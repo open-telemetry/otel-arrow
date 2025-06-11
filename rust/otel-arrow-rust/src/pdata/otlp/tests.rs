@@ -1,13 +1,18 @@
-// Copyright The OpenTelemetry Authors
-// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #[cfg(test)]
 use crate::pdata::SpanID;
 use crate::pdata::TraceID;
-use crate::pdata::otlp::ItemCounter;
-use crate::pdata::otlp::LogsVisitor;
-#[cfg(test)]
-//use crate::pdata::otlp::PrecomputedSizes;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::ArrayValue;
 use crate::proto::opentelemetry::common::v1::EntityRef;
@@ -17,8 +22,6 @@ use crate::proto::opentelemetry::common::v1::KeyValueList;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::logs::v1::LogRecord;
 use crate::proto::opentelemetry::logs::v1::LogRecordFlags;
-use crate::proto::opentelemetry::logs::v1::LogsData;
-use crate::proto::opentelemetry::logs::v1::LogsDataMessageAdapter;
 use crate::proto::opentelemetry::logs::v1::ResourceLogs;
 use crate::proto::opentelemetry::logs::v1::ScopeLogs;
 use crate::proto::opentelemetry::logs::v1::SeverityNumber;
@@ -50,39 +53,58 @@ use crate::proto::opentelemetry::trace::v1::span::Event;
 use crate::proto::opentelemetry::trace::v1::span::Link;
 use crate::proto::opentelemetry::trace::v1::span::SpanKind;
 use crate::proto::opentelemetry::trace::v1::status::StatusCode;
-
-// Import prost::Message trait for encoded_len() method
 use prost::Message;
 
 #[test]
 fn test_any_value() {
     // Primitives
-    assert_eq!(AnyValue::new_int(3i64), AnyValue {
+    let int_val = AnyValue::new_int(3i64);
+    let int_val_expected = AnyValue {
         value: Some(Value::IntValue(3i64)),
-    });
-    assert_eq!(AnyValue::new_double(3.123), AnyValue {
+    };
+    assert_eq!(int_val, int_val_expected);
+    assert_eq!(int_val.pdata_size(), int_val.encoded_len());
+
+    let double_val = AnyValue::new_double(3.123);
+    let double_val_expected = AnyValue {
         value: Some(Value::DoubleValue(3.123)),
-    });
-    assert_eq!(AnyValue::new_bool(true), AnyValue {
+    };
+    assert_eq!(double_val, double_val_expected);
+    assert_eq!(double_val.pdata_size(), double_val.encoded_len());
+
+    let bool_val = AnyValue::new_bool(true);
+    let bool_val_expected = AnyValue {
         value: Some(Value::BoolValue(true)),
-    });
+    };
+    assert_eq!(bool_val, bool_val_expected);
+    assert_eq!(bool_val.pdata_size(), bool_val.encoded_len());
 
     // String
     let xyz = "xyz".to_string();
     let xyz_value = AnyValue {
         value: Some(Value::StringValue(xyz.to_string())),
     };
-    assert_eq!(AnyValue::new_string("xyz"), xyz_value);
-    assert_eq!(AnyValue::new_string(&xyz), xyz_value);
-    assert_eq!(AnyValue::new_string(xyz), xyz_value);
+    let string_val1 = AnyValue::new_string("xyz");
+    let string_val2 = AnyValue::new_string(&xyz);
+    let string_val3 = AnyValue::new_string(xyz);
+    assert_eq!(string_val1, xyz_value);
+    assert_eq!(string_val1.pdata_size(), string_val1.encoded_len());
+    assert_eq!(string_val2, xyz_value);
+    assert_eq!(string_val2.pdata_size(), string_val2.encoded_len());
+    assert_eq!(string_val3, xyz_value);
+    assert_eq!(string_val3.pdata_size(), string_val3.encoded_len());
 
     // Bytes
     let hello: Vec<u8> = [104, 101, 108, 108, 111].to_vec();
     let hello_value = AnyValue {
         value: Some(Value::BytesValue(b"hello".to_vec())),
     };
-    assert_eq!(AnyValue::new_bytes(hello.as_slice()), hello_value);
-    assert_eq!(AnyValue::new_bytes(hello), hello_value);
+    let bytes_val1 = AnyValue::new_bytes(hello.as_slice());
+    let bytes_val2 = AnyValue::new_bytes(hello);
+    assert_eq!(bytes_val1, hello_value);
+    assert_eq!(bytes_val1.pdata_size(), bytes_val1.encoded_len());
+    assert_eq!(bytes_val2, hello_value);
+    assert_eq!(bytes_val2.pdata_size(), bytes_val2.encoded_len());
 
     // Kvlist
     let kvs = vec![
@@ -95,14 +117,16 @@ fn test_any_value() {
         })),
     };
 
-    assert_eq!(AnyValue::new_kvlist(kvs), kvs_value);
-    assert_eq!(
-        AnyValue::new_kvlist(vec![
-            KeyValue::new("k1", AnyValue::new_string("s1")),
-            KeyValue::new("k2", AnyValue::new_double(2.0)),
-        ]),
-        kvs_value
-    );
+    let kvlist_val1 = AnyValue::new_kvlist(kvs);
+    assert_eq!(kvlist_val1, kvs_value);
+    assert_eq!(kvlist_val1.pdata_size(), kvlist_val1.encoded_len());
+
+    let kvlist_val2 = AnyValue::new_kvlist(vec![
+        KeyValue::new("k1", AnyValue::new_string("s1")),
+        KeyValue::new("k2", AnyValue::new_double(2.0)),
+    ]);
+    assert_eq!(kvlist_val2, kvs_value);
+    assert_eq!(kvlist_val2.pdata_size(), kvlist_val2.encoded_len());
 
     // Array
     let vals = vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0)];
@@ -112,80 +136,14 @@ fn test_any_value() {
         })),
     };
 
-    assert_eq!(AnyValue::new_array(vals), vals_value);
-    assert_eq!(
-        AnyValue::new_array(vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0),]),
-        vals_value
-    );
+    let array_val1 = AnyValue::new_array(vals);
+    assert_eq!(array_val1, vals_value);
+    assert_eq!(array_val1.pdata_size(), array_val1.encoded_len());
 
-    // Test that our generated pdata_size() method matches prost's encoded_len() for a few examples
-    let int_val = AnyValue::new_int(3i64);
-    assert_eq!(int_val.pdata_size(), int_val.encoded_len());
-
-    let string_val = AnyValue::new_string("hello");
-    assert_eq!(string_val.pdata_size(), string_val.encoded_len());
-
-    assert_eq!(kvs_value.pdata_size(), kvs_value.encoded_len());
-    assert_eq!(vals_value.pdata_size(), vals_value.encoded_len());
-}
-
-#[test]
-fn test_any_value_int_debug() {
-    // Test the specific AnyValue that's causing the 1-byte difference
-    let av_int = AnyValue::new_int(123);
-
-    println!(
-        "AnyValue::new_int(123): pdata_size={}, encoded_len={}",
-        av_int.pdata_size(),
-        av_int.encoded_len()
-    );
-
-    // Let's also test some other int values to see if it's consistent
-    let av_int_0 = AnyValue::new_int(0);
-    let av_int_1 = AnyValue::new_int(1);
-    let av_int_127 = AnyValue::new_int(127);
-    let av_int_128 = AnyValue::new_int(128);
-
-    println!(
-        "AnyValue::new_int(0): pdata_size={}, encoded_len={}",
-        av_int_0.pdata_size(),
-        av_int_0.encoded_len()
-    );
-    println!(
-        "AnyValue::new_int(1): pdata_size={}, encoded_len={}",
-        av_int_1.pdata_size(),
-        av_int_1.encoded_len()
-    );
-    println!(
-        "AnyValue::new_int(127): pdata_size={}, encoded_len={}",
-        av_int_127.pdata_size(),
-        av_int_127.encoded_len()
-    );
-    println!(
-        "AnyValue::new_int(128): pdata_size={}, encoded_len={}",
-        av_int_128.pdata_size(),
-        av_int_128.encoded_len()
-    );
-
-    // Let's check the raw Value enum too
-    let raw_value = Value::IntValue(123);
-    println!("Raw IntValue(123): encoded_len={}", raw_value.encoded_len());
-
-    // The issue might be related to tag encoding for oneof fields
-    // Let's test other AnyValue types for comparison
-    let av_string = AnyValue::new_string("test");
-    let av_bool = AnyValue::new_bool(true);
-
-    println!(
-        "AnyValue::new_string('test'): pdata_size={}, encoded_len={}",
-        av_string.pdata_size(),
-        av_string.encoded_len()
-    );
-    println!(
-        "AnyValue::new_bool(true): pdata_size={}, encoded_len={}",
-        av_bool.pdata_size(),
-        av_bool.encoded_len()
-    );
+    let array_val2 =
+        AnyValue::new_array(vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0)]);
+    assert_eq!(array_val2, vals_value);
+    assert_eq!(array_val2.pdata_size(), array_val2.encoded_len());
 }
 
 #[test]
@@ -204,21 +162,20 @@ fn test_key_value() {
         value: Some(v2.clone()),
     };
 
-    let kv1 = KeyValue::new("k1", v1.clone());
-    let kv1_alt = KeyValue::new(k1.clone(), v1);
-    let kv2 = KeyValue::new("k2", v2.clone());
-    let kv2_alt = KeyValue::new(k2, v2);
+    let kv1_test1 = KeyValue::new("k1", v1.clone());
+    let kv1_test2 = KeyValue::new(k1.clone(), v1);
+    let kv2_test1 = KeyValue::new("k2", v2.clone());
+    let kv2_test2 = KeyValue::new(k2, v2);
 
-    assert_eq!(kv1, kv1_value);
-    assert_eq!(kv1_alt, kv1_value);
-    assert_eq!(kv2, kv2_value);
-    assert_eq!(kv2_alt, kv2_value);
+    assert_eq!(kv1_test1, kv1_value);
+    assert_eq!(kv1_test1.pdata_size(), kv1_test1.encoded_len());
+    assert_eq!(kv1_test2, kv1_value);
+    assert_eq!(kv1_test2.pdata_size(), kv1_test2.encoded_len());
 
-    // Test that our generated pdata_size() method matches prost's encoded_len()
-    assert_eq!(kv1.pdata_size(), kv1.encoded_len());
-    assert_eq!(kv1_value.pdata_size(), kv1_value.encoded_len());
-    assert_eq!(kv2.pdata_size(), kv2.encoded_len());
-    assert_eq!(kv2_value.pdata_size(), kv2_value.encoded_len());
+    assert_eq!(kv2_test1, kv2_value);
+    assert_eq!(kv2_test1.pdata_size(), kv2_test1.encoded_len());
+    assert_eq!(kv2_test2, kv2_value);
+    assert_eq!(kv2_test2.pdata_size(), kv2_test2.encoded_len());
 }
 
 #[test]
@@ -235,6 +192,7 @@ fn test_log_record_required() {
     let lr1 = LogRecord::new(ts, sev, name);
 
     assert_eq!(lr1, lr1_value);
+    assert_eq!(lr1.pdata_size(), lr1.encoded_len());
 }
 
 #[test]
@@ -262,10 +220,7 @@ fn test_log_record_required_all() {
         .finish();
 
     assert_eq!(lr1, lr1_value);
-
-    // Test that our generated pdata_size() method matches prost's encoded_len()
     assert_eq!(lr1.pdata_size(), lr1.encoded_len());
-    assert_eq!(lr1_value.pdata_size(), lr1_value.encoded_len());
 }
 
 #[test]
@@ -276,20 +231,7 @@ fn test_instrumentation_scope_default() {
         ..Default::default()
     };
     assert_eq!(is1, is1_value);
-
-    // Test that our generated pdata_size() method matches prost's encoded_len()
-    println!(
-        "InstrumentationScope default: pdata_size={}, encoded_len={}",
-        is1.pdata_size(),
-        is1.encoded_len()
-    );
-    println!(
-        "InstrumentationScope value: pdata_size={}, encoded_len={}",
-        is1_value.pdata_size(),
-        is1_value.encoded_len()
-    );
     assert_eq!(is1.pdata_size(), is1.encoded_len());
-    assert_eq!(is1_value.pdata_size(), is1_value.encoded_len());
 }
 
 #[test]
@@ -310,10 +252,7 @@ fn test_instrumentation_scope_options() {
     };
 
     assert_eq!(is1, is1_value);
-
-    // Test that our generated pdata_size() method matches prost's encoded_len()
     assert_eq!(is1.pdata_size(), is1.encoded_len());
-    assert_eq!(is1_value.pdata_size(), is1_value.encoded_len());
 }
 
 #[test]
@@ -345,6 +284,7 @@ fn test_scope_logs() {
     };
 
     assert_eq!(sl, sl_value);
+    assert_eq!(sl.pdata_size(), sl.encoded_len());
 }
 
 #[test]
@@ -362,6 +302,7 @@ fn test_entity() {
     };
 
     assert_eq!(er1, er1_value);
+    assert_eq!(er1.pdata_size(), er1.encoded_len());
 }
 
 #[test]
@@ -381,6 +322,7 @@ fn test_resource() {
     };
 
     assert_eq!(res1, res1_value);
+    assert_eq!(res1.pdata_size(), res1.encoded_len());
 }
 
 #[test]
@@ -414,63 +356,60 @@ fn test_resource_logs() {
     };
 
     assert_eq!(rl, rl_value);
+    assert_eq!(rl.pdata_size(), rl.encoded_len());
 }
 
-// TODO: This test is broken, but we need to study a simpler case.
-// #[test]
-// fn test_resource_spans() {
-//     let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
-//     let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
-//     let kvs = vec![kv1, kv2];
+#[test]
+fn test_resource_spans() {
+    let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
+    let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
+    let kvs = vec![kv1, kv2];
 
-//     let is1 = InstrumentationScope::new("library");
+    let is1 = InstrumentationScope::new("library");
 
-//     let tid: TraceID = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2].into();
-//     let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
-//     let psid: SpanID = [2, 1, 2, 1, 2, 1, 2, 1].into();
+    let tid: TraceID = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2].into();
+    let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
+    let psid: SpanID = [2, 1, 2, 1, 2, 1, 2, 1].into();
 
-//     let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
-//         .parent_span_id(psid)
-//         .attributes(kvs.clone())
-//         .flags(SpanFlags::ContextHasIsRemoteMask)
-//         .kind(SpanKind::Server)
-//         .trace_state("ot=th:0")
-//         .links(vec![Link::new(tid, sid)])
-//         .events(vec![Event::new("oops", 123_500_000_000u64)])
-//         .end_time_unix_nano(124_000_000_000u64)
-//         .status(Status::new("oh my!", StatusCode::Error))
-//         .dropped_attributes_count(1u32)
-//         .dropped_events_count(1u32)
-//         .dropped_links_count(1u32)
-//         .finish();
+    let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
+        .parent_span_id(psid)
+        .attributes(kvs.clone())
+        .flags(SpanFlags::ContextHasIsRemoteMask)
+        .kind(SpanKind::Server)
+        .trace_state("ot=th:0")
+        .links(vec![Link::new(tid, sid)])
+        .events(vec![Event::new("oops", 123_500_000_000u64)])
+        .end_time_unix_nano(124_000_000_000u64)
+        .status(Status::new("oh my!", StatusCode::Error))
+        .dropped_attributes_count(1u32)
+        .dropped_events_count(1u32)
+        .dropped_links_count(1u32)
+        .finish();
 
-//     let s2 = s1.clone();
-//     let sps = vec![s1, s2];
+    let s2 = s1.clone();
+    let sps = vec![s1, s2];
 
-//     let ss1 = ScopeSpans::build(is1.clone()).spans(sps.clone()).finish();
-//     let ss2 = ss1.clone();
-//     let sss = vec![ss1, ss2];
+    let ss1 = ScopeSpans::build(is1.clone()).spans(sps.clone()).finish();
+    let ss2 = ss1.clone();
+    let sss = vec![ss1, ss2];
 
-//     let res = Resource::new(vec![]);
+    let res = Resource::new(vec![]);
 
-//     let rs1 = ResourceSpans::build(res.clone())
-//         .scope_spans(sss.clone())
-//         .finish();
-//     let rs2 = rs1.clone();
-//     let rss = vec![rs1, rs2];
+    let rs1 = ResourceSpans::build(res.clone())
+        .scope_spans(sss.clone())
+        .finish();
+    let rs2 = rs1.clone();
+    let rss = vec![rs1, rs2];
 
-//     let rds = TracesData::new(rss.clone());
+    let rds = TracesData::new(rss.clone());
 
-//     let rds_value = TracesData {
-//         resource_spans: rss,
-//     };
+    let rds_value = TracesData {
+        resource_spans: rss,
+    };
 
-//     assert_eq!(rds, rds_value);
-
-//     // Test that our generated pdata_size() method matches prost's encoded_len()
-//     assert_eq!(rds.pdata_size(), rds.encoded_len());
-//     assert_eq!(rds_value.pdata_size(), rds_value.encoded_len());
-// }
+    assert_eq!(rds, rds_value);
+    assert_eq!(rds.pdata_size(), rds.encoded_len());
+}
 
 #[test]
 fn test_metric_sum() {
@@ -512,10 +451,7 @@ fn test_metric_sum() {
     };
 
     assert_eq!(m1, m1_value);
-
-    // Test that our generated pdata_size() method matches prost's encoded_len()
     assert_eq!(m1.pdata_size(), m1.encoded_len());
-    assert_eq!(m1_value.pdata_size(), m1_value.encoded_len());
 }
 
 #[test]
@@ -556,10 +492,7 @@ fn test_metric_gauge() {
     };
 
     assert_eq!(m1, m1_value);
-
-    // Test that our generated pdata_size() method matches prost's encoded_len()
     assert_eq!(m1.pdata_size(), m1.encoded_len());
-    assert_eq!(m1_value.pdata_size(), m1_value.encoded_len());
 }
 
 #[test]
@@ -580,86 +513,7 @@ fn test_exemplar() {
     };
 
     assert_eq!(e1, e1_value);
-
-    // Test that our generated pdata_size() method matches prost's encoded_len()
     assert_eq!(e1.pdata_size(), e1.encoded_len());
-    assert_eq!(e1_value.pdata_size(), e1_value.encoded_len());
-}
-
-#[test]
-fn debug_exemplar_encoding() {
-    let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
-    let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
-
-    let e1 = Exemplar::build_double(124_500_000_000u64, 10.1)
-        .trace_id(tid)
-        .span_id(sid)
-        .finish();
-
-    println!("Exemplar pdata_size: {}", e1.pdata_size());
-    println!("Exemplar encoded_len: {}", e1.encoded_len());
-
-    // Manual calculation:
-    // time_unix_nano: 124_500_000_000u64 (field 2, varint)
-    // Tag: 1 byte (2 << 3 = 16 = 0x10)
-    // Value: varint_size(124_500_000_000) bytes
-    let time_value = 124_500_000_000u64;
-    let time_tag = 1; // (2 << 3) >> 3 = 2, so tag size is 1 byte for field 2
-    let time_size = crate::pdata::otlp::PrecomputedSizes::varint_len(time_value as usize);
-    println!(
-        "time_unix_nano: tag={}, value={}, total={}",
-        time_tag,
-        time_size,
-        time_tag + time_size
-    );
-
-    // value: Some(ExemplarValue::AsDouble(10.1)) (field 4, fixed64)
-    // Tag: 1 byte (4 << 3 | 1 = 33 = 0x21)
-    // Value: 8 bytes (f64)
-    let value_tag = 1; // field 4, wire type 1
-    let value_size = 8; // f64 is always 8 bytes
-    println!(
-        "value (f64): tag={}, value={}, total={}",
-        value_tag,
-        value_size,
-        value_tag + value_size
-    );
-
-    // span_id: [1,2,1,2,1,2,1,2] (field 5, bytes)
-    // Tag: 1 byte (5 << 3 | 2 = 42 = 0x2A)
-    // Length: 1 byte (8)
-    // Value: 8 bytes
-    let span_tag = 1; // field 5, wire type 2
-    let span_len = 1; // length 8 fits in 1 byte
-    let span_value = 8;
-    println!(
-        "span_id: tag={}, len={}, value={}, total={}",
-        span_tag,
-        span_len,
-        span_value,
-        span_tag + span_len + span_value
-    );
-
-    // trace_id: [1,2,1,2,...] (field 6, bytes)
-    // Tag: 1 byte (6 << 3 | 2 = 50 = 0x32)
-    // Length: 1 byte (16)
-    // Value: 16 bytes
-    let trace_tag = 1; // field 6, wire type 2
-    let trace_len = 1; // length 16 fits in 1 byte
-    let trace_value = 16;
-    println!(
-        "trace_id: tag={}, len={}, value={}, total={}",
-        trace_tag,
-        trace_len,
-        trace_value,
-        trace_tag + trace_len + trace_value
-    );
-
-    let manual_total = (time_tag + time_size)
-        + (value_tag + value_size)
-        + (span_tag + span_len + span_value)
-        + (trace_tag + trace_len + trace_value);
-    println!("Manual total: {}", manual_total);
 }
 
 #[test]
@@ -734,6 +588,7 @@ fn test_metric_histogram() {
     };
 
     assert_eq!(m1, m1_value);
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -818,6 +673,7 @@ fn test_metric_summary() {
     };
 
     assert_eq!(m1, m1_value);
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -871,395 +727,5 @@ fn test_metric_exponential_histogram() {
     };
 
     assert_eq!(m1, m1_value);
-}
-
-#[test]
-fn test_logs_item_count() {
-    let ld = LogsData::new(vec![
-        ResourceLogs::build(Resource::new(vec![]))
-            .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope::new("test0"))
-                    .log_records(vec![
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                    ])
-                    .finish(),
-                ScopeLogs::build(InstrumentationScope::new("test1"))
-                    .log_records(vec![
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
-                    ])
-                    .finish(),
-            ])
-            .finish(),
-    ]);
-
-    let ic = ItemCounter::new().visit_logs(&LogsDataMessageAdapter::new(&ld));
-    assert_eq!(20, ic);
-}
-
-#[test]
-fn test_precomputed_sizes_varint_len() {
-    use crate::pdata::otlp::PrecomputedSizes;
-
-    assert_eq!(PrecomputedSizes::varint_len(0), 1);
-    assert_eq!(PrecomputedSizes::varint_len(127), 1);
-    assert_eq!(PrecomputedSizes::varint_len(128), 2);
-    assert_eq!(PrecomputedSizes::varint_len(16383), 2);
-    assert_eq!(PrecomputedSizes::varint_len(16384), 3);
-}
-
-// Primitive encoded length tests - start from the bottom up
-#[test]
-fn test_encoded_len_i32() {
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
-    use prost::Message;
-
-    let value: i32 = 42;
-    // prost encodes primitives as fields in messages, so we use AnyValue
-    let av = AnyValue {
-        value: Some(Value::IntValue(value as i64)),
-    };
-    let prost_len = av.encoded_len();
-    let pdata_len = av.pdata_size();
-    assert_eq!(
-        prost_len, pdata_len,
-        "pdata_size and prost encoded_len differ for i32: prost={}, pdata={}",
-        prost_len, pdata_len
-    );
-}
-
-#[test]
-fn test_encoded_len_f64() {
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
-    use prost::Message;
-
-    let value: f64 = 3.1415;
-    let av = AnyValue {
-        value: Some(Value::DoubleValue(value)),
-    };
-    let prost_len = av.encoded_len();
-    let pdata_len = av.pdata_size();
-    assert_eq!(
-        prost_len, pdata_len,
-        "pdata_size and prost encoded_len differ for f64: prost={}, pdata={}",
-        prost_len, pdata_len
-    );
-}
-
-#[test]
-fn test_encoded_len_string() {
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
-    use prost::Message;
-
-    let value = "hello world".to_string();
-    let av = AnyValue {
-        value: Some(Value::StringValue(value.clone())),
-    };
-    let prost_len = av.encoded_len();
-    let pdata_len = av.pdata_size();
-    assert_eq!(
-        prost_len, pdata_len,
-        "pdata_size and prost encoded_len differ for String: prost={}, pdata={}",
-        prost_len, pdata_len
-    );
-}
-
-#[test]
-fn test_encoded_len_keyvalue() {
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
-    use prost::Message;
-
-    let kv = KeyValue {
-        key: "test_key".to_string(),
-        value: Some(AnyValue {
-            value: Some(Value::StringValue("test_value".to_string())),
-        }),
-    };
-    let prost_len = kv.encoded_len();
-    let pdata_len = kv.pdata_size();
-    assert_eq!(
-        prost_len, pdata_len,
-        "pdata_size and prost encoded_len differ for KeyValue: prost={}, pdata={}",
-        prost_len, pdata_len
-    );
-}
-
-#[test]
-fn test_debug_keyvalue_calculation() {
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
-    use prost::Message;
-
-    // Create the components step by step
-    let key = "test_key";
-    let value_str = "test_value";
-
-    // Test AnyValue by itself first
-    let any_value = AnyValue {
-        value: Some(Value::StringValue(value_str.to_string())),
-    };
-    println!(
-        "AnyValue - prost: {}, pdata: {}",
-        any_value.encoded_len(),
-        any_value.pdata_size()
-    );
-
-    // Test string directly in AnyValue context
-    let just_string = AnyValue {
-        value: Some(Value::StringValue(value_str.to_string())),
-    };
-    println!(
-        "Just string in AnyValue - prost: {}, pdata: {}",
-        just_string.encoded_len(),
-        just_string.pdata_size()
-    );
-
-    // Test KeyValue with just key, no value
-    let kv_no_value = KeyValue {
-        key: key.to_string(),
-        value: None,
-    };
-    println!(
-        "KeyValue (no value) - prost: {}, pdata: {}",
-        kv_no_value.encoded_len(),
-        kv_no_value.pdata_size()
-    );
-
-    // Test KeyValue with value
-    let kv = KeyValue {
-        key: key.to_string(),
-        value: Some(any_value),
-    };
-    println!(
-        "KeyValue (with value) - prost: {}, pdata: {}",
-        kv.encoded_len(),
-        kv.pdata_size()
-    );
-
-    // Manual calculation for verification
-    println!("Manual calculation:");
-    println!(
-        "  key '{}' length: {} -> tag(1) + len(1) + data({}) = {}",
-        key,
-        key.len(),
-        key.len(),
-        1 + 1 + key.len()
-    );
-    println!(
-        "  AnyValue size: {} -> tag(1) + len(1) + data({}) = {}",
-        12,
-        12,
-        1 + 1 + 12
-    );
-    println!("  Expected total: {}", (1 + 1 + key.len()) + (1 + 1 + 12));
-}
-
-#[test]
-fn test_key_value_list() {
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
-    use prost::Message;
-
-    // Empty KeyValueList
-    let empty_kvl = KeyValueList { values: vec![] };
-    println!(
-        "Empty KVL: pdata_size={}, encoded_len={}",
-        empty_kvl.pdata_size(),
-        empty_kvl.encoded_len()
-    );
-    assert_eq!(empty_kvl.pdata_size(), empty_kvl.encoded_len());
-
-    // Single item KeyValueList
-    let single_kvl = KeyValueList {
-        values: vec![KeyValue::new("key1", AnyValue::new_string("value1"))],
-    };
-    println!(
-        "Single KVL: pdata_size={}, encoded_len={}",
-        single_kvl.pdata_size(),
-        single_kvl.encoded_len()
-    );
-    assert_eq!(single_kvl.pdata_size(), single_kvl.encoded_len());
-
-    // Multiple items KeyValueList
-    let multi_kvl = KeyValueList {
-        values: vec![
-            KeyValue::new("k1", AnyValue::new_string("s1")),
-            KeyValue::new("k2", AnyValue::new_double(2.0)),
-            KeyValue::new("k3", AnyValue::new_int(42)),
-            KeyValue::new("k4", AnyValue::new_bool(true)),
-        ],
-    };
-    println!(
-        "Multi KVL: pdata_size={}, encoded_len={}",
-        multi_kvl.pdata_size(),
-        multi_kvl.encoded_len()
-    );
-    assert_eq!(multi_kvl.pdata_size(), multi_kvl.encoded_len());
-
-    // Nested KeyValueList (a KeyValueList containing another KeyValueList)
-    let nested_kvl = KeyValueList {
-        values: vec![
-            KeyValue::new("outer", AnyValue::new_string("outer_value")),
-            KeyValue::new(
-                "nested",
-                AnyValue::new_kvlist(vec![
-                    KeyValue::new("inner1", AnyValue::new_string("inner_value1")),
-                    KeyValue::new("inner2", AnyValue::new_int(123)),
-                ]),
-            ),
-        ],
-    };
-    println!(
-        "Nested KVL: pdata_size={}, encoded_len={}",
-        nested_kvl.pdata_size(),
-        nested_kvl.encoded_len()
-    );
-    assert_eq!(nested_kvl.pdata_size(), nested_kvl.encoded_len());
-
-    println!("✅ KeyValueList tests passed - all pdata_size() matches encoded_len()");
-}
-
-#[test]
-fn test_simple_key_value_list_debug() {
-    // Test the exact same KeyValueList as the failing "inner" case
-    let simple_kvl = KeyValueList {
-        values: vec![
-            KeyValue::new("inner1", AnyValue::new_string("inner_value1")),
-            KeyValue::new("inner2", AnyValue::new_int(123)),
-        ],
-    };
-
-    println!(
-        "Simple KVL: pdata_size={}, encoded_len={}",
-        simple_kvl.pdata_size(),
-        simple_kvl.encoded_len()
-    );
-
-    // Let's also test the individual KeyValues to see if the issue is there
-    let kv1 = KeyValue::new("inner1", AnyValue::new_string("inner_value1"));
-    let kv2 = KeyValue::new("inner2", AnyValue::new_int(123));
-
-    println!(
-        "KV1: pdata_size={}, encoded_len={}",
-        kv1.pdata_size(),
-        kv1.encoded_len()
-    );
-    println!(
-        "KV2: pdata_size={}, encoded_len={}",
-        kv2.pdata_size(),
-        kv2.encoded_len()
-    );
-
-    // Check the individual AnyValues too
-    let av1 = AnyValue::new_string("inner_value1");
-    let av2 = AnyValue::new_int(123);
-
-    println!(
-        "AV1: pdata_size={}, encoded_len={}",
-        av1.pdata_size(),
-        av1.encoded_len()
-    );
-    println!(
-        "AV2: pdata_size={}, encoded_len={}",
-        av2.pdata_size(),
-        av2.encoded_len()
-    );
-
-    // This should pass for individual components:
-    assert_eq!(kv1.pdata_size(), kv1.encoded_len());
-    assert_eq!(kv2.pdata_size(), kv2.encoded_len());
-    assert_eq!(av1.pdata_size(), av1.encoded_len());
-    assert_eq!(av2.pdata_size(), av2.encoded_len());
-
-    // But this should fail:
-    // assert_eq!(simple_kvl.pdata_size(), simple_kvl.encoded_len());
-}
-
-#[test]
-fn test_nested_key_value_list_debug() {
-    // Create the inner KeyValueList
-    let inner_kvl = KeyValueList {
-        values: vec![
-            KeyValue::new("inner1", AnyValue::new_string("inner_value1")),
-            KeyValue::new("inner2", AnyValue::new_int(123)),
-        ],
-    };
-    println!(
-        "Inner KVL: pdata_size={}, encoded_len={}",
-        inner_kvl.pdata_size(),
-        inner_kvl.encoded_len()
-    );
-
-    // Create the AnyValue that wraps the inner KeyValueList
-    let inner_any_value = AnyValue::new_kvlist(vec![
-        KeyValue::new("inner1", AnyValue::new_string("inner_value1")),
-        KeyValue::new("inner2", AnyValue::new_int(123)),
-    ]);
-    println!(
-        "Inner AnyValue: pdata_size={}, encoded_len={}",
-        inner_any_value.pdata_size(),
-        inner_any_value.encoded_len()
-    );
-
-    // Create the nested KeyValue that contains the inner AnyValue
-    let nested_kv = KeyValue::new("nested", inner_any_value.clone());
-    println!(
-        "Nested KeyValue: pdata_size={}, encoded_len={}",
-        nested_kv.pdata_size(),
-        nested_kv.encoded_len()
-    );
-
-    // Create the outer KeyValueList
-    let outer_kvl = KeyValueList {
-        values: vec![
-            KeyValue::new("outer", AnyValue::new_string("outer_value")),
-            nested_kv.clone(),
-        ],
-    };
-    println!(
-        "Outer KVL: pdata_size={}, encoded_len={}",
-        outer_kvl.pdata_size(),
-        outer_kvl.encoded_len()
-    );
-
-    // Compare with the original nested structure
-    let nested_kvl = KeyValueList {
-        values: vec![
-            KeyValue::new("outer", AnyValue::new_string("outer_value")),
-            KeyValue::new(
-                "nested",
-                AnyValue::new_kvlist(vec![
-                    KeyValue::new("inner1", AnyValue::new_string("inner_value1")),
-                    KeyValue::new("inner2", AnyValue::new_int(123)),
-                ]),
-            ),
-        ],
-    };
-    println!(
-        "Direct nested KVL: pdata_size={}, encoded_len={}",
-        nested_kvl.pdata_size(),
-        nested_kvl.encoded_len()
-    );
-
-    // The issue is likely in the nested structure - let's isolate it
-    assert_eq!(inner_kvl.pdata_size(), inner_kvl.encoded_len());
-    assert_eq!(inner_any_value.pdata_size(), inner_any_value.encoded_len());
-    assert_eq!(nested_kv.pdata_size(), nested_kv.encoded_len());
-    // This should fail:
-    // assert_eq!(outer_kvl.pdata_size(), outer_kvl.encoded_len());
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }

@@ -514,15 +514,11 @@ impl<V: crate::pdata::SliceVisitor<PrecomputedSizes, Primitive>, Primitive>
     crate::pdata::SliceVisitor<PrecomputedSizes, Primitive> for &mut Accumulate<V>
 {
     fn visit_slice(&mut self, arg: PrecomputedSizes, _value: &[Primitive]) -> PrecomputedSizes {
-        // @@@
-        // arg = self.inner.visit_bytes(arg, value);
-        // self.total += arg.last();
-        // arg
-        // let before_size = arg.total_size();
-        // let result = self.inner.visit_slice(arg, value);
-        // let after_size = result.total_size();
-        // self.total += after_size - before_size;
-        // result
+        // TODO@@@
+        // for val in value {
+        //     arg = self.inner.visit_XXX(arg, val);
+        //     self.total += arg.last();
+        // }
         arg
     }
 }
