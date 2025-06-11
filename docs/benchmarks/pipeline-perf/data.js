@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1749662769084,
+  "lastUpdate": 1749665627173,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2771,6 +2771,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 126.48,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "albert.lockett@gmail.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "48502a8dc36935326bc309c83c8361429eb857dc",
+          "message": "feat: Adaptive array builders for struct & time types (#573)\n\nAdds adaptive array builder implementations for `Struct`,\n`TimestampNano` and `DurationNano`.\n\nSome small cleanup items:\n- changes the `append_value_checked` method on `AdaptiveArrayBuilder` to\njust be `append_value` by having `AdaptiveArrayBuilder` implement the\n`CheckedArrayAppend` trait. This makes the method call more similar to\nhow it's called on the underlying arrow builders (e.g. for\nFixedSizeBinaryBuilder, the method is just called `append_value`\nhttps://docs.rs/arrow/latest/arrow/array/struct.FixedSizeBinaryBuilder.html#method.append_value).\n- removes som unnecessary `'static` lifetime constraints in the\n`array::test` module.\n- made some methods on `AdaptiveBooleanBuilder` public which should not\nhave been private",
+          "timestamp": "2025-06-11T18:03:45Z",
+          "tree_id": "463bcaeced9c410e980cd4c0ecf82cd623efc11e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/48502a8dc36935326bc309c83c8361429eb857dc"
+        },
+        "date": 1749665624731,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 475833.3333333333,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 14275000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 14275000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 2.48,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 2.83,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 144.21,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 171.45,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 441500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 13245000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 13245000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 2.29,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 2.8,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 110.67,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 133.11,
             "unit": "MiB"
           }
         ]
