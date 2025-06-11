@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module contains primitive-field encoding support for protobufs.
-
+///
+/// - EncodedLen impls for primitive visitors.
+/// - Accumulate helper visitable
 use crate::pdata::otlp::PrecomputedSizes;
 
 /// Calculate the size of a varint encoded value
@@ -339,7 +341,9 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, i64> for Slice
     }
 }
 
-impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f64> for SliceDoubleEncodedLen<TAG> {
+impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f64>
+    for SliceDoubleEncodedLen<TAG>
+{
     fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[f64]) -> PrecomputedSizes {
         for _value in slice {
             let tag_size = varint_size(TAG << 3 | 1); // wire_type = 1
@@ -350,7 +354,9 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f64> for Slice
     }
 }
 
-impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f32> for SliceFixed32EncodedLen<TAG> {
+impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f32>
+    for SliceFixed32EncodedLen<TAG>
+{
     fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[f32]) -> PrecomputedSizes {
         for _value in slice {
             let tag_size = varint_size(TAG << 3 | 5); // wire_type = 5 (fixed32)
@@ -361,7 +367,9 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f32> for Slice
     }
 }
 
-impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, bool> for SliceBooleanEncodedLen<TAG> {
+impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, bool>
+    for SliceBooleanEncodedLen<TAG>
+{
     fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[bool]) -> PrecomputedSizes {
         for _value in slice {
             let tag_size = varint_size(TAG << 3); // wire_type = 0
@@ -372,7 +380,9 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, bool> for Slic
     }
 }
 
-impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, String> for SliceStringEncodedLen<TAG> {
+impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, String>
+    for SliceStringEncodedLen<TAG>
+{
     fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[String]) -> PrecomputedSizes {
         for value in slice {
             let tag_size = varint_size(TAG << 3 | 2); // wire_type = 2
@@ -385,7 +395,9 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, String> for Sl
     }
 }
 
-impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, Vec<u8>> for SliceBytesEncodedLen<TAG> {
+impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, Vec<u8>>
+    for SliceBytesEncodedLen<TAG>
+{
     fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[Vec<u8>]) -> PrecomputedSizes {
         for value in slice {
             let tag_size = varint_size(TAG << 3 | 2); // wire_type = 2

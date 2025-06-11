@@ -1,39 +1,26 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module contains traits and utilities for OTLP (OpenTelemetry Protocol) message types.
-
-// Re-export derive macros (required for generated code)
-pub use otlp_derive::Message;
-pub use otlp_derive::qualified;
+//! This module contains traits and utilities for OTLP (OpenTelemetry
+//! Protocol) message types.
+///
+/// - LogsVisitor<_>: prototype for top-level visitor interface, this could
+///   support both Export requests and the assocaited Data.
+/// - Counting items via the visitor pattern demonstration (ItemCounter)
+///   note that this is not necessarily a good application of the pattern.
+/// - PrecomputedSizes: used in first-pass of OTLP protobuf encoding visitor
+/// - Into<_> for KeyValueList, ArrayValue.
+pub use otlp_derive::Message; // Required for derived code
+pub use otlp_derive::qualified; // Required for derived code
 
 // Primitive encoders for the first pass of two-pass encoding
 pub mod primitive_encoders;
 pub use primitive_encoders::{
-    Accumulate,
-    BooleanEncodedLen,
-    BytesEncodedLen,
-    DoubleEncodedLen,
-    Fixed32EncodedLen,
-    Fixed64EncodedLen,
-    I32EncodedLen,
-    I64EncodedLen,
-    Sfixed64EncodedLen,
-    Sint32EncodedLen,
-    // Slice visitor types for repeated primitive fields
-    SliceBooleanEncodedLen,
-    SliceBytesEncodedLen,
-    SliceDoubleEncodedLen,
-    SliceFixed32EncodedLen,
-    SliceFixed64EncodedLen,
-    SliceI32EncodedLen,
-    SliceI64EncodedLen,
-    SliceStringEncodedLen,
-    SliceU32EncodedLen,
-    SliceU64EncodedLen,
-    StringEncodedLen,
-    U32EncodedLen,
-    U64EncodedLen,
+    Accumulate, BooleanEncodedLen, BytesEncodedLen, DoubleEncodedLen, Fixed32EncodedLen,
+    Fixed64EncodedLen, I32EncodedLen, I64EncodedLen, Sfixed64EncodedLen, Sint32EncodedLen,
+    SliceBooleanEncodedLen, SliceBytesEncodedLen, SliceDoubleEncodedLen, SliceFixed32EncodedLen,
+    SliceFixed64EncodedLen, SliceI32EncodedLen, SliceI64EncodedLen, SliceStringEncodedLen,
+    SliceU32EncodedLen, SliceU64EncodedLen, StringEncodedLen, U32EncodedLen, U64EncodedLen,
 };
 
 use crate::proto::opentelemetry::logs::v1::LogRecordVisitable;

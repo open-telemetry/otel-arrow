@@ -10,10 +10,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module contains data structures for OTLP and OTAP pipeline data
-
+//! This module contains data structures for OTLP and OTAP pipeline data.
+///
+/// - Visitors for primitive data types (string, i64, ...)
+/// - SliceVisitor<_, _>
+/// - NoopVisitor
+/// - From<_> for TraceID, SpanID
 pub mod otlp;
 
+// Concerning TraceID and SpanID:
+//
 // Note that these types are placeholders, we probably want to share
 // these definitions as well as the Prost/Tonic generation with the
 // OTel-Rust SDK where they are already defined. To avoid coordinating

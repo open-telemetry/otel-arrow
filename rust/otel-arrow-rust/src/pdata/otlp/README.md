@@ -3,7 +3,16 @@
 Status: **Development**
 
 This package defines an OTLP pipeline data interface based on
-prost::Message objects.  The package layout:
+prost::Message objects.
+
+For each OTLP message object, a set of additional implementation,
+associated methods and traits are generated through the ./derive
+sub-crate of this directory.
+
+The package layout:
+
+
+
 
 - `mod.rs`: Core module that re-exports the procedural macros and
   defines the main OTLP message traits.

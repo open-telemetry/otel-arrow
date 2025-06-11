@@ -201,7 +201,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
         } else {
             quote! { crate::pdata::otlp::BytesEncodedLen }
         };
-        return quote! { #visitor_type { tag: #tag } };
+        return quote! { #visitor_type::<#tag> {} };
     }
 
     // For repeated primitive fields, use slice visitors
@@ -220,7 +220,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
                 quote! { crate::pdata::otlp::SliceI32EncodedLen }
             }
         };
-        quote! { #visitor_type { tag: #tag } }
+        quote! { #visitor_type::<#tag> {} }
     } else {
         // For non-repeated primitive fields, use individual visitors
         let visitor_type = match info.base_type_name.as_str() {
@@ -265,7 +265,8 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
                 quote! { crate::pdata::otlp::I32EncodedLen }
             }
         };
-        quote! { #visitor_type { tag: #tag } }
+        // Generate const generic instantiation syntax: SomeEncodedLen::<TAG> {}
+        quote! { #visitor_type::<#tag> {} }
     }
 }
 
@@ -329,7 +330,8 @@ fn generate_primitive_visitor_instantiation(
         }
     };
 
-    quote! { #visitor_type { tag: #tag } }
+    // Generate const generic instantiation syntax: SomeEncodedLen::<TAG> {}
+    quote! { #visitor_type::<#tag> {} }
 }
 
 /// Generate message visitor instantiation for an oneof case.

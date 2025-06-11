@@ -133,31 +133,59 @@ fn test_any_value() {
 fn test_any_value_int_debug() {
     // Test the specific AnyValue that's causing the 1-byte difference
     let av_int = AnyValue::new_int(123);
-    
-    println!("AnyValue::new_int(123): pdata_size={}, encoded_len={}", av_int.pdata_size(), av_int.encoded_len());
-    
+
+    println!(
+        "AnyValue::new_int(123): pdata_size={}, encoded_len={}",
+        av_int.pdata_size(),
+        av_int.encoded_len()
+    );
+
     // Let's also test some other int values to see if it's consistent
     let av_int_0 = AnyValue::new_int(0);
     let av_int_1 = AnyValue::new_int(1);
     let av_int_127 = AnyValue::new_int(127);
     let av_int_128 = AnyValue::new_int(128);
-    
-    println!("AnyValue::new_int(0): pdata_size={}, encoded_len={}", av_int_0.pdata_size(), av_int_0.encoded_len());
-    println!("AnyValue::new_int(1): pdata_size={}, encoded_len={}", av_int_1.pdata_size(), av_int_1.encoded_len());
-    println!("AnyValue::new_int(127): pdata_size={}, encoded_len={}", av_int_127.pdata_size(), av_int_127.encoded_len());
-    println!("AnyValue::new_int(128): pdata_size={}, encoded_len={}", av_int_128.pdata_size(), av_int_128.encoded_len());
-    
+
+    println!(
+        "AnyValue::new_int(0): pdata_size={}, encoded_len={}",
+        av_int_0.pdata_size(),
+        av_int_0.encoded_len()
+    );
+    println!(
+        "AnyValue::new_int(1): pdata_size={}, encoded_len={}",
+        av_int_1.pdata_size(),
+        av_int_1.encoded_len()
+    );
+    println!(
+        "AnyValue::new_int(127): pdata_size={}, encoded_len={}",
+        av_int_127.pdata_size(),
+        av_int_127.encoded_len()
+    );
+    println!(
+        "AnyValue::new_int(128): pdata_size={}, encoded_len={}",
+        av_int_128.pdata_size(),
+        av_int_128.encoded_len()
+    );
+
     // Let's check the raw Value enum too
     let raw_value = Value::IntValue(123);
     println!("Raw IntValue(123): encoded_len={}", raw_value.encoded_len());
-    
+
     // The issue might be related to tag encoding for oneof fields
     // Let's test other AnyValue types for comparison
     let av_string = AnyValue::new_string("test");
     let av_bool = AnyValue::new_bool(true);
-    
-    println!("AnyValue::new_string('test'): pdata_size={}, encoded_len={}", av_string.pdata_size(), av_string.encoded_len());
-    println!("AnyValue::new_bool(true): pdata_size={}, encoded_len={}", av_bool.pdata_size(), av_bool.encoded_len());
+
+    println!(
+        "AnyValue::new_string('test'): pdata_size={}, encoded_len={}",
+        av_string.pdata_size(),
+        av_string.encoded_len()
+    );
+    println!(
+        "AnyValue::new_bool(true): pdata_size={}, encoded_len={}",
+        av_bool.pdata_size(),
+        av_bool.encoded_len()
+    );
 }
 
 #[test]
@@ -1049,14 +1077,22 @@ fn test_key_value_list() {
 
     // Empty KeyValueList
     let empty_kvl = KeyValueList { values: vec![] };
-    println!("Empty KVL: pdata_size={}, encoded_len={}", empty_kvl.pdata_size(), empty_kvl.encoded_len());
+    println!(
+        "Empty KVL: pdata_size={}, encoded_len={}",
+        empty_kvl.pdata_size(),
+        empty_kvl.encoded_len()
+    );
     assert_eq!(empty_kvl.pdata_size(), empty_kvl.encoded_len());
 
     // Single item KeyValueList
     let single_kvl = KeyValueList {
         values: vec![KeyValue::new("key1", AnyValue::new_string("value1"))],
     };
-    println!("Single KVL: pdata_size={}, encoded_len={}", single_kvl.pdata_size(), single_kvl.encoded_len());
+    println!(
+        "Single KVL: pdata_size={}, encoded_len={}",
+        single_kvl.pdata_size(),
+        single_kvl.encoded_len()
+    );
     assert_eq!(single_kvl.pdata_size(), single_kvl.encoded_len());
 
     // Multiple items KeyValueList
@@ -1068,7 +1104,11 @@ fn test_key_value_list() {
             KeyValue::new("k4", AnyValue::new_bool(true)),
         ],
     };
-    println!("Multi KVL: pdata_size={}, encoded_len={}", multi_kvl.pdata_size(), multi_kvl.encoded_len());
+    println!(
+        "Multi KVL: pdata_size={}, encoded_len={}",
+        multi_kvl.pdata_size(),
+        multi_kvl.encoded_len()
+    );
     assert_eq!(multi_kvl.pdata_size(), multi_kvl.encoded_len());
 
     // Nested KeyValueList (a KeyValueList containing another KeyValueList)
@@ -1084,7 +1124,11 @@ fn test_key_value_list() {
             ),
         ],
     };
-    println!("Nested KVL: pdata_size={}, encoded_len={}", nested_kvl.pdata_size(), nested_kvl.encoded_len());
+    println!(
+        "Nested KVL: pdata_size={}, encoded_len={}",
+        nested_kvl.pdata_size(),
+        nested_kvl.encoded_len()
+    );
     assert_eq!(nested_kvl.pdata_size(), nested_kvl.encoded_len());
 
     println!("✅ KeyValueList tests passed - all pdata_size() matches encoded_len()");
@@ -1099,29 +1143,49 @@ fn test_simple_key_value_list_debug() {
             KeyValue::new("inner2", AnyValue::new_int(123)),
         ],
     };
-    
-    println!("Simple KVL: pdata_size={}, encoded_len={}", simple_kvl.pdata_size(), simple_kvl.encoded_len());
-    
+
+    println!(
+        "Simple KVL: pdata_size={}, encoded_len={}",
+        simple_kvl.pdata_size(),
+        simple_kvl.encoded_len()
+    );
+
     // Let's also test the individual KeyValues to see if the issue is there
     let kv1 = KeyValue::new("inner1", AnyValue::new_string("inner_value1"));
     let kv2 = KeyValue::new("inner2", AnyValue::new_int(123));
-    
-    println!("KV1: pdata_size={}, encoded_len={}", kv1.pdata_size(), kv1.encoded_len());
-    println!("KV2: pdata_size={}, encoded_len={}", kv2.pdata_size(), kv2.encoded_len());
-    
+
+    println!(
+        "KV1: pdata_size={}, encoded_len={}",
+        kv1.pdata_size(),
+        kv1.encoded_len()
+    );
+    println!(
+        "KV2: pdata_size={}, encoded_len={}",
+        kv2.pdata_size(),
+        kv2.encoded_len()
+    );
+
     // Check the individual AnyValues too
     let av1 = AnyValue::new_string("inner_value1");
     let av2 = AnyValue::new_int(123);
-    
-    println!("AV1: pdata_size={}, encoded_len={}", av1.pdata_size(), av1.encoded_len());
-    println!("AV2: pdata_size={}, encoded_len={}", av2.pdata_size(), av2.encoded_len());
-    
+
+    println!(
+        "AV1: pdata_size={}, encoded_len={}",
+        av1.pdata_size(),
+        av1.encoded_len()
+    );
+    println!(
+        "AV2: pdata_size={}, encoded_len={}",
+        av2.pdata_size(),
+        av2.encoded_len()
+    );
+
     // This should pass for individual components:
     assert_eq!(kv1.pdata_size(), kv1.encoded_len());
     assert_eq!(kv2.pdata_size(), kv2.encoded_len());
     assert_eq!(av1.pdata_size(), av1.encoded_len());
     assert_eq!(av2.pdata_size(), av2.encoded_len());
-    
+
     // But this should fail:
     // assert_eq!(simple_kvl.pdata_size(), simple_kvl.encoded_len());
 }
@@ -1135,19 +1199,31 @@ fn test_nested_key_value_list_debug() {
             KeyValue::new("inner2", AnyValue::new_int(123)),
         ],
     };
-    println!("Inner KVL: pdata_size={}, encoded_len={}", inner_kvl.pdata_size(), inner_kvl.encoded_len());
-    
+    println!(
+        "Inner KVL: pdata_size={}, encoded_len={}",
+        inner_kvl.pdata_size(),
+        inner_kvl.encoded_len()
+    );
+
     // Create the AnyValue that wraps the inner KeyValueList
     let inner_any_value = AnyValue::new_kvlist(vec![
         KeyValue::new("inner1", AnyValue::new_string("inner_value1")),
         KeyValue::new("inner2", AnyValue::new_int(123)),
     ]);
-    println!("Inner AnyValue: pdata_size={}, encoded_len={}", inner_any_value.pdata_size(), inner_any_value.encoded_len());
-    
+    println!(
+        "Inner AnyValue: pdata_size={}, encoded_len={}",
+        inner_any_value.pdata_size(),
+        inner_any_value.encoded_len()
+    );
+
     // Create the nested KeyValue that contains the inner AnyValue
     let nested_kv = KeyValue::new("nested", inner_any_value.clone());
-    println!("Nested KeyValue: pdata_size={}, encoded_len={}", nested_kv.pdata_size(), nested_kv.encoded_len());
-    
+    println!(
+        "Nested KeyValue: pdata_size={}, encoded_len={}",
+        nested_kv.pdata_size(),
+        nested_kv.encoded_len()
+    );
+
     // Create the outer KeyValueList
     let outer_kvl = KeyValueList {
         values: vec![
@@ -1155,8 +1231,12 @@ fn test_nested_key_value_list_debug() {
             nested_kv.clone(),
         ],
     };
-    println!("Outer KVL: pdata_size={}, encoded_len={}", outer_kvl.pdata_size(), outer_kvl.encoded_len());
-    
+    println!(
+        "Outer KVL: pdata_size={}, encoded_len={}",
+        outer_kvl.pdata_size(),
+        outer_kvl.encoded_len()
+    );
+
     // Compare with the original nested structure
     let nested_kvl = KeyValueList {
         values: vec![
@@ -1170,8 +1250,12 @@ fn test_nested_key_value_list_debug() {
             ),
         ],
     };
-    println!("Direct nested KVL: pdata_size={}, encoded_len={}", nested_kvl.pdata_size(), nested_kvl.encoded_len());
-    
+    println!(
+        "Direct nested KVL: pdata_size={}, encoded_len={}",
+        nested_kvl.pdata_size(),
+        nested_kvl.encoded_len()
+    );
+
     // The issue is likely in the nested structure - let's isolate it
     assert_eq!(inner_kvl.pdata_size(), inner_kvl.encoded_len());
     assert_eq!(inner_any_value.pdata_size(), inner_any_value.encoded_len());
