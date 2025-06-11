@@ -138,34 +138,58 @@ where
     arg
 }
 
+/// Boolean field encoder with optional support
 pub struct BooleanEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// String field encoder with optional support
 pub struct StringEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// Bytes field encoder with optional support
 pub struct BytesEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// Double field encoder with optional support
 pub struct DoubleEncodedLen<const TAG: u32, const OPTION: bool> {}
 
+/// U32 varint field encoder with optional support
 pub struct U32VarintEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// U32 fixed field encoder with optional support
 pub struct U32FixedEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// U64 varint field encoder with optional support
 pub struct U64VarintEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// U64 fixed field encoder with optional support
 pub struct U64FixedEncodedLen<const TAG: u32, const OPTION: bool> {}
 
+/// I32 varint field encoder with optional support
 pub struct I32VarintEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// I32 fixed field encoder with optional support
 pub struct I32FixedEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// I64 varint field encoder with optional support
 pub struct I64VarintEncodedLen<const TAG: u32, const OPTION: bool> {}
+/// I64 fixed field encoder with optional support
 pub struct I64FixedEncodedLen<const TAG: u32, const OPTION: bool> {}
 
+/// Boolean slice encoder
 pub struct SliceBooleanEncodedLen<const TAG: u32> {}
+/// String slice encoder
 pub struct SliceStringEncodedLen<const TAG: u32> {}
+/// Bytes slice encoder
 pub struct SliceBytesEncodedLen<const TAG: u32> {}
+/// Double slice encoder
 pub struct SliceDoubleEncodedLen<const TAG: u32> {}
 
+/// U32 varint slice encoder
 pub struct SliceU32VarintEncodedLen<const TAG: u32> {}
+/// U32 fixed slice encoder
 pub struct SliceU32FixedEncodedLen<const TAG: u32> {}
+/// U64 varint slice encoder
 pub struct SliceU64VarintEncodedLen<const TAG: u32> {}
+/// U64 fixed slice encoder
 pub struct SliceU64FixedEncodedLen<const TAG: u32> {}
 
+/// I32 varint slice encoder
 pub struct SliceI32VarintEncodedLen<const TAG: u32> {}
+/// I32 fixed slice encoder
 pub struct SliceI32FixedEncodedLen<const TAG: u32> {}
+/// I64 varint slice encoder
 pub struct SliceI64VarintEncodedLen<const TAG: u32> {}
+/// I64 fixed slice encoder
 pub struct SliceI64FixedEncodedLen<const TAG: u32> {}
 
 // Boolean is always varint
