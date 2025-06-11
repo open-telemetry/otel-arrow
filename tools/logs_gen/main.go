@@ -18,13 +18,10 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"io"
 	"log"
-	"math"
-	"math/big"
 	"os"
 	"path"
 
@@ -128,12 +125,7 @@ func main() {
 	}
 
 	// Generate the dataset.
-	v, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
-	if err != nil {
-		log.Fatalf("Failed to generate random number - %v", err)
-	}
-
-	entropy := datagen.NewTestEntropy(v.Int64())
+	entropy := datagen.NewTestEntropy()
 	generator := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	// set default output file name

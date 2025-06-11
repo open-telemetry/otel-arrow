@@ -15,7 +15,6 @@
 package dataset
 
 import (
-	"math/rand"
 	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -61,8 +60,7 @@ type FakeMetricsDataset struct {
 }
 
 func NewFakeMetricsDataset(size int) *FakeMetricsDataset {
-	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy()
 	return &FakeMetricsDataset{len: size, generator: datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
@@ -83,8 +81,7 @@ type FakeLogsDataset struct {
 }
 
 func NewFakeLogsDataset(size int) *FakeLogsDataset {
-	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy()
 	return &FakeLogsDataset{len: size, generator: datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
@@ -113,8 +110,7 @@ type FakeTraceDataset struct {
 }
 
 func NewFakeTraceDataset(size int) *FakeTraceDataset {
-	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy()
 	return &FakeTraceDataset{len: size, generator: datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
