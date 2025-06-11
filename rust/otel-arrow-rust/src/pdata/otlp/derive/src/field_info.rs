@@ -731,7 +731,10 @@ impl FieldInfo {
     /// - "custom" case -> `CustomVisitor<Argument>`
     pub fn generate_visitor_type_for_oneof_case(case: &OneofCase) -> proc_macro2::TokenStream {
         /// Mapping of oneof case names to their visitor traits, considering proto_type
-        fn get_oneof_visitor_mapping(case_name: &str, proto_type: &str) -> Option<(&'static str, bool)> {
+        fn get_oneof_visitor_mapping(
+            case_name: &str,
+            proto_type: &str,
+        ) -> Option<(&'static str, bool)> {
             match case_name {
                 // Primitive types (in crate::pdata) - consider proto_type for encoding differences
                 "string" => Some(("StringVisitor", true)),
@@ -742,7 +745,7 @@ impl FieldInfo {
                         "sfixed64" => Some(("I64Visitor", true)), // Will use Sfixed64EncodedLen via encoder selection
                         "int64" | _ => Some(("I64Visitor", true)), // Will use I64EncodedLen via encoder selection
                     }
-                },
+                }
                 "double" => Some(("F64Visitor", true)),
                 "bytes" => Some(("BytesVisitor", true)),
 
@@ -754,7 +757,9 @@ impl FieldInfo {
             }
         }
 
-        if let Some((visitor_name, use_crate_pdata)) = get_oneof_visitor_mapping(&case.name, &case.proto_type) {
+        if let Some((visitor_name, use_crate_pdata)) =
+            get_oneof_visitor_mapping(&case.name, &case.proto_type)
+        {
             let visitor_ident = syn::Ident::new(visitor_name, proc_macro2::Span::call_site());
             if use_crate_pdata {
                 quote! { crate::pdata::#visitor_ident<Argument> }

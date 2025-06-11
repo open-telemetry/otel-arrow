@@ -3,28 +3,9 @@
 
 //! EncodedLen visitor generation for protobuf size calculation.
 //!
-//! This module implements the fourth generation step of the OTLP macro system,
-//! creating EncodedLen visitors that implement the visitor pattern for
-//! `PrecomputedSizes` arguments. These visitors calculate the total encoded
-//! size of protobuf messages using a two-pass algorithm.
-//!
-//! ## Generated Code Pattern
-//!
-//! For each message type, this generates:
-//! 1. An `EncodedLen` struct containing the protobuf tag
-//! 2. A visitor implementation that accumulates sizes using `PrecomputedSizes`
-//! 3. Proper handling of message fields, primitive fields, and oneof variants
-//!
-//! ## Algorithm
-//!
-//! The size calculation follows the two-pass pattern described in prd.md:
-//! 1. **First Pass (this module)**: Calculate sizes using visitor traversal
-//! 2. **Second Pass (future)**: Encode data using precomputed sizes
-//!
-//! The generated visitors use `PrecomputedSizes` helper methods for:
-//! - Reserving space for size calculations (`reserve()`)
-//! - Getting child sizes (`get_size()`)
-//! - Setting computed sizes (`set_size()`)
+//! This module implements EncodedLen visitors that implement the
+//! visitor pattern for `PrecomputedSizes` arguments. These visitors
+//! calculate the exact encoded size of protobuf (sub-)messages.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -34,11 +15,6 @@ use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
 
 /// Generate the EncodedLen visitor implementation for a message type.
-///
-/// This creates an `EncodedLen` struct and visitor implementation that calculates
-/// the total encoded size of a protobuf message using the PrecomputedSizes argument.
-/// The implementation follows the visitor pattern established by the existing
-/// generator steps.
 pub fn derive(msg: &MessageInfo) -> TokenStream {
     let outer_name = &msg.outer_name;
     let encoded_len_name = msg.related_typename("EncodedLen");
@@ -53,19 +29,19 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
     let expanded = quote! {
         /// EncodedLen visitor for calculating protobuf encoded size
-        pub struct #encoded_len_name {
-            /// Protocol buffer tag number for this message
-            pub tag: u32,
-        }
+        pub struct #encoded_len_name<const TAG: u32> {}
 
-        impl #encoded_len_name {
-            /// Create a new EncodedLen visitor with the specified tag
-            pub fn new(tag: u32) -> Self {
-                Self { tag }
+        impl<const TAG: u32> #encoded_len_name<TAG> {
+            /// Create a new EncodedLen visitor.
+            pub fn new() -> Self {
+                Self { }
+            }
+
+            pub const fn tag() -> u32 {
+        TAG
             }
 
             /// Calculate the sum of direct children's encoded lengths.
-            /// This method processes each child field individually using the visitor pattern.
             fn children_encoded_size(
                 &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
@@ -79,7 +55,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
         }
 
-        impl #visitor_name<crate::pdata::otlp::PrecomputedSizes> for #encoded_len_name {
+        impl<const TAG: u32> #visitor_name<crate::pdata::otlp::PrecomputedSizes> for #encoded_len_name<TAG> {
             fn #visitor_method_name(
                 &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
@@ -93,7 +69,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         let total_size = if total_child_size == 0 {
             0
         } else {
-                    let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3 | 2) as usize);
+                    let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((Self::tag() << 3 | 2) as usize);
                     let total = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
             total
         };
@@ -105,12 +81,10 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
         impl #outer_name {
             /// Calculate the encoded size using the existing visitor pattern.
-            /// This method is generated for testing purposes to compare against
-            /// the prost-generated encoded_len method.
             #[cfg(test)]
             pub fn pdata_size(&self) -> usize {
                 let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
-                let mut visitor = #encoded_len_name::new(0); // Use tag 0 for top-level, it is ignored.
+                let mut visitor = #encoded_len_name::<0> {};
                 let adapter = #message_adapter_name::new(self);
                 let (_, total) = visitor.children_encoded_size(sizes, &adapter);
                 total
@@ -125,9 +99,6 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 }
 
 /// Generate the helper method body that calculates encoded sizes of direct children.
-///
-/// This generates code to be used in the children_encoded_size method on the visitor.
-/// It works through the visitable interface, using the visitor pattern properly.
 fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
     let mut accumulate_instantiations = Vec::new();
     let mut accumulate_args = Vec::new();
@@ -143,7 +114,7 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
                 let visitor_instantiation = if case.is_primitive {
                     generate_primitive_visitor_instantiation(case, &case.tag)
                 } else {
-                    generate_message_visitor_instantiation(case, &case.tag)
+                    generate_message_visitor_instantiation(case)
                 };
 
                 accumulate_instantiations.push(quote! {
@@ -177,15 +148,10 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
     let visitable_method_name = common::visitable_method_name(&outer_name);
 
     quote! {
-        // Create Accumulate wrapper instances for each field
-        // Each Accumulate will sum only the sizes from its direct child visitor
         #(#accumulate_instantiations)*
 
-        // Call the main visitable method with all Accumulate-wrapped visitors
-        // Each field's contribution will be accumulated separately in 'total'
         arg = v.#visitable_method_name(arg, #(&mut #accumulate_args),*);
 
-        // Collect the total sizes from all Accumulate wrappers
         #(total += #accumulate_args.total;)*
     }
 }
@@ -274,7 +240,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
 fn generate_message_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
     let encoded_len_type = info.related_type("EncodedLen");
     let tag = &info.tag;
-    quote! { #encoded_len_type::new(#tag) }
+    quote! { #encoded_len_type::<#tag> {} }
 }
 
 /// Generate primitive visitor instantiation for an oneof case.
@@ -287,7 +253,6 @@ fn generate_primitive_visitor_instantiation(
         "::prost::alloc::string::String" => quote! { crate::pdata::otlp::StringEncodedLen },
         "Vec<u8>" => quote! { crate::pdata::otlp::BytesEncodedLen },
         "u32" => {
-            // Choose between fixed32 and varint encoding based on proto_type
             if case.proto_type.contains("fixed32") {
                 quote! { crate::pdata::otlp::Fixed32EncodedLen }
             } else {
@@ -295,7 +260,6 @@ fn generate_primitive_visitor_instantiation(
             }
         }
         "u64" => {
-            // Choose between fixed64 and varint encoding based on proto_type
             if case.proto_type.contains("fixed64") {
                 quote! { crate::pdata::otlp::Fixed64EncodedLen }
             } else {
@@ -303,7 +267,6 @@ fn generate_primitive_visitor_instantiation(
             }
         }
         "i32" => {
-            // Choose encoder based on proto_type
             if case.proto_type.contains("sint32") {
                 quote! { crate::pdata::otlp::Sint32EncodedLen }
             } else if case.proto_type.contains("sfixed32") {
@@ -313,7 +276,6 @@ fn generate_primitive_visitor_instantiation(
             }
         }
         "i64" => {
-            // Choose encoder based on proto_type
             if case.proto_type.contains("sfixed64") {
                 quote! { crate::pdata::otlp::Sfixed64EncodedLen }
             } else if case.proto_type.contains("sint64") {
@@ -324,10 +286,7 @@ fn generate_primitive_visitor_instantiation(
         }
         "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
         "f32" => quote! { crate::pdata::otlp::Fixed32EncodedLen },
-        _ => {
-            // For enums and other types, use I32EncodedLen as default
-            quote! { crate::pdata::otlp::I32EncodedLen }
-        }
+        _ => panic!("unimplemented"),
     };
 
     // Generate const generic instantiation syntax: SomeEncodedLen::<TAG> {}
@@ -337,10 +296,10 @@ fn generate_primitive_visitor_instantiation(
 /// Generate message visitor instantiation for an oneof case.
 fn generate_message_visitor_instantiation(
     case: &otlp_model::OneofCase,
-    tag: &u32,
 ) -> proc_macro2::TokenStream {
     // Regular message type handling
     let type_name = case.type_param;
+    let tag = &case.tag;
     let encoded_len_type = if type_name.contains("::") {
         let parts: Vec<&str> = type_name.split("::").collect();
         let last_part = parts.last().unwrap();
@@ -361,7 +320,7 @@ fn generate_message_visitor_instantiation(
         })
     };
 
-    quote! { #encoded_len_type::new(#tag) }
+    quote! { #encoded_len_type::<#tag> {} }
 }
 
 /// Generate Accumulate visitor implementations for a message type.
