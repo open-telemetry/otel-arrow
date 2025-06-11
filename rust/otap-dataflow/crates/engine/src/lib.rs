@@ -375,8 +375,6 @@ impl<PData: 'static> PipelineFactory<PData> {
             RuntimeNode::Processor {
                 config: node_config.clone(),
                 instance: create(&node_config.config, &processor_config),
-                control_sender: None,
-                control_receiver: None,
                 pdata_sender: None,
                 pdata_receiver: None,
             },

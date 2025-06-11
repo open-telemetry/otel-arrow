@@ -6,7 +6,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
-use crate::control::ControlMsg;
+use crate::control::{ControlMsg, Controllable};
 use crate::exporter::ExporterWrapper;
 use crate::message::{Receiver, Sender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
@@ -190,30 +190,17 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
 
     /// Sets the exporter for the test runtime and returns the test phase.
     pub fn set_exporter(self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
-        let (control_tx, control_rx, pdata_tx, pdata_rx) = match &exporter {
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = match &exporter {
             ExporterWrapper::Local { .. } => {
-                let (control_tx, control_rx) =
-                    create_not_send_channel(self.config.control_channel.capacity);
                 let (pdata_tx, pdata_rx) =
                     create_not_send_channel(self.config.control_channel.capacity);
-                (
-                    Sender::Local(control_tx),
-                    Receiver::Local(control_rx),
-                    Sender::Local(pdata_tx),
-                    Receiver::Local(pdata_rx),
-                )
+                (Sender::Local(pdata_tx), Receiver::Local(pdata_rx))
             }
             ExporterWrapper::Shared { .. } => {
-                let (control_tx, control_rx) =
-                    tokio::sync::mpsc::channel(self.config.control_channel.capacity);
                 let (pdata_tx, pdata_rx) =
                     tokio::sync::mpsc::channel(self.config.control_channel.capacity);
-                (
-                    Sender::Shared(control_tx),
-                    Receiver::Shared(control_rx),
-                    Sender::Shared(pdata_tx),
-                    Receiver::Shared(pdata_rx),
-                )
+                (Sender::Shared(pdata_tx), Receiver::Shared(pdata_rx))
             }
         };
 
@@ -227,7 +214,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counter.clone(),
-            control_sender: control_tx,
+            control_sender,
             pdata_sender: pdata_tx,
             run_exporter_handle,
         }

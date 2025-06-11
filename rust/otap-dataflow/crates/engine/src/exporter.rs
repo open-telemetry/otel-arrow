@@ -104,7 +104,7 @@ impl<PData> ExporterWrapper<PData> {
             ExporterWrapper::Local {
                 effect_handler,
                 exporter,
-                mut control_receiver,
+                control_receiver,
                 ..
             } => {
                 // Note: `start` consumes self, and self is initialized with a control_receiver.

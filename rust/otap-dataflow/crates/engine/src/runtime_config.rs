@@ -36,10 +36,6 @@ pub enum RuntimeNode<PData> {
         config: Rc<NodeConfig>,
         /// The instance of the processor that performs operations on the data.
         instance: ProcessorWrapper<PData>,
-        /// Sender for control messages.
-        control_sender: Option<ReceiverWrapper<PData>>,
-        /// Receiver for control messages.
-        control_receiver: Option<ReceiverWrapper<PData>>,
         /// Sender for PData messages.
         pdata_sender: Option<ReceiverWrapper<PData>>,
         /// Receiver for PData messages.
