@@ -28,9 +28,9 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
     let expanded = quote! {
         /// EncodedLen visitor for calculating protobuf encoded size
-        pub struct #encoded_len_name<const TAG: u32, const OPTION: bool> {}
+        pub struct #encoded_len_name<const TAG: u32> {}
 
-        impl<const TAG: u32, const OPTION: bool> #encoded_len_name<TAG, OPTION> {
+        impl<const TAG: u32> #encoded_len_name<TAG> {
             /// Create a new EncodedLen visitor.
             pub fn new() -> Self {
                 Self { }
@@ -50,7 +50,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
         }
 
-        impl<const TAG: u32, const OPTION: bool> #visitor_name<crate::pdata::otlp::PrecomputedSizes> for #encoded_len_name<TAG, OPTION> {
+        impl<const TAG: u32> #visitor_name<crate::pdata::otlp::PrecomputedSizes> for #encoded_len_name<TAG> {
             fn #visitor_method_name(
                 &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
@@ -61,7 +61,6 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
                 let (mut arg, total_child_size) = self.children_encoded_size(arg, v);
 
-        // Note: ignored OPTION: are messages ever not optional?
                 arg.set_size(idx, crate::pdata::otlp::primitive_encoders::conditional_length_delimited_size::<TAG, false>(total_child_size));
                 arg
             }
@@ -72,7 +71,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             #[cfg(test)]
             pub fn pdata_size(&self) -> usize {
                 let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
-                let mut visitor = #encoded_len_name::<0, false> {};
+                let mut visitor = #encoded_len_name::<0> {};
                 let adapter = #message_adapter_name::new(self);
                 let (_, total) = visitor.children_encoded_size(sizes, &adapter);
                 total
@@ -220,7 +219,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
 fn generate_message_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
     let encoded_len_type = info.related_type("EncodedLen");
     let tag = &info.tag;
-    quote! { #encoded_len_type::<#tag, true> {} }
+    quote! { #encoded_len_type::<#tag> {} }
 }
 
 /// Generate primitive visitor instantiation for an oneof case.
@@ -300,7 +299,7 @@ fn generate_message_visitor_instantiation(
         })
     };
 
-    quote! { #encoded_len_type::<#tag, false> {} }
+    quote! { #encoded_len_type::<#tag> {} }
 }
 
 /// Generate Accumulate visitor implementations for a message type.
