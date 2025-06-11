@@ -33,15 +33,15 @@ impl FieldData {
     }
 }
 
-/// This trait is a is should be implemented by types that can build build some struct column
+/// This trait should be implemented by types that can can be used as builders for a struct column
 trait StructArrayBuilderHelper {
     /// Returns the builder as Any so that it can be downcasted to a specific implementation.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
-    /// whether or not the array can contain null values
+    /// Whether the array can contain null values
     fn nullable(&self) -> bool;
 
-    /// produces the array, or None if the nullable array is all nulls
+    /// Produces the array, or None if the nullable array is all nulls
     fn finish(&mut self) -> Option<ArrayRef>;
 }
 
@@ -301,42 +301,55 @@ mod test {
         let mut builder = BinaryArrayBuilder::new(Default::default());
         builder.append_value(&b"b".to_vec());
         fields.push((FieldData::new("bin"), Box::new(builder)));
+
         let mut builder = UInt8ArrayBuilder::new(Default::default());
         builder.append_value(&1);
         fields.push((FieldData::new("u8"), Box::new(builder)));
+
         let mut builder = UInt16ArrayBuilder::new(Default::default());
         builder.append_value(&2);
         fields.push((FieldData::new("u16"), Box::new(builder)));
+
         let mut builder = UInt32ArrayBuilder::new(Default::default());
         builder.append_value(&3);
         fields.push((FieldData::new("u32"), Box::new(builder)));
+
         let mut builder = UInt64ArrayBuilder::new(Default::default());
         builder.append_value(&4);
         fields.push((FieldData::new("u64"), Box::new(builder)));
+
         let mut builder = Int8ArrayBuilder::new(Default::default());
         builder.append_value(&-1);
         fields.push((FieldData::new("i8"), Box::new(builder)));
+
         let mut builder = Int16ArrayBuilder::new(Default::default());
         builder.append_value(&-2);
         fields.push((FieldData::new("i16"), Box::new(builder)));
+
         let mut builder = Int32ArrayBuilder::new(Default::default());
         builder.append_value(&-3);
         fields.push((FieldData::new("i32"), Box::new(builder)));
+
         let mut builder = Int64ArrayBuilder::new(Default::default());
         builder.append_value(&-4);
         fields.push((FieldData::new("i64"), Box::new(builder)));
+
         let mut builder = Float32ArrayBuilder::new(Default::default());
         builder.append_value(&1.0);
         fields.push((FieldData::new("f32"), Box::new(builder)));
+
         let mut builder = Float64ArrayBuilder::new(Default::default());
         builder.append_value(&2.0);
         fields.push((FieldData::new("f64"), Box::new(builder)));
+
         let mut builder = TimestampNanosecondArrayBuilder::new(Default::default());
         builder.append_value(&1);
         fields.push((FieldData::new("ts_nano"), Box::new(builder)));
+
         let mut builder = DurationNanosecondArrayBuilder::new(Default::default());
         builder.append_value(&1);
         fields.push((FieldData::new("duration_nano"), Box::new(builder)));
+
         let mut builder = FixedSizeBinaryArrayBuilder::new_with_args(
             ArrayOptions {
                 dictionary_options: None,
