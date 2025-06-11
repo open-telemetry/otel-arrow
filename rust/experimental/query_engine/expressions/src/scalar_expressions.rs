@@ -1,6 +1,6 @@
 use chrono::{DateTime, FixedOffset};
 
-use crate::{Expression, QueryLocation, ValueAccessor, ValueSelector};
+use crate::{Expression, LogicalExpression, QueryLocation, ValueAccessor, ValueSelector};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
@@ -43,6 +43,9 @@ pub enum ScalarExpression {
 
     /// Negate the value returned by the inner scalar expression.
     Negate(NegateScalarExpression),
+
+    /// Boolean value returned by the inner logical expression.
+    Logical(Box<LogicalExpression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
