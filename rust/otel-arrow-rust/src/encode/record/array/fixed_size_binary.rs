@@ -5,16 +5,19 @@ use std::sync::Arc;
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, FixedSizeBinaryArray,
+        ArrayRef, ArrowPrimitiveType, DictionaryArray, FixedSizeBinaryArray,
         FixedSizeBinaryBuilder, FixedSizeBinaryDictionaryBuilder,
     },
-    datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type},
+    datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type},
     error::ArrowError,
 };
 
-use crate::encode::record::array::dictionary::{
-    CheckedDictionaryArrayAppend, ConvertToNativeHelper, DictionaryArrayAppend, DictionaryBuilder,
-    UpdateDictionaryIndexInto,
+use crate::encode::record::array::{
+    ArrayAppendNulls,
+    dictionary::{
+        CheckedDictionaryArrayAppend, ConvertToNativeHelper, DictionaryBuilder,
+        UpdateDictionaryIndexInto,
+    },
 };
 
 use super::{ArrayBuilder, ArrayBuilderConstructor, CheckedArrayAppend};
@@ -32,6 +35,21 @@ impl CheckedArrayAppend for FixedSizeBinaryBuilder {
 
     fn append_value(&mut self, value: &Self::Native) -> Result<(), ArrowError> {
         self.append_value(value)
+    }
+}
+
+impl ArrayAppendNulls for FixedSizeBinaryBuilder {
+    fn append_null(&mut self) {
+        self.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        // TODO - after the next release of arrow-rs we should revisit this and call append_nulls
+        // on the base builder. Waiting on these changes to be released:
+        // https://github.com/apache/arrow-rs/pull/7606
+        for _ in 0..n {
+            self.append_null();
+        }
     }
 }
 
@@ -74,6 +92,24 @@ where
     }
 }
 
+impl<K> ArrayAppendNulls for FixedSizeBinaryDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn append_null(&mut self) {
+        self.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        // TODO - after the next release of arrow-rs we should revisit this and call append_nulls
+        // on the base builder. Waiting on these changes to be released:
+        // https://github.com/apache/arrow-rs/pull/7606
+        for _ in 0..n {
+            self.append_null();
+        }
+    }
+}
+
 impl<K> DictionaryBuilder<K> for FixedSizeBinaryDictionaryBuilder<K>
 where
     K: ArrowDictionaryKeyType,
@@ -111,10 +147,7 @@ impl UpdateDictionaryIndexInto<FixedSizeBinaryDictionaryBuilder<UInt16Type>>
         for value in values {
             match value {
                 Some(value) => upgraded_builder.append_value(value),
-                None => {
-                    // TODO handle this in https://github.com/open-telemetry/otel-arrow/issues/534
-                    todo!("nulls not yet supported by adaptive array builders")
-                }
+                None => upgraded_builder.append_null(),
             }
         }
 
@@ -126,16 +159,16 @@ impl UpdateDictionaryIndexInto<FixedSizeBinaryDictionaryBuilder<UInt16Type>>
 mod test {
     use super::*;
     use arrow::array::{
-        FixedSizeBinaryArray, FixedSizeBinaryBuilder, UInt8Array, UInt8DictionaryArray,
+        Array, FixedSizeBinaryArray, FixedSizeBinaryBuilder, UInt8Array, UInt8DictionaryArray,
     };
     use arrow::datatypes::DataType;
 
     #[test]
     fn test_fsb_builder() {
         let mut fsb_builder = FixedSizeBinaryBuilder::new(4);
-        CheckedArrayAppend::append_value(&mut fsb_builder, &b"1234".to_vec());
-        CheckedArrayAppend::append_value(&mut fsb_builder, &b"5678".to_vec());
-        CheckedArrayAppend::append_value(&mut fsb_builder, &b"9012".to_vec());
+        CheckedArrayAppend::append_value(&mut fsb_builder, &b"1234".to_vec()).unwrap();
+        CheckedArrayAppend::append_value(&mut fsb_builder, &b"5678".to_vec()).unwrap();
+        CheckedArrayAppend::append_value(&mut fsb_builder, &b"9012".to_vec()).unwrap();
         let result = ArrayBuilder::finish(&mut fsb_builder);
         assert_eq!(result.data_type(), &DataType::FixedSizeBinary(4));
 
@@ -177,8 +210,8 @@ mod test {
         );
 
         let mut expected_dict_values = FixedSizeBinaryBuilder::new(1);
-        expected_dict_values.append_value(b"a");
-        expected_dict_values.append_value(b"b");
+        assert!(expected_dict_values.append_value(b"a").is_ok());
+        assert!(expected_dict_values.append_value(b"b").is_ok());
         let expected_dict_keys = UInt8Array::from_iter_values(vec![0, 0, 1]);
         let expected =
             UInt8DictionaryArray::new(expected_dict_keys, Arc::new(expected_dict_values.finish()));
