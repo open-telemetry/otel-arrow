@@ -663,7 +663,6 @@ mod tests {
                                             "resourceA".to_string(),
                                         )),
                                     }),
-                                    ..Default::default()
                                 }],
                                 ..Default::default()
                             }),
@@ -699,7 +698,6 @@ mod tests {
                                             "resourceB".to_string(),
                                         )),
                                     }),
-                                    ..Default::default()
                                 }],
                                 ..Default::default()
                             }),
@@ -796,7 +794,6 @@ mod tests {
                                             "resourceA".to_string(),
                                         )),
                                     }),
-                                    ..Default::default()
                                 }],
                                 ..Default::default()
                             }),
@@ -832,7 +829,6 @@ mod tests {
                                             "resourceB".to_string(),
                                         )),
                                     }),
-                                    ..Default::default()
                                 }],
                                 ..Default::default()
                             }),
