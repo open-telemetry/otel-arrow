@@ -1,3 +1,4 @@
+pub(crate) mod any_value;
 pub(crate) mod array_value;
 pub(crate) mod bool_value;
 pub(crate) mod date_time_value;
@@ -9,6 +10,7 @@ pub(crate) mod regex_value;
 pub(crate) mod string_value;
 pub(crate) mod xml_value;
 
+pub use any_value::*;
 pub use array_value::*;
 pub use bool_value::*;
 pub use date_time_value::*;
