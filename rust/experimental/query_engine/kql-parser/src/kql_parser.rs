@@ -59,7 +59,9 @@ impl KqlParserState {
 /// * `'some \\' string'` -> `some ' string`
 /// * `\"some \\\" string\"` -> `some \" string`
 #[allow(dead_code)]
-pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
+pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticScalarExpression {
+    let query_location = to_query_location(&string_literal_rule);
+
     let raw_string = string_literal_rule.as_str();
     let mut chars = raw_string.chars();
     let mut s = String::with_capacity(raw_string.len());
@@ -100,11 +102,15 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
         }
     }
 
-    s
+    StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
 
 #[allow(dead_code)]
-pub(crate) fn parse_double_literal(double_literal_rule: Pair<Rule>) -> Result<f64, Error> {
+pub(crate) fn parse_double_literal(
+    double_literal_rule: Pair<Rule>,
+) -> Result<StaticScalarExpression, Error> {
+    let query_location = to_query_location(&double_literal_rule);
+
     let raw_value = double_literal_rule.as_str();
     let parsed_value = raw_value.parse::<f64>();
     if parsed_value.is_err() {
@@ -117,11 +123,18 @@ pub(crate) fn parse_double_literal(double_literal_rule: Pair<Rule>) -> Result<f6
         ));
     }
 
-    Ok(parsed_value.unwrap())
+    Ok(StaticScalarExpression::Double(DoubleScalarExpression::new(
+        query_location,
+        parsed_value.unwrap(),
+    )))
 }
 
 #[allow(dead_code)]
-pub(crate) fn parse_integer_literal(integer_literal_rule: Pair<Rule>) -> Result<i64, Error> {
+pub(crate) fn parse_integer_literal(
+    integer_literal_rule: Pair<Rule>,
+) -> Result<StaticScalarExpression, Error> {
+    let query_location = to_query_location(&integer_literal_rule);
+
     let raw_value = integer_literal_rule.as_str();
     let parsed_value = raw_value.parse::<i64>();
     if parsed_value.is_err() {
@@ -134,13 +147,15 @@ pub(crate) fn parse_integer_literal(integer_literal_rule: Pair<Rule>) -> Result<
         ));
     }
 
-    Ok(parsed_value.unwrap())
+    Ok(StaticScalarExpression::Integer(
+        IntegerScalarExpression::new(query_location, parsed_value.unwrap()),
+    ))
 }
 
 #[allow(dead_code)]
 pub(crate) fn parse_datetime_expression(
     datetime_expression_rule: Pair<Rule>,
-) -> Result<ScalarExpression, Error> {
+) -> Result<StaticScalarExpression, Error> {
     let query_location = to_query_location(&datetime_expression_rule);
 
     let datetime_rule = datetime_expression_rule.into_inner().next().unwrap();
@@ -219,9 +234,11 @@ pub(crate) fn parse_datetime_expression(
             let l = ndt.unwrap().and_local_timezone(tz.unwrap());
 
             match l {
-                chrono::offset::LocalResult::Single(date_time) => Ok(ScalarExpression::DateTime(
-                    DateTimeScalarExpression::new(query_location, date_time),
-                )),
+                chrono::offset::LocalResult::Single(date_time) => {
+                    Ok(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(query_location, date_time),
+                    ))
+                }
                 _ => Err(Error::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
@@ -238,38 +255,207 @@ pub(crate) fn parse_datetime_expression(
 #[allow(dead_code)]
 pub(crate) fn parse_real_expression(
     real_expression_rule: Pair<Rule>,
-) -> Result<ScalarExpression, Error> {
+) -> Result<StaticScalarExpression, Error> {
     let query_location = to_query_location(&real_expression_rule);
 
     let real_rule = real_expression_rule.into_inner().next().unwrap();
 
     match real_rule.as_rule() {
-        Rule::positive_infinity_token => Ok(ScalarExpression::Double(DoubleScalarExpression::new(
-            query_location,
-            f64::INFINITY,
-        ))),
-        Rule::negative_infinity_token => Ok(ScalarExpression::Double(DoubleScalarExpression::new(
-            query_location,
-            f64::NEG_INFINITY,
-        ))),
-        Rule::double_literal => {
-            let d = parse_double_literal(real_rule)?;
-
-            Ok(ScalarExpression::Double(DoubleScalarExpression::new(
-                query_location,
-                d,
-            )))
-        }
-        Rule::integer_literal => {
-            let i = parse_integer_literal(real_rule)?;
-
-            Ok(ScalarExpression::Double(DoubleScalarExpression::new(
-                query_location,
-                i as f64,
-            )))
-        }
+        Rule::positive_infinity_token => Ok(StaticScalarExpression::Double(
+            DoubleScalarExpression::new(query_location, f64::INFINITY),
+        )),
+        Rule::negative_infinity_token => Ok(StaticScalarExpression::Double(
+            DoubleScalarExpression::new(query_location, f64::NEG_INFINITY),
+        )),
+        Rule::double_literal => parse_double_literal(real_rule),
+        Rule::integer_literal => match parse_integer_literal(real_rule)? {
+            StaticScalarExpression::Integer(v) => Ok(StaticScalarExpression::Double(
+                DoubleScalarExpression::new(query_location, v.get_value() as f64),
+            )),
+            _ => panic!("Unexpected type returned from parse_integer_literal"),
+        },
         _ => panic!("Unexpected rule in real_expression: {}", real_rule),
     }
+}
+
+pub(crate) fn parse_bool_literal(bool_literal_rule: Pair<Rule>) -> StaticScalarExpression {
+    let query_location = to_query_location(&bool_literal_rule);
+
+    let value = match bool_literal_rule.as_rule() {
+        Rule::true_literal => true,
+        Rule::false_literal => false,
+        _ => panic!(
+            "Unexpected rule in bool_literal_rule: {}",
+            bool_literal_rule
+        ),
+    };
+
+    StaticScalarExpression::Boolean(BooleanScalarExpression::new(query_location, value))
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_scalar_expression(
+    scalar_expression_rule: Pair<Rule>,
+    state: &KqlParserState,
+) -> Result<ScalarExpression, Error> {
+    let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
+
+    match scalar_rule.as_rule() {
+        Rule::real_expression => Ok(ScalarExpression::Static(parse_real_expression(
+            scalar_rule,
+        )?)),
+        Rule::datetime_expression => Ok(ScalarExpression::Static(parse_datetime_expression(
+            scalar_rule,
+        )?)),
+        Rule::logical_expression => Ok(ScalarExpression::Logical(
+            parse_logical_expression(scalar_rule, state)?.into(),
+        )),
+        Rule::true_literal | Rule::false_literal => {
+            Ok(ScalarExpression::Static(parse_bool_literal(scalar_rule)))
+        }
+        Rule::double_literal => Ok(ScalarExpression::Static(parse_double_literal(scalar_rule)?)),
+        Rule::integer_literal => Ok(ScalarExpression::Static(parse_integer_literal(
+            scalar_rule,
+        )?)),
+        Rule::string_literal => Ok(ScalarExpression::Static(parse_string_literal(scalar_rule))),
+        Rule::accessor_expression => parse_accessor_expression(scalar_rule, state),
+        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state),
+        _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
+    }
+}
+
+pub(crate) fn parse_comparison_expression(
+    comparison_expression_rule: Pair<Rule>,
+    state: &KqlParserState,
+) -> Result<LogicalExpression, Error> {
+    let query_location = to_query_location(&comparison_expression_rule);
+
+    let mut comparison_rules = comparison_expression_rule.into_inner();
+
+    let left_rule = comparison_rules.next().unwrap();
+
+    let left = match left_rule.as_rule() {
+        Rule::scalar_expression => parse_scalar_expression(left_rule, state)?,
+        _ => panic!("Unexpected rule in comparison_expression: {}", left_rule),
+    };
+
+    let operation_rule = comparison_rules.next().unwrap();
+
+    let right_rule = comparison_rules.next().unwrap();
+
+    let right = match right_rule.as_rule() {
+        Rule::scalar_expression => parse_scalar_expression(right_rule, state)?,
+        _ => panic!("Unexpected rule in comparison_expression: {}", right_rule),
+    };
+
+    match operation_rule.as_rule() {
+        Rule::equals_token => Ok(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            query_location,
+            left,
+            right,
+        ))),
+        Rule::not_equals_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
+            query_location.clone(),
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(query_location, left, right)),
+        ))),
+
+        Rule::greater_than_token => Ok(LogicalExpression::GreaterThan(
+            GreaterThanLogicalExpression::new(query_location, left, right),
+        )),
+        Rule::greater_than_or_equal_to_token => Ok(LogicalExpression::GreaterThanOrEqualTo(
+            GreaterThanOrEqualToLogicalExpression::new(query_location, left, right),
+        )),
+
+        Rule::less_than_token => {
+            Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                query_location.clone(),
+                LogicalExpression::GreaterThanOrEqualTo(
+                    GreaterThanOrEqualToLogicalExpression::new(query_location, left, right),
+                ),
+            )))
+        }
+        Rule::less_than_or_equal_to_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
+            query_location.clone(),
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                query_location,
+                left,
+                right,
+            )),
+        ))),
+
+        _ => panic!("Unexpected rule in operation_rule: {}", operation_rule),
+    }
+}
+
+pub(crate) fn parse_logical_expression(
+    logical_expression_rule: Pair<Rule>,
+    state: &KqlParserState,
+) -> Result<LogicalExpression, Error> {
+    let query_location = to_query_location(&logical_expression_rule);
+
+    let mut logical_rules = logical_expression_rule.into_inner();
+
+    let parse_rule = |logical_expression_rule: Pair<Rule>| -> Result<LogicalExpression, Error> {
+        match logical_expression_rule.as_rule() {
+            Rule::comparison_expression => {
+                Ok(parse_comparison_expression(logical_expression_rule, state)?)
+            }
+            Rule::logical_expression => {
+                Ok(parse_logical_expression(logical_expression_rule, state)?)
+            }
+            Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
+                ScalarExpression::Static(parse_bool_literal(logical_expression_rule)),
+            )),
+            Rule::accessor_expression => Ok(LogicalExpression::Scalar(parse_accessor_expression(
+                logical_expression_rule,
+                state,
+            )?)),
+            _ => panic!(
+                "Unexpected rule in logical_expression_rule: {}",
+                logical_expression_rule
+            ),
+        }
+    };
+
+    let first_expression = parse_rule(logical_rules.next().unwrap())?;
+
+    let mut chain_rules = Vec::new();
+    loop {
+        let rule = logical_rules.next();
+        if rule.is_none() {
+            break;
+        }
+
+        let chain_rule = rule.unwrap();
+        match chain_rule.as_rule() {
+            Rule::and_token => chain_rules.push(ChainedLogicalExpression::And(
+                parse_logical_expression(logical_rules.next().unwrap(), state)?,
+            )),
+            Rule::or_token => chain_rules.push(ChainedLogicalExpression::Or(
+                parse_logical_expression(logical_rules.next().unwrap(), state)?,
+            )),
+            _ => panic!("Unexpected rule in chain_rule: {}", chain_rule),
+        }
+    }
+
+    if !chain_rules.is_empty() {
+        let mut chain = ChainLogicalExpression::new(query_location, first_expression);
+
+        for expression in chain_rules {
+            match expression {
+                ChainedLogicalExpression::Or(logical_expression) => {
+                    chain.push_or(logical_expression)
+                }
+                ChainedLogicalExpression::And(logical_expression) => {
+                    chain.push_and(logical_expression)
+                }
+            };
+        }
+
+        return Ok(LogicalExpression::Chain(chain));
+    }
+
+    Ok(first_expression)
 }
 
 /// The goal of this code is to translate a KQL dynamic access
@@ -317,26 +503,31 @@ pub(crate) fn parse_accessor_expression(
             Rule::integer_literal => {
                 let location = to_query_location(&pair);
 
-                let i = parse_integer_literal(pair)?;
-                if i < i32::MIN as i64 || i > i32::MAX as i64 {
-                    return Err(Error::SyntaxError(
-                        location,
-                        format!(
-                            "'{}' value for array index is too large to fit into a 32bit value",
-                            i
-                        ),
-                    ));
+                match parse_integer_literal(pair)? {
+                    StaticScalarExpression::Integer(v) => {
+                        let i = v.get_value();
+
+                        if i < i32::MIN as i64 || i > i32::MAX as i64 {
+                            return Err(Error::SyntaxError(
+                                location,
+                                format!(
+                                    "'{}' value for array index is too large to fit into a 32bit value",
+                                    i
+                                ),
+                            ));
+                        }
+
+                        value_accessor.push_selector(ValueSelector::ArrayIndex(v));
+                    }
+                    _ => panic!("Unexpected type returned from parse_integer_literal"),
                 }
-                value_accessor.push_selector(ValueSelector::ArrayIndex(
-                    IntegerScalarExpression::new(location, i),
-                ));
             }
-            Rule::string_literal => {
-                value_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-                    to_query_location(&pair),
-                    parse_string_literal(pair).as_str(),
-                )));
-            }
+            Rule::string_literal => match parse_string_literal(pair) {
+                StaticScalarExpression::String(v) => {
+                    value_accessor.push_selector(ValueSelector::MapKey(v))
+                }
+                _ => panic!("Unexpected type returned from parse_string_literal"),
+            },
             Rule::identifier_literal => {
                 value_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
                     to_query_location(&pair),
@@ -530,6 +721,45 @@ mod pest_tests {
     }
 
     #[test]
+    fn test_comparison_expression() {
+        assert!(KqlParser::parse(Rule::comparison_expression, "1 == 1").is_ok());
+        assert!(KqlParser::parse(Rule::comparison_expression, "(1) != true").is_ok());
+        assert!(KqlParser::parse(Rule::comparison_expression, "(1==1) > false").is_ok());
+        assert!(KqlParser::parse(Rule::comparison_expression, "1 >= 1").is_ok());
+        assert!(KqlParser::parse(Rule::comparison_expression, "1 < 1").is_ok());
+        assert!(KqlParser::parse(Rule::comparison_expression, "1 <= 1").is_ok());
+    }
+
+    #[test]
+    fn test_scalar_expression() {
+        assert!(KqlParser::parse(Rule::scalar_expression, "1").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "1e1").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "real(1)").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "datetime(6/9/2025)").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "true").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "false").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "(true == true)").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "\"hello world\"").is_ok());
+        assert!(KqlParser::parse(Rule::scalar_expression, "variable").is_ok());
+
+        assert!(KqlParser::parse(Rule::scalar_expression, "!").is_err());
+    }
+
+    #[test]
+    fn test_logical_expression() {
+        assert!(KqlParser::parse(Rule::logical_expression, "true").is_ok());
+        assert!(KqlParser::parse(Rule::logical_expression, "false").is_ok());
+        assert!(KqlParser::parse(Rule::logical_expression, "variable").is_ok());
+        assert!(KqlParser::parse(Rule::logical_expression, "a == b").is_ok());
+        assert!(KqlParser::parse(Rule::logical_expression, "a == b or 10 < 1").is_ok());
+        assert!(KqlParser::parse(Rule::logical_expression, "(true)").is_ok());
+        assert!(KqlParser::parse(Rule::logical_expression, "(true or variable['a'])").is_ok());
+        assert!(KqlParser::parse(Rule::logical_expression, "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)").is_ok());
+
+        assert!(KqlParser::parse(Rule::logical_expression, "1").is_err());
+    }
+
+    #[test]
     fn test_accessor_expression() {
         validate_rule(
             KqlParser::parse(Rule::accessor_expression, "Abc").unwrap(),
@@ -649,7 +879,11 @@ mod parse_tests {
             let f = parse_double_literal(result.next().unwrap());
 
             assert!(f.is_ok());
-            assert_eq!(expected, f.unwrap());
+
+            match f.unwrap() {
+                StaticScalarExpression::Double(v) => assert_eq!(expected, v.get_value()),
+                _ => panic!("Unexpected type retured from parse_double_literal"),
+            }
         };
 
         run_test("1.0", 1.0);
@@ -672,7 +906,11 @@ mod parse_tests {
             let i = parse_integer_literal(result.next().unwrap());
 
             assert!(i.is_ok());
-            assert_eq!(expected, i.unwrap());
+
+            match i.unwrap() {
+                StaticScalarExpression::Integer(v) => assert_eq!(expected, v.get_value()),
+                _ => panic!("Unexpected type retured from parse_integer_literal"),
+            }
         };
 
         run_test("1", 1);
@@ -704,7 +942,10 @@ mod parse_tests {
 
             let actual = parse_string_literal(result.next().unwrap());
 
-            assert_eq!(expected, actual);
+            match actual {
+                StaticScalarExpression::String(v) => assert_eq!(expected, v.get_value()),
+                _ => panic!("Unexpected type retured from parse_string_literal"),
+            }
         };
 
         run_test("\"Hello world\"", "Hello world");
@@ -719,12 +960,13 @@ mod parse_tests {
         let run_test = |input: &str, expected: DateTime<FixedOffset>| {
             let mut result = KqlParser::parse(Rule::datetime_expression, input).unwrap();
 
-            let expression = parse_datetime_expression(result.next().unwrap()).unwrap();
+            let d = parse_datetime_expression(result.next().unwrap());
 
-            if let ScalarExpression::DateTime(d) = expression {
-                assert_eq!(expected, d.get_value());
-            } else {
-                panic!("Expected DateTimeScalarExpression");
+            assert!(d.is_ok());
+
+            match d.unwrap() {
+                StaticScalarExpression::DateTime(v) => assert_eq!(expected, v.get_value()),
+                _ => panic!("Unexpected type retured from parse_datetime_expression"),
             }
         };
 
@@ -921,12 +1163,13 @@ mod parse_tests {
         let run_test = |input: &str, expected: f64| {
             let mut result = KqlParser::parse(Rule::real_expression, input).unwrap();
 
-            let expression = parse_real_expression(result.next().unwrap()).unwrap();
+            let r = parse_real_expression(result.next().unwrap());
 
-            if let ScalarExpression::Double(d) = expression {
-                assert_eq!(expected, d.get_value());
-            } else {
-                panic!("Expected DoubleScalarExpression");
+            assert!(r.is_ok());
+
+            match r.unwrap() {
+                StaticScalarExpression::Double(v) => assert_eq!(expected, v.get_value()),
+                _ => panic!("Unexpected type retured from parse_real_expression"),
             }
         };
 
@@ -935,6 +1178,348 @@ mod parse_tests {
         run_test("real(1)", 1.0);
         run_test("real(+inf)", f64::INFINITY);
         run_test("real(-inf)", f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_parse_comparison_expression() {
+        let run_test = |input: &str, state: &KqlParserState, expected: LogicalExpression| {
+            let mut result = KqlParser::parse(Rule::comparison_expression, input).unwrap();
+
+            let expression = parse_comparison_expression(result.next().unwrap(), state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+
+        state.push_variable_name("variable");
+
+        run_test(
+            "variable == 'hello world'",
+            &state,
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new(0, 25, 1, 1),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new(0, 9, 1, 1),
+                    "variable",
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new(12, 25, 1, 13), "hello world"),
+                )),
+            )),
+        );
+
+        run_test(
+            "(true == true) != true",
+            &state,
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new(0, 22, 1, 1),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new(0, 22, 1, 1),
+                    ScalarExpression::Logical(
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new(1, 13, 1, 2),
+                            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                BooleanScalarExpression::new(QueryLocation::new(1, 5, 1, 2), true),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                BooleanScalarExpression::new(
+                                    QueryLocation::new(9, 13, 1, 10),
+                                    true,
+                                ),
+                            )),
+                        ))
+                        .into(),
+                    ),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new(18, 22, 1, 19), true),
+                    )),
+                )),
+            )),
+        );
+
+        let mut source_accessor = ValueAccessor::new();
+
+        source_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(4, 15, 1, 5),
+            "source_path",
+        )));
+
+        run_test(
+            "1 > source_path",
+            &state,
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                QueryLocation::new(0, 15, 1, 1),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new(0, 1, 1, 1), 1),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new(4, 15, 1, 5),
+                    source_accessor,
+                )),
+            )),
+        );
+
+        let mut resource_accessor = ValueAccessor::new();
+
+        resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(16, 19, 1, 17),
+            "key",
+        )));
+
+        run_test(
+            "(1) >= resource.key",
+            &state,
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new(0, 19, 1, 1),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new(1, 2, 1, 2), 1),
+                )),
+                ScalarExpression::Attached(AttachedScalarExpression::new(
+                    QueryLocation::new(7, 19, 1, 8),
+                    "resource",
+                    resource_accessor,
+                )),
+            )),
+        );
+
+        run_test(
+            "0 < (1)",
+            &state,
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new(0, 7, 1, 1),
+                LogicalExpression::GreaterThanOrEqualTo(
+                    GreaterThanOrEqualToLogicalExpression::new(
+                        QueryLocation::new(0, 7, 1, 1),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new(0, 1, 1, 1), 0),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new(5, 6, 1, 6), 1),
+                        )),
+                    ),
+                ),
+            )),
+        );
+
+        run_test(
+            "0 <= (true == true)",
+            &state,
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new(0, 19, 1, 1),
+                LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                    QueryLocation::new(0, 19, 1, 1),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new(0, 1, 1, 1), 0),
+                    )),
+                    ScalarExpression::Logical(
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new(6, 18, 1, 7),
+                            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                BooleanScalarExpression::new(QueryLocation::new(6, 10, 1, 7), true),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                BooleanScalarExpression::new(
+                                    QueryLocation::new(14, 18, 1, 15),
+                                    true,
+                                ),
+                            )),
+                        ))
+                        .into(),
+                    ),
+                )),
+            )),
+        );
+    }
+
+    #[test]
+    fn test_parse_logical_expression() {
+        let run_test = |input: &str, state: &KqlParserState, expected: LogicalExpression| {
+            let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
+
+            let expression = parse_logical_expression(result.next().unwrap(), state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+
+        state.push_variable_name("variable");
+
+        run_test(
+            "true",
+            &state,
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new(0, 4, 1, 1), true),
+            ))),
+        );
+
+        run_test(
+            "false",
+            &state,
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new(0, 5, 1, 1), false),
+            ))),
+        );
+
+        let mut source_accessor = ValueAccessor::new();
+        source_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(7, 11, 1, 8),
+            "name",
+        )));
+
+        run_test(
+            "source.name",
+            &state,
+            LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new(0, 11, 1, 1),
+                source_accessor,
+            ))),
+        );
+
+        let mut resource_accessor = ValueAccessor::new();
+        resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(9, 19, 1, 10),
+            "attributes",
+        )));
+        resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(20, 34, 1, 21),
+            "service.name",
+        )));
+
+        run_test(
+            "resource.attributes['service.name']",
+            &state,
+            LogicalExpression::Scalar(ScalarExpression::Attached(AttachedScalarExpression::new(
+                QueryLocation::new(0, 35, 1, 1),
+                "resource",
+                resource_accessor,
+            ))),
+        );
+
+        let variable_accessor = ValueAccessor::new();
+
+        run_test(
+            "variable",
+            &state,
+            LogicalExpression::Scalar(ScalarExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new(0, 8, 1, 1),
+                "variable",
+                variable_accessor.clone(),
+            ))),
+        );
+
+        run_test(
+            "variable == 'hello world'",
+            &state,
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new(0, 25, 1, 1),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new(0, 9, 1, 1),
+                    "variable",
+                    variable_accessor.clone(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new(12, 25, 1, 13), "hello world"),
+                )),
+            )),
+        );
+
+        let mut chain = ChainLogicalExpression::new(
+            QueryLocation::new(0, 51, 1, 1),
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new(0, 25, 1, 1),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new(0, 9, 1, 1),
+                    "variable",
+                    variable_accessor.clone(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new(12, 25, 1, 13), "hello world"),
+                )),
+            )),
+        );
+
+        let mut severity_text_accessor = ValueAccessor::new();
+
+        severity_text_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(29, 42, 1, 30),
+            "SeverityText",
+        )));
+
+        chain.push_or(LogicalExpression::Not(NotLogicalExpression::new(
+            QueryLocation::new(29, 51, 1, 30),
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new(29, 51, 1, 30),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new(29, 42, 1, 30),
+                    severity_text_accessor,
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new(45, 51, 1, 46), "Info"),
+                )),
+            )),
+        )));
+
+        run_test(
+            "variable == 'hello world' or SeverityText != 'Info'",
+            &state,
+            LogicalExpression::Chain(chain),
+        );
+
+        let mut nested_logical = ChainLogicalExpression::new(
+            QueryLocation::new(1, 53, 1, 2),
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new(1, 28, 1, 2),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new(1, 10, 1, 2),
+                    "variable",
+                    variable_accessor.clone(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new(14, 27, 1, 15), "hello world"),
+                )),
+            )),
+        );
+
+        let mut severity_text_accessor = ValueAccessor::new();
+
+        severity_text_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(33, 47, 1, 34),
+            "SeverityNumber",
+        )));
+
+        nested_logical.push_or(LogicalExpression::GreaterThanOrEqualTo(
+            GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new(32, 53, 1, 33),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new(33, 47, 1, 34),
+                    severity_text_accessor,
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new(52, 53, 1, 53), 0),
+                )),
+            ),
+        ));
+
+        let mut nested_chain = ChainLogicalExpression::new(
+            QueryLocation::new(0, 65, 1, 1),
+            LogicalExpression::Chain(nested_logical),
+        );
+
+        nested_chain.push_and(LogicalExpression::Scalar(ScalarExpression::Static(
+            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                QueryLocation::new(60, 64, 1, 61),
+                true,
+            )),
+        )));
+
+        run_test(
+            "(variable == ('hello world') or (SeverityNumber) >= 0) and (true)",
+            &state,
+            LogicalExpression::Chain(nested_chain),
+        );
     }
 
     #[test]
