@@ -27,7 +27,7 @@
 //! contextual information to produce a comprehensive `FieldInfo` instance containing
 //! all metadata needed for code generation.
 
-use convert_case::{Case, Casing};
+use convert_case::Casing;
 use otlp_model::OneofCase;
 use otlp_model::OneofMapping;
 use quote::{ToTokens, quote};
@@ -51,9 +51,6 @@ pub struct FieldInfo {
 
     /// Whether this field is a repeated field, typically `Vec<T>` (corresponds to `repeated` in protobuf)
     pub is_repeated: bool,
-
-    /// Whether this field represents a message type (complex nested structure) vs primitive type
-    pub is_message: bool,
 
     /// Whether this field represents a primitive type at the protocol level, including bytes,
     /// String, integers, etc.
@@ -97,9 +94,6 @@ pub struct FieldInfo {
     /// The visitable trait that this field type should implement.
     /// Precomputed for consistency with the corresponding visitor trait.
     pub visitable_trait: proc_macro2::TokenStream,
-
-    /// Parameter name for the visitor in generated code (e.g., `field_name_visitor`)
-    pub visitor_param_name: syn::Ident,
 
     /// Method name for the visit call in generated code (e.g., `visit_string`, `visit_message`)
     pub visit_method_name: syn::Ident,
@@ -382,7 +376,6 @@ impl FieldInfo {
 
                 let is_optional = Self::is_optional(field);
                 let is_repeated = Self::is_repeated(field);
-                let is_message = Self::is_message(field);
                 let is_primitive = Self::is_primitive(field);
                 let is_fixed = Self::is_fixed(field);
 
@@ -414,7 +407,7 @@ impl FieldInfo {
                 let (tag, proto_type) = parse_prost_tag_and_type(field);
 
                 // Compute visitor information
-                let (visitor_param_name, visit_method_name, visitor_trait, visitable_trait) =
+                let (_visitor_param_name, visit_method_name, visitor_trait, visitable_trait) =
                     Self::compute_visitor_info(
                         ident,
                         &proto_type,
@@ -430,7 +423,6 @@ impl FieldInfo {
                     is_param,
                     is_optional,
                     is_repeated,
-                    is_message,
                     is_primitive,
                     is_fixed,
                     oneof: oneof.clone(),
@@ -443,7 +435,6 @@ impl FieldInfo {
                     qualifier,
                     visitor_trait,
                     visitable_trait,
-                    visitor_param_name,
                     visit_method_name,
                 }
             })
@@ -591,10 +582,6 @@ impl FieldInfo {
         Self::has_prost_attr(field, "repeated")
     }
 
-    fn is_message(field: &syn::Field) -> bool {
-        Self::has_prost_attr(field, "message")
-    }
-
     fn is_primitive(field: &syn::Field) -> bool {
         const PRIMITIVE_PATTERNS: &[&str] = &[
             "bytes=\"vec\"",
@@ -727,61 +714,5 @@ impl FieldInfo {
             qualifier,
             "Visitable",
         )
-    }
-
-    /// Generates the appropriate visitor trait for a specific oneof case.
-    ///
-    /// Oneof fields in protobuf represent union types where a field can be one of
-    /// several possible types. This method maps oneof case names to their corresponding
-    /// visitor traits, handling both primitive types (which use crate::pdata traits)
-    /// and complex message types (which use unqualified or standard naming).
-    ///
-    /// Examples:
-    /// - "string" case -> `crate::pdata::StringVisitor<Argument>`
-    /// - "kvlist" case -> `KeyValueListVisitor<Argument>`  
-    /// - "custom" case -> `CustomVisitor<Argument>`
-    pub fn generate_visitor_type_for_oneof_case(case: &OneofCase) -> proc_macro2::TokenStream {
-        /// Mapping of oneof case names to their visitor traits, considering proto_type
-        fn get_oneof_visitor_mapping(
-            case_name: &str,
-            proto_type: &str,
-        ) -> Option<(&'static str, bool)> {
-            match case_name {
-                // Primitive types (in crate::pdata) - consider proto_type for encoding differences
-                "string" => Some(("StringVisitor", true)),
-                "bool" => Some(("BooleanVisitor", true)),
-                "int" => {
-                    // Choose visitor based on protobuf wire type
-                    match proto_type {
-                        "sfixed64" => Some(("I64Visitor", true)), // Will use Sfixed64EncodedLen via encoder selection
-                        "int64" | _ => Some(("I64Visitor", true)), // Will use I64EncodedLen via encoder selection
-                    }
-                }
-                "double" => Some(("F64Visitor", true)),
-                "bytes" => Some(("BytesVisitor", true)),
-
-                // Complex message types (unqualified)
-                "kvlist" => Some(("KeyValueListVisitor", false)),
-                "array" => Some(("ArrayValueVisitor", false)),
-
-                _ => None,
-            }
-        }
-
-        if let Some((visitor_name, use_crate_pdata)) =
-            get_oneof_visitor_mapping(&case.name, &case.proto_type)
-        {
-            let visitor_ident = syn::Ident::new(visitor_name, proc_macro2::Span::call_site());
-            if use_crate_pdata {
-                quote! { crate::pdata::#visitor_ident<Argument> }
-            } else {
-                quote! { #visitor_ident<Argument> }
-            }
-        } else {
-            // Standard message types - convert to PascalCase and append Visitor
-            let visitor_name = format!("{}Visitor", case.name.to_case(Case::Pascal));
-            let visitor_ident = syn::Ident::new(&visitor_name, proc_macro2::Span::call_site());
-            quote! { #visitor_ident<Argument> }
-        }
     }
 }

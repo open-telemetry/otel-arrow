@@ -6,7 +6,6 @@ use quote::quote;
 
 use super::TokenVec;
 use super::common;
-use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
 
 pub fn derive(msg: &MessageInfo) -> TokenStream {
@@ -334,28 +333,4 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
         #(#field_calls)*
         arg
     }
-}
-
-/// Generate visitor call for a field with proper handling for different field types
-///
-/// This function has been redesigned to use the DRY principle with centralized utilities
-/// from the common module, eliminating repetitive patterns.
-pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStream> {
-    // Handle oneof fields separately using centralized utility
-    if let Some(oneof_cases) = info.oneof.as_ref() {
-        return common::visitor_oneof_call(info, oneof_cases);
-    }
-
-    let field_name = &info.ident;
-    let visitor_param = &info.visitor_param_name;
-    let visit_method = &info.visit_method_name;
-
-    // Use the centralized visitor call pattern generator
-    let category = common::FieldCategory::from_field_info(info);
-    Some(common::generate_visitor_call_pattern(
-        category,
-        field_name,
-        visitor_param,
-        visit_method,
-    ))
 }
