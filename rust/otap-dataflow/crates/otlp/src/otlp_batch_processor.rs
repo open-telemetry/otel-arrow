@@ -11,20 +11,32 @@ use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::{ControlMsg, Message};
 use prost::Message as ProstMessage;
 use std::time::{Duration, Instant};
+use std::borrow::Cow;
 
 /// Trait for hierarchical batch splitting
 ///
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
-    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self>;
+    fn split_into_batches(
+        self,
+        max_batch_size: usize,
+    ) -> Result<Vec<Self>, Error<OTLPData>>;
 }
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
-    fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
+    fn split_into_batches(
+        mut self,
+        max_batch_size: usize,
+    ) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
-            panic!("max_batch_size must be greater than zero");
+            return Err(Error::ProcessorError {
+                processor: Cow::Borrowed(
+                    "HierarchicalBatchSplit::ExportTraceServiceRequest",
+                ),
+                error: "max_batch_size must be greater than zero".into(),
+            });
         }
 
         let mut batches            = Vec::new();
@@ -84,14 +96,22 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
             batches.push(current_batch);
         }
 
-        batches
+        Ok(batches)
     }
 }
 
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
-    fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
+    fn split_into_batches(
+        mut self,
+        max_batch_size: usize,
+    ) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
-            panic!("max_batch_size must be greater than zero");
+            return Err(Error::ProcessorError {
+                processor: Cow::Borrowed(
+                    "HierarchicalBatchSplit::ExportMetricsServiceRequest",
+                ),
+                error: "max_batch_size must be greater than zero".into(),
+            });
         }
         let total_metrics = self
             .resource_metrics
@@ -146,7 +166,7 @@ impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
                 batches.push(current_batch);
             }
         }
-        batches
+        Ok(batches)
     }
 }
 
@@ -166,9 +186,17 @@ impl ExportMetricsServiceRequest {
 }
 
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
-    fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
+    fn split_into_batches(
+        mut self,
+        max_batch_size: usize,
+    ) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
-            panic!("max_batch_size must be greater than zero");
+            return Err(Error::ProcessorError {
+                processor: Cow::Borrowed(
+                    "HierarchicalBatchSplit::ExportLogsServiceRequest",
+                ),
+                error: "max_batch_size must be greater than zero".into(),
+            });
         }
         let total_log_records = self
             .resource_logs
@@ -217,7 +245,7 @@ impl HierarchicalBatchSplit for ExportLogsServiceRequest {
         if !current_batch.resource_logs.is_empty() {
             batches.push(current_batch);
         }
-        batches
+        Ok(batches)
     }
 }
 
@@ -516,11 +544,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_spans.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => {
-                                req.split_by_requests(self.config.send_batch_size)
-                            }
+                            BatchSizer::Requests => Ok(req.split_by_requests(self.config.send_batch_size)),
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        };
+                        }?;
                         // The last batch may not be full: buffer it, emit the rest
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
@@ -544,11 +570,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_metrics.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => {
-                                req.split_by_requests(self.config.send_batch_size)
-                            }
+                            BatchSizer::Requests => Ok(req.split_by_requests(self.config.send_batch_size)),
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        };
+                        }?;
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler
@@ -570,11 +594,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_logs.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => {
-                                req.split_by_requests(self.config.send_batch_size)
-                            }
+                            BatchSizer::Requests => Ok(req.split_by_requests(self.config.send_batch_size)),
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        };
+                        }?;
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler
