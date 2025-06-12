@@ -5,12 +5,12 @@ use arrow::array::{
     ArrowPrimitiveType, DictionaryArray, PrimitiveArray, PrimitiveBuilder,
     PrimitiveDictionaryBuilder,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
+use arrow::datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type};
 use arrow::error::ArrowError;
 use std::sync::Arc;
 
-use crate::encode::record::array::NoArgs;
 use crate::encode::record::array::dictionary::{DictionaryBuilder, UpdateDictionaryIndexInto};
+use crate::encode::record::array::{ArrayAppendNulls, NoArgs};
 
 use super::dictionary::{self, ConvertToNativeHelper, DictionaryArrayAppend};
 use super::{ArrayAppend, ArrayBuilder, ArrayBuilderConstructor, ArrayRef};
@@ -26,6 +26,19 @@ where
 
     fn append_value(&mut self, value: &<Self as ArrayAppend>::Native) {
         self.append_value(*value);
+    }
+}
+
+impl<T> ArrayAppendNulls for PrimitiveBuilder<T>
+where
+    T: ArrowPrimitiveType,
+{
+    fn append_null(&mut self) {
+        self.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        self.append_nulls(n);
     }
 }
 
@@ -83,6 +96,20 @@ where
     }
 }
 
+impl<K, V> ArrayAppendNulls for PrimitiveDictionaryBuilder<K, V>
+where
+    K: ArrowDictionaryKeyType,
+    V: ArrowPrimitiveType,
+{
+    fn append_null(&mut self) {
+        self.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        self.append_nulls(n);
+    }
+}
+
 impl<K, V> DictionaryBuilder<K> for PrimitiveDictionaryBuilder<K, V>
 where
     K: ArrowDictionaryKeyType,
@@ -124,10 +151,7 @@ where
         for value in values {
             match value {
                 Some(value) => upgraded_builder.append_value(value),
-                None => {
-                    // TODO handle this in https://github.com/open-telemetry/otel-arrow/issues/534
-                    todo!("nulls not yet supported by adaptive array builders")
-                }
+                None => upgraded_builder.append_null(),
             }
         }
 
@@ -140,7 +164,7 @@ mod test {
     use super::*;
 
     use arrow::array::{Array, UInt8Array, UInt8Builder, UInt8DictionaryArray};
-    use arrow::datatypes::UInt8Type;
+    use arrow::datatypes::{DataType, UInt8Type};
 
     #[test]
     fn test_primitive_builder() {

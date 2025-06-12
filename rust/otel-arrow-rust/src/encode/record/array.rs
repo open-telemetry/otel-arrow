@@ -15,14 +15,13 @@
 //! handle converting between different builders dynamically  based on the data which is appended.
 
 use arrow::array::{
-    ArrayRef, ArrowPrimitiveType, BinaryBuilder, BinaryDictionaryBuilder, FixedSizeBinaryBuilder,
+    ArrayRef, BinaryBuilder, BinaryDictionaryBuilder, FixedSizeBinaryBuilder,
     FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder, PrimitiveDictionaryBuilder, StringBuilder,
     StringDictionaryBuilder,
 };
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
-    Int16Type, Int32Type, Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type,
-    UInt64Type,
+    DurationNanosecondType, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+    TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow::error::ArrowError;
 
@@ -68,7 +67,7 @@ pub trait ArrayBuilderConstructor {
 ///
 /// If the underlying builder can return an error from append (e.g. if some values for the
 /// Native are not valid), then `CheckedArrayAppend` should be implemented instead.
-pub trait ArrayAppend {
+pub trait ArrayAppend: ArrayAppendNulls {
     type Native;
 
     fn append_value(&mut self, value: &Self::Native);
@@ -82,10 +81,18 @@ pub trait ArrayAppend {
 ///
 /// In this case, underlying builders should implement this trait and callers can use it when
 /// there's uncertainty that the value they've passed is valid.
-pub trait CheckedArrayAppend {
+pub trait CheckedArrayAppend: ArrayAppendNulls {
     type Native;
 
     fn append_value(&mut self, value: &Self::Native) -> Result<(), ArrowError>;
+}
+
+pub trait ArrayAppendNulls {
+    /// Append a null value to the builder
+    fn append_null(&mut self);
+
+    /// Append `n` nulls to the builder
+    fn append_nulls(&mut self, n: usize);
 }
 
 /// This enum is a container that abstracts array builder which is either
@@ -121,6 +128,11 @@ pub struct AdaptiveArrayBuilder<TArgs, TN, TD8, TD16> {
     nullable: bool,
     inner: Option<MaybeDictionaryBuilder<TN, TD8, TD16>>,
 
+    // the number of nulls that have been appended to the builder before the first value. This is
+    // used as a counter until the underlying builder possibly gets initialized, then we prepend
+    // this many nulls
+    nulls_prefix: usize,
+
     // these are the args that will be used to create the underlying builder. In most cases this
     // will be NoArgs, but there are some cases where Array builder's constructors require args,
     // for example `FixedSizeBinary` requires the byte_width
@@ -129,9 +141,9 @@ pub struct AdaptiveArrayBuilder<TArgs, TN, TD8, TD16> {
 
 impl<TN, TD8, TD16> AdaptiveArrayBuilder<NoArgs, TN, TD8, TD16>
 where
-    TN: ArrayBuilderConstructor<Args = NoArgs>,
-    TD8: ArrayBuilderConstructor<Args = NoArgs>,
-    TD16: ArrayBuilderConstructor<Args = NoArgs>,
+    TN: ArrayBuilderConstructor<Args = NoArgs> + ArrayAppendNulls,
+    TD8: ArrayBuilderConstructor<Args = NoArgs> + ArrayAppendNulls,
+    TD16: ArrayBuilderConstructor<Args = NoArgs> + ArrayAppendNulls,
 {
     pub fn new(options: ArrayOptions) -> Self {
         Self::new_with_args(options, ())
@@ -141,9 +153,9 @@ where
 impl<TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>
 where
     TArgs: Clone,
-    TN: ArrayBuilderConstructor<Args = TArgs>,
-    TD8: ArrayBuilderConstructor<Args = TArgs>,
-    TD16: ArrayBuilderConstructor<Args = TArgs>,
+    TN: ArrayBuilderConstructor<Args = TArgs> + ArrayAppendNulls,
+    TD8: ArrayBuilderConstructor<Args = TArgs> + ArrayAppendNulls,
+    TD16: ArrayBuilderConstructor<Args = TArgs> + ArrayAppendNulls,
 {
     pub fn new_with_args(options: ArrayOptions, args: TArgs) -> Self {
         let inner = if options.nullable {
@@ -158,6 +170,7 @@ where
         Self {
             dictionary_options: options.dictionary_options,
             nullable: options.nullable,
+            nulls_prefix: 0,
             inner,
             inner_args: args,
         }
@@ -188,6 +201,38 @@ where
                 self.inner_args.clone(),
                 &self.dictionary_options,
             ));
+            if self.nulls_prefix > 0 {
+                self.append_nulls(self.nulls_prefix);
+            }
+        }
+    }
+}
+
+impl<TArgs, TN, TD8, TD16> ArrayAppendNulls for AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>
+where
+    TN: ArrayAppendNulls,
+    TD8: ArrayAppendNulls,
+    TD16: ArrayAppendNulls,
+{
+    fn append_null(&mut self) {
+        if let Some(inner) = self.inner.as_mut() {
+            match inner {
+                MaybeDictionaryBuilder::Dictionary(builder) => builder.append_null(),
+                MaybeDictionaryBuilder::Native(builder) => builder.append_null(),
+            }
+        } else {
+            self.nulls_prefix += 1;
+        }
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        if let Some(inner) = self.inner.as_mut() {
+            match inner {
+                MaybeDictionaryBuilder::Dictionary(builder) => builder.append_nulls(n),
+                MaybeDictionaryBuilder::Native(builder) => builder.append_nulls(n),
+            }
+        } else {
+            self.nulls_prefix += n;
         }
     }
 }
@@ -195,14 +240,16 @@ where
 impl<T, TArgs, TN, TD8, TD16> ArrayAppend for AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>
 where
     TArgs: Clone,
-    TN: ArrayAppend<Native = T> + ArrayBuilderConstructor<Args = TArgs>,
+    TN: ArrayAppend<Native = T> + ArrayAppendNulls + ArrayBuilderConstructor<Args = TArgs>,
     TD8: DictionaryArrayAppend<Native = T>
         + DictionaryBuilder<UInt8Type>
+        + ArrayAppendNulls
         + ArrayBuilderConstructor<Args = TArgs>
         + ConvertToNativeHelper
         + UpdateDictionaryIndexInto<TD16>,
     <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
     TD16: DictionaryArrayAppend<Native = T>
+        + ArrayAppendNulls
         + DictionaryBuilder<UInt16Type>
         + ArrayBuilderConstructor<Args = TArgs>
         + ConvertToNativeHelper,
@@ -239,15 +286,17 @@ where
 impl<T, TArgs, TN, TD8, TD16> CheckedArrayAppend for AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>
 where
     TArgs: Clone,
-    TN: CheckedArrayAppend<Native = T> + ArrayBuilderConstructor<Args = TArgs>,
+    TN: CheckedArrayAppend<Native = T> + ArrayAppendNulls + ArrayBuilderConstructor<Args = TArgs>,
     TD8: CheckedDictionaryArrayAppend<Native = T>
         + DictionaryBuilder<UInt8Type>
+        + ArrayAppendNulls
         + ArrayBuilderConstructor<Args = TArgs>
         + ConvertToNativeHelper
         + UpdateDictionaryIndexInto<TD16>,
     <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
     TD16: CheckedDictionaryArrayAppend<Native = T>
         + DictionaryBuilder<UInt16Type>
+        + ArrayAppendNulls
         + ArrayBuilderConstructor<Args = TArgs>
         + ConvertToNativeHelper,
     <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
@@ -346,9 +395,7 @@ pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanoseco
 pub mod test {
     use super::*;
 
-    use std::sync::Arc;
-
-    use arrow::array::{DictionaryArray, StringArray, UInt8Array, UInt8DictionaryArray};
+    use arrow::array::{DictionaryArray, UInt8Array};
     use arrow::datatypes::{DataType, TimeUnit};
 
     fn test_array_builder_generic<T, TArgs, TN, TD8, TD16>(
@@ -356,19 +403,22 @@ pub mod test {
         expected_data_type: DataType,
     ) where
         T: PartialEq + std::fmt::Debug,
-        TN: ArrayBuilderConstructor<Args = TArgs> + ArrayBuilder,
+        TN: ArrayBuilderConstructor<Args = TArgs> + ArrayAppendNulls + ArrayBuilder,
         TD8: DictionaryBuilder<UInt8Type>
+            + ArrayAppendNulls
             + ArrayBuilderConstructor<Args = TArgs>
             + ConvertToNativeHelper
             + UpdateDictionaryIndexInto<TD16>,
         <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T>,
         TD16: DictionaryBuilder<UInt16Type>
+            + ArrayAppendNulls
             + ArrayBuilderConstructor<Args = TArgs>
             + ConvertToNativeHelper,
         <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T>,
     {
         // tests some common behaviours of checked & unchecked array builders:
 
+        // expect that for empty array, we get a None value because the builder is nullable
         let mut builder = array_builder_factory(ArrayOptions {
             nullable: true,
             dictionary_options: Some(DictionaryOptions {
@@ -376,8 +426,6 @@ pub mod test {
                 min_cardinality: 4,
             }),
         });
-
-        // expect that for empty array, we get a None value because the builder is nullable
         let result = builder.finish();
         assert!(result.is_none());
 
@@ -398,6 +446,19 @@ pub mod test {
             )
         );
         assert_eq!(result.len(), 0);
+
+        // expect that for an all null array, we get None if the array is marked as nullable
+        let mut builder = array_builder_factory(ArrayOptions {
+            nullable: true,
+            dictionary_options: Some(DictionaryOptions {
+                max_cardinality: 4,
+                min_cardinality: 4,
+            }),
+        });
+        builder.append_null();
+        builder.append_nulls(2);
+        let result = builder.finish();
+        assert!(result.is_none());
     }
 
     fn test_array_append_generic<T, TN, TD8, TD16>(
@@ -406,15 +467,20 @@ pub mod test {
         expected_data_type: DataType,
     ) where
         T: PartialEq + std::fmt::Debug,
-        TN: ArrayAppend<Native = T> + ArrayBuilderConstructor<Args = NoArgs> + ArrayBuilder,
+        TN: ArrayAppend<Native = T>
+            + ArrayAppendNulls
+            + ArrayBuilderConstructor<Args = NoArgs>
+            + ArrayBuilder,
         TD8: DictionaryArrayAppend<Native = T>
             + DictionaryBuilder<UInt8Type>
+            + ArrayAppendNulls
             + ArrayBuilderConstructor<Args = NoArgs>
             + ConvertToNativeHelper
             + UpdateDictionaryIndexInto<TD16>,
         <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
         TD16: DictionaryArrayAppend<Native = T>
             + DictionaryBuilder<UInt16Type>
+            + ArrayAppendNulls
             + ArrayBuilderConstructor<Args = NoArgs>
             + ConvertToNativeHelper,
         <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
@@ -437,6 +503,10 @@ pub mod test {
         builder.append_value(&values[0]);
         builder.append_value(&values[0]);
         builder.append_value(&values[1]);
+        builder.append_null();
+        builder.append_value(&values[0]);
+        builder.append_nulls(2);
+        builder.append_value(&values[1]);
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -446,14 +516,26 @@ pub mod test {
                 Box::new(expected_data_type.clone())
             )
         );
-        assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), 8);
 
         let dict_array = result
             .as_any()
             .downcast_ref::<DictionaryArray<UInt8Type>>()
             .unwrap();
         let dict_keys = dict_array.keys();
-        assert_eq!(dict_keys, &UInt8Array::from_iter_values(vec![0, 0, 1]));
+        assert_eq!(
+            dict_keys,
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                None,
+                None,
+                Some(1)
+            ])
+        );
         let dict_values = dict_array
             .values()
             .as_any()
@@ -469,14 +551,23 @@ pub mod test {
         });
         builder.append_value(&values[0]);
         builder.append_value(&values[1]);
+        builder.append_null();
+        builder.append_value(&values[1]);
+        builder.append_nulls(2);
+        builder.append_value(&values[1]);
         let result = builder.finish().unwrap();
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 7);
         let array = result
             .as_any()
             .downcast_ref::<<TD8 as ConvertToNativeHelper>::Accessor>()
             .unwrap();
         assert_eq!(array.value_at(0).unwrap(), values[0]);
         assert_eq!(array.value_at(1).unwrap(), values[1]);
+        assert!(array.value_at(2).is_none());
+        assert_eq!(array.value_at(3).unwrap(), values[1]);
+        assert!(array.value_at(4).is_none());
+        assert!(array.value_at(5).is_none());
+        assert_eq!(array.value_at(6).unwrap(), values[1]);
 
         // expect that when dictionary overflow happens, we get the native builder
         let mut builder = array_builder_factory(ArrayOptions {
@@ -487,15 +578,42 @@ pub mod test {
             nullable: false,
         });
         builder.append_value(&values[0]);
+        builder.append_null();
+        builder.append_nulls(2);
         builder.append_value(&values[1]);
         let result = builder.finish().unwrap();
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 5);
         let array = result
             .as_any()
             .downcast_ref::<<TD8 as ConvertToNativeHelper>::Accessor>()
             .unwrap();
         assert_eq!(array.value_at(0).unwrap(), values[0]);
-        assert_eq!(array.value_at(1).unwrap(), values[1]);
+        assert!(array.value_at(1).is_none());
+        assert!(array.value_at(2).is_none());
+        assert!(array.value_at(3).is_none());
+        assert_eq!(array.value_at(4).unwrap(), values[1]);
+
+        // check that for nullable arrays we properly prepend nulls
+        let mut builder = array_builder_factory(ArrayOptions {
+            dictionary_options: Some(DictionaryOptions {
+                max_cardinality: 5,
+                min_cardinality: 5,
+            }),
+            nullable: true,
+        });
+        builder.append_null();
+        builder.append_nulls(2);
+        builder.append_value(&values[0]);
+        let result = builder.finish().unwrap();
+        let dict_array = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+        let dict_keys = dict_array.keys();
+        assert_eq!(
+            dict_keys,
+            &UInt8Array::from_iter(vec![None, None, None, Some(0),])
+        );
     }
 
     #[test]
@@ -566,6 +684,10 @@ pub mod test {
         assert!(builder.append_value(&values[0]).is_ok());
         assert!(builder.append_value(&values[0]).is_ok());
         assert!(builder.append_value(&values[1]).is_ok());
+        builder.append_null();
+        assert!(builder.append_value(&values[0]).is_ok());
+        builder.append_nulls(2);
+        assert!(builder.append_value(&values[1]).is_ok());
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -575,14 +697,26 @@ pub mod test {
                 Box::new(expected_data_type.clone())
             )
         );
-        assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), 8);
 
         let dict_array = result
             .as_any()
             .downcast_ref::<DictionaryArray<UInt8Type>>()
             .unwrap();
         let dict_keys = dict_array.keys();
-        assert_eq!(dict_keys, &UInt8Array::from_iter_values(vec![0, 0, 1]));
+        assert_eq!(
+            dict_keys,
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                None,
+                None,
+                Some(1)
+            ])
+        );
         let dict_values = dict_array
             .values()
             .as_any()
@@ -598,14 +732,23 @@ pub mod test {
         });
         assert!(builder.append_value(&values[0]).is_ok());
         assert!(builder.append_value(&values[1]).is_ok());
+        builder.append_null();
+        assert!(builder.append_value(&values[0]).is_ok());
+        builder.append_nulls(2);
+        assert!(builder.append_value(&values[0]).is_ok());
         let result = builder.finish().unwrap();
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 7);
         let array = result
             .as_any()
             .downcast_ref::<<TD8 as ConvertToNativeHelper>::Accessor>()
             .unwrap();
         assert_eq!(array.value_at(0).unwrap(), values[0]);
         assert_eq!(array.value_at(1).unwrap(), values[1]);
+        assert!(array.value_at(2).is_none());
+        assert_eq!(array.value_at(3).unwrap(), values[0]);
+        assert!(array.value_at(4).is_none());
+        assert!(array.value_at(5).is_none());
+        assert_eq!(array.value_at(6).unwrap(), values[0]);
 
         // expect that when dictionary overflow happens, we get the native builder
         let mut builder = array_builder_factory(ArrayOptions {
@@ -616,15 +759,20 @@ pub mod test {
             nullable: false,
         });
         assert!(builder.append_value(&values[0]).is_ok());
+        builder.append_null();
+        builder.append_nulls(2);
         assert!(builder.append_value(&values[1]).is_ok());
         let result = builder.finish().unwrap();
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 5);
         let array = result
             .as_any()
             .downcast_ref::<<TD8 as ConvertToNativeHelper>::Accessor>()
             .unwrap();
         assert_eq!(array.value_at(0).unwrap(), values[0]);
-        assert_eq!(array.value_at(1).unwrap(), values[1]);
+        assert!(array.value_at(1).is_none());
+        assert!(array.value_at(2).is_none());
+        assert!(array.value_at(3).is_none());
+        assert_eq!(array.value_at(4).unwrap(), values[1]);
 
         // expect that invalid values are rejected by the dictionary builder:
         let mut builder = array_builder_factory(ArrayOptions {
