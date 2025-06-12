@@ -44,6 +44,10 @@ harness = false
 name = "materialize_parent_id"
 harness = false
 
+[[bench]]
+name = "item_count"
+harness = false
+
 [dev-dependencies]
 rand = "0.9"
 nix = { version = "0.29.0", features = ["process", "signal"] }
