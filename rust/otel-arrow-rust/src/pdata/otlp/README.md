@@ -18,7 +18,6 @@ as bytes. It does this by implementing a Visitor pattern, in which:
 - Every OTLP message object has a corresponding Visitor trait, which is how
   to apply custom logic to OTLP-like data.
 - Every OTLP message object has also:
-  - MessageAdapter: a Visitable impl for OTLP message objects
   - NoopVisitor: a do-nothing Visitor implements all traits
   - Builder: a builder pattern for defning test OTLP message objects,
     along with a new() method covering obligatory fields.

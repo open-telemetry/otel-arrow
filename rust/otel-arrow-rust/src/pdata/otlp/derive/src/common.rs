@@ -58,7 +58,6 @@ pub fn generate_visitor_call_pattern(
     field_name: &Ident,
     visitor_param: &Ident,
     visit_method: &Ident,
-    info: &FieldInfo,
 ) -> TokenStream {
     match category {
         FieldCategory::MessageOptional => {

@@ -60,7 +60,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
                 let (mut arg, total_child_size) = self.children_encoded_size(arg, v);
 
-                arg.set_size(idx, crate::pdata::otlp::primitive_encoders::conditional_length_delimited_size::<TAG, OPTION>(total_child_size));
+                arg.set_size(idx, crate::pdata::otlp::encoders::conditional_length_delimited_size::<TAG, OPTION>(total_child_size));
                 arg
             }
         }

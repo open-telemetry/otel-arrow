@@ -14,9 +14,9 @@ pub use otlp_derive::Message; // Required for derived code
 pub use otlp_derive::qualified; // Required for derived code
 
 // Primitive encoders for the first pass of two-pass encoding
-pub mod primitive_encoders;
-pub use primitive_encoders::{
-    // TODO: export all (there are more)
+pub mod encoders;
+pub use encoders::{
+    // The encoders are exposed by this crate.
     Accumulate,
     BooleanEncodedLen,
     BytesEncodedLen,

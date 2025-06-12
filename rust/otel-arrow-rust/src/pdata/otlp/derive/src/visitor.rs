@@ -357,6 +357,5 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
         field_name,
         visitor_param,
         visit_method,
-        info,
     ))
 }
