@@ -23,7 +23,7 @@ impl ValuePath {
         let mut s: Vec<ValueSelector> = Vec::new();
         s.extend_from_slice(selectors);
 
-        if s.len() == 0 {
+        if s.is_empty() {
             s.push(ValueSelector::Value);
         } else if let ValueSelector::Value = s.last().unwrap() {
         } else {
@@ -39,7 +39,7 @@ impl ValuePath {
                 }
                 ValueSelector::ArrayValueInsert(index) => match index {
                     Some(index) => raw.push_str(format!("[+{index}]").as_str()),
-                    None => raw.push_str(format!("[+]").as_str()),
+                    None => raw.push_str("[+]".to_string().as_str()),
                 },
                 ValueSelector::MapValueKey(key) => raw.push_str(format!(":'{key}'").as_str()),
                 ValueSelector::Value => {}
@@ -61,7 +61,7 @@ impl ValuePath {
                     return Some((key, ValuePath::from_selectors(&selectors[1..])));
                 }
 
-                return None;
+                None
             }
             None => None,
         }
@@ -70,7 +70,7 @@ impl ValuePath {
     pub fn with_root_property_key(&self, key: &str) -> ValuePath {
         let mut selectors = self.get_selectors().to_vec();
         selectors.insert(0, ValueSelector::MapValueKey(key.into()));
-        return ValuePath::from_selectors(&selectors);
+        ValuePath::from_selectors(&selectors)
     }
 
     pub fn get_raw_value(&self) -> &str {
@@ -98,7 +98,7 @@ impl ValuePath {
                         let mut final_index = *index;
 
                         if final_index < 0 {
-                            final_index = (array_value.get_values().len() as i32) + final_index;
+                            final_index += array_value.get_values().len() as i32;
                         }
 
                         match array_value.get_values().get(final_index as usize) {
@@ -134,7 +134,7 @@ impl ValuePath {
             }
         }
 
-        return DataRecordReadAnyValueResult::NotFound;
+        DataRecordReadAnyValueResult::NotFound
     }
 
     pub fn read_mut<'a>(
@@ -153,7 +153,7 @@ impl ValuePath {
                         let mut final_index = *index;
 
                         if final_index < 0 {
-                            final_index = (array_value.get_values().len() as i32) + final_index;
+                            final_index += array_value.get_values().len() as i32;
                         }
 
                         match array_value.get_values_mut().get_mut(final_index as usize) {
@@ -189,7 +189,7 @@ impl ValuePath {
             }
         }
 
-        return DataRecordReadMutAnyValueResult::NotFound;
+        DataRecordReadMutAnyValueResult::NotFound
     }
 
     pub fn set(
@@ -210,7 +210,7 @@ impl ValuePath {
                             let mut final_index = index.unwrap();
 
                             if final_index < 0 {
-                                final_index = (array_value.get_values().len() as i32) + final_index;
+                                final_index += array_value.get_values().len() as i32;
                             }
 
                             if final_index < 0
@@ -234,7 +234,7 @@ impl ValuePath {
                         let mut final_index = *index;
 
                         if final_index < 0 {
-                            final_index = (array_value.get_values().len() as i32) + final_index;
+                            final_index += array_value.get_values().len() as i32;
                         }
 
                         match array_value.get_values_mut().get_mut(final_index as usize) {
@@ -254,37 +254,28 @@ impl ValuePath {
                         let k: &str = key;
                         let values = map_value.get_values_mut();
 
-                        match iter.peek() {
-                            Some(v) => {
-                                if let ValueSelector::Value = v {
-                                    if any_value_to_set.is_null() {
-                                        let old_value = values.remove(k);
-                                        match old_value {
-                                            Some(old_value) => {
-                                                return DataRecordSetAnyValueResult::Updated(
-                                                    old_value,
-                                                );
-                                            }
-                                            None => return DataRecordSetAnyValueResult::NotFound,
-                                        }
-                                    } else {
-                                        let old_value = values.insert(k.into(), any_value_to_set);
-                                        match old_value {
-                                            Some(old_value) => {
-                                                return DataRecordSetAnyValueResult::Updated(
-                                                    old_value,
-                                                );
-                                            }
-                                            None => return DataRecordSetAnyValueResult::Created,
-                                        }
+                        if let Some(ValueSelector::Value) = iter.peek() {
+                            if any_value_to_set.is_null() {
+                                let old_value = values.remove(k);
+                                match old_value {
+                                    Some(old_value) => {
+                                        return DataRecordSetAnyValueResult::Updated(old_value);
                                     }
+                                    None => return DataRecordSetAnyValueResult::NotFound,
+                                }
+                            } else {
+                                let old_value = values.insert(k.into(), any_value_to_set);
+                                match old_value {
+                                    Some(old_value) => {
+                                        return DataRecordSetAnyValueResult::Updated(old_value);
+                                    }
+                                    None => return DataRecordSetAnyValueResult::Created,
                                 }
                             }
-                            None => {}
                         }
 
                         let value = values.get_mut(k);
-                        if !value.is_none() {
+                        if value.is_some() {
                             current_value = value.unwrap();
                             continue;
                         }
@@ -303,7 +294,7 @@ impl ValuePath {
             }
         }
 
-        return DataRecordSetAnyValueResult::NotFound;
+        DataRecordSetAnyValueResult::NotFound
     }
 
     pub fn remove(&self, root_any_value: &mut AnyValue) -> DataRecordRemoveAnyValueResult {
@@ -320,11 +311,11 @@ impl ValuePath {
                         let mut final_index = *index;
 
                         if final_index < 0 {
-                            final_index = (array_value.get_values().len() as i32) + final_index;
+                            final_index += array_value.get_values().len() as i32;
                         }
 
                         let next = iter.peek();
-                        if !next.is_none() {
+                        if next.is_some() {
                             if let ValueSelector::Value = next.unwrap() {
                                 if final_index < 0
                                     || final_index >= array_value.get_values().len() as i32
@@ -356,7 +347,7 @@ impl ValuePath {
                         let k: &str = key;
 
                         let next = iter.peek();
-                        if !next.is_none() {
+                        if next.is_some() {
                             if let ValueSelector::Value = next.unwrap() {
                                 let result = map_value.get_values_mut().remove(k);
                                 match result {
@@ -388,7 +379,7 @@ impl ValuePath {
             }
         }
 
-        return DataRecordRemoveAnyValueResult::NotFound;
+        DataRecordRemoveAnyValueResult::NotFound
     }
 
     fn parse_path(path: &str) -> Result<ValuePath, Error> {
@@ -398,33 +389,30 @@ impl ValuePath {
         let mut chars = path.chars();
         let mut terminate = false;
 
-        'outer: loop {
-            match chars.next() {
-                Some(mut c) => 'inner: loop {
-                    if terminate {
-                        return Err(Error::PathParseError(format!("Path at position '{position}' contained selectors after an array or map insert operation").to_string()));
+        'outer: while let Some(mut c) = chars.next() {
+            'inner: loop {
+                if terminate {
+                    return Err(Error::PathParseError(format!("Path at position '{position}' contained selectors after an array or map insert operation").to_string()));
+                }
+                if c == '[' {
+                    let value_selector = Self::parse_array_selector(&mut position, &mut chars)?;
+                    if let ValueSelector::ArrayValueInsert(_) = value_selector {
+                        terminate = true;
                     }
-                    if c == '[' {
-                        let value_selector = Self::parse_array_selector(&mut position, &mut chars)?;
-                        if let ValueSelector::ArrayValueInsert(_) = value_selector {
-                            terminate = true;
+                    results.push(value_selector);
+                    continue 'outer;
+                } else {
+                    let (char_to_retry, value_selector) =
+                        Self::parse_key_selector(c, &mut position, &mut chars)?;
+                    results.push(value_selector);
+                    match char_to_retry {
+                        Some(retry_char) => {
+                            c = retry_char;
+                            continue 'inner;
                         }
-                        results.push(value_selector);
-                        continue 'outer;
-                    } else {
-                        let (char_to_retry, value_selector) =
-                            Self::parse_key_selector(c, &mut position, &mut chars)?;
-                        results.push(value_selector);
-                        match char_to_retry {
-                            Some(retry_char) => {
-                                c = retry_char;
-                                continue 'inner;
-                            }
-                            None => continue 'outer,
-                        }
+                        None => continue 'outer,
                     }
-                },
-                None => break,
+                }
             }
         }
 
@@ -432,10 +420,10 @@ impl ValuePath {
             results.push(ValueSelector::Value);
         }
 
-        return Ok(ValuePath {
+        Ok(ValuePath {
             raw_value: path.into(),
             selectors: results,
-        });
+        })
     }
 
     fn parse_key_selector(
@@ -444,7 +432,7 @@ impl ValuePath {
         chars: &mut std::str::Chars<'_>,
     ) -> Result<(Option<char>, ValueSelector), Error> {
         let start_position = *position;
-        *position = *position + 1;
+        *position += 1;
 
         let mut key = String::new();
 
@@ -459,12 +447,12 @@ impl ValuePath {
         loop {
             match chars.next() {
                 Some(c) => {
-                    *position = *position + 1;
+                    *position += 1;
                     if c == '\'' {
                         if in_quote {
                             return build_map_value_key(start_position, &key, None);
                         }
-                        if key.len() != 0 {
+                        if !key.is_empty() {
                             return Err(Error::PathParseError(format!(
                                 "Property expression beginning at position '{start_position}' contained an invalid character at position '{}': {c}",
                                 *position
@@ -488,13 +476,13 @@ impl ValuePath {
             key: &str,
             char_to_retry: Option<char>,
         ) -> Result<(Option<char>, ValueSelector), Error> {
-            if key.len() == 0 {
+            if key.is_empty() {
                 return Err(Error::PathParseError(format!(
                     "Property expression beginning at position '{start_position}' was empty"
                 )));
             }
 
-            return Ok((char_to_retry, ValueSelector::MapValueKey(key.into())));
+            Ok((char_to_retry, ValueSelector::MapValueKey(key.into())))
         }
     }
 
@@ -503,7 +491,7 @@ impl ValuePath {
         chars: &mut std::str::Chars<'_>,
     ) -> Result<ValueSelector, Error> {
         let start_position = *position;
-        *position = *position + 1;
+        *position += 1;
 
         let mut index = String::new();
         let mut insert = false;
@@ -511,13 +499,13 @@ impl ValuePath {
         loop {
             match chars.next() {
                 Some(c) => {
-                    if c == '+' && index.len() == 0 {
-                        *position = *position + 1;
+                    if c == '+' && index.is_empty() {
+                        *position += 1;
                         insert = true;
                     } else if c == ']' {
-                        *position = *position + 1;
+                        *position += 1;
                         if insert {
-                            if index.len() == 0 {
+                            if index.is_empty() {
                                 return Ok(ValueSelector::ArrayValueInsert(None));
                             } else {
                                 match index.parse::<i32>() {
@@ -543,7 +531,7 @@ impl ValuePath {
                         }
                     } else {
                         index.push(c);
-                        *position = *position + 1;
+                        *position += 1;
                     }
                 }
                 None => {
