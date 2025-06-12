@@ -205,7 +205,7 @@ the current expansion after modifying the procedural macros.
 
 If the derive macros are panicking, it becomes difficult to debug this
 way, and a backtrace of the Rust compiler tends to be difficult to
-interpret. In these cases, use `eprintln!("🚨 ...")` to make progress.
+interpret. In these cases, use `eprintln!("...")` to make progress.
 
 ## Macro debugging cycle
 
