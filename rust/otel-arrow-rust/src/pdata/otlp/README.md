@@ -22,8 +22,8 @@ as bytes. It does this by implementing a Visitor pattern, in which:
   - Builder: a builder pattern for defning test OTLP message objects,
     along with a new() method covering obligatory fields.
   - EncodedLen: a Visitor for computing the sizes of an OTLP object
-    to an intermediate Vec<usize>, uses Accumulator, has test-only
-    pdata_size() implementation.
+    to an intermediate `Vec<usize>`, uses Accumulator, has test-only
+    `pdata_size()` implementation.
   - Accumulator: an impl for summing the encoded size of the children
     of an OTLP message.
 
@@ -180,7 +180,7 @@ require debugging, and it will help us to know how to recognize them.
 Errors in the derived code will show up like the following, where "X"
 characters denote arbitrary errors inside the derived code.
 
-```
+```text
 error[E0XXX]: XXXXXXXXXXXXXXX
   --> rust/otel-arrow-rust/src/proto/./././opentelemetry.proto.collector.metrics.v1.rs:16:1
    |
@@ -211,7 +211,7 @@ interpret. In these cases, use `eprintln!("...")` to make progress.
 
 We will proceed to run a two commands in one:
 
-```
+```bash
 cargo expand > EXPANDED 2> EXPAND_ERRORS; cargo check 2> CHECKED
 ```
 
@@ -221,7 +221,7 @@ compiler errors during macro processing.
 
 When the check step succeeds, the next thing to verify are the tests:
 
-```
+```bash
 cargo test > TEST_OUTPUT 2> TEST_ERROR
 ```
 
