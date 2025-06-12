@@ -26,67 +26,64 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
         if max_batch_size == 0 {
             panic!("max_batch_size must be greater than zero");
         }
-        let total_spans = self
-            .resource_spans
-            .iter()
-            .flat_map(|rs| &rs.scope_spans)
-            .map(|ss| ss.spans.len())
-            .sum::<usize>();
-        let estimated_batches = total_spans.div_ceil(max_batch_size);
-        let mut batches = Vec::with_capacity(estimated_batches);
+
+        let mut batches            = Vec::new();
+        let mut current_batch       = ExportTraceServiceRequest { resource_spans: Vec::new() };
+        let mut current_span_count  = 0;
 
         for mut rs in self.resource_spans.drain(..) {
-            let mut current_batch = ExportTraceServiceRequest {
-                resource_spans: Vec::new(),
-            };
-            let mut current_span_count = 0;
+            // a working copy of the current ResourceSpans
             let mut res = ResourceSpans {
-                resource: rs.resource.take(),
-                scope_spans: Vec::new(),
-                schema_url: rs.schema_url.clone(),
+                resource     : rs.resource.take(),
+                scope_spans : Vec::new(),
+                schema_url  : rs.schema_url.clone(),
             };
+
             for mut ss in rs.scope_spans.drain(..) {
                 while !ss.spans.is_empty() {
-                    let remaining = max_batch_size - current_span_count;
+                    let remaining   = max_batch_size - current_span_count;
                     let take_amount = remaining.min(ss.spans.len());
-                    let mut this_spans = ss.spans.split_off(ss.spans.len() - take_amount);
 
-                    let mut this_scope = ScopeSpans {
-                        scope: ss.scope.clone(),
-                        spans: Vec::new(),
-                        schema_url: ss.schema_url.clone(),
+                    // move the last `take_amount` spans out of `ss`
+                    let mut taken   = ss.spans.split_off(ss.spans.len() - take_amount);
+                    let mut scope   = ScopeSpans {
+                        scope      : ss.scope.clone(),
+                        spans      : Vec::new(),
+                        schema_url : ss.schema_url.clone(),
                     };
-                    std::mem::swap(&mut this_scope.spans, &mut this_spans);
-                    res.scope_spans.push(this_scope);
+                    std::mem::swap(&mut scope.spans, &mut taken);
+                    res.scope_spans.push(scope);
                     current_span_count += take_amount;
 
+                    // current batch became full → emit it
                     if current_span_count == max_batch_size {
                         current_batch.resource_spans.push(res);
                         batches.push(current_batch);
 
-                        current_batch = ExportTraceServiceRequest {
-                            resource_spans: Vec::new(),
-                        };
-                        res = ResourceSpans {
-                            resource: rs.resource.clone(),
-                            scope_spans: Vec::new(),
-                            schema_url: rs.schema_url.clone(),
-                        };
+                        // start a fresh batch / resource container
+                        current_batch      = ExportTraceServiceRequest { resource_spans: Vec::new() };
                         current_span_count = 0;
+                        res = ResourceSpans {
+                            resource     : rs.resource.clone(),
+                            scope_spans  : Vec::new(),
+                            schema_url   : rs.schema_url.clone(),
+                        };
                     }
                 }
             }
+
+            // still have some scope-spans for this resource → keep them for the
+            // next iteration or for the final flush
             if !res.scope_spans.is_empty() {
                 current_batch.resource_spans.push(res);
             }
-            if current_batch
-                .resource_spans
-                .iter()
-                .any(|rs| !rs.scope_spans.is_empty())
-            {
-                batches.push(current_batch);
-            }
         }
+
+        // flush the last (possibly not-full) batch
+        if !current_batch.resource_spans.is_empty() {
+            batches.push(current_batch);
+        }
+
         batches
     }
 }
@@ -1172,117 +1169,115 @@ mod tests {
             .validate(|_ctx| async {});
     }
 
-    // #[test]
-    // NOTE: WIP STATUS...
-    //       This test is currently disabled due to the batching logic not preserving group boundaries correctly.
-    // fn traces_group_preserving_split() {
-    //     let runtime = TestRuntime::<OTLPData>::new();
-    //     let config = BatchConfig {
-    //         sizer: BatchSizer::Items,
-    //         send_batch_size: 3,
-    //         timeout: Duration::from_secs(60),
-    //     };
-    //     let wrapper = wrap_local(GenericBatcher::new(config));
-    //     runtime
-    //         .set_processor(wrapper)
-    //         .run_test(|mut ctx| async move {
-    //             // Compose a request with 2 resource groups, each with 2 scope groups, each with 2 spans
-    //             let req = ExportTraceServiceRequest {
-    //                 resource_spans: vec![
-    //                     ResourceSpans {
-    //                         resource: None,
-    //                         schema_url: String::new(),
-    //                         scope_spans: vec![
-    //                             ScopeSpans {
-    //                                 scope: None,
-    //                                 spans: (0..2)
-    //                                     .map(|i| Span {
-    //                                         name: format!("A1_scope0_span{i}"),
-    //                                         ..Default::default()
-    //                                     })
-    //                                     .collect(),
-    //                                 schema_url: String::new(),
-    //                             },
-    //                             ScopeSpans {
-    //                                 scope: None,
-    //                                 spans: (0..2)
-    //                                     .map(|i| Span {
-    //                                         name: format!("A1_scope1_span{i}"),
-    //                                         ..Default::default()
-    //                                     })
-    //                                     .collect(),
-    //                                 schema_url: String::new(),
-    //                             },
-    //                         ],
-    //                     },
-    //                     ResourceSpans {
-    //                         resource: None,
-    //                         schema_url: String::new(),
-    //                         scope_spans: vec![
-    //                             ScopeSpans {
-    //                                 scope: None,
-    //                                 spans: (0..2)
-    //                                     .map(|i| Span {
-    //                                         name: format!("B1_scope0_span{i}"),
-    //                                         ..Default::default()
-    //                                     })
-    //                                     .collect(),
-    //                                 schema_url: String::new(),
-    //                             },
-    //                             ScopeSpans {
-    //                                 scope: None,
-    //                                 spans: (0..2)
-    //                                     .map(|i| Span {
-    //                                         name: format!("B2_scope1_span{i}"),
-    //                                         ..Default::default()
-    //                                     })
-    //                                     .collect(),
-    //                                 schema_url: String::new(),
-    //                             },
-    //                         ],
-    //                     },
-    //                 ],
-    //             };
-    //             ctx.process(Message::PData(OTLPData::Traces(req)))
-    //                 .await
-    //                 .unwrap();
-    //             ctx.process(Message::Control(ControlMsg::Shutdown {
-    //                 deadline: Duration::from_secs(1),
-    //                 reason: "test".to_string(),
-    //             }))
-    //             .await
-    //             .unwrap();
-    //             let emitted = ctx.drain_pdata().await;
+    #[test]
+    fn traces_group_preserving_split() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Items,
+            send_batch_size: 3,
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                // Compose a request with 2 resource groups, each with 2 scope groups, each with 2 spans
+                let req = ExportTraceServiceRequest {
+                    resource_spans: vec![
+                        ResourceSpans {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_spans: vec![
+                                ScopeSpans {
+                                    scope: None,
+                                    spans: (0..2)
+                                        .map(|i| Span {
+                                            name: format!("A1_scope0_span{i}"),
+                                            ..Default::default()
+                                        })
+                                        .collect(),
+                                    schema_url: String::new(),
+                                },
+                                ScopeSpans {
+                                    scope: None,
+                                    spans: (0..2)
+                                        .map(|i| Span {
+                                            name: format!("A1_scope1_span{i}"),
+                                            ..Default::default()
+                                        })
+                                        .collect(),
+                                    schema_url: String::new(),
+                                },
+                            ],
+                        },
+                        ResourceSpans {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_spans: vec![
+                                ScopeSpans {
+                                    scope: None,
+                                    spans: (0..2)
+                                        .map(|i| Span {
+                                            name: format!("B1_scope0_span{i}"),
+                                            ..Default::default()
+                                        })
+                                        .collect(),
+                                    schema_url: String::new(),
+                                },
+                                ScopeSpans {
+                                    scope: None,
+                                    spans: (0..2)
+                                        .map(|i| Span {
+                                            name: format!("B2_scope1_span{i}"),
+                                            ..Default::default()
+                                        })
+                                        .collect(),
+                                    schema_url: String::new(),
+                                },
+                            ],
+                        },
+                    ],
+                };
+                ctx.process(Message::PData(OTLPData::Traces(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
 
-    //             // There are 8 spans, batch size 3: expect 3 batches (3+3+2)
-    //             assert_eq!(emitted.len(), 3, "Should emit 3 batches");
-    //             let mut seen = std::collections::HashSet::new();
-    //             for batch in &emitted {
-    //                 match batch {
-    //                     OTLPData::Traces(req) => {
-    //                         // Each batch must have 1 or more resource groups
-    //                         for rs in &req.resource_spans {
-    //                             for ss in &rs.scope_spans {
-    //                                 for span in &ss.spans {
-    //                                     assert!(
-    //                                         seen.insert(span.name.clone()),
-    //                                         "duplicate span name?"
-    //                                     );
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                     _ => panic!("Wrong batch type"),
-    //                 }
-    //             }
-    //             assert_eq!(
-    //                 seen.len(),
-    //                 8,
-    //                 "All 8 unique spans must be present, none dropped or duplicated"
-    //             );
-    //         })
-    //         .validate(|_ctx| async {});
-    // }
+                // There are 8 spans, batch size 3: expect 3 batches (3+3+2)
+                assert_eq!(emitted.len(), 3, "Should emit 3 batches");
+                let mut seen = std::collections::HashSet::new();
+                for batch in &emitted {
+                    match batch {
+                        OTLPData::Traces(req) => {
+                            // Each batch must have 1 or more resource groups
+                            for rs in &req.resource_spans {
+                                for ss in &rs.scope_spans {
+                                    for span in &ss.spans {
+                                        assert!(
+                                            seen.insert(span.name.clone()),
+                                            "duplicate span name?"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => panic!("Wrong batch type"),
+                    }
+                }
+                assert_eq!(
+                    seen.len(),
+                    8,
+                    "All 8 unique spans must be present, none dropped or duplicated"
+                );
+            })
+            .validate(|_ctx| async {});
+    }
 
     #[test]
     fn metrics_group_preserving_split() {
