@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1749766692859,
+  "lastUpdate": 1749767777902,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3811,6 +3811,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 123,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4d7598536817382d605199093636636bd745cc9c",
+          "message": "OTLP Pdata Visitor pattern work-in-progress ready-to-review (#580)\n\nReplaces #507.\nPart of #506.\n\nTested: ✅ Four OTLP encode_len tests have been marked with #[ignore]\nbecause the protobuf logic is incorrect, but it's close so some of the\ntests are passing.\n\nDocmentation: ✅ See src/pdata/otlp/README.md\n\nA new \"item_count\" benchmark is added for counting logs records, as a\nprototype.\n```\nOTLP Logs counting/Visitor\n                        time:   [2.3724 ns 2.4550 ns 2.5344 ns]\nOTLP Logs counting/Manual\n                        time:   [1.0240 ns 1.0703 ns 1.1206 ns]\nOTLP Logs counting/FlatMap\n                        time:   [3.2953 ns 3.4499 ns 3.6075 ns]\n\n```\n\n\n```\nOTLP Logs Serialization/LogsData Prost encode\n                        time:   [751.92 µs 774.70 µs 798.81 µs]\nOTLP Logs Serialization/LogsData Prost encoded_len\n                        time:   [83.360 µs 86.573 µs 90.076 µs]\nOTLP Logs Serialization/LogsData Visitor precompute_sizes\n                        time:   [1.1321 ms 1.1657 ms 1.2030 ms]\nOTLP Logs Serialization/LogsData Prost decode\n                        time:   [2.7549 ms 2.8485 ms 2.9458 ms]\n```\n\nThese results are not super!",
+          "timestamp": "2025-06-12T22:26:14Z",
+          "tree_id": "a689cfd17b52c031f2c65bd69b65a95f941cb626",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4d7598536817382d605199093636636bd745cc9c"
+        },
+        "date": 1749767776133,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 475000,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 14250000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 14250000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 2.49,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 2.83,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 137.54,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 171.04,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 443666.6666666667,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 13310000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 13310000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 2.33,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 2.81,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 115.16,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 141.27,
             "unit": "MiB"
           }
         ]
