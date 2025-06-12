@@ -14,7 +14,8 @@
 
 //! This crate benchmarks counting log records in an OTLP LogsData.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 use otel_arrow_rust::pdata::otlp::ItemCounter;
 use otel_arrow_rust::pdata::otlp::LogsVisitor;
@@ -64,7 +65,7 @@ fn count_logs(c: &mut Criterion) {
     assert_eq!(1000, ItemCounter::default().visit_logs(&logs));
 
     _ = group.bench_function("Visitor", |b| {
-        b.iter(|| black_box(ItemCounter::default().visit_logs(&logs)))
+        b.iter(|| ItemCounter::default().visit_logs(&logs))
     });
 
     _ = group.bench_function("Manual", |b| {
@@ -76,19 +77,17 @@ fn count_logs(c: &mut Criterion) {
                     count += sl.log_records.len();
                 }
             }
-            _ = black_box(count);
+            black_box(count)
         })
     });
 
     _ = group.bench_function("FlatMap", |b| {
         b.iter(|| {
-            let count = logs
-                .resource_logs
+            logs.resource_logs
                 .iter()
                 .flat_map(|rl| &rl.scope_logs)
                 .flat_map(|sl| &sl.log_records)
-                .count();
-            _ = black_box(count);
+                .count()
         })
     });
 

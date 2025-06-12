@@ -14,7 +14,7 @@
 
 //! This crate benchmarks OTLP and OTAP.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use prost::Message;
 
 use otel_arrow_rust::pdata::otlp::PrecomputedSizes;
@@ -70,12 +70,12 @@ fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
         b.iter(|| {
             buf.clear();
             let encoded = resource_logs.encode(&mut buf);
-            black_box(encoded.expect("encoding success"))
+            encoded.expect("encoding success")
         })
     });
 
     _ = group.bench_function("LogsData Prost encoded_len", |b| {
-        b.iter(|| black_box(resource_logs.encoded_len()))
+        b.iter(|| resource_logs.encoded_len())
     });
 
     _ = group.bench_function("LogsData Visitor precompute_sizes", |b| {
@@ -83,9 +83,8 @@ fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
         b.iter(|| {
             let mut reuse = PrecomputedSizes::default();
             std::mem::swap(&mut ps, &mut reuse);
-            let (mut reuse, total) = resource_logs.precompute_sizes(reuse);
+            let (mut reuse, _total) = resource_logs.precompute_sizes(reuse);
             std::mem::swap(&mut ps, &mut reuse);
-            black_box(total)
         })
     });
 
