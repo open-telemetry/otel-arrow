@@ -20,7 +20,6 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let encoded_len_name = msg.related_typename("EncodedLen");
     let visitor_name = msg.related_typename("Visitor");
     let visitable_name = msg.related_typename("Visitable");
-    let message_adapter_name = msg.related_typename("MessageAdapter");
     let visitor_method_name = common::visitor_method_name(&outer_name);
 
     // Generate the children_size helper method body for the visitor
@@ -72,8 +71,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             pub fn pdata_size(&self) -> usize {
                 let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
                 let mut visitor = #encoded_len_name::<0, false> {};
-                let adapter = #message_adapter_name::new(self);
-                let (_, total) = visitor.children_encoded_size(sizes, &adapter);
+                let (_, total) = visitor.children_encoded_size(sizes, self);
                 total
             }
         }

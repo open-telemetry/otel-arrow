@@ -5,7 +5,6 @@
 ///
 /// - builder.rs: new(), Builder, and finish()
 /// - visitor.rs: Visitor, Visitable, and NoopVisitor
-/// - message_adapter.rs: MessageAdapater
 /// - encoded_len: EncodedLen, Accumulator
 use proc_macro::TokenStream;
 
@@ -13,7 +12,6 @@ mod builder;
 mod common;
 mod encoded_len;
 mod field_info;
-mod message_adapter;
 mod message_info;
 mod visitor;
 
@@ -52,7 +50,6 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
         tokens.extend(builder::derive(&message_info));
         tokens.extend(visitor::derive(&message_info));
-        tokens.extend(message_adapter::derive(&message_info));
         tokens.extend(encoded_len::derive(&message_info));
 
         tokens

@@ -62,25 +62,22 @@ pub fn generate_visitor_call_pattern(
 ) -> TokenStream {
     match category {
         FieldCategory::MessageOptional => {
-            let adapter_name = info.related_type("MessageAdapter");
             quote! {
                 if let Some(f) = &self.data.#field_name {
-                    arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(f)));
+                    arg = #visitor_param.#visit_method(arg, f);
                 }
             }
         }
         FieldCategory::MessageRepeated => {
-            let adapter_name = info.related_type("MessageAdapter");
             quote! {
                 for item in &self.data.#field_name {
-                    arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(item)));
+                    arg = #visitor_param.#visit_method(arg, item);
                 }
             }
         }
         FieldCategory::MessageRequired => {
-            let adapter_name = info.related_type("MessageAdapter");
             quote! {
-                arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(&self.data.#field_name)));
+                arg = #visitor_param.#visit_method(arg, &self.data.#field_name);
             }
         }
         FieldCategory::PrimitiveRepeated => {
@@ -346,11 +343,8 @@ pub fn visitor_oneof_call(info: &FieldInfo, oneof_cases: &[OneofCase]) -> Option
                 arg = #param_name.#visit_method(arg, #value_arg);
             }
         } else {
-            // For message types, create an adapter using TypeNameMessageAdapter::new pattern
-            let adapter_constructor = generate_adapter_constructor(case);
             quote! {
-                let adapter = #adapter_constructor::new(inner);
-                arg = #param_name.#visit_method(arg, &adapter);
+                arg = #param_name.#visit_method(arg, &inner);
             }
         };
 
