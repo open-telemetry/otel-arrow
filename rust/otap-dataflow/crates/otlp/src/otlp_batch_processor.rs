@@ -10,58 +10,52 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::{ControlMsg, Message};
 use prost::Message as ProstMessage;
-use std::time::{Duration, Instant};
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 
 /// Trait for hierarchical batch splitting
 ///
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
-    fn split_into_batches(
-        self,
-        max_batch_size: usize,
-    ) -> Result<Vec<Self>, Error<OTLPData>>;
+    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
 }
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
-    fn split_into_batches(
-        mut self,
-        max_batch_size: usize,
-    ) -> Result<Vec<Self>, Error<OTLPData>> {
+    fn split_into_batches(mut self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
             return Err(Error::ProcessorError {
-                processor: Cow::Borrowed(
-                    "HierarchicalBatchSplit::ExportTraceServiceRequest",
-                ),
+                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportTraceServiceRequest"),
                 error: "max_batch_size must be greater than zero".into(),
             });
         }
 
-        let mut batches            = Vec::new();
-        let mut current_batch       = ExportTraceServiceRequest { resource_spans: Vec::new() };
-        let mut current_span_count  = 0;
+        let mut batches = Vec::new();
+        let mut current_batch = ExportTraceServiceRequest {
+            resource_spans: Vec::new(),
+        };
+        let mut current_span_count = 0;
 
         for mut rs in self.resource_spans.drain(..) {
             // a working copy of the current ResourceSpans
             let mut res = ResourceSpans {
-                resource     : rs.resource.take(),
-                scope_spans : Vec::new(),
-                schema_url  : rs.schema_url.clone(),
+                resource: rs.resource.take(),
+                scope_spans: Vec::new(),
+                schema_url: rs.schema_url.clone(),
             };
 
             for mut ss in rs.scope_spans.drain(..) {
                 while !ss.spans.is_empty() {
-                    let remaining   = max_batch_size - current_span_count;
+                    let remaining = max_batch_size - current_span_count;
                     let take_amount = remaining.min(ss.spans.len());
 
                     // move the last `take_amount` spans out of `ss`
-                    let mut taken   = ss.spans.split_off(ss.spans.len() - take_amount);
-                    let mut scope   = ScopeSpans {
-                        scope      : ss.scope.clone(),
-                        spans      : Vec::new(),
-                        schema_url : ss.schema_url.clone(),
+                    let mut taken = ss.spans.split_off(ss.spans.len() - take_amount);
+                    let mut scope = ScopeSpans {
+                        scope: ss.scope.clone(),
+                        spans: Vec::new(),
+                        schema_url: ss.schema_url.clone(),
                     };
                     std::mem::swap(&mut scope.spans, &mut taken);
                     res.scope_spans.push(scope);
@@ -73,12 +67,14 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
                         batches.push(current_batch);
 
                         // start a fresh batch / resource container
-                        current_batch      = ExportTraceServiceRequest { resource_spans: Vec::new() };
+                        current_batch = ExportTraceServiceRequest {
+                            resource_spans: Vec::new(),
+                        };
                         current_span_count = 0;
                         res = ResourceSpans {
-                            resource     : rs.resource.clone(),
-                            scope_spans  : Vec::new(),
-                            schema_url   : rs.schema_url.clone(),
+                            resource: rs.resource.clone(),
+                            scope_spans: Vec::new(),
+                            schema_url: rs.schema_url.clone(),
                         };
                     }
                 }
@@ -101,15 +97,10 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
 }
 
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
-    fn split_into_batches(
-        mut self,
-        max_batch_size: usize,
-    ) -> Result<Vec<Self>, Error<OTLPData>> {
+    fn split_into_batches(mut self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
             return Err(Error::ProcessorError {
-                processor: Cow::Borrowed(
-                    "HierarchicalBatchSplit::ExportMetricsServiceRequest",
-                ),
+                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportMetricsServiceRequest"),
                 error: "max_batch_size must be greater than zero".into(),
             });
         }
@@ -186,15 +177,10 @@ impl ExportMetricsServiceRequest {
 }
 
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
-    fn split_into_batches(
-        mut self,
-        max_batch_size: usize,
-    ) -> Result<Vec<Self>, Error<OTLPData>> {
+    fn split_into_batches(mut self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
             return Err(Error::ProcessorError {
-                processor: Cow::Borrowed(
-                    "HierarchicalBatchSplit::ExportLogsServiceRequest",
-                ),
+                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportLogsServiceRequest"),
                 error: "max_batch_size must be greater than zero".into(),
             });
         }
@@ -544,7 +530,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_spans.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => Ok(req.split_by_requests(self.config.send_batch_size)),
+                            BatchSizer::Requests => {
+                                Ok(req.split_by_requests(self.config.send_batch_size))
+                            }
                             _ => req.split_into_batches(self.config.send_batch_size),
                         }?;
                         // The last batch may not be full: buffer it, emit the rest
@@ -570,7 +558,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_metrics.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => Ok(req.split_by_requests(self.config.send_batch_size)),
+                            BatchSizer::Requests => {
+                                Ok(req.split_by_requests(self.config.send_batch_size))
+                            }
                             _ => req.split_into_batches(self.config.send_batch_size),
                         }?;
                         if let Some(last) = batches.pop() {
@@ -594,7 +584,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_logs.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => Ok(req.split_by_requests(self.config.send_batch_size)),
+                            BatchSizer::Requests => {
+                                Ok(req.split_by_requests(self.config.send_batch_size))
+                            }
                             _ => req.split_into_batches(self.config.send_batch_size),
                         }?;
                         if let Some(last) = batches.pop() {
