@@ -45,14 +45,6 @@ pub(crate) trait ExecutionContext<'a> {
     ) where
         'b: 'a;
 
-    fn read_any_value_mut<'b>(
-        &self,
-        expression_id: usize,
-        resolve_value_expr: &'b ResolveValueExpression,
-        action: &mut dyn DataRecordAnyValueReadMutCallback,
-    ) where
-        'b: 'a;
-
     fn set_any_value<'b>(
         &self,
         expression_id: usize,
@@ -78,8 +70,6 @@ pub(crate) trait ExecutionContext<'a> {
 
     fn get_observed_timestamp(&self) -> Option<SystemTime>;
 
-    fn get_messages(&self) -> &RefCell<HashMap<usize, Vec<ExpressionMessage>>>;
-
     fn get_summaries(&self) -> &Summaries;
 
     fn get_external_summary_index(&self) -> Result<Option<usize>, Error>;
@@ -87,8 +77,6 @@ pub(crate) trait ExecutionContext<'a> {
     fn get_summary_index(&self) -> Option<usize>;
 
     fn set_summary_index(&self, index: usize);
-
-    fn get_resolver_cache(&self) -> &DataRecordAnyValueResolverCache;
 
     fn get_variables(&self) -> &RefCell<HashMap<String, AnyValue>>;
 
@@ -146,7 +134,7 @@ impl<'a> DataRecordResolvedValue<'a> {
     }
 }
 
-impl<'a> DataRecordResolvedValue<'a> {
+impl DataRecordResolvedValue<'_> {
     pub fn get_name(&self) -> Option<&str> {
         self.name
     }
@@ -178,7 +166,7 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
             resolved_values.truncate(resolved_values_index);
         }
 
-        return result;
+        result
     }
 
     fn clear(&self) {
@@ -279,37 +267,6 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
         }
     }
 
-    fn read_any_value_mut<'b>(
-        &self,
-        expression_id: usize,
-        resolve_value_expr: &'b ResolveValueExpression,
-        action: &mut dyn DataRecordAnyValueReadMutCallback,
-    ) where
-        'b: 'a,
-    {
-        let r = self.resolver_cache.invoke_resolver(
-            expression_id,
-            self,
-            resolve_value_expr.get_path(),
-            self.data_record,
-            |resolver, data_record| {
-                resolver.read_value_mut(data_record, |r| action.invoke_once(r));
-            },
-        );
-
-        if r.is_err() {
-            self.add_message_for_expression_id(
-                expression_id,
-                ExpressionMessage::err(format!(
-                    "ExecutionContext read_mut operation returned an error: {}",
-                    r.unwrap_err()
-                )),
-            );
-
-            action.invoke_once(DataRecordReadMutAnyValueResult::NotFound);
-        }
-    }
-
     fn set_any_value<'b>(
         &self,
         expression_id: usize,
@@ -324,9 +281,7 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
             self,
             resolve_value_expr.get_path(),
             self.data_record,
-            |resolver, data_record| {
-                return resolver.set_value(data_record, value);
-            },
+            |resolver, data_record| resolver.set_value(data_record, value),
         );
 
         if r.is_err() {
@@ -341,7 +296,7 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
             return DataRecordSetAnyValueResult::NotFound;
         }
 
-        return r.unwrap();
+        r.unwrap()
     }
 
     fn remove_any_value<'b>(
@@ -357,9 +312,7 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
             self,
             resolve_value_expr.get_path(),
             self.data_record,
-            |resolver, data_record| {
-                return resolver.remove_value(data_record);
-            },
+            |resolver, data_record| resolver.remove_value(data_record),
         );
 
         if r.is_err() {
@@ -374,7 +327,7 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
             return DataRecordRemoveAnyValueResult::NotFound;
         }
 
-        return r.unwrap();
+        r.unwrap()
     }
 
     fn get_attached_data_records(&self) -> &dyn AttachedDataRecords {
@@ -391,10 +344,6 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
 
     fn get_observed_timestamp(&self) -> Option<SystemTime> {
         self.data_record.borrow().get_observed_timestamp()
-    }
-
-    fn get_messages(&self) -> &RefCell<HashMap<usize, Vec<ExpressionMessage>>> {
-        self.messages
     }
 
     fn get_summaries(&self) -> &Summaries {
@@ -416,7 +365,7 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
             return Err(Error::ExternalSummaryNotFound(summary_id.into()));
         }
 
-        return Ok(Some(summary_index.unwrap()));
+        Ok(Some(summary_index.unwrap()))
     }
 
     fn get_summary_index(&self) -> Option<usize> {
@@ -432,10 +381,6 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
         *self.summary_index.borrow_mut() = Some(index);
     }
 
-    fn get_resolver_cache(&self) -> &DataRecordAnyValueResolverCache {
-        self.resolver_cache
-    }
-
     fn get_variables(&self) -> &RefCell<HashMap<String, AnyValue>> {
         &self.variables
     }
@@ -449,7 +394,7 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
     }
 
     fn add_message_for_expression_id(&self, expression_id: usize, mut message: ExpressionMessage) {
-        if !self.message_scope.is_none() {
+        if self.message_scope.is_some() {
             message.add_scope(self.message_scope.as_ref().unwrap());
         }
 
@@ -478,9 +423,9 @@ impl<'a, T: DataRecord> ExecutionContext<'a> for DataRecordExecutionContext<'a, 
     ) {
         let messages = self.messages.borrow();
         let messages_for_expression = messages.get(&expression_id);
-        if !messages_for_expression.is_none() {
+        if messages_for_expression.is_some() {
             for message in messages_for_expression.unwrap() {
-                output.push_str(&padding);
+                output.push_str(padding);
                 message.write_debug_comment(output);
             }
         }
@@ -517,6 +462,6 @@ impl<'a, T: DataRecord> DataRecordExecutionContext<'a, T> {
     ) -> &'b mut Vec<ExpressionMessage> {
         let entry = messages.entry(expression_id);
 
-        return entry.or_insert_with(|| Vec::new());
+        entry.or_default()
     }
 }
