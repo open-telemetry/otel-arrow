@@ -22,43 +22,21 @@ use crate::pdata::{
     U32Visitor, U64Visitor,
 };
 
+use prost::encoding::varint::encoded_len_varint;
+
 /// Calculate the size of a varint encoded value
-fn varint_size32(mut value: u32) -> usize {
-    if value == 0 {
-        return 1;
-    }
-    let mut size = 0;
-    while value > 0 {
-        size += 1;
-        value >>= 7;
-    }
-    size
+fn varint_size32(value: u32) -> usize {
+    encoded_len_varint(value as u64)
 }
 
 /// Calculate the size of a varint64 encoded value
-fn varint_size64(mut value: u64) -> usize {
-    if value == 0 {
-        return 1;
-    }
-    let mut size = 0;
-    while value > 0 {
-        size += 1;
-        value >>= 7;
-    }
-    size
+fn varint_size64(value: u64) -> usize {
+    encoded_len_varint(value)
 }
 
 /// Calculate the size of a varint64 encoded value
-fn varint_usize(mut value: usize) -> usize {
-    if value == 0 {
-        return 1;
-    }
-    let mut size = 0;
-    while value > 0 {
-        size += 1;
-        value >>= 7;
-    }
-    size
+fn varint_usize(value: usize) -> usize {
+    encoded_len_varint(value as u64)
 }
 
 /// Calculate the size of a signed varint (zigzag encoded)

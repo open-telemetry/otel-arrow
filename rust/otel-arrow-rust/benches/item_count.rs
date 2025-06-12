@@ -61,15 +61,10 @@ fn count_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Logs counting");
 
     let logs = create_logs_data();
-    assert_eq!(
-        1000,
-        ItemCounter::new().visit_logs(&LogsDataMessageAdapter::new(&logs))
-    );
+    assert_eq!(1000, ItemCounter::default().visit_logs(&logs));
 
     _ = group.bench_function("Visitor", |b| {
-        b.iter(|| {
-            _ = black_box(ItemCounter::new().visit_logs(&LogsDataMessageAdapter::new(&logs)));
-        })
+        b.iter(|| black_box(ItemCounter::default().visit_logs(&logs)))
     });
 
     _ = group.bench_function("Manual", |b| {

@@ -36,7 +36,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
 
             /// Calculate the sum of direct children's encoded lengths.
-            fn children_encoded_size(
+            fn visit_children(
                 &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
                 mut v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
@@ -58,7 +58,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 let idx = arg.len();
                 arg.reserve();
 
-                let (mut arg, total_child_size) = self.children_encoded_size(arg, v);
+                let (mut arg, total_child_size) = self.visit_children(arg, v);
 
                 arg.set_size(idx, crate::pdata::otlp::encoders::conditional_length_delimited_size::<TAG, OPTION>(total_child_size));
                 arg
@@ -66,13 +66,21 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         }
 
         impl #outer_name {
-            /// Calculate the encoded size using the existing visitor pattern.
+            /// Calculate the encoded size using the existing visitor pattern, but only for
+        /// test because this throws away the precomputed sizes.
             #[cfg(test)]
             pub fn pdata_size(&self) -> usize {
-                let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
+        let (_, total) = self.precompute_sizes(crate::pdata::otlp::PrecomputedSizes::default());
+        total
+            }
+
+            /// Calculate the precomputed sizing using an input to allow re-use.
+            pub fn precompute_sizes(&self, mut input: crate::pdata::otlp::PrecomputedSizes) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
+        input.clear();
+        // Note that the <TAG, OPTION> passed here are irrelevant because
+        // top-level tags are not encoded. TODO: Reduce confusion on this point.
                 let mut visitor = #encoded_len_name::<0, false> {};
-                let (_, total) = visitor.children_encoded_size(sizes, self);
-                total
+                visitor.visit_children(input, self)
             }
         }
     };

@@ -44,14 +44,10 @@ pub use encoders::{
     U64VarintEncodedLen,
 };
 
-use crate::proto::opentelemetry::logs::v1::LogRecordVisitable;
-use crate::proto::opentelemetry::logs::v1::LogRecordVisitor;
-use crate::proto::opentelemetry::logs::v1::LogsDataVisitable;
-use crate::proto::opentelemetry::logs::v1::LogsDataVisitor;
-use crate::proto::opentelemetry::logs::v1::ResourceLogsVisitable;
-use crate::proto::opentelemetry::logs::v1::ResourceLogsVisitor;
-use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitable;
-use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitor;
+use crate::proto::opentelemetry::logs::v1::{
+    LogRecordVisitable, LogRecordVisitor, LogsDataVisitable, LogsDataVisitor,
+    ResourceLogsVisitable, ResourceLogsVisitor, ScopeLogsVisitable, ScopeLogsVisitor,
+};
 
 use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
 
@@ -69,16 +65,12 @@ pub trait LogsVisitor<Argument> {
 
 /// ItemCounter implements counting log records. This sort of item
 /// counting is a built-in feature of the Golang Pdata API.
+#[derive(Default)]
 pub struct ItemCounter {
     count: usize,
 }
 
 impl ItemCounter {
-    /// Create a new ItemCounter starting at 0
-    pub fn new() -> Self {
-        Self { count: 0 }
-    }
-
     #[allow(dead_code)] // Will be used when full adapter pattern is implemented
     fn borrow_mut<'a>(&'a mut self) -> &'a mut Self {
         self
@@ -148,14 +140,15 @@ impl<Argument> LogRecordVisitor<Argument> for &mut ItemCounter {
 }
 
 /// PrecomputeSizes is an argument to the PrecomputedSize visitor
+#[derive(Default)]
 pub struct PrecomputedSizes {
     sizes: Vec<usize>,
 }
 
 impl PrecomputedSizes {
-    /// Create a new PrecomputedSizes with initial capacity
-    pub fn default() -> Self {
-        Self { sizes: Vec::new() }
+    /// Reset to the empty state.
+    pub fn clear(&mut self) {
+        self.sizes.clear();
     }
 
     /// Get the size at a specific index (for reading child sizes)
