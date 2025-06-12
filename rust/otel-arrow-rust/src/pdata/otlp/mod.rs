@@ -72,7 +72,7 @@ pub struct ItemCounter {
 
 impl ItemCounter {
     #[allow(dead_code)] // Will be used when full adapter pattern is implemented
-    fn borrow_mut<'a>(&'a mut self) -> &'a mut Self {
+    fn borrow_mut(&mut self) -> &mut Self {
         self
     }
 }
@@ -152,12 +152,14 @@ impl PrecomputedSizes {
     }
 
     /// Get the size at a specific index (for reading child sizes)
+    #[must_use]
     pub fn get_size(&self, idx: usize) -> usize {
         self.sizes[idx]
     }
 
-    /// Get the current length (for tracking child positions)
-    pub fn len(&self) -> usize {
+    /// Get the current length for tracking child positions
+    #[must_use]
+    pub fn position(&self) -> usize {
         self.sizes.len()
     }
 
@@ -172,6 +174,7 @@ impl PrecomputedSizes {
     }
 
     /// Gets the last size.
+    #[must_use]
     pub fn last(&self) -> usize {
         *self.sizes.last().expect("has a size")
     }
@@ -185,6 +188,7 @@ impl PrecomputedSizes {
 // Into implementations for OTLP common types to support builder APIs
 
 /// Convert Vec<AnyValue> into ArrayValue for builder APIs
+#[allow(clippy::from_over_into)]
 impl Into<ArrayValue> for Vec<AnyValue> {
     fn into(self) -> ArrayValue {
         ArrayValue { values: self }
@@ -192,6 +196,7 @@ impl Into<ArrayValue> for Vec<AnyValue> {
 }
 
 /// Convert Vec<KeyValue> into KeyValueList for builder APIs
+#[allow(clippy::from_over_into)]
 impl Into<KeyValueList> for Vec<KeyValue> {
     fn into(self) -> KeyValueList {
         KeyValueList { values: self }

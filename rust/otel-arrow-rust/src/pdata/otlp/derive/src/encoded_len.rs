@@ -55,7 +55,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
                 mut v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
             ) -> crate::pdata::otlp::PrecomputedSizes {
-                let idx = arg.len();
+                let idx = arg.position();
                 arg.reserve();
 
                 let (mut arg, total_child_size) = self.visit_children(arg, v);
@@ -352,7 +352,7 @@ pub fn derive_accumulate_visitor(msg: &MessageInfo) -> TokenStream {
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
                 v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>,
             ) -> crate::pdata::otlp::PrecomputedSizes {
-                let idx = arg.len();
+                let idx = arg.position();
                 arg = self.inner.#visitor_method_name(arg, v);
                 self.total += arg.get_size(idx);
                 arg

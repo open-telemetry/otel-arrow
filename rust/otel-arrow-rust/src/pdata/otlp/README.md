@@ -97,7 +97,7 @@ Derive rules on the `TracesData` message object derive the following code.
                         Self {}
                     }
                     /// Calculate the sum of direct children's encoded lengths.
-                    fn children_encoded_size(
+                    fn visit_children(
                         &mut self,
                         mut arg: crate::pdata::otlp::PrecomputedSizes,
                         mut v: impl TracesDataVisitable<
@@ -128,8 +128,7 @@ Derive rules on the `TracesData` message object derive the following code.
                     ) -> crate::pdata::otlp::PrecomputedSizes {
                         let idx = arg.len();
                         arg.reserve();
-                        let (mut arg, total_child_size) = self
-                            .children_encoded_size(arg, v);
+                        let (mut arg, total_child_size) = self.visit_children(arg, v);
                         arg.set_size(
                             idx,
                             crate::pdata::otlp::encoders::conditional_length_delimited_size::<
@@ -140,7 +139,18 @@ Derive rules on the `TracesData` message object derive the following code.
                         arg
                     }
                 }
-                impl TracesData {}
+                impl TracesData {
+                    /// Calculate the precomputed sizing using an input to allow re-use.
+                    pub fn precompute_sizes(
+                        &self,
+                        mut input: crate::pdata::otlp::PrecomputedSizes,
+                    ) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
+                        input.clear();
+                        let mut visitor = TracesDataEncodedLen::<0, false> {
+                        };
+                        visitor.visit_children(input, self)
+                    }
+                }
                 impl<
                     V: TracesDataVisitor<crate::pdata::otlp::PrecomputedSizes>,
                 > TracesDataVisitor<crate::pdata::otlp::PrecomputedSizes>
