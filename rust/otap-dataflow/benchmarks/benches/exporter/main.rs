@@ -8,32 +8,38 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use fluke_hpack::Encoder;
 use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::Exporter;
-use otap_df_engine::message::{ControlMsg, Receiver, Sender};
-use otap_df_otap::grpc::OTAPData;
-use otap_df_otap::mock::{ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock};
-use otap_df_otap::otap_exporter::OTAPExporter;
-use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::{
-    ArrowPayload, ArrowPayloadType, BatchArrowRecords,
-    arrow_logs_service_server::ArrowLogsServiceServer,
-    arrow_metrics_service_server::ArrowMetricsServiceServer,
-    arrow_traces_service_server::ArrowTracesServiceServer,
+use otap_df_engine::{
+    config::ExporterConfig,
+    exporter::ExporterWrapper,
+    local::exporter::Exporter,
+    message::{ControlMsg, Receiver, Sender},
 };
-use otap_df_otlp::grpc::OTLPData;
-use otap_df_otlp::mock::{
-    LogsServiceMock, MetricsServiceMock, ProfilesServiceMock, TraceServiceMock,
-};
-use otap_df_otlp::otlp_exporter::OTLPExporter;
-use otap_df_otlp::proto::opentelemetry::collector::{
-    logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
-    metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
-    profiles::v1development::{
-        ExportProfilesServiceRequest, profiles_service_server::ProfilesServiceServer,
+use otap_df_otap::{
+    grpc::OTAPData,
+    mock::{ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock},
+    otap_exporter::OTAPExporter,
+    proto::opentelemetry::experimental::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
+        arrow_logs_service_server::ArrowLogsServiceServer,
+        arrow_metrics_service_server::ArrowMetricsServiceServer,
+        arrow_traces_service_server::ArrowTracesServiceServer,
     },
-    trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
 };
+
+use otap_df_otlp::{
+    grpc::OTLPData,
+    mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock},
+    otlp_exporter::OTLPExporter,
+    proto::opentelemetry::collector::{
+        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
+        profiles::v1development::{
+            ExportProfilesServiceRequest, profiles_service_server::ProfilesServiceServer,
+        },
+        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
+    },
+};
+
 use otap_df_perf::{config::Config, perf_exporter::PerfExporter};
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -111,6 +117,7 @@ fn bench_exporter(c: &mut Criterion) {
     // let mut group = c.benchmark_group("exporter");
     // _ = group.throughput(Throughput::Elements(MSG_COUNT as u64));
 
+    // create data that will be used to benchmark the exporters
     for _ in 0..3 {
         let traces_batch_data = create_batch_arrow_record_helper(
             TRACES_BATCH_ID,
@@ -166,13 +173,11 @@ fn bench_exporter(c: &mut Criterion) {
         otlp_signals.push(trace_message);
     }
 
-    // run server out here
+    // start grpc server to handle otap stream
     let grpc_addr = "127.0.0.1";
     let otap_grpc_port = portpicker::pick_unused_port().expect("No free ports");
     let otlp_grpc_port = portpicker::pick_unused_port().expect("No free ports");
-
     let otap_listening_addr: SocketAddr = format!("{grpc_addr}:{otap_grpc_port}").parse().unwrap();
-
     let (otap_shutdown_sender, otap_shutdown_signal) = tokio::sync::oneshot::channel();
     let (otap_sender, otap_receiver) = tokio::sync::mpsc::channel(32);
 
@@ -197,6 +202,8 @@ fn bench_exporter(c: &mut Criterion) {
             .await
             .expect("Test gRPC server has failed");
     });
+
+    // start grpc server to handle otlp requests
     let otlp_grpc_port = portpicker::pick_unused_port().expect("No free ports");
     let otlp_listening_addr: SocketAddr = format!("{grpc_addr}:{otlp_grpc_port}").parse().unwrap();
     let (otlp_shutdown_sender, otlp_shutdown_signal) = tokio::sync::oneshot::channel();
@@ -232,8 +239,8 @@ fn bench_exporter(c: &mut Criterion) {
                 let exporter_config = ExporterConfig::new("perf_exporter");
                 let exporter =
                     ExporterWrapper::local(PerfExporter::new(config, None), &exporter_config);
-                // in the background send signals
 
+                // create necessary senders and receivers to communicate with the exporter
                 let (control_tx, control_rx) = mpsc::Channel::new(100);
                 let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                 let control_sender = Sender::Local(control_tx);
@@ -241,6 +248,7 @@ fn bench_exporter(c: &mut Criterion) {
                 let pdata_sender = Sender::Local(pdata_tx);
                 let pdata_receiver = Receiver::Local(pdata_rx);
 
+                // start the exporter
                 let local = LocalSet::new();
                 let run_exporter_handle = local.spawn_local(async move {
                     exporter
@@ -249,6 +257,7 @@ fn bench_exporter(c: &mut Criterion) {
                         .expect("Exporter event loop failed");
                 });
 
+                // send signals to the exporter
                 for batch in batches {
                     pdata_sender.send(batch.clone()).await;
                 }
@@ -269,7 +278,7 @@ fn bench_exporter(c: &mut Criterion) {
         &(otap_signals, otap_grpc_port),
         |b, input| {
             b.to_async(&rt).iter(|| async {
-                // start perf exporter
+                // create otap exporter
                 let exporter_config = ExporterConfig::new("otap_exporter");
                 let grpc_addr = "127.0.0.1";
                 let (otap_signals, otlp_grpc_port) = input;
@@ -278,8 +287,8 @@ fn bench_exporter(c: &mut Criterion) {
                     OTAPExporter::new(grpc_endpoint, None),
                     &exporter_config,
                 );
-                // in the background send signals
 
+                // create necessary senders and receivers to communicate with the exporter
                 let (control_tx, control_rx) = mpsc::Channel::new(100);
                 let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                 let control_sender = Sender::Local(control_tx);
@@ -287,6 +296,7 @@ fn bench_exporter(c: &mut Criterion) {
                 let pdata_sender = Sender::Local(pdata_tx);
                 let pdata_receiver = Receiver::Local(pdata_rx);
 
+                // start the exporter
                 let local = LocalSet::new();
                 let run_exporter_handle = local.spawn_local(async move {
                     exporter
@@ -295,6 +305,7 @@ fn bench_exporter(c: &mut Criterion) {
                         .expect("Exporter event loop failed");
                 });
 
+                // send signals to the exporter
                 for otap_signal in otap_signals {
                     pdata_sender.send(otap_signal.clone()).await;
                 }
@@ -314,7 +325,7 @@ fn bench_exporter(c: &mut Criterion) {
         &(otlp_signals, otlp_grpc_port),
         |b, input| {
             b.to_async(&rt).iter(|| async {
-                // start perf exporter
+                // create otlp exporter
                 let exporter_config = ExporterConfig::new("otap_exporter");
                 let (otlp_signals, otlp_grpc_port) = input;
                 let grpc_addr = "127.0.0.1";
@@ -323,8 +334,8 @@ fn bench_exporter(c: &mut Criterion) {
                     OTLPExporter::new(grpc_endpoint, None),
                     &exporter_config,
                 );
-                // in the background send signals
 
+                // create necessary senders and receivers to communicate with the exporter
                 let (control_tx, control_rx) = mpsc::Channel::new(100);
                 let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                 let control_sender = Sender::Local(control_tx);
@@ -332,6 +343,7 @@ fn bench_exporter(c: &mut Criterion) {
                 let pdata_sender = Sender::Local(pdata_tx);
                 let pdata_receiver = Receiver::Local(pdata_rx);
 
+                // start the exporter
                 let local = LocalSet::new();
                 let run_exporter_handle = local.spawn_local(async move {
                     exporter
@@ -340,6 +352,7 @@ fn bench_exporter(c: &mut Criterion) {
                         .expect("Exporter event loop failed");
                 });
 
+                // send signals to the exporter
                 for otlp_signal in otlp_signals {
                     pdata_sender.send(otlp_signal.clone()).await;
                 }
@@ -356,6 +369,7 @@ fn bench_exporter(c: &mut Criterion) {
 
     // group.finish();
 
+    // shutdown the grpc servers
     _ = otlp_shutdown_sender.send("Shutdown");
     _ = otap_shutdown_sender.send("Shutdown");
 }

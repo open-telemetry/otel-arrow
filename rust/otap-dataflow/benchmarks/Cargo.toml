@@ -53,3 +53,4 @@ incremental = false
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+

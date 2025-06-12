@@ -5,7 +5,8 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: track cpu usage per thread
-//! minalloc -> get memory allocation per thread
+//! ToDo: track memory allocation per thread
+//! ToDo: calculate average latency of otlp signals
 
 use crate::config::Config;
 use async_trait::async_trait;
@@ -34,6 +35,7 @@ pub struct PerfExporter {
 
 impl PerfExporter {
     /// creates a perf exporter with the provided config
+    #[must_use]
     pub fn new(config: Config, output: Option<String>) -> Self {
         PerfExporter { config, output }
     }
@@ -97,6 +99,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         &mut writer,
                     );
 
+                    // update sysinfo data
                     system.refresh_specifics(sys_refresh_list);
                     let process = system.process(process_pid).ok_or(Error::ExporterError {
                         exporter: effect_handler.exporter_name(),
@@ -151,6 +154,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     break;
                 }
                 Message::PData(batch) => {
+                    // keep track of batches received
                     received_pdata_batch_count += 1;
                     total_received_pdata_batch_count += 1;
                     // decode the headers which are hpack encoded
@@ -188,14 +192,14 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         );
                     }
 
-                    // increment counters for received messages
-                    // increment by number of arrowpayloads
+                    // increment counters for received arrow payloads
                     received_arrow_records_count += batch.arrow_payloads.len() as u64;
                     total_received_arrow_records_count += received_arrow_records_count as u128;
-                    // increment counters for received events
+                    // increment counters for otlp signals
                     received_otlp_signal_count += calculate_otlp_signal_count(batch);
                     total_received_otlp_signal_count += received_otlp_signal_count as u128;
 
+                    // ToDo: Remove these lines, used to debugging
                     _ = writeln!(writer, "Arrow Records {}", received_arrow_records_count);
                     _ = writeln!(writer, "Otlp Data Count {}", received_otlp_signal_count);
                     _ = writeln!(writer, "Pdata Count {}", received_pdata_batch_count);
@@ -247,6 +251,7 @@ fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
     }
 }
 
+/// takes in the configuration and returns the appropriate system refresh list to make sure only the necessary data is refreshed
 fn sys_refresh_list(config: &Config) -> RefreshKind {
     let mut sys_refresh_list = RefreshKind::nothing();
     let mut process_refresh_list = ProcessRefreshKind::nothing();
@@ -265,11 +270,13 @@ fn sys_refresh_list(config: &Config) -> RefreshKind {
     sys_refresh_list.with_processes(process_refresh_list)
 }
 
+/// uses the exponential moving average formula to update the average
 fn update_average(new_value: f64, old_average: f64, smoothing_factor: f64) -> f64 {
     // update the average using a exponential moving average which allows new data points to have a greater impact depending on the smoothing factor
     smoothing_factor * new_value + (1.0 - smoothing_factor) * old_average
 }
 
+/// decodes the byte array from the timestamp header and gets the equivalent duration value
 fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     let timestamp_string = std::str::from_utf8(timestamp).map_err(|error| error.to_string())?;
     let timestamp_parts: Vec<&str> = timestamp_string.split(":").collect();
@@ -283,6 +290,7 @@ fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     Ok(Duration::new(secs, nanosecs))
 }
 
+/// calculate number of otlp signals based on arrow payload type
 fn calculate_otlp_signal_count(batch: BatchArrowRecords) -> u64 {
     batch.arrow_payloads.iter().fold(0, |acc, arrow_payload| {
         let table_size = if arrow_payload.r#type == ArrowPayloadType::Spans as i32
@@ -297,6 +305,7 @@ fn calculate_otlp_signal_count(batch: BatchArrowRecords) -> u64 {
     })
 }
 
+/// takes in the process and system outputs cpu stats via the writer
 fn display_cpu_usage(process: &Process, system: &System, writer: &mut impl Write) {
     let process_cpu_usage = process.cpu_usage(); // as %
     let global_cpu_usage = system.global_cpu_usage(); // as %
@@ -312,6 +321,7 @@ fn display_cpu_usage(process: &Process, system: &System, writer: &mut impl Write
     );
 }
 
+/// takes in the process outputs memory stats via the writer
 fn display_mem_usage(process: &Process, writer: &mut impl Write) {
     let memory_rss = process.memory(); // as bytes
     let memory_virtual = process.virtual_memory(); // as bytes
@@ -327,6 +337,7 @@ fn display_mem_usage(process: &Process, writer: &mut impl Write) {
     );
 }
 
+/// takes in the disk usage data and outputs stats via the writer
 fn display_disk_usage(disk_usage: DiskUsage, duration: Duration, writer: &mut impl Write) {
     let total_written_bytes = disk_usage.total_written_bytes;
     let total_read_bytes = disk_usage.total_read_bytes;
@@ -356,6 +367,7 @@ fn display_disk_usage(disk_usage: DiskUsage, duration: Duration, writer: &mut im
     );
 }
 
+/// takes in network data and outputs networks stats via the writer
 fn display_io_usage(
     network_name: &str,
     network_data: &NetworkData,
@@ -449,6 +461,7 @@ fn display_io_usage(
     );
 }
 
+/// accepts pipeline statistics and prints a report via the writer
 fn display_report_pipeline(
     received_arrow_records_count: u64,
     received_otlp_signal_count: u64,
@@ -542,7 +555,8 @@ mod tests {
         }
 
         // create timestamp
-        // unix timestamp -> number -> byte array &[u8]
+        // unix timestamp -> get secs and nano secs -> format string as secs:nanos -> create byte array &[u8]
+        // decoding will do the opposite to get the latency
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
         let secs = timestamp.as_secs().to_string();
@@ -571,7 +585,7 @@ mod tests {
     {
         |ctx| {
             Box::pin(async move {
-                // Send 3 TimerTick events. with a couple messages between them
+                // send some messages to the exporter to calculate pipeline statistics
                 for _ in 0..3 {
                     let traces_batch_data = create_batch_arrow_record_helper(
                         TRACES_BATCH_ID,
@@ -605,6 +619,8 @@ mod tests {
 
                 // TODO ADD DELAY BETWEEN HERE
                 let _ = sleep(Duration::from_millis(5000));
+
+                // send timertick to generate the report
                 ctx.send_timer_tick()
                     .await
                     .expect("Failed to send TimerTick");
@@ -701,13 +717,13 @@ mod tests {
             PerfExporter::new(config, Some(output_file.clone())),
             test_runtime.config(),
         );
-        // tokio runtime to run tcp server in the background
 
         test_runtime
             .set_exporter(exporter)
             .run_test(scenario())
             .run_validation(validation_procedure(output_file.clone()));
 
-        // remove_file(output_file).expect("Failed to remove file");
+        // remove the created file, prevent accidental check in of report
+        remove_file(output_file).expect("Failed to remove file");
     }
 }
