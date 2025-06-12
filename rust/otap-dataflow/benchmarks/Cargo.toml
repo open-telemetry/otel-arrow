@@ -20,6 +20,7 @@ otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
 otap-df-perf = { path="../crates/perf_exporter"}
 otap-df-otap = { path="../crates/otap"}
+otap-df-otlp = { path="../crates/otlp"}
 fluke-hpack = "0.3.1"
 futures-channel = "0.3"
 futures = "0.3.31"
@@ -28,7 +29,8 @@ core_affinity = "0.8.3"
 local-sync = "0.1.1"
 async-unsync = "0.3.0"
 unsync = "0.1.2"
-
+tonic = "0.13.1"
+portpicker = "0.1.1"
 [lints]
 workspace = true
 
@@ -41,7 +43,7 @@ name = "channel"
 harness = false
 
 [[bench]]
-name = "perf_exporter"
+name = "exporter"
 harness = false
 
 [profile.bench]

@@ -12,5 +12,5 @@ pub mod otap_receiver;
 pub mod proto;
 
 /// testing utilities
-#[cfg(test)]
-mod mock;
+// #[cfg(test)]
+pub mod mock;

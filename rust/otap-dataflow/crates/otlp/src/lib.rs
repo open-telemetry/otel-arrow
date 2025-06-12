@@ -14,5 +14,5 @@ pub mod otlp_receiver;
 pub mod proto;
 
 /// grpc mock server for testing
-#[cfg(test)]
-mod mock;
+// #[cfg(test)]
+pub mod mock;
