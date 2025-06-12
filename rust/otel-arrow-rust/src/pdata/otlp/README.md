@@ -86,34 +86,6 @@ Derive rules on the `TracesData` message object derive the following code.
                         arg
                     }
                 }
-                /// Message adapter for presenting OTLP message objects as visitable.
-                pub struct TracesDataMessageAdapter<'a> {
-                    data: &'a TracesData,
-                }
-                impl<'a> TracesDataMessageAdapter<'a> {
-                    /// Create a new message adapter
-                    pub fn new(data: &'a TracesData) -> Self {
-                        Self { data }
-                    }
-                }
-                impl<'a, Argument> TracesDataVisitable<Argument>
-                for &TracesDataMessageAdapter<'a> {
-                    /// Visits a field of the associated type, passing child-visitors for the traversal.
-                    fn accept_traces_data(
-                        &mut self,
-                        mut arg: Argument,
-                        mut resource_spans_visitor: impl ResourceSpansVisitor<Argument>,
-                    ) -> Argument {
-                        for item in &self.data.resource_spans {
-                            arg = resource_spans_visitor
-                                .visit_resource_spans(
-                                    arg,
-                                    &(ResourceSpansMessageAdapter::new(item)),
-                                );
-                        }
-                        arg
-                    }
-                }
                 /// EncodedLen visitor for calculating protobuf encoded size
                 pub struct TracesDataEncodedLen<const TAG: u32, const OPTION: bool> {}
                 impl<
@@ -160,7 +132,7 @@ Derive rules on the `TracesData` message object derive the following code.
                             .children_encoded_size(arg, v);
                         arg.set_size(
                             idx,
-                            crate::pdata::otlp::primitive_encoders::conditional_length_delimited_size::<
+                            crate::pdata::otlp::encoders::conditional_length_delimited_size::<
                                 TAG,
                                 OPTION,
                             >(total_child_size),
@@ -229,7 +201,9 @@ interpret. In these cases, use `eprintln!("🚨 ...")` to make progress.
 
 We will proceed to run a two commands in one:
 
+```
 cargo expand > EXPANDED 2> EXPAND_ERRORS; cargo check 2> CHECKED
+```
 
 Inspect CHECKED for compiler errors and EXPANDED for the raw source
 code produced by the derive generation logic and EXPAND_ERRORS for
@@ -237,7 +211,9 @@ compiler errors during macro processing.
 
 When the check step succeeds, the next thing to verify are the tests:
 
+```
 cargo test > TEST_OUTPUT 2> TEST_ERROR
+```
 
 After the tests run, inspect both files to learn whether the tests
 passed or failed, then continue to iterate.
