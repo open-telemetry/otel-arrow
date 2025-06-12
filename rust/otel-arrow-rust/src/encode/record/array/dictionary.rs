@@ -9,18 +9,18 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{AnyDictionaryArray, Array, ArrayRef, ArrowPrimitiveType, DictionaryArray},
-    datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type},
+    array::{Array, ArrayRef, ArrowPrimitiveType, DictionaryArray},
+    datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type},
     error::ArrowError,
 };
 use snafu::Snafu;
 
 use crate::{
     arrays::NullableArrayAccessor,
-    encode::record::array::{ArrayAppend, CheckedArrayAppend},
+    encode::record::array::{ArrayAppend, ArrayAppendNulls, CheckedArrayAppend},
 };
 
-use super::{ArrayBuilder, ArrayBuilderConstructor};
+use super::ArrayBuilderConstructor;
 
 #[derive(Snafu, Debug)]
 #[snafu(visibility(pub))]
@@ -33,7 +33,7 @@ pub type Result<T> = std::result::Result<T, DictionaryBuilderError>;
 
 // This is the base trait for array builder implementations that are
 // used to construct dictionary arrays
-pub trait DictionaryArrayAppend {
+pub trait DictionaryArrayAppend: ArrayAppendNulls {
     type Native;
 
     // Append a new value to the dictionary, and return the index of the keys array. The returned
@@ -49,7 +49,7 @@ pub trait DictionaryArrayAppend {
 
 // This is the base trait for array builder implementations that are used to construct dictionary
 // arrays for types where the call to append could fail.
-pub trait CheckedDictionaryArrayAppend {
+pub trait CheckedDictionaryArrayAppend: ArrayAppendNulls {
     type Native;
 
     // see comments on `DictionaryArrayAppend::append_value` for info about the returned value.
@@ -237,6 +237,19 @@ where
     }
 }
 
+impl<T> ArrayAppendNulls for UncheckedArrayBuilderAdapter<'_, T>
+where
+    T: ArrayAppend,
+{
+    fn append_null(&mut self) {
+        self.inner.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        self.inner.append_nulls(n);
+    }
+}
+
 // This helper function populates the native builder from the dict values in a way
 // that is generic over the type of dictionary key
 fn populate_native_builder<T, K, V, TN>(
@@ -261,22 +274,22 @@ where
 
     for i in 0..dict_arr.len() {
         if !keys.is_valid(i) {
-            // TODO handle nulls in https://github.com/open-telemetry/otel-arrow/issues/534
-            todo!("nulls not currently supported in adaptive array builders");
-        }
-        let key = keys.value(i);
-        let index = key.into();
+            builder.append_null();
+        } else {
+            let key = keys.value(i);
+            let index = key.into();
 
-        // break if we find the index that caused the overflow
-        if overflow_index == Some(index) {
-            break;
-        }
+            // break if we find the index that caused the overflow
+            if overflow_index == Some(index) {
+                break;
+            }
 
-        // safety: we've already checked that the key at this index is valid
-        let value = values
-            .value_at(index)
-            .expect("expect index in dict values array to be valid");
-        builder.append_value(&value)?;
+            // safety: we've already checked that the key at this index is valid
+            let value = values
+                .value_at(index)
+                .expect("expect index in dict values array to be valid");
+            builder.append_value(&value)?;
+        }
     }
 
     Ok(())
@@ -351,6 +364,26 @@ where
 
 impl<T8, T16> AdaptiveDictionaryBuilder<T8, T16>
 where
+    T8: ArrayAppendNulls,
+    T16: ArrayAppendNulls,
+{
+    pub fn append_null(&mut self) {
+        match &mut self.variant {
+            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_null(),
+            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_null(),
+        }
+    }
+
+    pub fn append_nulls(&mut self, n: usize) {
+        match &mut self.variant {
+            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_nulls(n),
+            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_nulls(n),
+        }
+    }
+}
+
+impl<T8, T16> AdaptiveDictionaryBuilder<T8, T16>
+where
     T8: DictionaryBuilder<UInt8Type>,
     T16: DictionaryBuilder<UInt16Type>,
 {
@@ -366,13 +399,12 @@ where
 mod test {
     use super::*;
 
-    use std::fmt::format;
     use std::sync::Arc;
 
     use arrow::array::{
         BinaryDictionaryBuilder, FixedSizeBinaryDictionaryBuilder, PrimitiveDictionaryBuilder,
-        StringArray, StringBuilder, StringDictionaryBuilder, UInt8Array, UInt8DictionaryArray,
-        UInt16Array, UInt16DictionaryArray,
+        StringArray, StringBuilder, StringDictionaryBuilder, UInt8Array, UInt16Array,
+        UInt16DictionaryArray,
     };
     use arrow::datatypes::{DataType, Int64Type, UInt8Type, UInt16Type};
     use prost::Message;
@@ -600,6 +632,7 @@ mod test {
         for i in 0..(u16::MAX as usize) {
             let value = values_generator(i);
             let index = dict_builder.append_value_checked(&value).unwrap();
+            assert_eq!(index, i);
         }
         let result = dict_builder.append_value_checked(&values_generator(1 + u16::MAX as usize));
         assert!(result.is_err());
@@ -621,7 +654,7 @@ mod test {
                 >::new(opts, 3)
             },
             |i| vec![(i >> 16) as u8, (i >> 8) as u8, i as u8],
-            |i| vec![0],
+            |_| vec![0],
             DataType::FixedSizeBinary(3),
         );
     }
@@ -775,9 +808,9 @@ mod test {
             (),
         );
         assert!(matches!(dict_builder.variant, DictIndexVariant::UInt16(_)));
-        dict_builder.append_value(&"a".to_string());
-        dict_builder.append_value(&"a".to_string());
-        dict_builder.append_value(&"b".to_string());
+        assert!(dict_builder.append_value(&"a".to_string()).is_ok());
+        assert!(dict_builder.append_value(&"a".to_string()).is_ok());
+        assert!(dict_builder.append_value(&"b".to_string()).is_ok());
 
         let mut native_builder = StringBuilder::new();
         dict_builder.to_native(&mut native_builder);

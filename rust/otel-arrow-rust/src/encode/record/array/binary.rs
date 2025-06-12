@@ -4,15 +4,15 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder, BinaryDictionaryBuilder,
-    DictionaryArray, PrimitiveDictionaryBuilder,
+    ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder, BinaryDictionaryBuilder,
+    DictionaryArray,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
+use arrow::datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type};
 
 use crate::encode::record::array::dictionary::{
     ConvertToNativeHelper, DictionaryBuilder, UpdateDictionaryIndexInto,
 };
-use crate::encode::record::array::{ArrayAppend, NoArgs};
+use crate::encode::record::array::{ArrayAppend, ArrayAppendNulls, NoArgs};
 
 use super::dictionary::{self, DictionaryArrayAppend};
 use super::{ArrayBuilder, ArrayBuilderConstructor};
@@ -22,6 +22,21 @@ impl ArrayAppend for BinaryBuilder {
 
     fn append_value(&mut self, value: &Self::Native) {
         self.append_value(value);
+    }
+}
+
+impl ArrayAppendNulls for BinaryBuilder {
+    fn append_null(&mut self) {
+        self.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        // TODO - to be more efficient, after the next release of arrow-rs we should revisit this
+        // and call append_nulls on the base builder. Waiting on these changes to be released:
+        // https://github.com/apache/arrow-rs/pull/7606
+        for _ in 0..n {
+            self.append_null();
+        }
     }
 }
 
@@ -70,6 +85,19 @@ where
     }
 }
 
+impl<K> ArrayAppendNulls for BinaryDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn append_null(&mut self) {
+        self.append_null();
+    }
+
+    fn append_nulls(&mut self, n: usize) {
+        self.append_nulls(n);
+    }
+}
+
 impl<K> DictionaryBuilder<K> for BinaryDictionaryBuilder<K>
 where
     K: ArrowDictionaryKeyType,
@@ -106,10 +134,7 @@ impl UpdateDictionaryIndexInto<BinaryDictionaryBuilder<UInt16Type>>
         for value in values {
             match value {
                 Some(value) => upgraded_builder.append_value(value),
-                None => {
-                    // TODO handle this in https://github.com/open-telemetry/otel-arrow/issues/534
-                    todo!("nulls not yet supported by adaptive array builders")
-                }
+                None => upgraded_builder.append_null(),
             }
         }
 
@@ -120,8 +145,8 @@ impl UpdateDictionaryIndexInto<BinaryDictionaryBuilder<UInt16Type>>
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{ArrayRef, BinaryArray, UInt8Array, UInt8DictionaryArray};
-    use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
+    use arrow::array::{Array, BinaryArray, UInt8Array, UInt8DictionaryArray};
+    use arrow::datatypes::{DataType, UInt8Type};
     use prost::Message;
 
     #[test]

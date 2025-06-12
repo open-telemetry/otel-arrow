@@ -10,15 +10,14 @@
 use std::{any::Any, sync::Arc};
 
 use arrow::{
-    array::{Array, ArrayRef, StructArray},
-    datatypes::{DataType, Field, FieldRef, Fields, UInt8Type, UInt16Type},
+    array::{Array, ArrayRef, NullBufferBuilder, StructArray},
+    datatypes::{Field, Fields, UInt8Type, UInt16Type},
     error::ArrowError,
 };
-use paste::paste;
 
 use crate::encode::record::array::{
-    AdaptiveArrayBuilder, ArrayAppend, ArrayBuilder, ArrayOptions, CheckedArrayAppend,
-    boolean::AdaptiveBooleanArrayBuilder, dictionary::DictionaryBuilder,
+    AdaptiveArrayBuilder, ArrayBuilder, boolean::AdaptiveBooleanArrayBuilder,
+    dictionary::DictionaryBuilder,
 };
 
 /// Data about some field contained in this struct
@@ -82,11 +81,15 @@ impl StructArrayBuilderHelper for AdaptiveBooleanArrayBuilder {
 /// Adaptive array builder for columns of type struct.
 struct AdaptiveStructBuilder {
     fields: Vec<(FieldData, Box<dyn StructArrayBuilderHelper>)>,
+    null_buffer_builder: NullBufferBuilder,
 }
 
 impl AdaptiveStructBuilder {
     pub fn new(fields: Vec<(FieldData, Box<dyn StructArrayBuilderHelper>)>) -> Self {
-        Self { fields }
+        Self {
+            fields,
+            null_buffer_builder: NullBufferBuilder::new(0),
+        }
     }
 
     /// Get the builder for some field index.
@@ -99,6 +102,22 @@ impl AdaptiveStructBuilder {
         self.fields
             .get_mut(i)
             .and_then(|(_, builder)| builder.as_any_mut().downcast_mut())
+    }
+
+    /// Appends an element (either null or non-null) to the struct. The actual elements
+    /// should be appended for each child sub-array in a consistent way.
+    fn append(&mut self, is_valid: bool) {
+        self.null_buffer_builder.append(is_valid);
+    }
+
+    /// Appends a null element to the struct.
+    fn append_null(&mut self) {
+        self.append(false)
+    }
+
+    /// Appends `n` `null`s into the builder.
+    pub fn append_nulls(&mut self, n: usize) {
+        self.null_buffer_builder.append_slice(&vec![false; n]);
     }
 
     fn finish(&mut self) -> Option<Result<ArrayRef, ArrowError>> {
@@ -118,7 +137,8 @@ impl AdaptiveStructBuilder {
         }
 
         if !arrays.is_empty() {
-            let struct_array_result = StructArray::try_new(Fields::from(fields), arrays, None)
+            let nulls = self.null_buffer_builder.finish();
+            let struct_array_result = StructArray::try_new(Fields::from(fields), arrays, nulls)
                 .map(|sa| Arc::new(sa) as ArrayRef);
             Some(struct_array_result)
         } else {
@@ -136,21 +156,23 @@ mod test {
             Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, StringArray,
             TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
         },
-        datatypes::{Fields, TimeUnit},
+        buffer::NullBuffer,
+        datatypes::{DataType, Fields, TimeUnit},
     };
 
     use crate::encode::record::array::{
-        ArrayBuilderConstructor, BinaryArrayBuilder, DurationNanosecondArrayBuilder,
-        FixedSizeBinaryArrayBuilder, Float32ArrayBuilder, Float64ArrayBuilder, Int8ArrayBuilder,
-        Int16ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder, NoArgs, PrimitiveArrayBuilder,
-        StringArrayBuilder, TimestampNanosecondArrayBuilder, UInt8ArrayBuilder, UInt16ArrayBuilder,
-        UInt32ArrayBuilder, UInt64ArrayBuilder, boolean::BooleanBuilderOptions,
+        ArrayAppend, ArrayAppendNulls, ArrayOptions, BinaryArrayBuilder, CheckedArrayAppend,
+        DurationNanosecondArrayBuilder, FixedSizeBinaryArrayBuilder, Float32ArrayBuilder,
+        Float64ArrayBuilder, Int8ArrayBuilder, Int16ArrayBuilder, Int32ArrayBuilder,
+        Int64ArrayBuilder, StringArrayBuilder, TimestampNanosecondArrayBuilder, UInt8ArrayBuilder,
+        UInt16ArrayBuilder, UInt32ArrayBuilder, UInt64ArrayBuilder, boolean::BooleanBuilderOptions,
     };
+    use paste::paste;
 
     use super::*;
 
     #[test]
-    fn test_struct_builder_simple() {
+    fn test_struct_builder_simple_non_nullable() {
         let mut struct_builder = AdaptiveStructBuilder::new(vec![
             (
                 FieldData::new("name"),
@@ -195,6 +217,90 @@ mod test {
                 Arc::new(UInt8Array::from_iter_values(vec![60, 70, 150])),
             ],
             None,
+        );
+
+        assert_eq!(result_struct_arr, &expected);
+    }
+
+    #[test]
+    fn test_struct_builder_simple_nullable() {
+        let mut struct_builder = AdaptiveStructBuilder::new(vec![
+            (
+                FieldData::new("name"),
+                Box::new(StringArrayBuilder::new(ArrayOptions {
+                    dictionary_options: None,
+                    nullable: true,
+                })),
+            ),
+            (
+                FieldData::new("age"),
+                Box::new(UInt8ArrayBuilder::new(ArrayOptions {
+                    dictionary_options: None,
+                    nullable: true,
+                })),
+            ),
+        ]);
+
+        let name_field_builder = struct_builder
+            .field_builder::<StringArrayBuilder>(0)
+            .unwrap();
+        name_field_builder.append_value(&"joe".to_string());
+        name_field_builder.append_null();
+        name_field_builder.append_value(&"mark".to_string());
+        name_field_builder.append_null();
+        name_field_builder.append_null();
+        name_field_builder.append_value(&"terry".to_string());
+        name_field_builder.append_value(&"tim".to_string());
+
+        let age_field_builder = struct_builder
+            .field_builder::<UInt8ArrayBuilder>(1)
+            .unwrap();
+        age_field_builder.append_value(&60);
+        age_field_builder.append_null();
+        age_field_builder.append_value(&70);
+        age_field_builder.append_null();
+        age_field_builder.append_null();
+        age_field_builder.append_value(&150);
+        age_field_builder.append_null();
+
+        struct_builder.append(true);
+        struct_builder.append_null();
+        struct_builder.append(true);
+        struct_builder.append_nulls(2);
+        struct_builder.append(true);
+        struct_builder.append(true);
+
+        let result = struct_builder.finish().unwrap().unwrap();
+        let result_struct_arr = result.as_any().downcast_ref::<StructArray>().unwrap();
+
+        let expected = StructArray::new(
+            Fields::from(vec![
+                Field::new("name", DataType::Utf8, true),
+                Field::new("age", DataType::UInt8, true),
+            ]),
+            vec![
+                Arc::new(StringArray::from_iter(vec![
+                    Some("joe"),
+                    None,
+                    Some("mark"),
+                    None,
+                    None,
+                    Some("terry"),
+                    Some("tim"),
+                ])),
+                Arc::new(UInt8Array::from_iter(vec![
+                    Some(60),
+                    None,
+                    Some(70),
+                    None,
+                    None,
+                    Some(150),
+                    None,
+                ])),
+            ],
+            Some(NullBuffer::from_iter(vec![
+                true, false, true, false, false, true, true,
+            ])),
         );
 
         assert_eq!(result_struct_arr, &expected);
@@ -287,7 +393,7 @@ mod test {
         age_field_builder.append_value(&150);
 
         let result = struct_builder.finish().unwrap();
-        println!("{:?}", result);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -357,7 +463,7 @@ mod test {
             },
             4,
         );
-        builder.append_value(&b"1234".to_vec());
+        builder.append_value(&b"1234".to_vec()).unwrap();
         fields.push((FieldData::new("fsb"), Box::new(builder)));
 
         let mut builder =
