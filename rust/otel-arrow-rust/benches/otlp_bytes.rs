@@ -14,8 +14,9 @@
 
 //! This crate benchmarks OTLP and OTAP.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use prost::Message;
+use std::hint::black_box;
 
 use otel_arrow_rust::pdata::*;
 use otel_arrow_rust::proto::opentelemetry::common::v1::*;
