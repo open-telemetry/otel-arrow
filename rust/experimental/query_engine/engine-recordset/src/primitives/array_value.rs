@@ -57,31 +57,6 @@ impl ArrayValueData {
             ExpressionMessage::warn(
                 format!("AnyValue '{:?}' provided as right side of array equality comparison was not an array", other)));
 
-        return Ok(false);
-    }
-
-    pub(crate) fn contains(
-        &self,
-        execution_context: &dyn ExecutionContext,
-        expression_id: usize,
-        other: &AnyValue,
-    ) -> Result<bool, Error> {
-        if let AnyValue::ArrayValue(array_value) = other {
-            for other_value in array_value.values.iter() {
-                if !self.contains(execution_context, expression_id, other_value)? {
-                    return Ok(false);
-                }
-            }
-
-            return Ok(true);
-        }
-
-        for value in self.values.iter() {
-            if value.equals(execution_context, expression_id, other)? {
-                return Ok(true);
-            }
-        }
-
-        return Ok(false);
+        Ok(false)
     }
 }
