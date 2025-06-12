@@ -116,17 +116,16 @@ Derive rules on the `TracesData` message object derive the following code.
                     }
                 }
                 /// EncodedLen visitor for calculating protobuf encoded size
-                pub struct TracesDataEncodedLen {
-                    /// Protocol buffer tag number for this message
-                    pub tag: u32,
-                }
-                impl TracesDataEncodedLen {
-                    /// Create a new EncodedLen visitor with the specified tag
-                    pub fn new(tag: u32) -> Self {
-                        Self { tag }
+                pub struct TracesDataEncodedLen<const TAG: u32, const OPTION: bool> {}
+                impl<
+                    const TAG: u32,
+                    const OPTION: bool,
+                > TracesDataEncodedLen<TAG, OPTION> {
+                    /// Create a new EncodedLen visitor.
+                    pub fn new() -> Self {
+                        Self {}
                     }
                     /// Calculate the sum of direct children's encoded lengths.
-                    /// This method processes each child field individually using the visitor pattern.
                     fn children_encoded_size(
                         &mut self,
                         mut arg: crate::pdata::otlp::PrecomputedSizes,
@@ -135,16 +134,20 @@ Derive rules on the `TracesData` message object derive the following code.
                         >,
                     ) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
                         let mut total = 0;
-                        let mut resource_spans = crate::pdata::otlp::Accumulate::new(
-                            ResourceSpansEncodedLen::new(1u32),
-                        );
+                        let mut resource_spans = crate::pdata::otlp::Accumulate::new(ResourceSpansEncodedLen::<
+                            1u32,
+                            true,
+                        > {});
                         arg = v.accept_traces_data(arg, &mut resource_spans);
                         total += resource_spans.total;
                         (arg, total)
                     }
                 }
-                impl TracesDataVisitor<crate::pdata::otlp::PrecomputedSizes>
-                for TracesDataEncodedLen {
+                impl<
+                    const TAG: u32,
+                    const OPTION: bool,
+                > TracesDataVisitor<crate::pdata::otlp::PrecomputedSizes>
+                for TracesDataEncodedLen<TAG, OPTION> {
                     fn visit_traces_data(
                         &mut self,
                         mut arg: crate::pdata::otlp::PrecomputedSizes,
@@ -156,19 +159,13 @@ Derive rules on the `TracesData` message object derive the following code.
                         arg.reserve();
                         let (mut arg, total_child_size) = self
                             .children_encoded_size(arg, v);
-                        let total_size = if total_child_size == 0 {
-                            0
-                        } else {
-                            let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len(
-                                (self.tag << 3 | 2) as usize,
-                            );
-                            let total = tag_size
-                                + crate::pdata::otlp::PrecomputedSizes::varint_len(
-                                    total_child_size,
-                                ) + total_child_size;
-                            total
-                        };
-                        arg.set_size(idx, total_size);
+                        arg.set_size(
+                            idx,
+                            crate::pdata::otlp::primitive_encoders::conditional_length_delimited_size::<
+                                TAG,
+                                OPTION,
+                            >(total_child_size),
+                        );
                         arg
                     }
                 }

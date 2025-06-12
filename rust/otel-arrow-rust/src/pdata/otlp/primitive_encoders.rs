@@ -16,7 +16,6 @@ const WIRE_TYPE_VARINT: u32 = 0; // Varint (int32, int64, uint32, uint64, sint32
 const WIRE_TYPE_FIXED64: u32 = 1; // 64-bit (fixed64, sfixed64, double)
 const WIRE_TYPE_LENGTH_DELIMITED: u32 = 2; // Length-delimited (string, bytes, embedded messages)
 const WIRE_TYPE_FIXED32: u32 = 5; // 32-bit (fixed32, sfixed32, float)
-const WIRE_TYPE_DONTCARE: u32 = 0; // In situations where we are computing size
 
 use crate::pdata::{
     BooleanVisitor, BytesVisitor, F64Visitor, I32Visitor, I64Visitor, SliceVisitor, StringVisitor,
@@ -104,7 +103,7 @@ fn push_calculated_size(mut arg: PrecomputedSizes, size: usize) -> PrecomputedSi
 }
 
 /// Helper function to process slices with varint values, where wire type does not matter.
-fn process_integer_slice<const TAG: u32, T, F>(
+fn process_number_slice<const TAG: u32, T, F>(
     mut arg: PrecomputedSizes,
     slice: &[T],
     size_fn: F,
@@ -115,9 +114,9 @@ where
 {
     let mut size = 0;
     for value in slice {
-        size += calculate_primitive_size::<TAG, WIRE_TYPE_DONTCARE>(size_fn(*value));
+        size += size_fn(*value);
     }
-    arg.push_size(size);
+    arg.push_size(conditional_length_delimited_size::<TAG, true>(size));
     arg
 }
 
@@ -356,37 +355,37 @@ impl<const TAG: u32, const OPTION: bool> I32Visitor<PrecomputedSizes>
 // Implementations of SliceVisitor for the slice types
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, u32> for SliceU32VarintEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[u32]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, u32, _>(arg, slice, varint_size32)
+        process_number_slice::<TAG, u32, _>(arg, slice, varint_size32)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, u64> for SliceU64VarintEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[u64]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, u64, _>(arg, slice, varint_size64)
+        process_number_slice::<TAG, u64, _>(arg, slice, varint_size64)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, i32> for SliceI32VarintEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[i32]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, i32, _>(arg, slice, signed_varint_size32)
+        process_number_slice::<TAG, i32, _>(arg, slice, signed_varint_size32)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, i64> for SliceI64VarintEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[i64]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, i64, _>(arg, slice, signed_varint_size64)
+        process_number_slice::<TAG, i64, _>(arg, slice, signed_varint_size64)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, f64> for SliceDoubleEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[f64]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, f64, _>(arg, slice, |_| 8)
+        process_number_slice::<TAG, f64, _>(arg, slice, |_| 8)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, bool> for SliceBooleanEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[bool]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, bool, _>(arg, slice, |_| 1)
+        process_number_slice::<TAG, bool, _>(arg, slice, |_| 1)
     }
 }
 
@@ -402,29 +401,27 @@ impl<const TAG: u32> SliceVisitor<PrecomputedSizes, Vec<u8>> for SliceBytesEncod
     }
 }
 
-// xx
-
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, u32> for SliceU32FixedEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[u32]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, u32, _>(arg, slice, |_| 4)
+        process_number_slice::<TAG, u32, _>(arg, slice, |_| 4)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, u64> for SliceU64FixedEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[u64]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, u64, _>(arg, slice, |_| 8)
+        process_number_slice::<TAG, u64, _>(arg, slice, |_| 8)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, i32> for SliceI32FixedEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[i32]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, i32, _>(arg, slice, |_| 4)
+        process_number_slice::<TAG, i32, _>(arg, slice, |_| 4)
     }
 }
 
 impl<const TAG: u32> SliceVisitor<PrecomputedSizes, i64> for SliceI64FixedEncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[i64]) -> PrecomputedSizes {
-        process_integer_slice::<TAG, i64, _>(arg, slice, |_| 8)
+        process_number_slice::<TAG, i64, _>(arg, slice, |_| 8)
     }
 }
 

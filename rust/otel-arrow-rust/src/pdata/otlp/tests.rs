@@ -290,26 +290,14 @@ fn test_scope_logs() {
 #[test]
 fn test_entity() {
     let er1 = EntityRef::build("entity")
-        .id_keys(&[
-            //
-            "a".to_string(),
-            //"b".to_string(),
-            //"c".to_string(),
-        ])
-        //.description_keys(&["d".to_string(), "e".to_string(), "f".to_string()])
+        .id_keys(&["a".to_string(), "b".to_string(), "c".to_string()])
+        .description_keys(&["d".to_string(), "e".to_string(), "f".to_string()])
         .finish();
 
     let er1_value = EntityRef {
         r#type: "entity".into(),
-        id_keys: vec![
-            //
-            "a".to_string(),
-            //"b".to_string(),
-            //"c".to_string(),
-        ],
-        description_keys: vec![
-            //"d".to_string(), "e".to_string(), "f".to_string(),
-        ],
+        id_keys: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        description_keys: vec!["d".to_string(), "e".to_string(), "f".to_string()],
         schema_url: "".to_string(),
     };
 
