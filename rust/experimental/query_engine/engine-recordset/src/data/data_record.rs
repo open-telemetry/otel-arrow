@@ -25,35 +25,26 @@ pub trait AttachedDataRecords: Debug {
     fn get_attached_data_record(&self, name: &str) -> Option<&dyn DataRecord>;
 }
 
-pub fn create_string_value_resolver<T: DataRecord, R, M, S>(
+pub fn create_string_value_resolver<T: DataRecord, R, S>(
     path: &ValuePath,
     read_action: &'static R,
-    read_mut_action: &'static M,
     set_action: &'static S,
 ) -> DataRecordAnyValueResolver<T>
 where
     R: Fn(&T) -> Option<&AnyValue>,
-    M: Fn(&mut T) -> Option<&mut AnyValue>,
     S: Fn(&mut T, Option<AnyValue>) -> Option<AnyValue>,
 {
     if !path.is_value_selector() {
         return DataRecordAnyValueResolver::new_no_op();
     }
 
-    return DataRecordAnyValueResolver::new(
+    DataRecordAnyValueResolver::new(
         path.clone(),
         |_, data_record| {
             let root = read_action(data_record);
             match root {
                 Some(v) => DataRecordReadAnyValueResult::Found(v),
                 None => DataRecordReadAnyValueResult::NotFound,
-            }
-        },
-        |_, data_record| {
-            let root = read_mut_action(data_record);
-            match root {
-                Some(v) => DataRecordReadMutAnyValueResult::Found(v),
-                None => DataRecordReadMutAnyValueResult::NotFound,
             }
         },
         move |_, data_record, v| {
@@ -75,7 +66,7 @@ where
                 return DataRecordSetAnyValueResult::Updated(old_value.unwrap());
             }
 
-            return DataRecordSetAnyValueResult::NotSupported("Value was not a String");
+            DataRecordSetAnyValueResult::NotSupported("Value was not a String")
         },
         move |_, data_record| {
             let old_value = set_action(data_record, None);
@@ -84,9 +75,9 @@ where
                 return DataRecordRemoveAnyValueResult::NotFound;
             }
 
-            return DataRecordRemoveAnyValueResult::Removed(old_value.unwrap());
+            DataRecordRemoveAnyValueResult::Removed(old_value.unwrap())
         },
-    );
+    )
 }
 
 pub fn create_map_value_resolver<T: DataRecord, R, M, S>(
@@ -100,20 +91,13 @@ where
     M: Fn(&mut T) -> Option<&mut AnyValue>,
     S: Fn(&mut T, Option<AnyValue>) -> Option<AnyValue>,
 {
-    return DataRecordAnyValueResolver::new(
+    DataRecordAnyValueResolver::new(
         path.clone(),
         |path, data_record| {
             let root = read_action(data_record);
             match root {
                 Some(v) => path.read(v),
                 None => DataRecordReadAnyValueResult::NotFound,
-            }
-        },
-        |path, data_record| {
-            let root = read_mut_action(data_record);
-            match root {
-                Some(v) => path.read_mut(v),
-                None => DataRecordReadMutAnyValueResult::NotFound,
             }
         },
         move |path, data_record, v| {
@@ -136,7 +120,7 @@ where
                     return DataRecordSetAnyValueResult::Updated(old_value.unwrap());
                 }
 
-                return DataRecordSetAnyValueResult::NotSupported("Value was not a Map");
+                DataRecordSetAnyValueResult::NotSupported("Value was not a Map")
             } else {
                 let root = read_mut_action(data_record);
                 match root {
@@ -153,7 +137,7 @@ where
                     return DataRecordRemoveAnyValueResult::NotFound;
                 }
 
-                return DataRecordRemoveAnyValueResult::Removed(old_value.unwrap());
+                DataRecordRemoveAnyValueResult::Removed(old_value.unwrap())
             } else {
                 let root = read_mut_action(data_record);
                 match root {
@@ -162,5 +146,5 @@ where
                 }
             }
         },
-    );
+    )
 }

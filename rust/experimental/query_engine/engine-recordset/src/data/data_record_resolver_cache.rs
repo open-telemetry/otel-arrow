@@ -6,10 +6,7 @@ use std::{
 
 use crate::{Error, ValuePath, execution_context::*, expression::ExpressionMessage};
 
-use super::{
-    DataRecord, array_data_record::ArrayDataRecord, data_record_resolver::*,
-    key_value_data_record::KeyValueDataRecord,
-};
+use super::{DataRecord, data_record_resolver::*};
 
 pub(crate) struct DataRecordAnyValueResolverCache {
     cache: HashMap<TypeId, Box<dyn DynamicDataRecordAnyValueResolver>>,
@@ -17,27 +14,17 @@ pub(crate) struct DataRecordAnyValueResolverCache {
 
 impl DataRecordAnyValueResolverCache {
     pub fn new() -> DataRecordAnyValueResolverCache {
-        let mut cache = Self {
+        Self {
             cache: HashMap::new(),
-        };
-
-        if cache.register::<ArrayDataRecord>().is_err()
-            || cache.register::<KeyValueDataRecord>().is_err()
-        {
-            panic!("DataRecordAnyValueResolverCache default registration failure")
         }
-
-        return cache;
     }
 
     pub fn register<T: DataRecord>(&mut self) -> Result<(), Error> {
         match self.cache.entry(TypeId::of::<T>()) {
-            Entry::Occupied(_) => {
-                return Err(Error::RegistrationError("DataRecord already registered"));
-            }
+            Entry::Occupied(_) => Err(Error::RegistrationError("DataRecord already registered")),
             Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(Box::new(GenericDataRecordAnyValueResolverCache::<T>::new()));
-                return Ok(());
+                Ok(())
             }
         }
     }
@@ -127,7 +114,7 @@ impl<T: DataRecord> GenericDataRecordAnyValueResolverCache<T> {
         {
             let cache_read_borrow = self.cache.borrow();
             let resolver = cache_read_borrow.get(path);
-            if !resolver.is_none() {
+            if resolver.is_some() {
                 execution_context.add_message_for_expression_id(
                     expression_id,
                     ExpressionMessage::info(format!(
@@ -145,7 +132,7 @@ impl<T: DataRecord> GenericDataRecordAnyValueResolverCache<T> {
             .entry(path.clone())
             .or_insert(T::get_any_value_resolver_for_path(path));
 
-        return action(resolver, data_record);
+        action(resolver, data_record)
     }
 }
 
@@ -163,7 +150,7 @@ impl<T: DataRecord> DynamicDataRecordAnyValueResolver
         {
             let cache_read_borrow = self.cache.borrow();
             let resolver = cache_read_borrow.get(path);
-            if !resolver.is_none() {
+            if resolver.is_some() {
                 execution_context.add_message_for_expression_id(
                     expression_id,
                     ExpressionMessage::info(format!(
@@ -197,13 +184,11 @@ impl<T: DataRecord> DynamicDataRecordAnyValueResolver
         match (data_record as &dyn Any).downcast_ref::<T>() {
             Some(typed_data_record) => {
                 resolver.read_value_direct(typed_data_record, |r| action.invoke_once(r));
-                return Ok(());
+                Ok(())
             }
-            None => {
-                return Err(Error::RegistrationError(
-                    "DataRecord registration type mismatch",
-                ));
-            }
+            None => Err(Error::RegistrationError(
+                "DataRecord registration type mismatch",
+            )),
         }
     }
 }
