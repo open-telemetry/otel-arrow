@@ -47,10 +47,10 @@ impl BoolValueData {
             ExpressionMessage::warn(
                 format!("AnyValue '{:?}' provided as right side of bool equality comparison could not be convered into a bool", other)));
 
-        return false;
+        false
     }
 
     pub(crate) fn to_string(&self) -> &str {
-        return either!(self.value => "true"; "false");
+        either!(self.value => "true"; "false")
     }
 }

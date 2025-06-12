@@ -44,10 +44,10 @@ impl LongValueData {
             ));
         } else if let AnyValue::StringValue(other_string_value) = other {
             let result = other_string_value.get_value().parse::<i64>();
-            if result.is_err() {
+            if let Err(e) = result {
                 return Err(Error::ExpressionError(
                     expression_id,
-                    Error::LongParseError(result.unwrap_err()).into(),
+                    Error::LongParseError(e).into(),
                 ));
             }
 
@@ -65,12 +65,10 @@ impl LongValueData {
         ));
 
         fn compare_values(left: i64, right: i64) -> i32 {
-            if left == right {
-                return 0;
-            } else if left < right {
-                return -1;
-            } else {
-                return 1;
+            match left.cmp(&right) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
             }
         }
     }
@@ -104,7 +102,7 @@ impl LongValueData {
             ExpressionMessage::warn(
                 format!("AnyValue '{:?}' provided as right side of long equality expression could not be convered into a long", other)));
 
-        return false;
+        false
     }
 
     pub(crate) fn to_string<F>(&self, action: F)
@@ -117,6 +115,6 @@ impl LongValueData {
             *string_value = Some(self.value.to_string());
         }
 
-        return action(string_value.as_ref().unwrap());
+        action(string_value.as_ref().unwrap())
     }
 }

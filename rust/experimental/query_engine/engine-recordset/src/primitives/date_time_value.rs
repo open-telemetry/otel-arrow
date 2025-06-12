@@ -17,10 +17,10 @@ impl DateTimeValueData {
             return Err(Error::DateTimeParseError(error));
         }
 
-        return Ok(Self {
+        Ok(Self {
             raw_value: value.into(),
             value: result.unwrap(),
-        });
+        })
     }
 
     pub fn new(raw_value: &str, value: DateTime<FixedOffset>) -> DateTimeValueData {
@@ -57,10 +57,10 @@ impl DateTimeValueData {
             let result = other_string_value
                 .get_value()
                 .parse::<DateTime<FixedOffset>>();
-            if result.is_err() {
+            if let Err(e) = result {
                 return Err(Error::ExpressionError(
                     expression_id,
-                    Error::DateTimeParseError(result.unwrap_err()).into(),
+                    Error::DateTimeParseError(e).into(),
                 ));
             }
             return Ok(compare_values(self.value, result.unwrap()));
@@ -77,12 +77,10 @@ impl DateTimeValueData {
         ));
 
         fn compare_values(left: DateTime<FixedOffset>, right: DateTime<FixedOffset>) -> i32 {
-            if left == right {
-                return 0;
-            } else if left < right {
-                return -1;
-            } else {
-                return 1;
+            match left.cmp(&right) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
             }
         }
     }
@@ -116,6 +114,6 @@ impl DateTimeValueData {
             ExpressionMessage::warn(
                 format!("AnyValue '{:?}' provided as right side of date time equality expression could not be convered into a date time", other)));
 
-        return false;
+        false
     }
 }

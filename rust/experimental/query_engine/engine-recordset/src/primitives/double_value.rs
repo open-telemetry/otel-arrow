@@ -44,10 +44,10 @@ impl DoubleValueData {
             ));
         } else if let AnyValue::StringValue(other_string_value) = other {
             let result = other_string_value.get_value().parse::<f64>();
-            if result.is_err() {
+            if let Err(e) = result {
                 return Err(Error::ExpressionError(
                     expression_id,
-                    Error::DoubleParseError(result.unwrap_err()).into(),
+                    Error::DoubleParseError(e).into(),
                 ));
             }
 
@@ -59,15 +59,15 @@ impl DoubleValueData {
             ExpressionMessage::warn(
                 format!("AnyValue '{:?}' provided as right side of double compare expression could not be convered into a double", other)));
 
-        return Err(Error::new_expression_not_supported(
+        Err(Error::new_expression_not_supported(
             expression_id,
             "AnyValue type on right side of compare expression is not supported",
-        ));
+        ))
     }
 
     pub(crate) fn compare_values(left: f64, right: f64) -> i32 {
         if left == right {
-            return 0;
+            0
         } else if left < right {
             return -1;
         } else {
@@ -104,7 +104,7 @@ impl DoubleValueData {
             ExpressionMessage::warn(
                 format!("AnyValue '{:?}' provided as right side of double equality expression could not be convered into a double", other)));
 
-        return false;
+        false
     }
 
     pub(crate) fn to_string<F>(&self, action: F)
@@ -117,6 +117,6 @@ impl DoubleValueData {
             *string_value = Some(self.value.to_string());
         }
 
-        return action(string_value.as_ref().unwrap());
+        action(string_value.as_ref().unwrap())
     }
 }

@@ -6,9 +6,9 @@ use crate::{error::Error, execution_context::ExecutionContext, expression::Hashe
 
 use super::{
     array_value::ArrayValueData, bool_value::BoolValueData, date_time_value::DateTimeValueData,
-    double_value::DoubleValueData, json_value::JsonValueData, key_value_pair::KeyValuePairData,
-    long_value::LongValueData, map_value::MapValueData, regex_value::RegexValueData,
-    string_value::StringValueData, xml_value::XmlValueData,
+    double_value::DoubleValueData, json_value::JsonValueData, long_value::LongValueData,
+    map_value::MapValueData, regex_value::RegexValueData, string_value::StringValueData,
+    xml_value::XmlValueData,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -34,7 +34,7 @@ impl AnyValue {
         expression_id: usize,
         other: &AnyValue,
     ) -> Result<i32, Error> {
-        return match self {
+        match self {
             AnyValue::ArrayValue(_) => Err(Error::new_expression_not_supported(
                 expression_id,
                 "ArrayValue type on left side of compare expression is not supported",
@@ -52,10 +52,6 @@ impl AnyValue {
             AnyValue::JsonValue(_) => Err(Error::new_expression_not_supported(
                 expression_id,
                 "JsonValue type on left side of compare expression is not supported",
-            )),
-            AnyValue::KeyValuePair(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "KeyValue type on left side of compare expression is not supported",
             )),
             AnyValue::LongValue(long_value) => {
                 long_value.compare(execution_context, expression_id, other)
@@ -80,119 +76,7 @@ impl AnyValue {
                 expression_id,
                 "XmlValue type on left side of compare expression is not supported",
             )),
-        };
-    }
-
-    pub(crate) fn contains(
-        &self,
-        execution_context: &dyn ExecutionContext,
-        expression_id: usize,
-        other: &AnyValue,
-    ) -> Result<bool, Error> {
-        return match self {
-            AnyValue::ArrayValue(array_value) => {
-                array_value.contains(execution_context, expression_id, other)
-            }
-            AnyValue::BoolValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "BoolValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::DateTimeValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "DateTimeValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::DoubleValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "DoubleValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::JsonValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "JsonValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::KeyValuePair(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "KeyValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::LongValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "LongValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::MapValue(map_value) => {
-                map_value.contains(execution_context, expression_id, other)
-            }
-            AnyValue::NullValue => Err(Error::new_expression_not_supported(
-                expression_id,
-                "NullValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::RegexValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "RegexValue type on left side of contains expression is not supported",
-            )),
-            AnyValue::StringValue(string_value) => {
-                Ok(string_value.contains(execution_context, expression_id, other))
-            }
-            AnyValue::XmlValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "XmlValue type on left side of contains expression is not supported",
-            )),
-        };
-    }
-
-    pub(crate) fn contains_key(
-        &self,
-        execution_context: &dyn ExecutionContext,
-        expression_id: usize,
-        other: &AnyValue,
-    ) -> Result<bool, Error> {
-        return match self {
-            AnyValue::ArrayValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "ArrayValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::BoolValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "BoolValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::DateTimeValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "DateTimeValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::DoubleValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "DoubleValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::JsonValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "JsonValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::KeyValuePair(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "KeyValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::LongValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "LongValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::MapValue(map_value) => {
-                Ok(map_value.contains_key(execution_context, expression_id, other))
-            }
-            AnyValue::NullValue => Err(Error::new_expression_not_supported(
-                expression_id,
-                "NullValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::RegexValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "RegexValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::StringValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "StringValue type on left side of contains key expression is not supported",
-            )),
-            AnyValue::XmlValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "XmlValue type on left side of contains key expression is not supported",
-            )),
-        };
+        }
     }
 
     pub(crate) fn equals(
@@ -201,7 +85,7 @@ impl AnyValue {
         expression_id: usize,
         other: &AnyValue,
     ) -> Result<bool, Error> {
-        return match self {
+        match self {
             AnyValue::NullValue => Ok(other.is_null()),
             AnyValue::ArrayValue(array_value) => {
                 array_value.equals(execution_context, expression_id, other)
@@ -219,9 +103,6 @@ impl AnyValue {
                 expression_id,
                 "JsonValue type on left side of equality expression is not supported",
             )),
-            AnyValue::KeyValuePair(key_value_pair) => {
-                key_value_pair.equals(execution_context, expression_id, other)
-            }
             AnyValue::LongValue(long_value) => {
                 Ok(long_value.equals(execution_context, expression_id, other))
             }
@@ -239,63 +120,7 @@ impl AnyValue {
                 expression_id,
                 "XmlValue type on left side of equality expression is not supported",
             )),
-        };
-    }
-
-    pub(crate) fn matches(
-        &self,
-        execution_context: &dyn ExecutionContext,
-        expression_id: usize,
-        input: &AnyValue,
-    ) -> Result<bool, Error> {
-        return match self {
-            AnyValue::ArrayValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "NullValue type on left side of match expression is not supported",
-            )),
-            AnyValue::BoolValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "BoolValue type on left side of match expression is not supported",
-            )),
-            AnyValue::DateTimeValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "BoolValue type on left side of match expression is not supported",
-            )),
-            AnyValue::DoubleValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "BoolValue type on left side of match expression is not supported",
-            )),
-            AnyValue::JsonValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "JsonValue type on left side of match expression is not supported",
-            )),
-            AnyValue::KeyValuePair(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "KeyValue type on left side of match expression is not supported",
-            )),
-            AnyValue::LongValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "BoolValue type on left side of match expression is not supported",
-            )),
-            AnyValue::MapValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "NullValue type on left side of match expression is not supported",
-            )),
-            AnyValue::NullValue => Err(Error::new_expression_not_supported(
-                expression_id,
-                "NullValue type on left side of match expression is not supported",
-            )),
-            AnyValue::RegexValue(regex_value) => {
-                Ok(regex_value.matches(execution_context, expression_id, input))
-            }
-            AnyValue::StringValue(string_value) => {
-                Ok(string_value.matches(execution_context, expression_id, input))
-            }
-            AnyValue::XmlValue(_) => Err(Error::new_expression_not_supported(
-                expression_id,
-                "XmlValue type on left side of match expression is not supported",
-            )),
-        };
+        }
     }
 
     pub(crate) fn is_null(&self) -> bool {
@@ -303,24 +128,7 @@ impl AnyValue {
             return true;
         }
 
-        return false;
-    }
-
-    pub(crate) fn get_type(&self) -> &'static str {
-        match self {
-            AnyValue::ArrayValue(_) => "ArrayValue",
-            AnyValue::BoolValue(_) => "BoolValue",
-            AnyValue::DateTimeValue(_) => "DateTimeValue",
-            AnyValue::DoubleValue(_) => "DoubleValue",
-            AnyValue::JsonValue(_) => "JsonValue",
-            AnyValue::KeyValuePair(_) => "KeyValuePair",
-            AnyValue::LongValue(_) => "LongValue",
-            AnyValue::MapValue(_) => "MapValue",
-            AnyValue::NullValue => "NullValue",
-            AnyValue::RegexValue(_) => "RegexValue",
-            AnyValue::StringValue(_) => "StringValue",
-            AnyValue::XmlValue(_) => "XmlValue",
-        }
+        false
     }
 
     pub(crate) fn as_string_value<F>(&self, action: F)
@@ -333,7 +141,6 @@ impl AnyValue {
             AnyValue::DateTimeValue(v) => action(Some(v.get_raw_value())),
             AnyValue::DoubleValue(v) => v.to_string(|v| action(Some(v))),
             AnyValue::JsonValue(v) => action(Some(v.get_raw_value())),
-            AnyValue::KeyValuePair(_) => action(None),
             AnyValue::LongValue(v) => v.to_string(|v| action(Some(v))),
             AnyValue::MapValue(_) => action(None),
             AnyValue::NullValue => action(None),
@@ -350,7 +157,6 @@ impl AnyValue {
             AnyValue::DateTimeValue(date_time_value) => date_time_value.add_hash_bytes(hasher),
             AnyValue::DoubleValue(double_value) => double_value.add_hash_bytes(hasher),
             AnyValue::JsonValue(json_value) => json_value.add_hash_bytes(hasher),
-            AnyValue::KeyValuePair(key_value_pair) => key_value_pair.add_hash_bytes(hasher),
             AnyValue::LongValue(long_value) => long_value.add_hash_bytes(hasher),
             AnyValue::MapValue(map_value) => map_value.add_hash_bytes(hasher),
             AnyValue::NullValue => hasher.add_bytes(&[0xFF]),
@@ -407,7 +213,7 @@ impl AnyValue {
             return Some(string_value.get_value());
         }
 
-        return None;
+        None
     }
 
     pub fn get_long_value(&self) -> Option<i64> {
@@ -415,7 +221,7 @@ impl AnyValue {
             return Some(long_value.get_value());
         }
 
-        return None;
+        None
     }
 
     pub fn get_double_value(&self) -> Option<f64> {
@@ -423,7 +229,7 @@ impl AnyValue {
             return Some(double_value.get_value());
         }
 
-        return None;
+        None
     }
 
     pub fn get_bool_value(&self) -> Option<bool> {
@@ -431,7 +237,7 @@ impl AnyValue {
             return Some(bool_value.get_value());
         }
 
-        return None;
+        None
     }
 
     pub fn get_array_value(&self) -> Option<&Vec<AnyValue>> {
@@ -439,7 +245,7 @@ impl AnyValue {
             return Some(array_value.get_values());
         }
 
-        return None;
+        None
     }
 
     pub fn get_map_value(&self) -> Option<&HashMap<String, AnyValue>> {
@@ -447,6 +253,6 @@ impl AnyValue {
             return Some(map_value.get_values());
         }
 
-        return None;
+        None
     }
 }
