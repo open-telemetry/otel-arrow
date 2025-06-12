@@ -12,7 +12,7 @@
 
 #![allow(missing_docs)]
 
-//! This crate benchmarks OTLP and OTAP.
+//! This crate benchmarks OTLP.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use prost::Message;
@@ -63,19 +63,26 @@ fn create_logs_data() -> LogsData {
 fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Logs Serialization");
 
-    let resource_logs = create_logs_data();
+    let logs = create_logs_data();
 
     _ = group.bench_function("LogsData Prost encode", |b| {
         let mut buf = Vec::new();
         b.iter(|| {
             buf.clear();
-            let encoded = resource_logs.encode(&mut buf);
+            let encoded = logs.encode(&mut buf);
             encoded.expect("encoding success")
         })
     });
 
+    _ = group.bench_function("LogsData Prost decode", |b| {
+        let mut enc_buf = Vec::new();
+        logs.encode(&mut enc_buf).unwrap();
+
+        b.iter(|| LogsData::decode(enc_buf.as_slice()).unwrap())
+    });
+
     _ = group.bench_function("LogsData Prost encoded_len", |b| {
-        b.iter(|| resource_logs.encoded_len())
+        b.iter(|| logs.encoded_len())
     });
 
     _ = group.bench_function("LogsData Visitor precompute_sizes", |b| {
@@ -83,7 +90,7 @@ fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
         b.iter(|| {
             let mut reuse = PrecomputedSizes::default();
             std::mem::swap(&mut ps, &mut reuse);
-            let (mut reuse, _total) = resource_logs.precompute_sizes(reuse);
+            let (mut reuse, _total) = logs.precompute_sizes(reuse);
             std::mem::swap(&mut ps, &mut reuse);
         })
     });
