@@ -17,7 +17,7 @@ use std::ops::Add;
 /// # Examples
 ///
 /// ```
-/// use crate::otlp::traces::delta_decoder::DeltaDecoder;
+/// use otel_arrow_rust::otlp::traces::delta_decoder::DeltaDecoder;
 ///
 /// let mut decoder = DeltaDecoder::new();
 ///
@@ -42,7 +42,7 @@ where
     V: Add<Output = V> + Copy,
 {
     /// Creates a new `DeltaDecoder` instance.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             prev_key_value: None,
         }
@@ -70,6 +70,8 @@ where
     /// # Examples
     ///
     /// ```
+    /// use otel_arrow_rust::otlp::traces::delta_decoder::DeltaDecoder;
+    ///
     /// let mut decoder = DeltaDecoder::new();
     ///
     /// // First decode - returns delta value as baseline
@@ -84,7 +86,7 @@ where
     /// // Back to first key - resets (doesn't remember previous accumulation)
     /// assert_eq!(decoder.decode(&"key1", 75), 75);
     /// ```
-    pub(crate) fn decode(&mut self, key: &K, delta_value: V) -> V {
+    pub fn decode(&mut self, key: &K, delta_value: V) -> V {
         match &mut self.prev_key_value {
             None => {
                 // First decode - store the key and return the initial value
