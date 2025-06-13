@@ -254,7 +254,7 @@ pub(crate) fn parse_scalar_expression(
             parse_logical_expression(scalar_rule, state)?.into(),
         )),
         Rule::true_literal | Rule::false_literal => {
-            Ok(ScalarExpression::Static(parse_bool_literal(scalar_rule)))
+            Ok(ScalarExpression::Static(generic_parse_bool_literal(scalar_rule)))
         }
         Rule::double_literal => Ok(ScalarExpression::Static(parse_double_literal(scalar_rule)?)),
         Rule::integer_literal => Ok(ScalarExpression::Static(parse_integer_literal(
@@ -347,7 +347,7 @@ pub(crate) fn parse_logical_expression(
                 Ok(parse_logical_expression(logical_expression_rule, state)?)
             }
             Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
-                ScalarExpression::Static(parse_bool_literal(logical_expression_rule)),
+                ScalarExpression::Static(generic_parse_bool_literal(logical_expression_rule)),
             )),
             Rule::accessor_expression => Ok(LogicalExpression::Scalar(parse_accessor_expression(
                 logical_expression_rule,
@@ -547,17 +547,17 @@ mod pest_tests {
     use std::mem::discriminant;
 
     use super::*;
-    use data_engine_parser_generics::pest_test_helpers::*;
+    use data_engine_parser_generics::generic_pest_helpers::*;
     use pest::{Parser, iterators::Pairs};
 
     #[test]
     fn test_true_literal() {
-        test_true_literal_generic::<KqlParser, Rule>(Rule::true_literal);
+        test_generic_true_literal::<KqlParser, Rule>(Rule::true_literal);
     }
 
     #[test]
     fn test_false_literal() {
-        test_false_literal_generic::<KqlParser, Rule>(Rule::false_literal);
+        test_generic_false_literal::<KqlParser, Rule>(Rule::false_literal);
     }
 
     #[test]
@@ -798,11 +798,11 @@ mod parse_tests {
     use super::*;
     use chrono::{DateTime, Datelike, NaiveDate, Utc};
     use pest::Parser;
-    use data_engine_parser_generics::parse_tests_helpers::*;
+    use data_engine_parser_generics::generic_parse_helpers::*;
 
     #[test]
     fn test_parse_bool_literal() {
-        test_parse_bool_literal_generic::<KqlParser, Rule>(Rule::true_literal, Rule::false_literal);
+        test_generic_parse_bool_literal::<KqlParser, Rule>(Rule::true_literal, Rule::false_literal);
     }
 
     #[test]
