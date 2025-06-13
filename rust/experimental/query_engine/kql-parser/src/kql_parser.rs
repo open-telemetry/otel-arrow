@@ -1,58 +1,15 @@
-use std::collections::HashSet;
-
 use chrono::{FixedOffset, NaiveDate};
 use data_engine_expressions::*;
+use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
-
 use pest_derive::Parser;
 
-use crate::{Error, date_utils};
+use crate::date_utils;
 
 #[derive(Parser)]
 #[grammar = "kql.pest"]
 #[allow(dead_code)]
 pub(crate) struct KqlParser;
-
-#[allow(dead_code)]
-pub(crate) struct KqlParserState {
-    default_source_map_key: Option<Box<str>>,
-    attached_data_names: HashSet<Box<str>>,
-    variable_names: HashSet<Box<str>>,
-}
-
-impl KqlParserState {
-    #[allow(dead_code)]
-    pub fn new() -> KqlParserState {
-        Self {
-            default_source_map_key: None,
-            attached_data_names: HashSet::new(),
-            variable_names: HashSet::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_default_source_map_key_name(mut self, name: &str) -> KqlParserState {
-        if !name.is_empty() {
-            self.default_source_map_key = Some(name.into());
-        }
-
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_attached_data_names(mut self, names: &[&str]) -> KqlParserState {
-        for name in names {
-            self.attached_data_names.insert((*name).into());
-        }
-
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn push_variable_name(&mut self, name: &str) {
-        self.variable_names.insert(name.into());
-    }
-}
 
 /// The goal of this code is to unescape string literal values as they come in
 /// when parsed from pest:
@@ -108,13 +65,13 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
 #[allow(dead_code)]
 pub(crate) fn parse_double_literal(
     double_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&double_literal_rule);
 
     let raw_value = double_literal_rule.as_str();
     let parsed_value = raw_value.parse::<f64>();
     if parsed_value.is_err() {
-        return Err(Error::SyntaxError(
+        return Err(ParserError::SyntaxError(
             to_query_location(&double_literal_rule),
             format!(
                 "'{}' could not be parsed as a literal of type 'double'",
@@ -132,13 +89,13 @@ pub(crate) fn parse_double_literal(
 #[allow(dead_code)]
 pub(crate) fn parse_integer_literal(
     integer_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&integer_literal_rule);
 
     let raw_value = integer_literal_rule.as_str();
     let parsed_value = raw_value.parse::<i64>();
     if parsed_value.is_err() {
-        return Err(Error::SyntaxError(
+        return Err(ParserError::SyntaxError(
             to_query_location(&integer_literal_rule),
             format!(
                 "'{}' could not be parsed as a literal of type 'integer'",
@@ -155,7 +112,7 @@ pub(crate) fn parse_integer_literal(
 #[allow(dead_code)]
 pub(crate) fn parse_datetime_expression(
     datetime_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&datetime_expression_rule);
 
     let datetime_rule = datetime_expression_rule.into_inner().next().unwrap();
@@ -167,7 +124,7 @@ pub(crate) fn parse_datetime_expression(
 
             let date = date_utils::parse_date(&raw_value);
             if date.is_err() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -182,7 +139,7 @@ pub(crate) fn parse_datetime_expression(
 
             let time = date_utils::parse_time(&raw_value);
             if time.is_err() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -199,7 +156,7 @@ pub(crate) fn parse_datetime_expression(
 
             let nd = NaiveDate::from_ymd_opt(year as i32, month, day);
             if nd.is_none() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -211,7 +168,7 @@ pub(crate) fn parse_datetime_expression(
             let ndt = nd.unwrap().and_hms_micro_opt(hour, min, sec, micro);
 
             if ndt.is_none() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -222,7 +179,7 @@ pub(crate) fn parse_datetime_expression(
 
             let tz = FixedOffset::east_opt(offset);
             if tz.is_none() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -239,7 +196,7 @@ pub(crate) fn parse_datetime_expression(
                         DateTimeScalarExpression::new(query_location, date_time),
                     ))
                 }
-                _ => Err(Error::SyntaxError(
+                _ => Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -255,7 +212,7 @@ pub(crate) fn parse_datetime_expression(
 #[allow(dead_code)]
 pub(crate) fn parse_real_expression(
     real_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&real_expression_rule);
 
     let real_rule = real_expression_rule.into_inner().next().unwrap();
@@ -278,26 +235,11 @@ pub(crate) fn parse_real_expression(
     }
 }
 
-pub(crate) fn parse_bool_literal(bool_literal_rule: Pair<Rule>) -> StaticScalarExpression {
-    let query_location = to_query_location(&bool_literal_rule);
-
-    let value = match bool_literal_rule.as_rule() {
-        Rule::true_literal => true,
-        Rule::false_literal => false,
-        _ => panic!(
-            "Unexpected rule in bool_literal_rule: {}",
-            bool_literal_rule
-        ),
-    };
-
-    StaticScalarExpression::Boolean(BooleanScalarExpression::new(query_location, value))
-}
-
 #[allow(dead_code)]
 pub(crate) fn parse_scalar_expression(
     scalar_expression_rule: Pair<Rule>,
-    state: &KqlParserState,
-) -> Result<ScalarExpression, Error> {
+    state: &ParserState,
+) -> Result<ScalarExpression, ParserError> {
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 
     match scalar_rule.as_rule() {
@@ -310,9 +252,9 @@ pub(crate) fn parse_scalar_expression(
         Rule::logical_expression => Ok(ScalarExpression::Logical(
             parse_logical_expression(scalar_rule, state)?.into(),
         )),
-        Rule::true_literal | Rule::false_literal => {
-            Ok(ScalarExpression::Static(parse_bool_literal(scalar_rule)))
-        }
+        Rule::true_literal | Rule::false_literal => Ok(ScalarExpression::Static(
+            parse_standard_bool_literal(scalar_rule),
+        )),
         Rule::double_literal => Ok(ScalarExpression::Static(parse_double_literal(scalar_rule)?)),
         Rule::integer_literal => Ok(ScalarExpression::Static(parse_integer_literal(
             scalar_rule,
@@ -326,8 +268,8 @@ pub(crate) fn parse_scalar_expression(
 
 pub(crate) fn parse_comparison_expression(
     comparison_expression_rule: Pair<Rule>,
-    state: &KqlParserState,
-) -> Result<LogicalExpression, Error> {
+    state: &ParserState,
+) -> Result<LogicalExpression, ParserError> {
     let query_location = to_query_location(&comparison_expression_rule);
 
     let mut comparison_rules = comparison_expression_rule.into_inner();
@@ -389,33 +331,33 @@ pub(crate) fn parse_comparison_expression(
 
 pub(crate) fn parse_logical_expression(
     logical_expression_rule: Pair<Rule>,
-    state: &KqlParserState,
-) -> Result<LogicalExpression, Error> {
+    state: &ParserState,
+) -> Result<LogicalExpression, ParserError> {
     let query_location = to_query_location(&logical_expression_rule);
 
     let mut logical_rules = logical_expression_rule.into_inner();
 
-    let parse_rule = |logical_expression_rule: Pair<Rule>| -> Result<LogicalExpression, Error> {
-        match logical_expression_rule.as_rule() {
-            Rule::comparison_expression => {
-                Ok(parse_comparison_expression(logical_expression_rule, state)?)
+    let parse_rule =
+        |logical_expression_rule: Pair<Rule>| -> Result<LogicalExpression, ParserError> {
+            match logical_expression_rule.as_rule() {
+                Rule::comparison_expression => {
+                    Ok(parse_comparison_expression(logical_expression_rule, state)?)
+                }
+                Rule::logical_expression => {
+                    Ok(parse_logical_expression(logical_expression_rule, state)?)
+                }
+                Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
+                    ScalarExpression::Static(parse_standard_bool_literal(logical_expression_rule)),
+                )),
+                Rule::accessor_expression => Ok(LogicalExpression::Scalar(
+                    parse_accessor_expression(logical_expression_rule, state)?,
+                )),
+                _ => panic!(
+                    "Unexpected rule in logical_expression_rule: {}",
+                    logical_expression_rule
+                ),
             }
-            Rule::logical_expression => {
-                Ok(parse_logical_expression(logical_expression_rule, state)?)
-            }
-            Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
-                ScalarExpression::Static(parse_bool_literal(logical_expression_rule)),
-            )),
-            Rule::accessor_expression => Ok(LogicalExpression::Scalar(parse_accessor_expression(
-                logical_expression_rule,
-                state,
-            )?)),
-            _ => panic!(
-                "Unexpected rule in logical_expression_rule: {}",
-                logical_expression_rule
-            ),
-        }
-    };
+        };
 
     let first_expression = parse_rule(logical_rules.next().unwrap())?;
 
@@ -474,14 +416,14 @@ pub(crate) fn parse_logical_expression(
 /// * If the root identifier is not `source` or something contained in either
 ///   attached names nor variables names we assume the user wants some default
 ///   behavior. This is controlled by `default_source_map_key` on
-///   [`KqlParserState`].
+///   [`ParserState`].
 ///
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
 #[allow(dead_code)]
 pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
-    state: &KqlParserState,
-) -> Result<ScalarExpression, Error> {
+    state: &ParserState,
+) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&accessor_expression_rule);
 
     let mut accessor_rules = accessor_expression_rule.into_inner();
@@ -508,7 +450,7 @@ pub(crate) fn parse_accessor_expression(
                         let i = v.get_value();
 
                         if i < i32::MIN as i64 || i > i32::MAX as i64 {
-                            return Err(Error::SyntaxError(
+                            return Err(ParserError::SyntaxError(
                                 location,
                                 format!(
                                     "'{}' value for array index is too large to fit into a 32bit value",
@@ -602,8 +544,8 @@ pub(crate) fn parse_accessor_expression(
 #[allow(dead_code)]
 pub(crate) fn parse_assignment_expression(
     assignment_expression_rule: Pair<Rule>,
-    state: &KqlParserState,
-) -> Result<TransformExpression, Error> {
+    state: &ParserState,
+) -> Result<TransformExpression, ParserError> {
     let query_location = to_query_location(&assignment_expression_rule);
 
     let mut assignment_rules = assignment_expression_rule.into_inner();
@@ -624,7 +566,7 @@ pub(crate) fn parse_assignment_expression(
         ScalarExpression::Source(s) => MutableValueExpression::Source(s),
         ScalarExpression::Variable(v) => MutableValueExpression::Variable(v),
         _ => {
-            return Err(Error::SyntaxError(
+            return Err(ParserError::SyntaxError(
                 destination_rule_location,
                 format!(
                     "'{}' destination accessor must refer to a mutable source or variable to be used in an assignment expression",
@@ -651,8 +593,8 @@ pub(crate) fn parse_assignment_expression(
 #[allow(dead_code)]
 pub(crate) fn parse_extend_expression(
     extend_expression_rule: Pair<Rule>,
-    state: &KqlParserState,
-) -> Result<Vec<TransformExpression>, Error> {
+    state: &ParserState,
+) -> Result<Vec<TransformExpression>, ParserError> {
     let extend_rules = extend_expression_rule.into_inner();
 
     let mut set_expressions = Vec::new();
@@ -674,7 +616,7 @@ pub(crate) fn parse_extend_expression(
                             let (start, end) = location.get_start_and_end_positions();
                             let raw_accessor = &rule_span.as_str()
                                 [(start - rule_span.start())..(end - rule_span.start())];
-                            return Err(Error::SyntaxError(
+                            return Err(ParserError::SyntaxError(
                                 location,
                                 format!(
                                     "'{}' destination accessor must refer to a mutable source to be used in an extend expression",
@@ -698,37 +640,30 @@ pub(crate) fn parse_extend_expression(
     Ok(set_expressions)
 }
 
-pub(crate) fn to_query_location(rule: &Pair<Rule>) -> QueryLocation {
-    let s = rule.as_span();
-    let (line_number, column_number) = rule.line_col();
-    QueryLocation::new(s.start(), s.end(), line_number, column_number)
-}
-
 #[cfg(test)]
 mod pest_tests {
     use std::mem::discriminant;
 
     use super::*;
+    use data_engine_parser_abstractions::pest_test_helpers;
     use pest::{Parser, iterators::Pairs};
 
     #[test]
     fn test_true_literal() {
-        assert!(KqlParser::parse(Rule::true_literal, "true").is_ok());
-        assert!(KqlParser::parse(Rule::true_literal, "True").is_ok());
-        assert!(KqlParser::parse(Rule::true_literal, "TRUE").is_ok());
-        assert!(KqlParser::parse(Rule::true_literal, "tRuE").is_err());
-        assert!(KqlParser::parse(Rule::true_literal, "false").is_err());
-        assert!(KqlParser::parse(Rule::true_literal, "tru").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::true_literal,
+            &["true", "True", "TRUE"],
+            &["tru", "tRuE", "false"],
+        );
     }
 
     #[test]
     fn test_false_literal() {
-        assert!(KqlParser::parse(Rule::false_literal, "false").is_ok());
-        assert!(KqlParser::parse(Rule::false_literal, "False").is_ok());
-        assert!(KqlParser::parse(Rule::false_literal, "FALSE").is_ok());
-        assert!(KqlParser::parse(Rule::false_literal, "fAlSe").is_err());
-        assert!(KqlParser::parse(Rule::false_literal, "true").is_err());
-        assert!(KqlParser::parse(Rule::false_literal, "fals").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::false_literal,
+            &["false", "False", "FALSE"],
+            &["fals", "fAlSe", "true"],
+        );
     }
 
     #[test]
@@ -968,7 +903,24 @@ mod pest_tests {
 mod parse_tests {
     use super::*;
     use chrono::{DateTime, Datelike, NaiveDate, Utc};
+    use data_engine_parser_abstractions::parse_test_helpers;
     use pest::Parser;
+
+    #[test]
+    fn test_parse_bool_literal() {
+        parse_test_helpers::test_parse_bool_literal::<KqlParser, Rule>(
+            Rule::true_literal,
+            Rule::false_literal,
+            &[
+                ("true", true),
+                ("True", true),
+                ("TRUE", true),
+                ("false", false),
+                ("False", false),
+                ("FALSE", false),
+            ],
+        );
+    }
 
     #[test]
     fn test_parse_double_literal() {
@@ -1028,7 +980,7 @@ mod parse_tests {
 
         assert!(i.is_err());
 
-        if let Error::SyntaxError(_, _) = i.unwrap_err() {
+        if let ParserError::SyntaxError(_, _) = i.unwrap_err() {
         } else {
             panic!("Expected SyntaxError");
         }
@@ -1281,7 +1233,7 @@ mod parse_tests {
 
     #[test]
     fn test_parse_comparison_expression() {
-        let run_test = |input: &str, state: &KqlParserState, expected: LogicalExpression| {
+        let run_test = |input: &str, state: &ParserState, expected: LogicalExpression| {
             let mut result = KqlParser::parse(Rule::comparison_expression, input).unwrap();
 
             let expression = parse_comparison_expression(result.next().unwrap(), state).unwrap();
@@ -1289,7 +1241,7 @@ mod parse_tests {
             assert_eq!(expected, expression);
         };
 
-        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
 
         state.push_variable_name("variable");
 
@@ -1434,7 +1386,7 @@ mod parse_tests {
 
     #[test]
     fn test_parse_logical_expression() {
-        let run_test = |input: &str, state: &KqlParserState, expected: LogicalExpression| {
+        let run_test = |input: &str, state: &ParserState, expected: LogicalExpression| {
             let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
 
             let expression = parse_logical_expression(result.next().unwrap(), state).unwrap();
@@ -1442,7 +1394,7 @@ mod parse_tests {
             assert_eq!(expected, expression);
         };
 
-        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
 
         state.push_variable_name("variable");
 
@@ -1627,7 +1579,7 @@ mod parse_tests {
             KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
 
         let expression =
-            parse_accessor_expression(result.next().unwrap(), &KqlParserState::new()).unwrap();
+            parse_accessor_expression(result.next().unwrap(), &ParserState::new()).unwrap();
 
         if let ScalarExpression::Source(path) = expression {
             assert_eq!(
@@ -1658,7 +1610,7 @@ mod parse_tests {
         let mut result =
             KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]").unwrap();
 
-        let mut state = KqlParserState::new();
+        let mut state = ParserState::new();
 
         state.push_variable_name("var");
 
@@ -1708,7 +1660,7 @@ mod parse_tests {
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
-            &KqlParserState::new().with_default_source_map_key_name("attributes"),
+            &ParserState::new().with_default_source_map_key_name("attributes"),
         )
         .unwrap();
 
@@ -1745,7 +1697,7 @@ mod parse_tests {
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
-            &KqlParserState::new().with_attached_data_names(&["resource"]),
+            &ParserState::new().with_attached_data_names(&["resource"]),
         )
         .unwrap();
 
@@ -1768,7 +1720,7 @@ mod parse_tests {
     fn test_parse_accessor_expression_from_variable() {
         let mut result = KqlParser::parse(Rule::accessor_expression, "a[-1]").unwrap();
 
-        let mut state = KqlParserState::new();
+        let mut state = ParserState::new();
 
         state.push_variable_name("a");
 
@@ -1791,9 +1743,7 @@ mod parse_tests {
 
     #[test]
     fn test_parse_assignment_expression() {
-        let run_test_success = |input: &str,
-                                state: &KqlParserState,
-                                expected: TransformExpression| {
+        let run_test_success = |input: &str, state: &ParserState, expected: TransformExpression| {
             let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
 
             let expression = parse_assignment_expression(result.next().unwrap(), state).unwrap();
@@ -1801,19 +1751,19 @@ mod parse_tests {
             assert_eq!(expected, expression);
         };
 
-        let run_test_failure = |input: &str, state: &KqlParserState, expected: &str| {
+        let run_test_failure = |input: &str, state: &ParserState, expected: &str| {
             let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
 
             let error = parse_assignment_expression(result.next().unwrap(), state).unwrap_err();
 
-            if let Error::SyntaxError(_, msg) = error {
+            if let ParserError::SyntaxError(_, msg) = error {
                 assert_eq!(expected, msg);
             } else {
                 panic!("Expected SyntaxError");
             }
         };
 
-        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
 
         state.push_variable_name("variable");
 
@@ -1871,7 +1821,7 @@ mod parse_tests {
     #[test]
     fn test_parse_extend_expression() {
         let run_test_success =
-            |input: &str, state: &KqlParserState, expected: Vec<TransformExpression>| {
+            |input: &str, state: &ParserState, expected: Vec<TransformExpression>| {
                 let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
 
                 let expression = parse_extend_expression(result.next().unwrap(), state).unwrap();
@@ -1879,19 +1829,19 @@ mod parse_tests {
                 assert_eq!(expected, expression);
             };
 
-        let run_test_failure = |input: &str, state: &KqlParserState, expected: &str| {
+        let run_test_failure = |input: &str, state: &ParserState, expected: &str| {
             let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
 
             let error = parse_extend_expression(result.next().unwrap(), state).unwrap_err();
 
-            if let Error::SyntaxError(_, msg) = error {
+            if let ParserError::SyntaxError(_, msg) = error {
                 assert_eq!(expected, msg);
             } else {
                 panic!("Expected SyntaxError");
             }
         };
 
-        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
 
         state.push_variable_name("variable");
 
