@@ -1,11 +1,8 @@
-use crate::parser_abstractions::*;
-use data_engine_expressions::*;
-use pest::RuleType;
-
 /// Test helper to validate pest rules across different parsers
 pub mod pest_test_helpers {
-    use super::*;
-    use pest::Parser;
+    use pest::RuleType;
+    use pest::{Parser, iterators::Pairs};
+    use std::mem::discriminant;
 
     pub fn test_pest_rule<P, R>(parser_rule: R, ok_inputs: &[&str], err_inputs: &[&str])
     where
@@ -27,13 +24,50 @@ pub mod pest_test_helpers {
             );
         }
     }
+
+    /// Flattens the parsed pairs and validates each rule and its string content.
+    pub fn test_compound_pest_rule<R>(parsed: Pairs<'_, R>, expected: &[(R, &str)])
+    where
+        R: RuleType + std::fmt::Debug + PartialEq,
+    {
+        let flat: Vec<_> = parsed.flatten().collect();
+
+        assert_eq!(
+            flat.len(),
+            expected.len(),
+            "Expected {} rules, got {}",
+            expected.len(),
+            flat.len()
+        );
+
+        for (index, rule) in flat.iter().enumerate() {
+            let (expected_rule, expected_str) = &expected[index];
+
+            assert!(
+                discriminant(&rule.as_rule()) == discriminant(expected_rule),
+                "Rule at index {}: expected {:?}, got {:?}",
+                index,
+                expected_rule,
+                rule.as_rule()
+            );
+            assert_eq!(
+                rule.as_str(),
+                *expected_str,
+                "Rule at index {}: expected string '{}', got '{}'",
+                index,
+                expected_str,
+                rule.as_str()
+            );
+        }
+    }
 }
 
 /// Test helper to validate parsing of common expressions across different
 /// parsers that use generic parse functions.
 pub mod parse_test_helpers {
-    use super::*;
-    use pest::Parser;
+    use crate::parser_abstractions::*;
+    use data_engine_expressions::*;
+    use pest::{Parser, RuleType};
 
     pub fn test_parse_bool_literal<P, R>(
         true_parser_rule: R,
