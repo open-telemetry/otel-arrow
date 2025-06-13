@@ -10,9 +10,11 @@ use arrow::array::{
 use arrow::datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type};
 
 use crate::encode::record::array::dictionary::{
-    ConvertToNativeHelper, DictionaryBuilder, UpdateDictionaryIndexInto,
+    ConvertToNativeHelper, DictionaryArrayAppendSlice, DictionaryBuilder, UpdateDictionaryIndexInto,
 };
-use crate::encode::record::array::{ArrayAppend, ArrayAppendNulls, NoArgs};
+use crate::encode::record::array::{
+    ArrayAppend, ArrayAppendNulls, ArrayAppendSlice, DefaultValueProvider, NoArgs,
+};
 
 use super::dictionary::{self, DictionaryArrayAppend};
 use super::{ArrayBuilder, ArrayBuilderConstructor};
@@ -21,6 +23,14 @@ impl ArrayAppend for BinaryBuilder {
     type Native = Vec<u8>;
 
     fn append_value(&mut self, value: &Self::Native) {
+        self.append_value(value);
+    }
+}
+
+impl ArrayAppendSlice for BinaryBuilder {
+    type Native = u8;
+
+    fn append_slice(&mut self, value: &[Self::Native]) {
         self.append_value(value);
     }
 }
@@ -37,6 +47,12 @@ impl ArrayAppendNulls for BinaryBuilder {
         for _ in 0..n {
             self.append_null();
         }
+    }
+}
+
+impl DefaultValueProvider<Vec<u8>, NoArgs> for BinaryBuilder {
+    fn default_value(_args: NoArgs) -> Vec<u8> {
+        Vec::new()
     }
 }
 
@@ -73,6 +89,18 @@ where
     type Native = Vec<u8>;
 
     fn append_value(&mut self, value: &Self::Native) -> dictionary::Result<usize> {
+        self.append_slice(value)
+    }
+}
+
+impl<K> DictionaryArrayAppendSlice for BinaryDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+    <K as ArrowPrimitiveType>::Native: Into<usize>,
+{
+    type Native = u8;
+
+    fn append_slice(&mut self, value: &[Self::Native]) -> dictionary::Result<usize> {
         match self.append(value) {
             Ok(index) => Ok(index.into()),
             Err(arrow::error::ArrowError::DictionaryKeyOverflowError) => {
