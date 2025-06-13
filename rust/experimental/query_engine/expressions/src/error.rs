@@ -1,4 +1,4 @@
-use data_engine_expressions::QueryLocation;
+use crate::QueryLocation;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

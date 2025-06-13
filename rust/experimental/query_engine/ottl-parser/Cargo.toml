@@ -1,5 +1,5 @@
 [package]
-name = "data_engine_kql_parser"
+name = "data_engine_ottl_parser"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

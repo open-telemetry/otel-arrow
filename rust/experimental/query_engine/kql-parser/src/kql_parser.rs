@@ -6,7 +6,7 @@ use pest::iterators::Pair;
 
 use pest_derive::Parser;
 
-use crate::{Error, date_utils};
+use crate::date_utils;
 
 #[derive(Parser)]
 #[grammar = "kql.pest"]

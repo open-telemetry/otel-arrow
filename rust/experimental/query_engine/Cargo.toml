@@ -2,6 +2,7 @@
 members = [
     "expressions",
     "kql-parser",
+    "ottl-parser",
     "engine-columnar",
     "engine-recordset",
 ]
