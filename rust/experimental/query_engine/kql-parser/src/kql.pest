@@ -70,3 +70,7 @@ logical_expression = { (logical_expressions|("(" ~ logical_expression ~ ")")) ~ 
 accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ accessor_expression)) ~ "]" }
 accessor = _{ identifier_literal ~ accessor_index? }
 accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
+
+assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
+
+extend_expression = { "extend" ~ assignment_expression ~ ("," ~ assignment_expression)* }
