@@ -2,12 +2,13 @@ pub trait Expression {
     fn get_query_location(&self) -> &QueryLocation;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct QueryLocation {
     start: usize,
     end: usize,
     line_number: usize,
     column_number: usize,
+    fake: bool,
 }
 
 impl QueryLocation {
@@ -22,6 +23,17 @@ impl QueryLocation {
             end,
             line_number,
             column_number,
+            fake: false,
+        }
+    }
+
+    pub fn new_fake() -> QueryLocation {
+        Self {
+            start: 0,
+            end: 0,
+            line_number: 1,
+            column_number: 1,
+            fake: true,
         }
     }
 
@@ -31,5 +43,18 @@ impl QueryLocation {
 
     pub fn get_line_and_column_numbers(&self) -> (usize, usize) {
         (self.line_number, self.column_number)
+    }
+}
+
+impl PartialEq for QueryLocation {
+    fn eq(&self, other: &Self) -> bool {
+        if self.fake || other.fake {
+            return true;
+        }
+
+        self.start == other.start
+            && self.end == other.end
+            && self.line_number == other.line_number
+            && self.column_number == other.column_number
     }
 }
