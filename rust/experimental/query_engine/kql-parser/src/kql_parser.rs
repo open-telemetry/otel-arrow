@@ -599,6 +599,105 @@ pub(crate) fn parse_accessor_expression(
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn parse_assignment_expression(
+    assignment_expression_rule: Pair<Rule>,
+    state: &KqlParserState,
+) -> Result<TransformExpression, Error> {
+    let query_location = to_query_location(&assignment_expression_rule);
+
+    let mut assignment_rules = assignment_expression_rule.into_inner();
+
+    let destination_rule = assignment_rules.next().unwrap();
+    let destination_rule_location = to_query_location(&destination_rule);
+    let destination_rule_str = destination_rule.as_str();
+
+    let accessor = match destination_rule.as_rule() {
+        Rule::accessor_expression => parse_accessor_expression(destination_rule, state)?,
+        _ => panic!(
+            "Unexpected rule in assignment_expression: {}",
+            destination_rule
+        ),
+    };
+
+    let destination = match accessor {
+        ScalarExpression::Source(s) => MutableValueExpression::Source(s),
+        ScalarExpression::Variable(v) => MutableValueExpression::Variable(v),
+        _ => {
+            return Err(Error::SyntaxError(
+                destination_rule_location,
+                format!(
+                    "'{}' destination accessor must refer to a mutable source or variable to be used in an assignment expression",
+                    destination_rule_str
+                ),
+            ));
+        }
+    };
+
+    let source_rule = assignment_rules.next().unwrap();
+
+    let scalar = match source_rule.as_rule() {
+        Rule::scalar_expression => parse_scalar_expression(source_rule, state)?,
+        _ => panic!("Unexpected rule in assignment_expression: {}", source_rule),
+    };
+
+    Ok(TransformExpression::Set(SetTransformExpression::new(
+        query_location,
+        ImmutableValueExpression::Scalar(scalar),
+        destination,
+    )))
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_extend_expression(
+    extend_expression_rule: Pair<Rule>,
+    state: &KqlParserState,
+) -> Result<Vec<TransformExpression>, Error> {
+    let extend_rules = extend_expression_rule.into_inner();
+
+    let mut set_expressions = Vec::new();
+
+    for rule in extend_rules {
+        match rule.as_rule() {
+            Rule::assignment_expression => {
+                let rule_span = rule.as_span();
+
+                let assignment_expression = parse_assignment_expression(rule, state)?;
+
+                // todo: Remove when another TransformExpression is added
+                #[allow(irrefutable_let_patterns)]
+                if let TransformExpression::Set(s) = &assignment_expression {
+                    match s.get_destination() {
+                        MutableValueExpression::Source(_) => {}
+                        MutableValueExpression::Variable(v) => {
+                            let location = v.get_query_location().clone();
+                            let (start, end) = location.get_start_and_end_positions();
+                            let raw_accessor = &rule_span.as_str()
+                                [(start - rule_span.start())..(end - rule_span.start())];
+                            return Err(Error::SyntaxError(
+                                location,
+                                format!(
+                                    "'{}' destination accessor must refer to a mutable source to be used in an extend expression",
+                                    raw_accessor.trim()
+                                ),
+                            ));
+                        }
+                    }
+                    set_expressions.push(assignment_expression);
+                } else {
+                    panic!(
+                        "Unexpected transformation in extend_expression: {:?}",
+                        assignment_expression
+                    )
+                }
+            }
+            _ => panic!("Unexpected rule in extend_expression: {}", rule),
+        }
+    }
+
+    Ok(set_expressions)
+}
+
 pub(crate) fn to_query_location(rule: &Pair<Rule>) -> QueryLocation {
     let s = rule.as_span();
     let (line_number, column_number) = rule.line_col();
@@ -1688,5 +1787,183 @@ mod parse_tests {
         } else {
             panic!("Expected VariableScalarExpression");
         }
+    }
+
+    #[test]
+    fn test_parse_assignment_expression() {
+        let run_test_success = |input: &str,
+                                state: &KqlParserState,
+                                expected: TransformExpression| {
+            let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
+
+            let expression = parse_assignment_expression(result.next().unwrap(), state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, state: &KqlParserState, expected: &str| {
+            let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
+
+            let error = parse_assignment_expression(result.next().unwrap(), state).unwrap_err();
+
+            if let Error::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+
+        state.push_variable_name("variable");
+
+        let mut new_attribute_accessor = ValueAccessor::new();
+
+        new_attribute_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(0, 14, 1, 1),
+            "new_attribute",
+        )));
+
+        run_test_success(
+            "new_attribute = 1",
+            &state,
+            TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new(0, 17, 1, 1),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new(16, 17, 1, 17),
+                        1,
+                    )),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new(0, 14, 1, 1),
+                    new_attribute_accessor,
+                )),
+            )),
+        );
+
+        run_test_success(
+            "variable = 'hello world'",
+            &state,
+            TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new(0, 24, 1, 1),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new(11, 24, 1, 12),
+                        "hello world",
+                    )),
+                )),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new(0, 9, 1, 1),
+                    "variable",
+                    ValueAccessor::new(),
+                )),
+            )),
+        );
+
+        run_test_failure(
+            "resource.attributes['new_attribute'] = 1",
+            &state,
+            "'resource.attributes['new_attribute']' destination accessor must refer to a mutable source or variable to be used in an assignment expression",
+        );
+    }
+
+    #[test]
+    fn test_parse_extend_expression() {
+        let run_test_success =
+            |input: &str, state: &KqlParserState, expected: Vec<TransformExpression>| {
+                let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+
+                let expression = parse_extend_expression(result.next().unwrap(), state).unwrap();
+
+                assert_eq!(expected, expression);
+            };
+
+        let run_test_failure = |input: &str, state: &KqlParserState, expected: &str| {
+            let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+
+            let error = parse_extend_expression(result.next().unwrap(), state).unwrap_err();
+
+            if let Error::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        let mut state = KqlParserState::new().with_attached_data_names(&["resource"]);
+
+        state.push_variable_name("variable");
+
+        let mut new_attribute1_accessor = ValueAccessor::new();
+
+        new_attribute1_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(7, 22, 1, 8),
+            "new_attribute1",
+        )));
+
+        run_test_success(
+            "extend new_attribute1 = 1",
+            &state,
+            vec![TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new(7, 25, 1, 8),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new(24, 25, 1, 25),
+                        1,
+                    )),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new(7, 22, 1, 8),
+                    new_attribute1_accessor.clone(),
+                )),
+            ))],
+        );
+
+        let mut new_attribute2_accessor = ValueAccessor::new();
+
+        new_attribute2_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(27, 42, 1, 28),
+            "new_attribute2",
+        )));
+
+        run_test_success(
+            "extend new_attribute1 = 1, new_attribute2 = 2",
+            &state,
+            vec![
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new(7, 25, 1, 8),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new(24, 25, 1, 25),
+                            1,
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new(7, 22, 1, 8),
+                        new_attribute1_accessor,
+                    )),
+                )),
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new(27, 45, 1, 28),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new(44, 45, 1, 45),
+                            2,
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new(27, 42, 1, 28),
+                        new_attribute2_accessor,
+                    )),
+                )),
+            ],
+        );
+
+        run_test_failure(
+            "extend variable.key = 1",
+            &state,
+            "'variable.key' destination accessor must refer to a mutable source to be used in an extend expression",
+        );
     }
 }
