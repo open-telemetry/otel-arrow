@@ -1249,14 +1249,14 @@ mod parse_tests {
             "variable == 'hello world'",
             &state,
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                QueryLocation::new(0, 25, 1, 1),
+                QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
-                    QueryLocation::new(0, 9, 1, 1),
+                    QueryLocation::new_fake(),
                     "variable",
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new(12, 25, 1, 13), "hello world"),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 )),
             )),
         );
@@ -1265,26 +1265,23 @@ mod parse_tests {
             "(true == true) != true",
             &state,
             LogicalExpression::Not(NotLogicalExpression::new(
-                QueryLocation::new(0, 22, 1, 1),
+                QueryLocation::new_fake(),
                 LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                    QueryLocation::new(0, 22, 1, 1),
+                    QueryLocation::new_fake(),
                     ScalarExpression::Logical(
                         LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                            QueryLocation::new(1, 13, 1, 2),
+                            QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Boolean(
-                                BooleanScalarExpression::new(QueryLocation::new(1, 5, 1, 2), true),
+                                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                             )),
                             ScalarExpression::Static(StaticScalarExpression::Boolean(
-                                BooleanScalarExpression::new(
-                                    QueryLocation::new(9, 13, 1, 10),
-                                    true,
-                                ),
+                                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                             )),
                         ))
                         .into(),
                     ),
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
-                        BooleanScalarExpression::new(QueryLocation::new(18, 22, 1, 19), true),
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                 )),
             )),
@@ -1293,7 +1290,7 @@ mod parse_tests {
         let mut source_accessor = ValueAccessor::new();
 
         source_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(4, 15, 1, 5),
+            QueryLocation::new_fake(),
             "source_path",
         )));
 
@@ -1301,12 +1298,12 @@ mod parse_tests {
             "1 > source_path",
             &state,
             LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                QueryLocation::new(0, 15, 1, 1),
+                QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new(0, 1, 1, 1), 1),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new(4, 15, 1, 5),
+                    QueryLocation::new_fake(),
                     source_accessor,
                 )),
             )),
@@ -1315,7 +1312,7 @@ mod parse_tests {
         let mut resource_accessor = ValueAccessor::new();
 
         resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(16, 19, 1, 17),
+            QueryLocation::new_fake(),
             "key",
         )));
 
@@ -1323,12 +1320,12 @@ mod parse_tests {
             "(1) >= resource.key",
             &state,
             LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
-                QueryLocation::new(0, 19, 1, 1),
+                QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new(1, 2, 1, 2), 1),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
                 ScalarExpression::Attached(AttachedScalarExpression::new(
-                    QueryLocation::new(7, 19, 1, 8),
+                    QueryLocation::new_fake(),
                     "resource",
                     resource_accessor,
                 )),
@@ -1339,15 +1336,15 @@ mod parse_tests {
             "0 < (1)",
             &state,
             LogicalExpression::Not(NotLogicalExpression::new(
-                QueryLocation::new(0, 7, 1, 1),
+                QueryLocation::new_fake(),
                 LogicalExpression::GreaterThanOrEqualTo(
                     GreaterThanOrEqualToLogicalExpression::new(
-                        QueryLocation::new(0, 7, 1, 1),
+                        QueryLocation::new_fake(),
                         ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new(0, 1, 1, 1), 0),
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                         )),
                         ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new(5, 6, 1, 6), 1),
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                         )),
                     ),
                 ),
@@ -1358,23 +1355,20 @@ mod parse_tests {
             "0 <= (true == true)",
             &state,
             LogicalExpression::Not(NotLogicalExpression::new(
-                QueryLocation::new(0, 19, 1, 1),
+                QueryLocation::new_fake(),
                 LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                    QueryLocation::new(0, 19, 1, 1),
+                    QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new(0, 1, 1, 1), 0),
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                     )),
                     ScalarExpression::Logical(
                         LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                            QueryLocation::new(6, 18, 1, 7),
+                            QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Boolean(
-                                BooleanScalarExpression::new(QueryLocation::new(6, 10, 1, 7), true),
+                                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                             )),
                             ScalarExpression::Static(StaticScalarExpression::Boolean(
-                                BooleanScalarExpression::new(
-                                    QueryLocation::new(14, 18, 1, 15),
-                                    true,
-                                ),
+                                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                             )),
                         ))
                         .into(),
@@ -1402,7 +1396,7 @@ mod parse_tests {
             "true",
             &state,
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new(0, 4, 1, 1), true),
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
             ))),
         );
 
@@ -1410,13 +1404,13 @@ mod parse_tests {
             "false",
             &state,
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new(0, 5, 1, 1), false),
+                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
             ))),
         );
 
         let mut source_accessor = ValueAccessor::new();
         source_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(7, 11, 1, 8),
+            QueryLocation::new_fake(),
             "name",
         )));
 
@@ -1424,18 +1418,18 @@ mod parse_tests {
             "source.name",
             &state,
             LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
-                QueryLocation::new(0, 11, 1, 1),
+                QueryLocation::new_fake(),
                 source_accessor,
             ))),
         );
 
         let mut resource_accessor = ValueAccessor::new();
         resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(9, 19, 1, 10),
+            QueryLocation::new_fake(),
             "attributes",
         )));
         resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(20, 34, 1, 21),
+            QueryLocation::new_fake(),
             "service.name",
         )));
 
@@ -1443,7 +1437,7 @@ mod parse_tests {
             "resource.attributes['service.name']",
             &state,
             LogicalExpression::Scalar(ScalarExpression::Attached(AttachedScalarExpression::new(
-                QueryLocation::new(0, 35, 1, 1),
+                QueryLocation::new_fake(),
                 "resource",
                 resource_accessor,
             ))),
@@ -1455,7 +1449,7 @@ mod parse_tests {
             "variable",
             &state,
             LogicalExpression::Scalar(ScalarExpression::Variable(VariableScalarExpression::new(
-                QueryLocation::new(0, 8, 1, 1),
+                QueryLocation::new_fake(),
                 "variable",
                 variable_accessor.clone(),
             ))),
@@ -1465,29 +1459,29 @@ mod parse_tests {
             "variable == 'hello world'",
             &state,
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                QueryLocation::new(0, 25, 1, 1),
+                QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
-                    QueryLocation::new(0, 9, 1, 1),
+                    QueryLocation::new_fake(),
                     "variable",
                     variable_accessor.clone(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new(12, 25, 1, 13), "hello world"),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 )),
             )),
         );
 
         let mut chain = ChainLogicalExpression::new(
-            QueryLocation::new(0, 51, 1, 1),
+            QueryLocation::new_fake(),
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                QueryLocation::new(0, 25, 1, 1),
+                QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
-                    QueryLocation::new(0, 9, 1, 1),
+                    QueryLocation::new_fake(),
                     "variable",
                     variable_accessor.clone(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new(12, 25, 1, 13), "hello world"),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 )),
             )),
         );
@@ -1495,20 +1489,20 @@ mod parse_tests {
         let mut severity_text_accessor = ValueAccessor::new();
 
         severity_text_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(29, 42, 1, 30),
+            QueryLocation::new_fake(),
             "SeverityText",
         )));
 
         chain.push_or(LogicalExpression::Not(NotLogicalExpression::new(
-            QueryLocation::new(29, 51, 1, 30),
+            QueryLocation::new_fake(),
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                QueryLocation::new(29, 51, 1, 30),
+                QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new(29, 42, 1, 30),
+                    QueryLocation::new_fake(),
                     severity_text_accessor,
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new(45, 51, 1, 46), "Info"),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "Info"),
                 )),
             )),
         )));
@@ -1520,16 +1514,16 @@ mod parse_tests {
         );
 
         let mut nested_logical = ChainLogicalExpression::new(
-            QueryLocation::new(1, 53, 1, 2),
+            QueryLocation::new_fake(),
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                QueryLocation::new(1, 28, 1, 2),
+                QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
-                    QueryLocation::new(1, 10, 1, 2),
+                    QueryLocation::new_fake(),
                     "variable",
                     variable_accessor.clone(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new(14, 27, 1, 15), "hello world"),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 )),
             )),
         );
@@ -1537,31 +1531,31 @@ mod parse_tests {
         let mut severity_text_accessor = ValueAccessor::new();
 
         severity_text_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(33, 47, 1, 34),
+            QueryLocation::new_fake(),
             "SeverityNumber",
         )));
 
         nested_logical.push_or(LogicalExpression::GreaterThanOrEqualTo(
             GreaterThanOrEqualToLogicalExpression::new(
-                QueryLocation::new(32, 53, 1, 33),
+                QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new(33, 47, 1, 34),
+                    QueryLocation::new_fake(),
                     severity_text_accessor,
                 )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new(52, 53, 1, 53), 0),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                 )),
             ),
         ));
 
         let mut nested_chain = ChainLogicalExpression::new(
-            QueryLocation::new(0, 65, 1, 1),
+            QueryLocation::new_fake(),
             LogicalExpression::Chain(nested_logical),
         );
 
         nested_chain.push_and(LogicalExpression::Scalar(ScalarExpression::Static(
             StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                QueryLocation::new(60, 64, 1, 61),
+                QueryLocation::new_fake(),
                 true,
             )),
         )));
@@ -1585,15 +1579,15 @@ mod parse_tests {
             assert_eq!(
                 &[
                     ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new(7, 13, 1, 8),
+                        QueryLocation::new_fake(),
                         "subkey"
                     )),
                     ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new(14, 21, 1, 15),
+                        QueryLocation::new_fake(),
                         "array"
                     )),
                     ValueSelector::ArrayIndex(IntegerScalarExpression::new(
-                        QueryLocation::new(23, 24, 1, 24),
+                        QueryLocation::new_fake(),
                         0
                     ))
                 ]
@@ -1618,7 +1612,7 @@ mod parse_tests {
 
         let mut v = ValueAccessor::new();
         v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(13, 21, 1, 14),
+            QueryLocation::new_fake(),
             "neg_attr",
         )));
 
@@ -1626,21 +1620,21 @@ mod parse_tests {
             assert_eq!(
                 &[
                     ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new(0, 22, 1, 1),
+                        QueryLocation::new_fake(),
                         "subkey"
                     )),
                     ValueSelector::ScalarExpression(ScalarExpression::Variable(
                         VariableScalarExpression::new(
-                            QueryLocation::new(7, 10, 1, 8),
+                            QueryLocation::new_fake(),
                             "var",
                             ValueAccessor::new()
                         )
                     )),
                     ValueSelector::ScalarExpression(ScalarExpression::Negate(
                         NegateScalarExpression::new(
-                            QueryLocation::new(12, 13, 1, 13),
+                            QueryLocation::new_fake(),
                             ScalarExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new(13, 21, 1, 14),
+                                QueryLocation::new_fake(),
                                 v
                             ))
                         )
@@ -1666,7 +1660,7 @@ mod parse_tests {
 
         let mut v = ValueAccessor::new();
         v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(13, 21, 1, 14),
+            QueryLocation::new_fake(),
             "neg_attr",
         )));
 
@@ -1674,11 +1668,11 @@ mod parse_tests {
             assert_eq!(
                 &[
                     ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new(0, 6, 1, 1),
+                        QueryLocation::new_fake(),
                         "attributes"
                     )),
                     ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new(0, 6, 1, 1),
+                        QueryLocation::new_fake(),
                         "subkey"
                     ))
                 ]
@@ -1705,7 +1699,7 @@ mod parse_tests {
             assert_eq!("resource", a.get_name());
             assert_eq!(
                 &[ValueSelector::MapKey(StringScalarExpression::new(
-                    QueryLocation::new(9, 19, 1, 10),
+                    QueryLocation::new_fake(),
                     "~at'tr~"
                 ))]
                 .to_vec(),
@@ -1730,7 +1724,7 @@ mod parse_tests {
             assert_eq!("a", v.get_name());
             assert_eq!(
                 &[ValueSelector::ArrayIndex(IntegerScalarExpression::new(
-                    QueryLocation::new(2, 4, 1, 3),
+                    QueryLocation::new_fake(),
                     -1
                 ))]
                 .to_vec(),
@@ -1770,7 +1764,7 @@ mod parse_tests {
         let mut new_attribute_accessor = ValueAccessor::new();
 
         new_attribute_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(0, 14, 1, 1),
+            QueryLocation::new_fake(),
             "new_attribute",
         )));
 
@@ -1778,15 +1772,15 @@ mod parse_tests {
             "new_attribute = 1",
             &state,
             TransformExpression::Set(SetTransformExpression::new(
-                QueryLocation::new(0, 17, 1, 1),
+                QueryLocation::new_fake(),
                 ImmutableValueExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new(16, 17, 1, 17),
+                        QueryLocation::new_fake(),
                         1,
                     )),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new(0, 14, 1, 1),
+                    QueryLocation::new_fake(),
                     new_attribute_accessor,
                 )),
             )),
@@ -1796,15 +1790,15 @@ mod parse_tests {
             "variable = 'hello world'",
             &state,
             TransformExpression::Set(SetTransformExpression::new(
-                QueryLocation::new(0, 24, 1, 1),
+                QueryLocation::new_fake(),
                 ImmutableValueExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new(11, 24, 1, 12),
+                        QueryLocation::new_fake(),
                         "hello world",
                     )),
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
-                    QueryLocation::new(0, 9, 1, 1),
+                    QueryLocation::new_fake(),
                     "variable",
                     ValueAccessor::new(),
                 )),
@@ -1848,7 +1842,7 @@ mod parse_tests {
         let mut new_attribute1_accessor = ValueAccessor::new();
 
         new_attribute1_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(7, 22, 1, 8),
+            QueryLocation::new_fake(),
             "new_attribute1",
         )));
 
@@ -1856,15 +1850,15 @@ mod parse_tests {
             "extend new_attribute1 = 1",
             &state,
             vec![TransformExpression::Set(SetTransformExpression::new(
-                QueryLocation::new(7, 25, 1, 8),
+                QueryLocation::new_fake(),
                 ImmutableValueExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new(24, 25, 1, 25),
+                        QueryLocation::new_fake(),
                         1,
                     )),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new(7, 22, 1, 8),
+                    QueryLocation::new_fake(),
                     new_attribute1_accessor.clone(),
                 )),
             ))],
@@ -1873,7 +1867,7 @@ mod parse_tests {
         let mut new_attribute2_accessor = ValueAccessor::new();
 
         new_attribute2_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new(27, 42, 1, 28),
+            QueryLocation::new_fake(),
             "new_attribute2",
         )));
 
@@ -1882,28 +1876,28 @@ mod parse_tests {
             &state,
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
-                    QueryLocation::new(7, 25, 1, 8),
+                    QueryLocation::new_fake(),
                     ImmutableValueExpression::Scalar(ScalarExpression::Static(
                         StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new(24, 25, 1, 25),
+                            QueryLocation::new_fake(),
                             1,
                         )),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new(7, 22, 1, 8),
+                        QueryLocation::new_fake(),
                         new_attribute1_accessor,
                     )),
                 )),
                 TransformExpression::Set(SetTransformExpression::new(
-                    QueryLocation::new(27, 45, 1, 28),
+                    QueryLocation::new_fake(),
                     ImmutableValueExpression::Scalar(ScalarExpression::Static(
                         StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            QueryLocation::new(44, 45, 1, 45),
+                            QueryLocation::new_fake(),
                             2,
                         )),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new(27, 42, 1, 28),
+                        QueryLocation::new_fake(),
                         new_attribute2_accessor,
                     )),
                 )),
