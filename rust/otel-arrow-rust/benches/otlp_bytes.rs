@@ -16,7 +16,6 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use prost::Message;
-use std::hint::black_box;
 
 use otel_arrow_rust::pdata::otlp::PrecomputedSizes;
 use otel_arrow_rust::proto::opentelemetry::common::v1::*;
@@ -77,9 +76,9 @@ fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
 
     _ = group.bench_function("LogsData Prost decode", |b| {
         let mut enc_buf = Vec::new();
-        logs.encode(&mut enc_buf).unwrap();
+        logs.encode(&mut enc_buf).expect("expect can encode logs");
 
-        b.iter(|| LogsData::decode(enc_buf.as_slice()).unwrap())
+        b.iter(|| LogsData::decode(enc_buf.as_slice()).expect("expect can decode"))
     });
 
     _ = group.bench_function("LogsData Prost encoded_len", |b| {
