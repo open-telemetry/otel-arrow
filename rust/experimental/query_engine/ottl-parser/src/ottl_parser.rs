@@ -28,6 +28,9 @@ mod parse_tests {
 
     #[test]
     fn test_parse_bool_literal() {
-        test_generic_parse_bool_literal::<OttlParser, Rule>(Rule::true_literal, Rule::false_literal);
+        test_generic_parse_bool_literal::<OttlParser, Rule>(
+            Rule::true_literal,
+            Rule::false_literal,
+        );
     }
 }

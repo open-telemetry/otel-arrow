@@ -1,6 +1,6 @@
 use data_engine_expressions::*;
-use pest::iterators::Pair;
 use pest::RuleType;
+use pest::iterators::Pair;
 
 /// Use a Pest rule to create a `QueryLocation`
 /// This function extracts the start and end positions, as well as line and column numbers, from a Pest rule pair.
@@ -13,7 +13,9 @@ pub fn to_query_location<R: RuleType>(rule: &Pair<R>) -> QueryLocation {
 
 /// Parses a boolean literal from a Pest rule pair and returns a `StaticScalarExpression`.
 /// The rule name is required to be either `true_literal` or `false_literal`.
-pub fn generic_parse_bool_literal<R: RuleType>(bool_literal_rule: Pair<R>) -> StaticScalarExpression {
+pub fn generic_parse_bool_literal<R: RuleType>(
+    bool_literal_rule: Pair<R>,
+) -> StaticScalarExpression {
     let query_location = to_query_location(&bool_literal_rule);
     let rule_name = format!("{:?}", bool_literal_rule.as_rule());
 
@@ -22,8 +24,7 @@ pub fn generic_parse_bool_literal<R: RuleType>(bool_literal_rule: Pair<R>) -> St
         "false_literal" => false,
         _ => panic!(
             "Unexpected rule in bool_literal_rule: {} (rule: {})",
-            bool_literal_rule,
-            rule_name
+            bool_literal_rule, rule_name
         ),
     };
 

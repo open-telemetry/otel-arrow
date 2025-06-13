@@ -1,6 +1,6 @@
+use crate::parser_generics::*;
 use data_engine_expressions::*;
 use pest::RuleType;
-use crate::parser_generics::*;
 
 /// Test helpers to validate common pest rules across different parsers that
 /// adhere to common conventions for certain pest rules.
@@ -41,10 +41,8 @@ pub mod generic_parse_helpers {
     use super::*;
     use pest::Parser;
 
-    pub fn test_generic_parse_bool_literal<P, R>(
-        parser_true_rule: R,
-        parser_false_rule: R,
-    ) where
+    pub fn test_generic_parse_bool_literal<P, R>(parser_true_rule: R, parser_false_rule: R)
+    where
         P: Parser<R>,
         R: RuleType,
     {

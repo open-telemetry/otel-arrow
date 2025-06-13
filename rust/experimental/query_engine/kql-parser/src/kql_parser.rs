@@ -1,4 +1,3 @@
-
 use chrono::{FixedOffset, NaiveDate};
 use data_engine_expressions::*;
 use data_engine_parser_generics::*;
@@ -253,9 +252,9 @@ pub(crate) fn parse_scalar_expression(
         Rule::logical_expression => Ok(ScalarExpression::Logical(
             parse_logical_expression(scalar_rule, state)?.into(),
         )),
-        Rule::true_literal | Rule::false_literal => {
-            Ok(ScalarExpression::Static(generic_parse_bool_literal(scalar_rule)))
-        }
+        Rule::true_literal | Rule::false_literal => Ok(ScalarExpression::Static(
+            generic_parse_bool_literal(scalar_rule),
+        )),
         Rule::double_literal => Ok(ScalarExpression::Static(parse_double_literal(scalar_rule)?)),
         Rule::integer_literal => Ok(ScalarExpression::Static(parse_integer_literal(
             scalar_rule,
@@ -338,27 +337,27 @@ pub(crate) fn parse_logical_expression(
 
     let mut logical_rules = logical_expression_rule.into_inner();
 
-    let parse_rule = |logical_expression_rule: Pair<Rule>| -> Result<LogicalExpression, ParserError> {
-        match logical_expression_rule.as_rule() {
-            Rule::comparison_expression => {
-                Ok(parse_comparison_expression(logical_expression_rule, state)?)
+    let parse_rule =
+        |logical_expression_rule: Pair<Rule>| -> Result<LogicalExpression, ParserError> {
+            match logical_expression_rule.as_rule() {
+                Rule::comparison_expression => {
+                    Ok(parse_comparison_expression(logical_expression_rule, state)?)
+                }
+                Rule::logical_expression => {
+                    Ok(parse_logical_expression(logical_expression_rule, state)?)
+                }
+                Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
+                    ScalarExpression::Static(generic_parse_bool_literal(logical_expression_rule)),
+                )),
+                Rule::accessor_expression => Ok(LogicalExpression::Scalar(
+                    parse_accessor_expression(logical_expression_rule, state)?,
+                )),
+                _ => panic!(
+                    "Unexpected rule in logical_expression_rule: {}",
+                    logical_expression_rule
+                ),
             }
-            Rule::logical_expression => {
-                Ok(parse_logical_expression(logical_expression_rule, state)?)
-            }
-            Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
-                ScalarExpression::Static(generic_parse_bool_literal(logical_expression_rule)),
-            )),
-            Rule::accessor_expression => Ok(LogicalExpression::Scalar(parse_accessor_expression(
-                logical_expression_rule,
-                state,
-            )?)),
-            _ => panic!(
-                "Unexpected rule in logical_expression_rule: {}",
-                logical_expression_rule
-            ),
-        }
-    };
+        };
 
     let first_expression = parse_rule(logical_rules.next().unwrap())?;
 
@@ -797,8 +796,8 @@ mod pest_tests {
 mod parse_tests {
     use super::*;
     use chrono::{DateTime, Datelike, NaiveDate, Utc};
-    use pest::Parser;
     use data_engine_parser_generics::generic_parse_helpers::*;
+    use pest::Parser;
 
     #[test]
     fn test_parse_bool_literal() {
