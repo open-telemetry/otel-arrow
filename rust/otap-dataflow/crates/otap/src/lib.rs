@@ -14,3 +14,4 @@ pub mod proto;
 /// testing utilities
 // #[cfg(test)]
 pub mod mock;
+pub mod perf_exporter;

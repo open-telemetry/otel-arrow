@@ -18,7 +18,6 @@ mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
-otap-df-perf = { path="../crates/perf_exporter"}
 otap-df-otap = { path="../crates/otap"}
 otap-df-otlp = { path="../crates/otlp"}
 fluke-hpack = "0.3.1"

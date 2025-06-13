@@ -5,4 +5,4 @@
 /// allows the user to configure their perf exporter
 pub mod config;
 /// Perf Exporter implementation
-pub mod perf_exporter;
+pub mod exporter;

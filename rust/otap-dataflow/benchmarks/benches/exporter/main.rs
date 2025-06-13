@@ -18,6 +18,7 @@ use otap_df_otap::{
     grpc::OTAPData,
     mock::{ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock},
     otap_exporter::OTAPExporter,
+    perf_exporter::{config::Config, exporter::PerfExporter},
     proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
         arrow_logs_service_server::ArrowLogsServiceServer,
@@ -40,7 +41,6 @@ use otap_df_otlp::{
     },
 };
 
-use otap_df_perf::{config::Config, perf_exporter::PerfExporter};
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
@@ -259,11 +259,11 @@ fn bench_exporter(c: &mut Criterion) {
 
                 // send signals to the exporter
                 for batch in batches {
-                    pdata_sender.send(batch.clone()).await;
+                    _ = pdata_sender.send(batch.clone()).await;
                 }
 
-                control_sender.send(ControlMsg::TimerTick {}).await;
-                control_sender
+                _ = control_sender.send(ControlMsg::TimerTick {}).await;
+                _ = control_sender
                     .send(ControlMsg::Shutdown {
                         deadline: Duration::from_millis(2000),
                         reason: "shutdown".to_string(),
@@ -307,10 +307,10 @@ fn bench_exporter(c: &mut Criterion) {
 
                 // send signals to the exporter
                 for otap_signal in otap_signals {
-                    pdata_sender.send(otap_signal.clone()).await;
+                    _ = pdata_sender.send(otap_signal.clone()).await;
                 }
 
-                control_sender
+                _ = control_sender
                     .send(ControlMsg::Shutdown {
                         deadline: Duration::from_millis(2000),
                         reason: "shutdown".to_string(),
@@ -354,10 +354,10 @@ fn bench_exporter(c: &mut Criterion) {
 
                 // send signals to the exporter
                 for otlp_signal in otlp_signals {
-                    pdata_sender.send(otlp_signal.clone()).await;
+                    _ = pdata_sender.send(otlp_signal.clone()).await;
                 }
 
-                control_sender
+                _ = control_sender
                     .send(ControlMsg::Shutdown {
                         deadline: Duration::from_millis(2000),
                         reason: "shutdown".to_string(),

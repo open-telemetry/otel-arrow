@@ -8,16 +8,14 @@
 //! ToDo: track memory allocation per thread
 //! ToDo: calculate average latency of otlp signals
 
-use crate::config::Config;
+use crate::perf_exporter::config::Config;
+use crate::proto::opentelemetry::experimental::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use async_trait::async_trait;
 use byte_unit::Byte;
 use fluke_hpack::Decoder;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
-use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::{
-    ArrowPayloadType, BatchArrowRecords,
-};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -515,15 +513,15 @@ fn display_report_pipeline(
 #[cfg(test)]
 mod tests {
 
-    use crate::config::Config;
-    use crate::perf_exporter::PerfExporter;
+    use crate::perf_exporter::config::Config;
+    use crate::perf_exporter::exporter::PerfExporter;
+    use crate::proto::opentelemetry::experimental::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
+    };
     use fluke_hpack::Encoder;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-    use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
-    };
     use tokio::time::{Duration, sleep, timeout};
 
     use std::fs::{File, remove_file};
