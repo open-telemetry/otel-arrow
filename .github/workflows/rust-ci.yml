@@ -108,7 +108,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - name: cargo clippy ${{ matrix.folder }}
+      - name: cargo clippy ${{ matrix.folder }} --all-targets
         # beaubourg is a reference implementation without active development, so don't break the build on warnings
         run: |
           if [ "${{ matrix.folder }}" = "beaubourg" ]; then
