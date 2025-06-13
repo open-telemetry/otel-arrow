@@ -6,6 +6,12 @@ pub struct ParserState {
     pub variable_names: HashSet<Box<str>>,
 }
 
+impl Default for ParserState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ParserState {
     pub fn new() -> ParserState {
         Self {
