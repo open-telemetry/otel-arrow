@@ -66,13 +66,13 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
 #[allow(dead_code)]
 pub(crate) fn parse_double_literal(
     double_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&double_literal_rule);
 
     let raw_value = double_literal_rule.as_str();
     let parsed_value = raw_value.parse::<f64>();
     if parsed_value.is_err() {
-        return Err(Error::SyntaxError(
+        return Err(ParserError::SyntaxError(
             to_query_location(&double_literal_rule),
             format!(
                 "'{}' could not be parsed as a literal of type 'double'",
@@ -90,13 +90,13 @@ pub(crate) fn parse_double_literal(
 #[allow(dead_code)]
 pub(crate) fn parse_integer_literal(
     integer_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&integer_literal_rule);
 
     let raw_value = integer_literal_rule.as_str();
     let parsed_value = raw_value.parse::<i64>();
     if parsed_value.is_err() {
-        return Err(Error::SyntaxError(
+        return Err(ParserError::SyntaxError(
             to_query_location(&integer_literal_rule),
             format!(
                 "'{}' could not be parsed as a literal of type 'integer'",
@@ -113,7 +113,7 @@ pub(crate) fn parse_integer_literal(
 #[allow(dead_code)]
 pub(crate) fn parse_datetime_expression(
     datetime_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&datetime_expression_rule);
 
     let datetime_rule = datetime_expression_rule.into_inner().next().unwrap();
@@ -125,7 +125,7 @@ pub(crate) fn parse_datetime_expression(
 
             let date = date_utils::parse_date(&raw_value);
             if date.is_err() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -140,7 +140,7 @@ pub(crate) fn parse_datetime_expression(
 
             let time = date_utils::parse_time(&raw_value);
             if time.is_err() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -157,7 +157,7 @@ pub(crate) fn parse_datetime_expression(
 
             let nd = NaiveDate::from_ymd_opt(year as i32, month, day);
             if nd.is_none() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -169,7 +169,7 @@ pub(crate) fn parse_datetime_expression(
             let ndt = nd.unwrap().and_hms_micro_opt(hour, min, sec, micro);
 
             if ndt.is_none() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -180,7 +180,7 @@ pub(crate) fn parse_datetime_expression(
 
             let tz = FixedOffset::east_opt(offset);
             if tz.is_none() {
-                return Err(Error::SyntaxError(
+                return Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -197,7 +197,7 @@ pub(crate) fn parse_datetime_expression(
                         DateTimeScalarExpression::new(query_location, date_time),
                     ))
                 }
-                _ => Err(Error::SyntaxError(
+                _ => Err(ParserError::SyntaxError(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
@@ -213,7 +213,7 @@ pub(crate) fn parse_datetime_expression(
 #[allow(dead_code)]
 pub(crate) fn parse_real_expression(
     real_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, Error> {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&real_expression_rule);
 
     let real_rule = real_expression_rule.into_inner().next().unwrap();
@@ -240,7 +240,7 @@ pub(crate) fn parse_real_expression(
 pub(crate) fn parse_scalar_expression(
     scalar_expression_rule: Pair<Rule>,
     state: &ParserState,
-) -> Result<ScalarExpression, Error> {
+) -> Result<ScalarExpression, ParserError> {
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 
     match scalar_rule.as_rule() {
@@ -270,7 +270,7 @@ pub(crate) fn parse_scalar_expression(
 pub(crate) fn parse_comparison_expression(
     comparison_expression_rule: Pair<Rule>,
     state: &ParserState,
-) -> Result<LogicalExpression, Error> {
+) -> Result<LogicalExpression, ParserError> {
     let query_location = to_query_location(&comparison_expression_rule);
 
     let mut comparison_rules = comparison_expression_rule.into_inner();
@@ -333,12 +333,12 @@ pub(crate) fn parse_comparison_expression(
 pub(crate) fn parse_logical_expression(
     logical_expression_rule: Pair<Rule>,
     state: &ParserState,
-) -> Result<LogicalExpression, Error> {
+) -> Result<LogicalExpression, ParserError> {
     let query_location = to_query_location(&logical_expression_rule);
 
     let mut logical_rules = logical_expression_rule.into_inner();
 
-    let parse_rule = |logical_expression_rule: Pair<Rule>| -> Result<LogicalExpression, Error> {
+    let parse_rule = |logical_expression_rule: Pair<Rule>| -> Result<LogicalExpression, ParserError> {
         match logical_expression_rule.as_rule() {
             Rule::comparison_expression => {
                 Ok(parse_comparison_expression(logical_expression_rule, state)?)
@@ -424,7 +424,7 @@ pub(crate) fn parse_logical_expression(
 pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
     state: &ParserState,
-) -> Result<ScalarExpression, Error> {
+) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&accessor_expression_rule);
 
     let mut accessor_rules = accessor_expression_rule.into_inner();
@@ -451,7 +451,7 @@ pub(crate) fn parse_accessor_expression(
                         let i = v.get_value();
 
                         if i < i32::MIN as i64 || i > i32::MAX as i64 {
-                            return Err(Error::SyntaxError(
+                            return Err(ParserError::SyntaxError(
                                 location,
                                 format!(
                                     "'{}' value for array index is too large to fit into a 32bit value",
@@ -863,7 +863,7 @@ mod parse_tests {
 
         assert!(i.is_err());
 
-        if let Error::SyntaxError(_, _) = i.unwrap_err() {
+        if let ParserError::SyntaxError(_, _) = i.unwrap_err() {
         } else {
             panic!("Expected SyntaxError");
         }
