@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "expressions",
+    "parser-generics",
     "kql-parser",
     "ottl-parser",
     "engine-columnar",

@@ -1,0 +1,5 @@
+WHITESPACE = _{ " " | NEWLINE }
+COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
+
+true_literal = @{ "true" | "True" | "TRUE" }
+false_literal = @{ "false" | "False" | "FALSE" }

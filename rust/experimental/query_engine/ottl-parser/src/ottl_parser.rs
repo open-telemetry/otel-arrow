@@ -4,3 +4,30 @@ use pest_derive::Parser;
 #[grammar = "ottl.pest"]
 #[allow(dead_code)]
 pub(crate) struct OttlParser;
+
+#[cfg(test)]
+mod pest_tests {
+    use super::*;
+    use data_engine_parser_generics::pest_test_helpers::*;
+
+    #[test]
+    fn test_true_literal() {
+        test_true_literal_generic::<OttlParser, Rule>(Rule::true_literal);
+    }
+
+    #[test]
+    fn test_false_literal() {
+        test_false_literal_generic::<OttlParser, Rule>(Rule::false_literal);
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+    use data_engine_parser_generics::parse_tests_helpers::*;
+
+    #[test]
+    fn test_parse_bool_literal() {
+        test_parse_bool_literal_generic::<OttlParser, Rule>(Rule::true_literal, Rule::false_literal);
+    }
+}
