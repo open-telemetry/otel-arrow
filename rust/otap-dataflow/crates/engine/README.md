@@ -26,8 +26,8 @@ Collector.
 
 A list of the design principles followed by this project can be found
 [here](../../docs/design-principles.md). More specifically, the pipeline engine
-implemented in this crate follows a share-nothing, thread-per-core approach.
-In particular, one instance of the pipeline engine is created per core. This
+implemented in this crate follows a share-nothing, thread-per-core approach. In
+particular, one instance of the pipeline engine is created per core. This
 engine:
 
 - Is based on a single-threaded async runtime
@@ -92,9 +92,9 @@ The dual effect handler approach was introduced to address several challenges:
    allowing the engine to evolve independently from the components.
 
 2. **Library Integration**: Some external libraries (e.g. Tonic) don't yet
-   support `?Send` trait declarations
-   (see [Tonic issue #2171](https://github.com/hyperium/tonic/issues/2171)).
-   The type-level declaration with `SendEffectHandler` provides a pathway to
+   support `?Send` trait declarations (see
+   [Tonic issue #2171](https://github.com/hyperium/tonic/issues/2171)). The
+   type-level declaration with `SendEffectHandler` provides a pathway to
    integrate such libraries. For nodes that don't need to be `Send`, there's no
    synchronization overhead.
 
@@ -134,3 +134,28 @@ to each pipeline component:
 These utilities streamline the process of validating individual component
 behaviors, significantly reducing setup effort while enabling comprehensive
 testing.
+
+## Compile-Time Plugin System
+
+This project uses a compile-time plugin system based on the
+[`linkme`](https://docs.rs/linkme) crate to register node factories, such as
+receivers, processors, and exporters, along with their associated URNs (Uniform
+Resource Names). This mechanism enables the engine to dynamically instantiate
+nodes for specific URNs by looking up and invoking the appropriate factory at
+runtime.
+
+Each node type exposes a factory function, which is registered using `linkme`'s
+distributed slice feature. At startup, the engine collects all registered
+factories, allowing new node types to be added simply by implementing and
+registering a new factory. This approach provides a flexible and extensible
+foundation for building complex pipelines.
+
+Currently, this plugin infrastructure only supports built-in plugins compiled
+directly into the binary. However, the system is designed with future
+extensibility in mind. There are plans to support loading plugins via WASM,
+which would allow for dynamic, user-defined node types to be loaded at runtime
+without requiring a full rebuild of the engine.
+
+**Note:** The plugin system is still a work-in-progress. While the compile-time
+registration and dynamic instantiation of built-in nodes is functional, support
+for external (e.g. WASM-based) plugins is planned but not yet implemented.

@@ -11,9 +11,8 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
-use otel_arrow_rust::otlp::attributes::{
-    decoder::materialize_parent_id, store::AttributeValueType,
-};
+use otel_arrow_rust::otap::transform::materialize_parent_id_for_attributes;
+use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
 use otel_arrow_rust::schema::consts;
 
 fn create_bench_batch(num_attrs: usize) -> RecordBatch {
@@ -79,29 +78,32 @@ fn create_bench_batch(num_attrs: usize) -> RecordBatch {
         Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
     ]);
 
-    RecordBatch::try_new(Arc::new(schema), vec![
-        Arc::new(parent_ids.finish()),
-        Arc::new(keys.finish()),
-        Arc::new(types.finish()),
-        Arc::new(str_values.finish()),
-        Arc::new(int_values.finish()),
-        Arc::new(double_values.finish()),
-        Arc::new(bool_values.finish()),
-    ])
+    RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(parent_ids.finish()),
+            Arc::new(keys.finish()),
+            Arc::new(types.finish()),
+            Arc::new(str_values.finish()),
+            Arc::new(int_values.finish()),
+            Arc::new(double_values.finish()),
+            Arc::new(bool_values.finish()),
+        ],
+    )
     .expect("expect can create this record batch")
 }
 
 fn bench_materialize_parent_ids(c: &mut Criterion) {
-    let mut group = c.benchmark_group("materialize_parent_ids");
+    let mut group = c.benchmark_group("materialize_parent_ids_for_attributes");
 
     for size in [0, 128, 1536, 8092] {
         let input = create_bench_batch(size);
         let _ = group.bench_with_input(
-            BenchmarkId::new("materialize_parent_ids", size),
+            BenchmarkId::new("materialize_parent_ids_for_attributes", size),
             &input,
             |b, input| {
                 b.iter(|| {
-                    let _ = materialize_parent_id::<u16>(input)
+                    let _ = materialize_parent_id_for_attributes::<u16>(input)
                         .expect("function should not error here");
                 });
             },

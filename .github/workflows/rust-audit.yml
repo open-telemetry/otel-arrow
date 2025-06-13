@@ -4,7 +4,8 @@ permissions:
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - 'rust/otap-dataflow/Cargo.toml'
   schedule:

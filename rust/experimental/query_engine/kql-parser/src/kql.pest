@@ -1,0 +1,63 @@
+WHITESPACE = _{ " " | NEWLINE }
+COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
+
+// Tokens
+minus_token = { "-" }
+plus_token = { "+" }
+positive_infinity_token = { "+inf" }
+negative_infinity_token = { "-inf" }
+equals_token = @{ "==" }
+not_equals_token = @{ "!=" }
+greater_than_token = @{ ">" ~ !"=" }
+greater_than_or_equal_to_token = @{ ">=" }
+less_than_token = @{ "<" ~ !"=" }
+less_than_or_equal_to_token = @{ "<=" }
+and_token = @{ "and" }
+or_token = @{ "or" }
+
+// Literals
+true_literal = @{ "true" | "True" | "TRUE" }
+false_literal = @{ "false" | "False" | "FALSE" }
+integer_literal = @{
+    "-"?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+}
+double_quote_string_char = _{
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+single_quote_string_char = _{
+    !("'" | "\\") ~ ANY
+    | "\\" ~ ("'" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+exponent_literal = { ^"e" ~ (plus_token | minus_token)? ~ integer_literal }
+double_literal = @{
+    (integer_literal ~ "." ~ integer_literal ~ exponent_literal?)
+    | (integer_literal ~ exponent_literal)
+}
+string_literal = @{
+    ("\"" ~ double_quote_string_char* ~ "\"")
+    | ("'" ~ single_quote_string_char* ~ "'")
+}
+datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
+identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+
+// Expressions
+real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
+datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
+
+comparison_expression = { scalar_expression ~ (equals_token|not_equals_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression }
+scalar_expression = {
+    (real_expression | datetime_expression | boolean_expression | double_literal | integer_literal | string_literal | accessor_expression)
+    | ("(" ~ scalar_expression ~ ")")
+    | ("(" ~ logical_expression ~ ")")
+}
+boolean_expression = _{ true_literal | false_literal }
+logical_expressions = _{ comparison_expression|boolean_expression|accessor_expression }
+logical_expression = { (logical_expressions|("(" ~ logical_expression ~ ")")) ~ ((and_token|or_token) ~ logical_expression)* }
+
+accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ accessor_expression)) ~ "]" }
+accessor = _{ identifier_literal ~ accessor_index? }
+accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }

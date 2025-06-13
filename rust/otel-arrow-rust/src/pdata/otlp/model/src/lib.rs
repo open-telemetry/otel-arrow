@@ -1,14 +1,5 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -19,22 +10,42 @@ pub struct OneofCase {
     pub name: &'static str,
     pub type_param: &'static str,
     pub value_variant: &'static str,
-    pub extra_call: Option<&'static str>,
+    pub is_primitive: bool,
+    pub tag: u32,
+    pub proto_type: &'static str,
 }
 
 fn oneof(
     name: &'static str,
     type_param: &'static str,
     value_variant: &'static str,
-    extra_call: Option<&'static str>,
+    tag: u32,
+    proto_type: &'static str,
 ) -> OneofCase {
+    let is_primitive = matches!(
+        type_param,
+        "bool"
+            | "i32"
+            | "i64"
+            | "u32"
+            | "u64"
+            | "f32"
+            | "f64"
+            | "::prost::alloc::string::String"
+            | "Vec<u8>"
+    );
+
     OneofCase {
         name,
         type_param,
         value_variant,
-        extra_call,
+        is_primitive,
+        tag,
+        proto_type,
     }
 }
+
+pub type OneofMapping = Option<(String, Vec<OneofCase>)>;
 
 /// This provides detail about the underlying type of protobuf enum values.
 #[derive(Clone, Debug, Default)]
@@ -57,91 +68,98 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
         HashMap::from([
             // Common
             ("opentelemetry.proto.common.v1.AnyValue", vec!["value"]),
-            ("opentelemetry.proto.common.v1.KeyValue", vec![
-                "key", "value",
-            ]),
+            (
+                "opentelemetry.proto.common.v1.KeyValue",
+                vec!["key", "value"],
+            ),
             ("opentelemetry.proto.common.v1.KeyValueList", vec!["values"]),
             ("opentelemetry.proto.common.v1.ArrayValue", vec!["values"]),
-            ("opentelemetry.proto.common.v1.InstrumentationScope", vec![
-                "name",
-            ]),
+            (
+                "opentelemetry.proto.common.v1.InstrumentationScope",
+                vec!["name"],
+            ),
             ("opentelemetry.proto.common.v1.EntityRef", vec!["r#type"]),
             // Resource
-            ("opentelemetry.proto.resource.v1.Resource", vec![
-                "attributes",
-            ]),
+            (
+                "opentelemetry.proto.resource.v1.Resource",
+                vec!["attributes"],
+            ),
             // Logs
-            ("opentelemetry.proto.logs.v1.LogRecord", vec![
-                "time_unix_nano",
-                "severity_number",
-                "event_name",
-            ]),
+            (
+                "opentelemetry.proto.logs.v1.LogRecord",
+                vec!["time_unix_nano", "severity_number", "event_name"],
+            ),
             ("opentelemetry.proto.logs.v1.ScopeLogs", vec!["scope"]),
             ("opentelemetry.proto.logs.v1.ResourceLogs", vec!["resource"]),
-            ("opentelemetry.proto.logs.v1.LogsData", vec![
-                "resource_logs",
-            ]),
+            (
+                "opentelemetry.proto.logs.v1.LogsData",
+                vec!["resource_logs"],
+            ),
             // Traces
-            ("opentelemetry.proto.trace.v1.Span", vec![
-                "trace_id",
-                "span_id",
-                "name",
-                "start_time_unix_nano",
-            ]),
+            (
+                "opentelemetry.proto.trace.v1.Span",
+                vec!["trace_id", "span_id", "name", "start_time_unix_nano"],
+            ),
             ("opentelemetry.proto.trace.v1.ScopeSpans", vec!["scope"]),
-            ("opentelemetry.proto.trace.v1.ResourceSpans", vec![
-                "resource",
-            ]),
-            ("opentelemetry.proto.trace.v1.TracesData", vec![
-                "resource_spans",
-            ]),
-            ("opentelemetry.proto.trace.v1.Status", vec![
-                "message", "code",
-            ]),
-            ("opentelemetry.proto.trace.v1.Span.Link", vec![
-                "trace_id", "span_id",
-            ]),
-            ("opentelemetry.proto.trace.v1.Span.Event", vec![
-                "name",
-                "time_unix_nano",
-            ]),
+            (
+                "opentelemetry.proto.trace.v1.ResourceSpans",
+                vec!["resource"],
+            ),
+            (
+                "opentelemetry.proto.trace.v1.TracesData",
+                vec!["resource_spans"],
+            ),
+            (
+                "opentelemetry.proto.trace.v1.Status",
+                vec!["message", "code"],
+            ),
+            (
+                "opentelemetry.proto.trace.v1.Span.Link",
+                vec!["trace_id", "span_id"],
+            ),
+            (
+                "opentelemetry.proto.trace.v1.Span.Event",
+                vec!["name", "time_unix_nano"],
+            ),
             // Metrics
             ("opentelemetry.proto.metrics.v1.ScopeMetrics", vec!["scope"]),
-            ("opentelemetry.proto.metrics.v1.ResourceMetrics", vec![
-                "resource",
-            ]),
-            ("opentelemetry.proto.metrics.v1.MetricsData", vec![
-                "resource_metrics",
-            ]),
-            ("opentelemetry.proto.metrics.v1.Metric", vec![
-                "name", "data",
-            ]),
-            ("opentelemetry.proto.metrics.v1.Sum", vec![
-                "aggregation_temporality",
-                "is_monotonic",
-                "data_points",
-            ]),
+            (
+                "opentelemetry.proto.metrics.v1.ResourceMetrics",
+                vec!["resource"],
+            ),
+            (
+                "opentelemetry.proto.metrics.v1.MetricsData",
+                vec!["resource_metrics"],
+            ),
+            (
+                "opentelemetry.proto.metrics.v1.Metric",
+                vec!["name", "data"],
+            ),
+            (
+                "opentelemetry.proto.metrics.v1.Sum",
+                vec!["aggregation_temporality", "is_monotonic", "data_points"],
+            ),
             ("opentelemetry.proto.metrics.v1.Gauge", vec!["data_points"]),
-            ("opentelemetry.proto.metrics.v1.Histogram", vec![
-                "aggregation_temporality",
-                "data_points",
-            ]),
-            ("opentelemetry.proto.metrics.v1.ExponentialHistogram", vec![
-                "aggregation_temporality",
-                "data_points",
-            ]),
-            ("opentelemetry.proto.metrics.v1.Summary", vec![
-                "data_points",
-            ]),
-            ("opentelemetry.proto.metrics.v1.NumberDataPoint", vec![
-                "time_unix_nano",
-                "value",
-            ]),
-            ("opentelemetry.proto.metrics.v1.HistogramDataPoint", vec![
-                "time_unix_nano",
-                "bucket_counts",
-                "explicit_bounds",
-            ]),
+            (
+                "opentelemetry.proto.metrics.v1.Histogram",
+                vec!["aggregation_temporality", "data_points"],
+            ),
+            (
+                "opentelemetry.proto.metrics.v1.ExponentialHistogram",
+                vec!["aggregation_temporality", "data_points"],
+            ),
+            (
+                "opentelemetry.proto.metrics.v1.Summary",
+                vec!["data_points"],
+            ),
+            (
+                "opentelemetry.proto.metrics.v1.NumberDataPoint",
+                vec!["time_unix_nano", "value"],
+            ),
+            (
+                "opentelemetry.proto.metrics.v1.HistogramDataPoint",
+                vec!["time_unix_nano", "bucket_counts", "explicit_bounds"],
+            ),
             (
                 "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
                 vec!["time_unix_nano", "scale", "positive"],
@@ -150,18 +168,18 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets",
                 vec!["offset", "bucket_counts"],
             ),
-            ("opentelemetry.proto.metrics.v1.SummaryDataPoint", vec![
-                "time_unix_nano",
-                "quantile_values",
-            ]),
+            (
+                "opentelemetry.proto.metrics.v1.SummaryDataPoint",
+                vec!["time_unix_nano", "quantile_values"],
+            ),
             (
                 "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
                 vec!["quantile", "value"],
             ),
-            ("opentelemetry.proto.metrics.v1.Exemplar", vec![
-                "time_unix_nano",
-                "value",
-            ]),
+            (
+                "opentelemetry.proto.metrics.v1.Exemplar",
+                vec!["time_unix_nano", "value"],
+            ),
             // Service
             (
                 "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest",
@@ -203,55 +221,98 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
     });
 
 /// This lists all the known oneof fields in OpenTelemetry, with their cases.
-pub static ONEOF_MAPPINGS: LazyLock<HashMap<&'static str, Vec<OneofCase>>> = LazyLock::new(|| {
+pub static ONEOF_MAPPINGS: LazyLock<HashMap<String, Vec<OneofCase>>> = LazyLock::new(|| {
     HashMap::from([
-        ("opentelemetry.proto.common.v1.AnyValue.value", vec![
-            oneof(
-                "string",
-                "::prost::alloc::string::String",
-                "any_value::Value::StringValue",
-                None,
-            ),
-            oneof("bool", "bool", "any_value::Value::BoolValue", None),
-            oneof("int", "i64", "any_value::Value::IntValue", None),
-            oneof("double", "f64", "any_value::Value::DoubleValue", None),
-            oneof(
-                "kvlist",
-                "Vec<KeyValue>",
-                "any_value::Value::KvlistValue",
-                Some("KeyValueList::new"),
-            ),
-            oneof(
-                "array",
-                "Vec<AnyValue>",
-                "any_value::Value::ArrayValue",
-                Some("ArrayValue::new"),
-            ),
-            oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", None),
-        ]),
-        ("opentelemetry.proto.metrics.v1.Metric.data", vec![
-            oneof("sum", "Sum", "metric::Data::Sum", None),
-            oneof("gauge", "Gauge", "metric::Data::Gauge", None),
-            oneof("histogram", "Histogram", "metric::Data::Histogram", None),
-            oneof(
-                "exponential_histogram",
-                "ExponentialHistogram",
-                "metric::Data::ExponentialHistogram",
-                None,
-            ),
-            oneof("summary", "Summary", "metric::Data::Summary", None),
-        ]),
         (
-            "opentelemetry.proto.metrics.v1.NumberDataPoint.value",
+            "opentelemetry.proto.common.v1.AnyValue.value".into(),
             vec![
-                oneof("int", "i64", "number_data_point::Value::AsInt", None),
-                oneof("double", "f64", "number_data_point::Value::AsDouble", None),
+                oneof(
+                    "string",
+                    "::prost::alloc::string::String",
+                    "any_value::Value::StringValue",
+                    1,
+                    "string",
+                ),
+                oneof("bool", "bool", "any_value::Value::BoolValue", 2, "bool"),
+                oneof("int", "i64", "any_value::Value::IntValue", 3, "int64"),
+                oneof(
+                    "double",
+                    "f64",
+                    "any_value::Value::DoubleValue",
+                    4,
+                    "double",
+                ),
+                oneof(
+                    "array",
+                    "ArrayValue",
+                    "any_value::Value::ArrayValue",
+                    5,
+                    "message",
+                ),
+                oneof(
+                    "kvlist",
+                    "KeyValueList",
+                    "any_value::Value::KvlistValue",
+                    6,
+                    "message",
+                ),
+                oneof(
+                    "bytes",
+                    "Vec<u8>",
+                    "any_value::Value::BytesValue",
+                    7,
+                    "bytes",
+                ),
             ],
         ),
-        ("opentelemetry.proto.metrics.v1.Exemplar.value", vec![
-            oneof("int", "i64", "exemplar::Value::AsInt", None),
-            oneof("double", "f64", "exemplar::Value::AsDouble", None),
-        ]),
+        (
+            "opentelemetry.proto.metrics.v1.Metric.data".into(),
+            vec![
+                oneof("sum", "Sum", "metric::Data::Sum", 5, "message"),
+                oneof("gauge", "Gauge", "metric::Data::Gauge", 6, "message"),
+                oneof(
+                    "histogram",
+                    "Histogram",
+                    "metric::Data::Histogram",
+                    7,
+                    "message",
+                ),
+                oneof(
+                    "exponential_histogram",
+                    "ExponentialHistogram",
+                    "metric::Data::ExponentialHistogram",
+                    8,
+                    "message",
+                ),
+                oneof("summary", "Summary", "metric::Data::Summary", 11, "message"),
+            ],
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.NumberDataPoint.value".into(),
+            vec![
+                oneof(
+                    "int",
+                    "i64",
+                    "number_data_point::Value::AsInt",
+                    4,
+                    "sfixed64",
+                ),
+                oneof(
+                    "double",
+                    "f64",
+                    "number_data_point::Value::AsDouble",
+                    5,
+                    "double",
+                ),
+            ],
+        ),
+        (
+            "opentelemetry.proto.metrics.v1.Exemplar.value".into(),
+            vec![
+                oneof("int", "i64", "exemplar::Value::AsInt", 4, "sfixed64"),
+                oneof("double", "f64", "exemplar::Value::AsDouble", 5, "double"),
+            ],
+        ),
     ])
 });
 

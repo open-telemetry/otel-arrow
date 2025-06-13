@@ -53,36 +53,58 @@ use crate::proto::opentelemetry::trace::v1::span::Event;
 use crate::proto::opentelemetry::trace::v1::span::Link;
 use crate::proto::opentelemetry::trace::v1::span::SpanKind;
 use crate::proto::opentelemetry::trace::v1::status::StatusCode;
+use prost::Message;
 
 #[test]
 fn test_any_value() {
     // Primitives
-    assert_eq!(AnyValue::new_int(3i64), AnyValue {
+    let int_val = AnyValue::new_int(3i64);
+    let int_val_expected = AnyValue {
         value: Some(Value::IntValue(3i64)),
-    });
-    assert_eq!(AnyValue::new_double(3.123), AnyValue {
+    };
+    assert_eq!(int_val, int_val_expected);
+    assert_eq!(int_val.pdata_size(), int_val.encoded_len());
+
+    let double_val = AnyValue::new_double(3.123);
+    let double_val_expected = AnyValue {
         value: Some(Value::DoubleValue(3.123)),
-    });
-    assert_eq!(AnyValue::new_bool(true), AnyValue {
+    };
+    assert_eq!(double_val, double_val_expected);
+    assert_eq!(double_val.pdata_size(), double_val.encoded_len());
+
+    let bool_val = AnyValue::new_bool(true);
+    let bool_val_expected = AnyValue {
         value: Some(Value::BoolValue(true)),
-    });
+    };
+    assert_eq!(bool_val, bool_val_expected);
+    assert_eq!(bool_val.pdata_size(), bool_val.encoded_len());
 
     // String
     let xyz = "xyz".to_string();
     let xyz_value = AnyValue {
         value: Some(Value::StringValue(xyz.to_string())),
     };
-    assert_eq!(AnyValue::new_string("xyz"), xyz_value);
-    assert_eq!(AnyValue::new_string(&xyz), xyz_value);
-    assert_eq!(AnyValue::new_string(xyz), xyz_value);
+    let string_val1 = AnyValue::new_string("xyz");
+    let string_val2 = AnyValue::new_string(&xyz);
+    let string_val3 = AnyValue::new_string(xyz);
+    assert_eq!(string_val1, xyz_value);
+    assert_eq!(string_val1.pdata_size(), string_val1.encoded_len());
+    assert_eq!(string_val2, xyz_value);
+    assert_eq!(string_val2.pdata_size(), string_val2.encoded_len());
+    assert_eq!(string_val3, xyz_value);
+    assert_eq!(string_val3.pdata_size(), string_val3.encoded_len());
 
     // Bytes
     let hello: Vec<u8> = [104, 101, 108, 108, 111].to_vec();
     let hello_value = AnyValue {
         value: Some(Value::BytesValue(b"hello".to_vec())),
     };
-    assert_eq!(AnyValue::new_bytes(hello.as_slice()), hello_value);
-    assert_eq!(AnyValue::new_bytes(hello), hello_value);
+    let bytes_val1 = AnyValue::new_bytes(hello.as_slice());
+    let bytes_val2 = AnyValue::new_bytes(hello);
+    assert_eq!(bytes_val1, hello_value);
+    assert_eq!(bytes_val1.pdata_size(), bytes_val1.encoded_len());
+    assert_eq!(bytes_val2, hello_value);
+    assert_eq!(bytes_val2.pdata_size(), bytes_val2.encoded_len());
 
     // Kvlist
     let kvs = vec![
@@ -95,14 +117,16 @@ fn test_any_value() {
         })),
     };
 
-    assert_eq!(AnyValue::new_kvlist(kvs), kvs_value);
-    assert_eq!(
-        AnyValue::new_kvlist(&[
-            KeyValue::new("k1", AnyValue::new_string("s1")),
-            KeyValue::new("k2", AnyValue::new_double(2.0)),
-        ]),
-        kvs_value
-    );
+    let kvlist_val1 = AnyValue::new_kvlist(kvs);
+    assert_eq!(kvlist_val1, kvs_value);
+    assert_eq!(kvlist_val1.pdata_size(), kvlist_val1.encoded_len());
+
+    let kvlist_val2 = AnyValue::new_kvlist(vec![
+        KeyValue::new("k1", AnyValue::new_string("s1")),
+        KeyValue::new("k2", AnyValue::new_double(2.0)),
+    ]);
+    assert_eq!(kvlist_val2, kvs_value);
+    assert_eq!(kvlist_val2.pdata_size(), kvlist_val2.encoded_len());
 
     // Array
     let vals = vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0)];
@@ -112,11 +136,14 @@ fn test_any_value() {
         })),
     };
 
-    assert_eq!(AnyValue::new_array(vals), vals_value);
-    assert_eq!(
-        AnyValue::new_array(vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0),]),
-        vals_value
-    );
+    let array_val1 = AnyValue::new_array(vals);
+    assert_eq!(array_val1, vals_value);
+    assert_eq!(array_val1.pdata_size(), array_val1.encoded_len());
+
+    let array_val2 =
+        AnyValue::new_array(vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0)]);
+    assert_eq!(array_val2, vals_value);
+    assert_eq!(array_val2.pdata_size(), array_val2.encoded_len());
 }
 
 #[test]
@@ -135,11 +162,20 @@ fn test_key_value() {
         value: Some(v2.clone()),
     };
 
-    assert_eq!(KeyValue::new("k1", v1.clone()), kv1_value);
-    assert_eq!(KeyValue::new(k1.clone(), v1), kv1_value);
+    let kv1_test1 = KeyValue::new("k1", v1.clone());
+    let kv1_test2 = KeyValue::new(k1.clone(), v1);
+    let kv2_test1 = KeyValue::new("k2", v2.clone());
+    let kv2_test2 = KeyValue::new(k2, v2);
 
-    assert_eq!(KeyValue::new("k2", v2.clone()), kv2_value);
-    assert_eq!(KeyValue::new(k2, v2), kv2_value);
+    assert_eq!(kv1_test1, kv1_value);
+    assert_eq!(kv1_test1.pdata_size(), kv1_test1.encoded_len());
+    assert_eq!(kv1_test2, kv1_value);
+    assert_eq!(kv1_test2.pdata_size(), kv1_test2.encoded_len());
+
+    assert_eq!(kv2_test1, kv2_value);
+    assert_eq!(kv2_test1.pdata_size(), kv2_test1.encoded_len());
+    assert_eq!(kv2_test2, kv2_value);
+    assert_eq!(kv2_test2.pdata_size(), kv2_test2.encoded_len());
 }
 
 #[test]
@@ -156,6 +192,7 @@ fn test_log_record_required() {
     let lr1 = LogRecord::new(ts, sev, name);
 
     assert_eq!(lr1, lr1_value);
+    assert_eq!(lr1.pdata_size(), lr1.encoded_len());
 }
 
 #[test]
@@ -183,6 +220,7 @@ fn test_log_record_required_all() {
         .finish();
 
     assert_eq!(lr1, lr1_value);
+    assert_eq!(lr1.pdata_size(), lr1.encoded_len());
 }
 
 #[test]
@@ -193,6 +231,7 @@ fn test_instrumentation_scope_default() {
         ..Default::default()
     };
     assert_eq!(is1, is1_value);
+    assert_eq!(is1.pdata_size(), is1.encoded_len());
 }
 
 #[test]
@@ -213,6 +252,7 @@ fn test_instrumentation_scope_options() {
     };
 
     assert_eq!(is1, is1_value);
+    assert_eq!(is1.pdata_size(), is1.encoded_len());
 }
 
 #[test]
@@ -244,6 +284,7 @@ fn test_scope_logs() {
     };
 
     assert_eq!(sl, sl_value);
+    assert_eq!(sl.pdata_size(), sl.encoded_len());
 }
 
 #[test]
@@ -261,6 +302,7 @@ fn test_entity() {
     };
 
     assert_eq!(er1, er1_value);
+    assert_eq!(er1.pdata_size(), er1.encoded_len());
 }
 
 #[test]
@@ -280,6 +322,7 @@ fn test_resource() {
     };
 
     assert_eq!(res1, res1_value);
+    assert_eq!(res1.pdata_size(), res1.encoded_len());
 }
 
 #[test]
@@ -313,10 +356,61 @@ fn test_resource_logs() {
     };
 
     assert_eq!(rl, rl_value);
+    assert_eq!(rl.pdata_size(), rl.encoded_len());
+}
+
+#[test]
+fn test_empty_resource_spans() {
+    let rs = ResourceSpans::build(Resource::new(vec![])).finish();
+
+    assert_eq!(rs.pdata_size(), rs.encoded_len());
 }
 
 #[test]
 fn test_resource_spans() {
+    let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
+    let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
+    let kvs = vec![kv1, kv2];
+
+    let is1 = InstrumentationScope::new("library");
+
+    let tid: TraceID = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2].into();
+    let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
+    let psid: SpanID = [2, 1, 2, 1, 2, 1, 2, 1].into();
+
+    let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
+        .parent_span_id(psid)
+        .attributes(kvs.clone())
+        .flags(SpanFlags::ContextHasIsRemoteMask)
+        .kind(SpanKind::Server)
+        .trace_state("ot=th:0")
+        .links(vec![Link::new(tid, sid)])
+        .events(vec![Event::new("oops", 123_500_000_000u64)])
+        .end_time_unix_nano(124_000_000_000u64)
+        .status(Status::new("oh my!", StatusCode::Error))
+        .dropped_attributes_count(1u32)
+        .dropped_events_count(1u32)
+        .dropped_links_count(1u32)
+        .finish();
+
+    let s2 = s1.clone();
+    let sps = vec![s1, s2];
+
+    let ss1 = ScopeSpans::build(is1.clone()).spans(sps.clone()).finish();
+    let ss2 = ss1.clone();
+    let sss = vec![ss1, ss2];
+
+    let res = Resource::new(vec![]);
+
+    let rs1 = ResourceSpans::build(res.clone())
+        .scope_spans(sss.clone())
+        .finish();
+
+    assert_eq!(rs1.pdata_size(), rs1.encoded_len());
+}
+
+#[test]
+fn test_traces_data() {
     let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
     let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
     let kvs = vec![kv1, kv2];
@@ -364,16 +458,21 @@ fn test_resource_spans() {
     };
 
     assert_eq!(rds, rds_value);
+    assert_eq!(rds.pdata_size(), rds.encoded_len());
 }
 
 #[test]
 fn test_metric_sum() {
     let m1 = Metric::new_sum(
         "counter",
-        Sum::new(AggregationTemporality::Delta, true, vec![
-            NumberDataPoint::new_int(125_000_000_000u64, 123i64),
-            NumberDataPoint::new_double(125_000_000_000u64, 123f64),
-        ]),
+        Sum::new(
+            AggregationTemporality::Delta,
+            true,
+            vec![
+                NumberDataPoint::new_int(125_000_000_000u64, 123i64),
+                NumberDataPoint::new_double(125_000_000_000u64, 123f64),
+            ],
+        ),
     );
 
     let m1_value = Metric {
@@ -406,6 +505,7 @@ fn test_metric_sum() {
     };
 
     assert_eq!(m1, m1_value);
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -446,6 +546,7 @@ fn test_metric_gauge() {
     };
 
     assert_eq!(m1, m1_value);
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -466,6 +567,7 @@ fn test_exemplar() {
     };
 
     assert_eq!(e1, e1_value);
+    assert_eq!(e1.pdata_size(), e1.encoded_len());
 }
 
 #[test]
@@ -475,24 +577,27 @@ fn test_metric_histogram() {
 
     let m1 = Metric::new_histogram(
         "histogram",
-        Histogram::new(AggregationTemporality::Delta, vec![
-            HistogramDataPoint::build(125_000_000_000u64, [1u64, 2u64, 3u64], [1.0, 10.0])
-                .start_time_unix_nano(124_000_000_000u64)
-                .exemplars(vec![
-                    Exemplar::build_double(124_500_000_000u64, 10.1)
-                        .span_id(sid)
-                        .trace_id(tid)
-                        .finish(),
-                ])
-                .finish(),
-            HistogramDataPoint::build(126_000_000_000u64, [3u64, 2u64, 1u64], [1.0, 10.0])
-                .start_time_unix_nano(125_000_000_000u64)
-                .count(100u64)
-                .sum(1000.0)
-                .min(0.1)
-                .max(10.1)
-                .finish(),
-        ]),
+        Histogram::new(
+            AggregationTemporality::Delta,
+            vec![
+                HistogramDataPoint::build(125_000_000_000u64, [1u64, 2u64, 3u64], [1.0, 10.0])
+                    .start_time_unix_nano(124_000_000_000u64)
+                    .exemplars(vec![
+                        Exemplar::build_double(124_500_000_000u64, 10.1)
+                            .span_id(sid)
+                            .trace_id(tid)
+                            .finish(),
+                    ])
+                    .finish(),
+                HistogramDataPoint::build(126_000_000_000u64, [3u64, 2u64, 1u64], [1.0, 10.0])
+                    .start_time_unix_nano(125_000_000_000u64)
+                    .count(100u64)
+                    .sum(1000.0)
+                    .min(0.1)
+                    .max(10.1)
+                    .finish(),
+            ],
+        ),
     );
 
     let m1_value = Metric {
@@ -540,6 +645,7 @@ fn test_metric_histogram() {
     };
 
     assert_eq!(m1, m1_value);
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
@@ -547,20 +653,26 @@ fn test_metric_summary() {
     let m1 = Metric::new_summary(
         "summary",
         Summary::new(vec![
-            SummaryDataPoint::build(125_000_000_000u64, vec![
-                ValueAtQuantile::new(0.1, 0.1),
-                ValueAtQuantile::new(0.5, 2.1),
-                ValueAtQuantile::new(1.0, 10.1),
-            ])
+            SummaryDataPoint::build(
+                125_000_000_000u64,
+                vec![
+                    ValueAtQuantile::new(0.1, 0.1),
+                    ValueAtQuantile::new(0.5, 2.1),
+                    ValueAtQuantile::new(1.0, 10.1),
+                ],
+            )
             .start_time_unix_nano(124_000_000_000u64)
             .count(100u64)
             .sum(1000.0)
             .finish(),
-            SummaryDataPoint::build(126_000_000_000u64, vec![
-                ValueAtQuantile::new(0.1, 0.5),
-                ValueAtQuantile::new(0.5, 2.5),
-                ValueAtQuantile::new(1.0, 10.5),
-            ])
+            SummaryDataPoint::build(
+                126_000_000_000u64,
+                vec![
+                    ValueAtQuantile::new(0.1, 0.5),
+                    ValueAtQuantile::new(0.5, 2.5),
+                    ValueAtQuantile::new(1.0, 10.5),
+                ],
+            )
             .start_time_unix_nano(124_000_000_000u64)
             .count(200u64)
             .sum(2000.0)
@@ -624,24 +736,28 @@ fn test_metric_summary() {
     };
 
     assert_eq!(m1, m1_value);
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
 #[test]
 fn test_metric_exponential_histogram() {
     let m1 = Metric::new_exponential_histogram(
         "exp_histogram",
-        ExponentialHistogram::new(AggregationTemporality::Delta, vec![
-            ExponentialHistogramDataPoint::build(
-                125_000_000_000u64,
-                7,
-                Buckets::new(1, vec![3, 4, 5]),
-            )
-            .start_time_unix_nano(124_000_000_000u64)
-            .count(17u64)
-            .zero_count(2u64)
-            .negative(Buckets::new(0, vec![1, 2]))
-            .finish(),
-        ]),
+        ExponentialHistogram::new(
+            AggregationTemporality::Delta,
+            vec![
+                ExponentialHistogramDataPoint::build(
+                    125_000_000_000u64,
+                    7,
+                    Buckets::new(1, vec![3, 4, 5]),
+                )
+                .start_time_unix_nano(124_000_000_000u64)
+                .count(17u64)
+                .zero_count(2u64)
+                .negative(Buckets::new(0, vec![1, 2]))
+                .finish(),
+            ],
+        ),
     );
 
     let m1_value = Metric {
@@ -677,4 +793,5 @@ fn test_metric_exponential_histogram() {
     };
 
     assert_eq!(m1, m1_value);
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
 }

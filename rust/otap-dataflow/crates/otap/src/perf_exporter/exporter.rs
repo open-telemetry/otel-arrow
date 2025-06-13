@@ -722,6 +722,6 @@ mod tests {
             .run_validation(validation_procedure(output_file.clone()));
 
         // remove the created file, prevent accidental check in of report
-        remove_file(output_file).expect("Failed to remove file");
+        // remove_file(output_file).expect("Failed to remove file");
     }
 }
