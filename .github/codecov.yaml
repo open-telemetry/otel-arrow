@@ -15,6 +15,9 @@ component_management:
       name: "otel-arrow-rust"
       paths:
         - "rust/otel-arrow-rust/"
+      ignore:
+        - "rust/otel-arrow-rust/src/pdata/otlp/derive/"
+        - "rust/otel-arrow-rust/src/pdata/otlp/model/"
     - component_id: "query_abstraction"
       name: "query_abstraction"
       paths:
@@ -31,3 +34,4 @@ component_management:
       name: "otel-arrow-go"
       paths:
         - "go/"
+        - "pkg/"

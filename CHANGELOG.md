@@ -9,7 +9,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-## [0.36.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.36.0) - 2025-06-09
+## [0.38.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.38.0) - 2025-06-10
+
+- Downgrade Go to 1.23.0.
+  [#569](https://github.com/open-telemetry/otel-arrow/pull/569)
+- Mark terminal version of `github.com/open-telemetry/otel-arrow` module.
+  [#572](https://github.com/open-telemetry/otel-arrow/pull/572)
+- Retract `github.com/open-telemetry/otel-arrow v0.37.0`.
+  [#572](https://github.com/open-telemetry/otel-arrow/pull/572)
+
+## [0.37.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.37.0) - 2025-06-10
+
+> Note: v0.36.0 release was attempted on 2025-06-09, but had to be deleted per
+> problems mentioned in
+> [#566](https://github.com/open-telemetry/otel-arrow/issues/566).
 
 - Remove `concurrentbatch` and `obfuscation` processors.
   [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
@@ -22,6 +35,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   [#517](https://github.com/open-telemetry/otel-arrow/pull/517)
 - Upgrade to v0.127.0 / v1.33.0 of collector dependencies.
   [#526](https://github.com/open-telemetry/otel-arrow/pull/526)
+- Retract `github.com/open-telemetry/otel-arrow v0.36.0`.
+  [#567](https://github.com/open-telemetry/otel-arrow/pull/567)
 
 ## [0.35.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.35.0) - 2025-04-07
 

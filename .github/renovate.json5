@@ -1,5 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "constraints": {
+    // primary usage of Golang components is in
+    // OpenTelemetry-Collector-Contrib repository which
+    // currently enforces 1.23.0 compatibility
+    "go": "1.23.0"
+  },
   "extends": [
     "config:recommended",
     "docker:pinDigests",

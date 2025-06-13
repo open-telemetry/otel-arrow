@@ -20,7 +20,7 @@ func main() {
 	info := component.BuildInfo{
 		Command:     "otelarrowcol",
 		Description: "OpenTelemetry Protocol with Apache Arrow development collector, for testing and evaluation",
-		Version:     "0.34.0",
+		Version:     "0.38.0",
 	}
 
 	set := otelcol.CollectorSettings{
