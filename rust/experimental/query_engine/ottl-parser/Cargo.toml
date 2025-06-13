@@ -13,4 +13,4 @@ pest = "2.8"
 pest_derive = "2.8"
 
 data_engine_expressions = { path = "../expressions" }
-data_engine_parser_generics = { path = "../parser-generics" }
+data_engine_parser_abstractions = { path = "../parser-abstractions" }

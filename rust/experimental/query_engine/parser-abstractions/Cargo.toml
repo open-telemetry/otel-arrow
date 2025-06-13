@@ -1,5 +1,5 @@
 [package]
-name = "data_engine_parser_generics"
+name = "data_engine_parser_abstractions"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

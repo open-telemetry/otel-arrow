@@ -1,6 +1,6 @@
 use chrono::{FixedOffset, NaiveDate};
 use data_engine_expressions::*;
-use data_engine_parser_generics::*;
+use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 use pest_derive::Parser;
 
@@ -253,7 +253,7 @@ pub(crate) fn parse_scalar_expression(
             parse_logical_expression(scalar_rule, state)?.into(),
         )),
         Rule::true_literal | Rule::false_literal => Ok(ScalarExpression::Static(
-            generic_parse_bool_literal(scalar_rule),
+            parse_standard_bool_literal(scalar_rule),
         )),
         Rule::double_literal => Ok(ScalarExpression::Static(parse_double_literal(scalar_rule)?)),
         Rule::integer_literal => Ok(ScalarExpression::Static(parse_integer_literal(
@@ -347,7 +347,7 @@ pub(crate) fn parse_logical_expression(
                     Ok(parse_logical_expression(logical_expression_rule, state)?)
                 }
                 Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
-                    ScalarExpression::Static(generic_parse_bool_literal(logical_expression_rule)),
+                    ScalarExpression::Static(parse_standard_bool_literal(logical_expression_rule)),
                 )),
                 Rule::accessor_expression => Ok(LogicalExpression::Scalar(
                     parse_accessor_expression(logical_expression_rule, state)?,
@@ -546,17 +546,25 @@ mod pest_tests {
     use std::mem::discriminant;
 
     use super::*;
-    use data_engine_parser_generics::generic_pest_helpers::*;
+    use data_engine_parser_abstractions::pest_test_helpers;
     use pest::{Parser, iterators::Pairs};
 
     #[test]
     fn test_true_literal() {
-        test_generic_true_literal::<KqlParser, Rule>(Rule::true_literal);
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::true_literal,
+            &["true", "True", "TRUE"],
+            &["tru", "tRuE", "false"],
+        );
     }
 
     #[test]
     fn test_false_literal() {
-        test_generic_false_literal::<KqlParser, Rule>(Rule::false_literal);
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::false_literal,
+            &["false", "False", "FALSE"],
+            &["fals", "fAlSe", "true"],
+        );
     }
 
     #[test]
@@ -796,12 +804,23 @@ mod pest_tests {
 mod parse_tests {
     use super::*;
     use chrono::{DateTime, Datelike, NaiveDate, Utc};
-    use data_engine_parser_generics::generic_parse_helpers::*;
+    use data_engine_parser_abstractions::parse_test_helpers;
     use pest::Parser;
 
     #[test]
     fn test_parse_bool_literal() {
-        test_generic_parse_bool_literal::<KqlParser, Rule>(Rule::true_literal, Rule::false_literal);
+        parse_test_helpers::test_parse_bool_literal::<KqlParser, Rule>(
+            Rule::true_literal,
+            Rule::false_literal,
+            &[
+                ("true", true),
+                ("True", true),
+                ("TRUE", true),
+                ("false", false),
+                ("False", false),
+                ("FALSE", false),
+            ],
+        );
     }
 
     #[test]
