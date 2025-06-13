@@ -1743,9 +1743,7 @@ mod parse_tests {
 
     #[test]
     fn test_parse_assignment_expression() {
-        let run_test_success = |input: &str,
-                                state: &ParserState,
-                                expected: TransformExpression| {
+        let run_test_success = |input: &str, state: &ParserState, expected: TransformExpression| {
             let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
 
             let expression = parse_assignment_expression(result.next().unwrap(), state).unwrap();
