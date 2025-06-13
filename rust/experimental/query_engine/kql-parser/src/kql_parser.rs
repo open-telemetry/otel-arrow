@@ -901,6 +901,12 @@ mod pest_tests {
                 (Rule::identifier_literal, "name2"),
             ],
         );
+
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::accessor_expression,
+            &[],
+            &["123", "+name", "-name", "~name", ".name"],
+        );
     }
 }
 
