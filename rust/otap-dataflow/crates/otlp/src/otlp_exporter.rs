@@ -23,7 +23,7 @@ use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use serde_json::Value;
 
 /// Exporter that sends OTLP data via gRPC
-struct OTLPExporter {
+pub struct OTLPExporter {
     grpc_endpoint: String,
     compression_method: Option<CompressionMethod>,
 }

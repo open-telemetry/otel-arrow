@@ -40,7 +40,6 @@ impl<PData> Clone for TestContext<PData> {
 
 impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
-    #[must_use]
     pub fn new(
         control_tx: Sender<ControlMsg>,
         pdata_tx: Sender<PData>,
@@ -54,7 +53,6 @@ impl<PData> TestContext<PData> {
     }
 
     /// Returns the control message counters.
-    #[must_use]
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counters.clone()
     }
@@ -162,7 +160,6 @@ pub struct ValidationPhase<PData> {
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
-    #[must_use]
     pub fn new() -> Self {
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
@@ -173,7 +170,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             rt,
             local_tasks,
             counter,
-            _pd: PhantomData,
+            _pd: PhantomData::default(),
         }
     }
 
@@ -230,12 +227,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             pdata_sender: pdata_tx,
             run_exporter_handle,
         }
-    }
-}
-
-impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
