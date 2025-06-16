@@ -57,6 +57,9 @@ func (c *Lz4CompressionAlgo) Compress(data []byte) ([]byte, error) {
 }
 
 func (c *Lz4CompressionAlgo) Decompress(data []byte) ([]byte, error) {
+	if len(data) > (1<<30)/10 { // Ensure len(data) is within a safe range
+		return nil, fmt.Errorf("data too large to decompress")
+	}
 	decompressed := make([]byte, 10*len(data))
 
 	n, err := lz4.UncompressBlock(data, decompressed)
