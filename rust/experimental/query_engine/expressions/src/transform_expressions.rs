@@ -1,8 +1,11 @@
+use std::collections::HashSet;
+
 use crate::{Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransformExpression {
     Set(SetTransformExpression),
+    Clear(ClearTransformExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +38,41 @@ impl SetTransformExpression {
 }
 
 impl Expression for SetTransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClearTransformExpression {
+    query_location: QueryLocation,
+    target: MutableValueExpression,
+    keys_to_keep: HashSet<Box<str>>,
+}
+
+impl ClearTransformExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        target: MutableValueExpression,
+        keys_to_keep: HashSet<Box<str>>,
+    ) -> ClearTransformExpression {
+        Self {
+            query_location,
+            target,
+            keys_to_keep,
+        }
+    }
+
+    pub fn get_target(&self) -> &MutableValueExpression {
+        &self.target
+    }
+
+    pub fn get_keys_to_keep(&self) -> &HashSet<Box<str>> {
+        &self.keys_to_keep
+    }
+}
+
+impl Expression for ClearTransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
