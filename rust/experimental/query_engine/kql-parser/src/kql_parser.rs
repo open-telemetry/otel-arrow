@@ -642,11 +642,9 @@ pub(crate) fn parse_extend_expression(
 
 #[cfg(test)]
 mod pest_tests {
-    use std::mem::discriminant;
-
     use super::*;
     use data_engine_parser_abstractions::pest_test_helpers;
-    use pest::{Parser, iterators::Pairs};
+    use pest::Parser;
 
     #[test]
     fn test_true_literal() {
@@ -668,134 +666,160 @@ mod pest_tests {
 
     #[test]
     fn test_datetime_literal() {
-        assert!(KqlParser::parse(Rule::datetime_literal, "").is_err());
-        assert!(KqlParser::parse(Rule::datetime_literal, "\"").is_err());
-        assert!(KqlParser::parse(Rule::datetime_literal, "'").is_err());
-        assert!(KqlParser::parse(Rule::datetime_literal, "\\").is_err());
-
-        assert!(KqlParser::parse(Rule::datetime_literal, "12/31/2025").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "12/31/2025 10 AM").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "12-31-2025 10:00PM").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "12-31-2025 13:00:00").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2025-12-13 13:00:00 +08:00").is_ok());
-
-        assert!(KqlParser::parse(Rule::datetime_literal, "November 7, 2025").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "Nov 7 25").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &[
+                "12/31/2025",
+                "12/31/2025 10 AM",
+                "12-31-2025 10:00PM",
+                "12-31-2025 13:00:00",
+                "2025-12-13 13:00:00 +08:00",
+                "November 7, 2025",
+                "Nov 7 25",
+            ],
+            &["", "\"", "'", "\\"],
+        );
 
         // ISO 8601
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-05-25T08:20:03.123456Z").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08 15:55:55.123456Z").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08 15:55:55").is_ok());
-        // RFC 822
-        assert!(KqlParser::parse(Rule::datetime_literal, "Sat, 8 Nov 14 15:05:02 GMT").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "8 Nov 14 15:05 GMT").is_ok());
-        // RFC 850
-        assert!(
-            KqlParser::parse(Rule::datetime_literal, "Saturday, 08-Nov-14 15:05:02 GMT").is_ok()
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &[
+                "2014-05-25T08:20:03.123456Z",
+                "2014-11-08 15:55:55.123456Z",
+                "2014-11-08 15:55:55",
+            ],
+            &[],
         );
-        assert!(KqlParser::parse(Rule::datetime_literal, "08-Nov-14 15:05:02 GMT").is_ok());
+        // RFC 822
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &["Sat, 8 Nov 14 15:05:02 GMT", "8 Nov 14 15:05 GMT"],
+            &[],
+        );
+        // RFC 850
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &["Saturday, 08-Nov-14 15:05:02 GMT", "08-Nov-14 15:05:02 GMT"],
+            &[],
+        );
         // Sortable
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08 15:05:25 GMT").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08T15:05:25 GMT").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &["2014-11-08 15:05:25 GMT", "2014-11-08T15:05:25 GMT"],
+            &[],
+        );
     }
 
     #[test]
     fn test_double_literal() {
-        assert!(KqlParser::parse(Rule::double_literal, "1.0").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "-1.0").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1.0e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "-1.0e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "-1e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1e+1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1e-1").is_ok());
-
-        assert!(KqlParser::parse(Rule::double_literal, "1").is_err());
-        assert!(KqlParser::parse(Rule::double_literal, ".1").is_err());
-        assert!(KqlParser::parse(Rule::double_literal, "abc").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::double_literal,
+            &[
+                "1.0", "-1.0", "1.0e1", "-1.0e1", "1e1", "-1e1", "1e+1", "1e-1",
+            ],
+            &["1", ".1", "abc"],
+        );
     }
 
     #[test]
     fn test_integer_literal() {
-        assert!(KqlParser::parse(Rule::integer_literal, "123").is_ok());
-        assert!(KqlParser::parse(Rule::integer_literal, "-123").is_ok());
-        assert!(KqlParser::parse(Rule::integer_literal, ".53").is_err());
-        assert!(KqlParser::parse(Rule::integer_literal, "abc").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::integer_literal,
+            &["123", "-123"],
+            &[".53", "abc"],
+        );
     }
 
     #[test]
     fn test_string_literal() {
-        assert!(KqlParser::parse(Rule::string_literal, "\"hello\"").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "\"he\\\"llo\"").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "'hello'").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "'he\"llo'").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "'he\\'llo'").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, r#""hello"#).is_err());
-        assert!(KqlParser::parse(Rule::string_literal, r#"hello""#).is_err());
-        assert!(KqlParser::parse(Rule::string_literal, r#""""#).is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::string_literal,
+            &[
+                "\"hello\"",
+                "\"he\\\"llo\"",
+                "'hello'",
+                "'he\"llo'",
+                "'he\\'llo'",
+                r#""""#,
+            ],
+            &[r#""hello"#, r#"hello""#],
+        );
     }
 
     #[test]
     fn test_identifier_literal() {
-        assert!(KqlParser::parse(Rule::identifier_literal, "Abc").is_ok());
-        assert!(KqlParser::parse(Rule::identifier_literal, "abc_123").is_ok());
-        assert!(KqlParser::parse(Rule::identifier_literal, "_abc").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::identifier_literal,
+            &["Abc", "abc_123", "_abc"],
+            &[],
+        );
     }
 
     #[test]
     fn test_real_expression() {
-        assert!(KqlParser::parse(Rule::real_expression, "real(1.0)").is_ok());
-        assert!(KqlParser::parse(Rule::real_expression, "real(1)").is_ok());
-        assert!(KqlParser::parse(Rule::real_expression, "real(+inf)").is_ok());
-        assert!(KqlParser::parse(Rule::real_expression, "real(-inf)").is_ok());
-
-        assert!(KqlParser::parse(Rule::real_expression, "real(.1)").is_err());
-        assert!(KqlParser::parse(Rule::real_expression, "real()").is_err());
-        assert!(KqlParser::parse(Rule::real_expression, "real(abc)").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::real_expression,
+            &["real(1.0)", "real(1)", "real(+inf)", "real(-inf)"],
+            &["real(.1)", "real()", "real(abc)"],
+        );
     }
 
     #[test]
     fn test_comparison_expression() {
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 == 1").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "(1) != true").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "(1==1) > false").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 >= 1").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 < 1").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 <= 1").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::comparison_expression,
+            &[
+                "1 == 1",
+                "(1) != true",
+                "(1==1) > false",
+                "1 >= 1",
+                "1 < 1",
+                "1 <= 1",
+            ],
+            &[],
+        );
     }
 
     #[test]
     fn test_scalar_expression() {
-        assert!(KqlParser::parse(Rule::scalar_expression, "1").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "1e1").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "real(1)").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "datetime(6/9/2025)").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "true").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "false").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "(true == true)").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "\"hello world\"").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "variable").is_ok());
-
-        assert!(KqlParser::parse(Rule::scalar_expression, "!").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::scalar_expression,
+            &[
+                "1",
+                "1e1",
+                "real(1)",
+                "datetime(6/9/2025)",
+                "true",
+                "false",
+                "(true == true)",
+                "\"hello world\"",
+                "variable",
+            ],
+            &["!"],
+        );
     }
 
     #[test]
     fn test_logical_expression() {
-        assert!(KqlParser::parse(Rule::logical_expression, "true").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "false").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "variable").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "a == b").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "a == b or 10 < 1").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "(true)").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "(true or variable['a'])").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)").is_ok());
-
-        assert!(KqlParser::parse(Rule::logical_expression, "1").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::logical_expression,
+            &[
+                "true",
+                "false",
+                "variable",
+                "a == b",
+                "a == b or 10 < 1",
+                "(true)",
+                "(true or variable['a'])",
+                "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)",
+            ],
+            &["1"],
+        );
     }
 
     #[test]
     fn test_accessor_expression() {
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "Abc").unwrap(),
             &[
                 (Rule::accessor_expression, "Abc"),
@@ -803,7 +827,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "abc_123").unwrap(),
             &[
                 (Rule::accessor_expression, "abc_123"),
@@ -811,7 +835,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "_abc").unwrap(),
             &[
                 (Rule::accessor_expression, "_abc"),
@@ -819,7 +843,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "array[0]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[0]"),
@@ -828,7 +852,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "array[-1]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[-1]"),
@@ -837,7 +861,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "abc.name").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name"),
@@ -846,7 +870,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "abc.name1.name2").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name1.name2"),
@@ -856,7 +880,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(
                 Rule::accessor_expression,
                 "abc['~name-!'].name1[0][-sub].name2",
@@ -878,24 +902,11 @@ mod pest_tests {
             ],
         );
 
-        assert!(KqlParser::parse(Rule::accessor_expression, "123").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, "+name").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, "-name").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, "~name").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, ".name").is_err());
-    }
-
-    fn validate_rule(parsed: Pairs<'_, Rule>, expected: &[(Rule, &str)]) {
-        let flat = parsed.flatten();
-
-        assert_eq!(flat.len(), expected.len());
-
-        for (index, rule) in flat.enumerate() {
-            let expected = expected.get(index).unwrap();
-
-            assert!(discriminant(&rule.as_rule()) == discriminant(&expected.0));
-            assert_eq!(rule.as_str(), expected.1);
-        }
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::accessor_expression,
+            &[],
+            &["123", "+name", "-name", "~name", ".name"],
+        );
     }
 }
 
