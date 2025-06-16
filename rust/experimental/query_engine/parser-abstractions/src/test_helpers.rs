@@ -1,8 +1,12 @@
+use crate::parser_abstractions::*;
+use data_engine_expressions::*;
+use pest::RuleType;
+use pest::{Parser, iterators::Pairs};
+use std::mem::discriminant;
+
 /// Test helper to validate pest rules across different parsers
 pub mod pest_test_helpers {
-    use pest::RuleType;
-    use pest::{Parser, iterators::Pairs};
-    use std::mem::discriminant;
+    use super::*;
 
     pub fn test_pest_rule<P, R>(parser_rule: R, ok_inputs: &[&str], err_inputs: &[&str])
     where
@@ -65,9 +69,7 @@ pub mod pest_test_helpers {
 /// Test helper to validate parsing of common expressions across different
 /// parsers that use generic parse functions.
 pub mod parse_test_helpers {
-    use crate::parser_abstractions::*;
-    use data_engine_expressions::*;
-    use pest::{Parser, RuleType};
+    use super::*;
 
     pub fn test_parse_bool_literal<P, R>(
         true_parser_rule: R,
