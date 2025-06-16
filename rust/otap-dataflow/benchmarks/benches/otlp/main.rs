@@ -39,7 +39,7 @@ fn bench_trace_batch_split(c: &mut Criterion) {
     let _ = c.bench_function("trace_split_into_batches", |b| {
         b.iter(|| {
             let req = black_box(req.clone());
-            let _ = req.split_into_batches(black_box(128));
+            let _ = req.split_into_batches(black_box(1000));
         });
     });
 }
