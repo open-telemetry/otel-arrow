@@ -14,6 +14,7 @@ Classes:
 These components are designed to be modular and easily extensible, enabling customized reporting workflows
 that can adapt to different output formats (e.g., JSON, HTML, XML) and destinations (e.g., file system, APIs, databases).
 """
+
 from abc import abstractmethod
 from typing import Any
 
@@ -54,6 +55,7 @@ class ReportFormatter:
     Attributes:
         config (ReportFormatterConfig): Configuration object containing formatter-specific settings.
     """
+
     @abstractmethod
     def __init__(self, config: ReportFormatterConfig) -> None:
         """
@@ -71,7 +73,7 @@ class ReportFormatter:
 
         Args:
             report (TestReport): The test report object to be formatted.
-            ctx (BaseContext): The context in which the formatting is occurring, 
+            ctx (BaseContext): The context in which the formatting is occurring,
                                which may provide environmental or runtime data.
 
         Returns:
@@ -88,12 +90,13 @@ class DestinationWriter:
     Abstract base class for writing formatted report data to a destination.
 
     This class defines a consistent interface for all destination writers,
-    which are responsible for delivering or storing formatted report output 
+    which are responsible for delivering or storing formatted report output
     (e.g., to files, databases, network endpoints, etc.).
 
     Attributes:
         config (DestinationWriterConfig): Configuration object containing writer-specific settings.
     """
+
     @abstractmethod
     def __init__(self, config: DestinationWriterConfig) -> None:
         """Initialize with a config object."""
@@ -106,7 +109,7 @@ class DestinationWriter:
 
         Args:
             formatted_data (Any): The data to be written, typically the output of a ReportFormatter.
-            ctx (BaseContext): The context in which the writing is occurring, 
+            ctx (BaseContext): The context in which the writing is occurring,
                                which may provide environmental or runtime data.
 
         Raises:
@@ -128,6 +131,7 @@ class ReportOutputPipeline:
         formatter (ReportFormatter): The formatter responsible for transforming the raw test report.
         writer (DestinationWriter): The writer responsible for delivering the formatted report to its destination.
     """
+
     def __init__(self, formatter: ReportFormatter, writer: DestinationWriter):
         """
         Initialize the output pipeline with a formatter and writer.
@@ -159,14 +163,15 @@ class ReportingHookStrategy(HookStrategy):
     """
     Abstract base class for reporting hook strategies.
 
-    This class defines the interface for strategies that manage how and when 
-    reporting logic is hooked into a larger process or lifecycle. All concrete 
-    implementations must be initialized with a configuration object that defines 
+    This class defines the interface for strategies that manage how and when
+    reporting logic is hooked into a larger process or lifecycle. All concrete
+    implementations must be initialized with a configuration object that defines
     their behavior.
 
     Attributes:
         config (ReportingHookStrategyConfig): Configuration object containing strategy-specific settings.
     """
+
     @abstractmethod
     def __init__(self, config: ReportingHookStrategyConfig) -> None:
         """

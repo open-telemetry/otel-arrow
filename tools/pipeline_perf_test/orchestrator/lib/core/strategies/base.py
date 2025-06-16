@@ -9,6 +9,7 @@ Classes:
     BaseStrategyConfig: Pydantic model that provides common configuration options for strategies.
     BaseStrategy: Abstract base class to be inherited by all concrete strategy implementations.
 """
+
 from abc import ABC
 from typing import Optional
 

@@ -11,6 +11,7 @@ It provides utilities for:
 
 The module also defines supporting enums and types used to configure aggregation behaviors.
 """
+
 import datetime
 import json
 import re
@@ -41,6 +42,7 @@ class TestReportAggregation(Enum):
         COMPARISON: Aggregates reports for comparison across test runs or environments.
         TIMESERIES: Aggregates reports over time for trend or time-based analysis.
     """
+
     NONE = "none"
     COMPARISON = "comparison"
     TIMESERIES = "timeseries"
@@ -63,6 +65,7 @@ class TestReport:
         results (Dict[str, pd.DataFrame]): A mapping from result names to pandas DataFrames containing result data.
         REPORT_TYPE (str, class variable): A string identifier for the type of report. Subclasses should override this.
     """
+
     report_name: str
     report_time: datetime.datetime
     metadata: Dict[str, Any]
@@ -228,6 +231,7 @@ class TestReport:
                 ...
             }
         """
+
         def convert_timestamps(val):
             if isinstance(val, (pd.Timestamp, datetime.datetime)):
                 return val.isoformat()
