@@ -1,7 +1,7 @@
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+pub use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
@@ -17,12 +17,32 @@ use std::time::{Duration, Instant};
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
+    /// Splits the current batch into smaller batches.
+    ///
+    /// Divides the batch represented by `self` into smaller batches. Each batch contains
+    /// at most `max_batch_size` items while preserving the hierarchical structure.
+    ///
+    /// # Parameters
+    /// - `max_batch_size`: The maximum number of entries allowed in a single batch.
+    ///
+    /// # Returns
+    /// A vector of smaller batches, each adhering to the `max_batch_size` limit.
     fn split_into_batches(self, max_batch_size: usize) -> Vec<Self>;
 }
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
+    /// Splits the current batch into smaller batches.
+    ///
+    /// This method divides the batch represented by `self` into smaller batches
+    /// while ensuring that no batch exceeds the specified `max_batch_size`.
+    ///
+    /// # Parameters
+    /// - `max_batch_size`: The maximum number of entries allowed in a single batch.
+    /// # Returns
+    /// A vector of smaller batches adhering to the size constraint.
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
+        // This function splits the ExportTraceServiceRequest into smaller batches
         let mut batches = Vec::new();
 
         // Accumulates resource groups and their contents until the batch reaches max_batch_size leaf items.
@@ -85,6 +105,7 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
 }
 
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
+    /// Splits the current batch into smaller batches for Metrics.
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
 
@@ -157,6 +178,7 @@ impl ExportMetricsServiceRequest {
 }
 
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
+    /// Splits the current batch into smaller batches for Logs.
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
 
@@ -268,6 +290,7 @@ pub struct BatchConfig {
     pub timeout: Duration,
 }
 impl Default for BatchConfig {
+    /// Provides a default configuration for the batch processor.
     fn default() -> Self {
         Self {
             sizer: BatchSizer::Items,
@@ -317,6 +340,7 @@ impl GenericBatcher {
 impl GenericBatcher {
     /// Creates a new `GenericBatcher` with the given configuration.
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
         Self {

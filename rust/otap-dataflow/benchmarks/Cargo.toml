@@ -17,6 +17,7 @@ criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
+otap-df-otlp = { path = "../crates/otlp" }
 futures-channel = "0.3"
 futures = "0.3.31"
 flume = "0.11.1"
@@ -34,6 +35,10 @@ harness = false
 
 [[bench]]
 name = "channel"
+harness = false
+
+[[bench]]
+name = "otlp"
 harness = false
 
 [profile.bench]
