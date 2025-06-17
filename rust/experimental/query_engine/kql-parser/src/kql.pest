@@ -1,3 +1,12 @@
+// KQL Grammar is heavily influenced by the following sources:
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/KqlTokens.g4
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/Kql.g4
+
+// These two special rules, when defined, are implicitly allowed at:
+// - at every sequence (split by ~)
+// - between every repetition (+ or *)
+// Atomics (marked with @) are excluded
+// See https://pest.rs/book/grammars/syntax.html#implicit-whitespace
 WHITESPACE = _{ " " | NEWLINE }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
@@ -65,3 +74,4 @@ accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
 assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
 
 extend_expression = { "extend" ~ assignment_expression ~ ("," ~ assignment_expression)* }
+project_expression = { "project" ~ (assignment_expression|accessor_expression) ~ ("," ~ (assignment_expression|accessor_expression))* }
