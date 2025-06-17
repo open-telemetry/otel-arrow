@@ -99,10 +99,8 @@ pub mod parse_test_helpers {
         }
     }
 
-    pub fn test_parse_integer_literal<P, R>(
-        parser_rule: R,
-        inputs: &[(&str, i64)],
-    ) where
+    pub fn test_parse_integer_literal<P, R>(parser_rule: R, inputs: &[(&str, i64)])
+    where
         P: Parser<R>,
         R: RuleType + Copy,
     {
@@ -118,10 +116,8 @@ pub mod parse_test_helpers {
         }
     }
 
-    pub fn test_parse_float_literal<P, R>(
-        parser_rule: R,
-        inputs: &[(&str, f64)],
-    ) where
+    pub fn test_parse_float_literal<P, R>(parser_rule: R, inputs: &[(&str, f64)])
+    where
         P: Parser<R>,
         R: RuleType + Copy,
     {
@@ -137,10 +133,8 @@ pub mod parse_test_helpers {
         }
     }
 
-    pub fn test_parse_string_literal<P, R>(
-        parser_rule: R,
-        inputs: &[(&str, &str)],
-    ) where
+    pub fn test_parse_string_literal<P, R>(parser_rule: R, inputs: &[(&str, &str)])
+    where
         P: Parser<R>,
         R: RuleType + Copy,
     {

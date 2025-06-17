@@ -1,7 +1,7 @@
+use crate::parser_error::ParserError;
 use data_engine_expressions::*;
 use pest::RuleType;
 use pest::iterators::Pair;
-use crate::parser_error::ParserError;
 
 /// Use a Pest rule to create a `QueryLocation`
 /// This function extracts the start and end positions, as well as line and column numbers, from a Pest rule pair.
@@ -38,7 +38,7 @@ pub fn parse_standard_integer_literal<R: RuleType>(
     integer_literal_rule: Pair<R>,
 ) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&integer_literal_rule);
-    
+
     let raw_value = integer_literal_rule.as_str();
     let parsed_value = raw_value.parse::<i64>();
     if parsed_value.is_err() {
@@ -62,7 +62,7 @@ pub fn parse_standard_float_literal<R: RuleType>(
     float_literal_rule: Pair<R>,
 ) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&float_literal_rule);
-    
+
     let raw_value = float_literal_rule.as_str();
     let parsed_value = raw_value.parse::<f64>();
     if parsed_value.is_err() {
@@ -87,7 +87,7 @@ pub fn parse_standard_string_literal<R: RuleType>(
     string_literal_rule: Pair<R>,
 ) -> StaticScalarExpression {
     let query_location = to_query_location(&string_literal_rule);
-    
+
     let raw_string = string_literal_rule.as_str();
     let mut chars = raw_string.chars();
     let mut s = String::with_capacity(raw_string.len());

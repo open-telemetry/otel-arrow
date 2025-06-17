@@ -19,12 +19,12 @@ pub(crate) struct KqlParser;
 #[allow(dead_code)]
 pub(crate) fn parse_kql_string_literal(string_literal_rule: Pair<Rule>) -> StaticScalarExpression {
     let raw_string = string_literal_rule.as_str();
-    
+
     // If it's a double-quoted string, use the shared parser
     if raw_string.starts_with('"') {
         return parse_standard_string_literal(string_literal_rule);
     }
-    
+
     // Handle single-quoted strings with KQL-specific escape sequences
     let query_location = to_query_location(&string_literal_rule);
     let mut chars = raw_string.chars();
@@ -70,12 +70,6 @@ pub(crate) fn parse_kql_string_literal(string_literal_rule: Pair<Rule>) -> Stati
 
     StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
-
-
-
-
-
-
 
 #[allow(dead_code)]
 pub(crate) fn parse_datetime_expression(
@@ -223,11 +217,15 @@ pub(crate) fn parse_scalar_expression(
         Rule::true_literal | Rule::false_literal => Ok(ScalarExpression::Static(
             parse_standard_bool_literal(scalar_rule),
         )),
-        Rule::double_literal => Ok(ScalarExpression::Static(parse_standard_float_literal(scalar_rule)?)),
+        Rule::double_literal => Ok(ScalarExpression::Static(parse_standard_float_literal(
+            scalar_rule,
+        )?)),
         Rule::integer_literal => Ok(ScalarExpression::Static(parse_standard_integer_literal(
             scalar_rule,
         )?)),
-        Rule::string_literal => Ok(ScalarExpression::Static(parse_kql_string_literal(scalar_rule))),
+        Rule::string_literal => Ok(ScalarExpression::Static(parse_kql_string_literal(
+            scalar_rule,
+        ))),
         Rule::accessor_expression => parse_accessor_expression(scalar_rule, state),
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state),
         _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
