@@ -13,15 +13,20 @@ use crate::date_utils;
 #[allow(dead_code)]
 pub(crate) struct KqlParser;
 
-/// The goal of this code is to unescape string literal values as they come in
-/// when parsed from pest:
-/// * `'some \\' string'` -> `some ' string`
-/// * `\"some \\\" string\"` -> `some \" string`
+/// KQL-specific string literal parser that handles both single and double quotes.
+/// Uses the shared standard parser for double quotes but handles single quotes locally
+/// since KQL supports `\'` escape sequence which is not part of the OTTL standard.
 #[allow(dead_code)]
-pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticScalarExpression {
-    let query_location = to_query_location(&string_literal_rule);
-
+pub(crate) fn parse_kql_string_literal(string_literal_rule: Pair<Rule>) -> StaticScalarExpression {
     let raw_string = string_literal_rule.as_str();
+    
+    // If it's a double-quoted string, use the shared parser
+    if raw_string.starts_with('"') {
+        return parse_standard_string_literal(string_literal_rule);
+    }
+    
+    // Handle single-quoted strings with KQL-specific escape sequences
+    let query_location = to_query_location(&string_literal_rule);
     let mut chars = raw_string.chars();
     let mut s = String::with_capacity(raw_string.len());
     let mut position = 1;
@@ -29,7 +34,9 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
 
     let mut c = chars.next();
     loop {
-        debug_assert!(c.is_some());
+        if c.is_none() {
+            break;
+        }
 
         let mut current_char = c.unwrap();
         let mut skip_push = false;
@@ -64,52 +71,11 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
     StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
 
-#[allow(dead_code)]
-pub(crate) fn parse_double_literal(
-    double_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
-    let query_location = to_query_location(&double_literal_rule);
 
-    let raw_value = double_literal_rule.as_str();
-    let parsed_value = raw_value.parse::<f64>();
-    if parsed_value.is_err() {
-        return Err(ParserError::SyntaxError(
-            to_query_location(&double_literal_rule),
-            format!(
-                "'{}' could not be parsed as a literal of type 'double'",
-                raw_value
-            ),
-        ));
-    }
 
-    Ok(StaticScalarExpression::Double(DoubleScalarExpression::new(
-        query_location,
-        parsed_value.unwrap(),
-    )))
-}
 
-#[allow(dead_code)]
-pub(crate) fn parse_integer_literal(
-    integer_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
-    let query_location = to_query_location(&integer_literal_rule);
 
-    let raw_value = integer_literal_rule.as_str();
-    let parsed_value = raw_value.parse::<i64>();
-    if parsed_value.is_err() {
-        return Err(ParserError::SyntaxError(
-            to_query_location(&integer_literal_rule),
-            format!(
-                "'{}' could not be parsed as a literal of type 'integer'",
-                raw_value
-            ),
-        ));
-    }
 
-    Ok(StaticScalarExpression::Integer(
-        IntegerScalarExpression::new(query_location, parsed_value.unwrap()),
-    ))
-}
 
 #[allow(dead_code)]
 pub(crate) fn parse_datetime_expression(
@@ -226,8 +192,8 @@ pub(crate) fn parse_real_expression(
         Rule::negative_infinity_token => Ok(StaticScalarExpression::Double(
             DoubleScalarExpression::new(query_location, f64::NEG_INFINITY),
         )),
-        Rule::double_literal => parse_double_literal(real_rule),
-        Rule::integer_literal => match parse_integer_literal(real_rule)? {
+        Rule::double_literal => parse_standard_float_literal(real_rule),
+        Rule::integer_literal => match parse_standard_integer_literal(real_rule)? {
             StaticScalarExpression::Integer(v) => Ok(StaticScalarExpression::Double(
                 DoubleScalarExpression::new(query_location, v.get_value() as f64),
             )),
@@ -257,11 +223,11 @@ pub(crate) fn parse_scalar_expression(
         Rule::true_literal | Rule::false_literal => Ok(ScalarExpression::Static(
             parse_standard_bool_literal(scalar_rule),
         )),
-        Rule::double_literal => Ok(ScalarExpression::Static(parse_double_literal(scalar_rule)?)),
-        Rule::integer_literal => Ok(ScalarExpression::Static(parse_integer_literal(
+        Rule::double_literal => Ok(ScalarExpression::Static(parse_standard_float_literal(scalar_rule)?)),
+        Rule::integer_literal => Ok(ScalarExpression::Static(parse_standard_integer_literal(
             scalar_rule,
         )?)),
-        Rule::string_literal => Ok(ScalarExpression::Static(parse_string_literal(scalar_rule))),
+        Rule::string_literal => Ok(ScalarExpression::Static(parse_kql_string_literal(scalar_rule))),
         Rule::accessor_expression => parse_accessor_expression(scalar_rule, state),
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state),
         _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
@@ -447,7 +413,7 @@ pub(crate) fn parse_accessor_expression(
             Rule::integer_literal => {
                 let location = to_query_location(&pair);
 
-                match parse_integer_literal(pair)? {
+                match parse_standard_integer_literal(pair)? {
                     StaticScalarExpression::Integer(v) => {
                         let i = v.get_value();
 
@@ -466,7 +432,7 @@ pub(crate) fn parse_accessor_expression(
                     _ => panic!("Unexpected type returned from parse_integer_literal"),
                 }
             }
-            Rule::string_literal => match parse_string_literal(pair) {
+            Rule::string_literal => match parse_kql_string_literal(pair) {
                 StaticScalarExpression::String(v) => {
                     value_accessor.push_selector(ValueSelector::MapKey(v))
                 }
@@ -1069,7 +1035,7 @@ mod parse_tests {
         let run_test = |input: &str, expected: f64| {
             let mut result = KqlParser::parse(Rule::double_literal, input).unwrap();
 
-            let f = parse_double_literal(result.next().unwrap());
+            let f = parse_standard_float_literal(result.next().unwrap());
 
             assert!(f.is_ok());
 
@@ -1096,7 +1062,7 @@ mod parse_tests {
         let run_test = |input: &str, expected: i64| {
             let mut result = KqlParser::parse(Rule::integer_literal, input).unwrap();
 
-            let i = parse_integer_literal(result.next().unwrap());
+            let i = parse_standard_integer_literal(result.next().unwrap());
 
             assert!(i.is_ok());
 
@@ -1118,7 +1084,7 @@ mod parse_tests {
         assert!(result.is_ok());
 
         let mut pairs = result.unwrap();
-        let i = parse_integer_literal(pairs.next().unwrap());
+        let i = parse_standard_integer_literal(pairs.next().unwrap());
 
         assert!(i.is_err());
 
@@ -1133,7 +1099,7 @@ mod parse_tests {
         let run_test = |input: &str, expected: &str| {
             let mut result = KqlParser::parse(Rule::string_literal, input).unwrap();
 
-            let actual = parse_string_literal(result.next().unwrap());
+            let actual = parse_kql_string_literal(result.next().unwrap());
 
             match actual {
                 StaticScalarExpression::String(v) => assert_eq!(expected, v.get_value()),
