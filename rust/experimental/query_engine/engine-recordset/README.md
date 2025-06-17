@@ -247,6 +247,8 @@ summaries: [
   total_count: 1
  }
 ]
+```
+
 For this run 3 summaries were output. The late-arriving record was included in
 its own summary with the same id as the previous run. This is due to the
 deterministic generation of summary ids.
