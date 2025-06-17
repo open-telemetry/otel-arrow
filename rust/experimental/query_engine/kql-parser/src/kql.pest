@@ -74,3 +74,4 @@ accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
 assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
 
 extend_expression = { "extend" ~ assignment_expression ~ ("," ~ assignment_expression)* }
+project_expression = { "project" ~ (assignment_expression|accessor_expression) ~ ("," ~ (assignment_expression|accessor_expression))* }
