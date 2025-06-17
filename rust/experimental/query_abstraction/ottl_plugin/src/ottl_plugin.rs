@@ -434,14 +434,26 @@ impl OttlPlugin {
     }
 
     fn process_literal(literal: Pair<Rule>) -> Literal {
-        if let Ok(value) = literal.as_str().parse::<i32>() {
-            Literal::Int(value)
-        } else if literal.as_str() == "true" {
-            Literal::Bool(true)
-        } else if literal.as_str() == "false" {
-            Literal::Bool(false)
+        if let Some(inner) = literal.into_inner().next() {
+            match inner.as_rule() {
+                Rule::true_token => Literal::Bool(true),
+                Rule::false_token => Literal::Bool(false),
+                Rule::integer_token => {
+                    let value = inner.as_str().parse::<i64>().unwrap();
+                    Literal::Int(value)
+                }
+                Rule::float_token => {
+                    let value = inner.as_str().parse::<f64>().unwrap();
+                    Literal::Float(value)
+                }
+                Rule::string_token => {
+                    let s = inner.as_str().trim_matches('"').to_string();
+                    Literal::String(s)
+                }
+                _ => panic!("Unexpected token in literal: {:?}", inner.as_rule()),
+            }
         } else {
-            Literal::String(literal.as_str().trim_matches('"').to_string())
+            panic!("Expected inner token in literal");
         }
     }
 }
@@ -472,6 +484,27 @@ mod tests {
             .unwrap();
         let result = OttlPlugin::process_literal(literal);
         assert_eq!(result, Literal::String("hello".to_string()));
+
+        let literal = OttlParser::parse(Rule::literal, "3.14")
+            .unwrap()
+            .next()
+            .unwrap();
+        let result = OttlPlugin::process_literal(literal);
+        assert_eq!(result, Literal::Float(3.14));
+
+        let literal = OttlParser::parse(Rule::literal, "-123")
+            .unwrap()
+            .next()
+            .unwrap();
+        let result = OttlPlugin::process_literal(literal);
+        assert_eq!(result, Literal::Int(-123));
+
+        let literal = OttlParser::parse(Rule::literal, "-.5")
+            .unwrap()
+            .next()
+            .unwrap();
+        let result = OttlPlugin::process_literal(literal);
+        assert_eq!(result, Literal::Float(-0.5));
     }
 
     #[test]
