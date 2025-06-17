@@ -33,25 +33,8 @@ mod tests {
     #[test]
     fn test_integer_token() {
         assert!(OttlParser::parse(Rule::integer_token, "123").is_ok());
-        assert!(OttlParser::parse(Rule::integer_token, "-123").is_ok());
-        assert!(OttlParser::parse(Rule::integer_token, "+123").is_ok());
         assert!(OttlParser::parse(Rule::integer_token, ".53").is_err());
         assert!(OttlParser::parse(Rule::integer_token, "abc").is_err());
-        assert!(OttlParser::parse(Rule::integer_token, "12.3").is_err());
-    }
-
-    #[test]
-    fn test_float_token() {
-        assert!(OttlParser::parse(Rule::float_token, "1.0").is_ok());
-        assert!(OttlParser::parse(Rule::float_token, "-1.0").is_ok());
-        assert!(OttlParser::parse(Rule::float_token, "+1.0").is_ok());
-        assert!(OttlParser::parse(Rule::float_token, ".5").is_ok());
-        assert!(OttlParser::parse(Rule::float_token, "-.5").is_ok());
-        assert!(OttlParser::parse(Rule::float_token, "+.5").is_ok());
-        assert!(OttlParser::parse(Rule::float_token, "123.456").is_ok());
-        assert!(OttlParser::parse(Rule::float_token, "1").is_err());
-        assert!(OttlParser::parse(Rule::float_token, "abc").is_err());
-        assert!(OttlParser::parse(Rule::float_token, "1.").is_err());
     }
 
     #[test]

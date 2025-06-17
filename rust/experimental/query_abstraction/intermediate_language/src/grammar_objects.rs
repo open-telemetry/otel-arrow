@@ -267,8 +267,7 @@ impl Debug for Identifier {
 #[derive(Clone, PartialEq)]
 pub enum Literal {
     Bool(bool),
-    Int(i64),
-    Float(f64),
+    Int(i32),
     String(String),
 }
 
@@ -277,7 +276,6 @@ impl Debug for Literal {
         match self {
             Literal::Bool(val) => write!(f, "Bool({})", val),
             Literal::Int(val) => write!(f, "Int({})", val),
-            Literal::Float(val) => write!(f, "Float({})", val),
             Literal::String(val) => write!(f, "String(\"{}\")", val),
         }
     }

@@ -373,7 +373,7 @@ impl KqlPlugin {
     }
 
     fn process_literal(literal: Pair<Rule>) -> Literal {
-        if let Ok(value) = literal.as_str().parse::<i64>() {
+        if let Ok(value) = literal.as_str().parse::<i32>() {
             Literal::Int(value)
         } else if literal.as_str() == "true" {
             Literal::Bool(true)

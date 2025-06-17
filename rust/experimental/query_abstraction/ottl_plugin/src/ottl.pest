@@ -14,13 +14,8 @@ COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 true_token = @{ "true" }
 false_token = @{ "false" }
 integer_token = @{ 
-    ("+" | "-")?
+    "-"?
     ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
-    ~ !("." ~ ASCII_DIGIT)
-}
-float_token = @{
-    ("+" | "-")?
-    ~ ((ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+) | ("." ~ ASCII_DIGIT+))
 }
 string_token = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 equals_token = @{ "==" }
@@ -40,7 +35,7 @@ where_token = @{ "where" }
 
 // Basic Grammar
 // ----------------------------------------------
-literal = { true_token | false_token | float_token | integer_token | string_token }
+literal = { true_token | false_token | integer_token | string_token }
 identifier = @{ ("_" | ASCII_ALPHANUMERIC)+ }
 
 expression_base = { identifier | literal | enclosed_expression }
