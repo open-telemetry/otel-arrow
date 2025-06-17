@@ -9,7 +9,7 @@ use crate::execution_context::ExecutionContext;
 pub(crate) fn get_next_id() -> usize {
     static COUNTER: AtomicUsize = AtomicUsize::new(1);
 
-    return COUNTER.fetch_add(1, Ordering::Relaxed);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 pub(crate) struct Hasher {
@@ -28,26 +28,26 @@ impl Hasher {
     }
 }
 
-impl Into<ExpressionHash> for Hasher {
-    fn into(self) -> ExpressionHash {
-        let hash = self.hasher.finalize();
+impl From<Hasher> for ExpressionHash {
+    fn from(val: Hasher) -> Self {
+        let hash = val.hasher.finalize();
 
         let bytes = &hash[..];
 
-        return ExpressionHash {
+        ExpressionHash {
             bytes: bytes.into(),
             hex: hex::encode(bytes).into(),
-        };
+        }
     }
 }
 
-impl Into<Box<str>> for Hasher {
-    fn into(self) -> Box<str> {
-        let hash = self.hasher.finalize();
+impl From<Hasher> for Box<str> {
+    fn from(val: Hasher) -> Self {
+        let hash = val.hasher.finalize();
 
         let bytes = &hash[..];
 
-        return hex::encode(bytes).into();
+        hex::encode(bytes).into()
     }
 }
 
@@ -149,15 +149,17 @@ impl ExpressionMessage {
         };
 
         if !result.1.is_none() {
-            write!(
+            writeln!(
                 output,
-                "// [{}] {}: {}\n",
+                "// [{}] {}: {}",
                 result.1.as_ref().unwrap(),
                 result.0,
                 result.2
-            );
+            )
+            .expect("debug comments could not be written");
         } else {
-            write!(output, "// {}: {}\n", result.0, result.2);
+            writeln!(output, "// {}: {}", result.0, result.2)
+                .expect("debug comments could not be written");
         }
     }
 }

@@ -19,15 +19,15 @@ impl Expression for PipelineExpression {
 
     fn get_hash(&self) -> &ExpressionHash {
         self.hash.get_or_init(|| {
-            return ExpressionHash::new(|h| {
+            ExpressionHash::new(|h| {
                 h.add_bytes(b"pipeline");
-                if self.expressions.len() > 0 {
+                if !self.expressions.is_empty() {
                     h.add_bytes(b"expressions:");
                     for expression in self.expressions.iter() {
                         h.add_bytes(expression.get_hash().get_bytes());
                     }
                 }
-            });
+            })
         })
     }
 
@@ -62,6 +62,12 @@ impl Expression for PipelineExpression {
     }
 }
 
+impl Default for PipelineExpression {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PipelineExpression {
     pub fn new() -> PipelineExpression {
         Self {
@@ -93,6 +99,6 @@ impl PipelineExpression {
             return Ok(result);
         }
 
-        return Ok(DataExpressionResult::Include(self.get_id()));
+        Ok(DataExpressionResult::Include(self.get_id()))
     }
 }
