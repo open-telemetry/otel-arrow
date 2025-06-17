@@ -22,26 +22,26 @@ change partially or wholly but this is how it works at the moment.
 
 Consider the following set up:
 
-```
+```text
 pipeline: [
-	summarize_by
-	(
-		predicate: (
-			equal_to(
-				left: resolve("@resource:attributes:'service.name'"),
-				right: static(StringValue("MyService")))
-			)
-		 &&
-			equal_to(
-				left: resolve("@instrumentation_scope:name"),
-				right: static(StringValue("CategoryNameB")))
-		),
-		window: Timestamp("00:05:00"),
-		values: [
-			resolve("@attributes[event_id]")
-		],
-		reservoir: SimpleReservoir(2)
-	)
+ summarize_by
+ (
+  predicate: (
+   equal_to(
+    left: resolve("@resource:attributes:'service.name'"),
+    right: static(StringValue("MyService")))
+   )
+   &&
+   equal_to(
+    left: resolve("@instrumentation_scope:name"),
+    right: static(StringValue("CategoryNameB")))
+  ),
+  window: Timestamp("00:05:00"),
+  values: [
+   resolve("@attributes[event_id]")
+  ],
+  reservoir: SimpleReservoir(2)
+ )
 ]
 ```
 
@@ -53,7 +53,7 @@ size of 2.
 
 Let's say the engine is sent 6 records:
 
-```
+```text
 resourceMyService { attributes: { service.name: MyService } }
 resourceOtherService { attributes: { service.name: OtherService } }
 
@@ -70,66 +70,66 @@ log6 [ resourceOtherService, scopeA ] { timestamp: 6/1/2025 10:03am, attributes:
 
 The engine will output:
 
-```
+```text
 included_records: [
-	log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
-	log4 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:02am, attributes: { event_id: 2 }, summary_id: 7aeb }
-	log5 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 }, summary_id: 9aa6 }
-	log6 [ resourceOtherService, scopeA ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 } }
+ log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
+ log4 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:02am, attributes: { event_id: 2 }, summary_id: 7aeb }
+ log5 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 }, summary_id: 9aa6 }
+ log6 [ resourceOtherService, scopeA ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 } }
 ]
 
 dropped_records: [
-	log2 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:02am, attributes: { event_id: 1 } }
-	log3 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:02am, attributes: { event_id: 1 } }
+ log2 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:02am, attributes: { event_id: 1 } }
+ log3 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:02am, attributes: { event_id: 1 } }
 ]
 
 summaries: [
-	{ 
-		id: 9aa6, 
-		observed_timestamp: 6/1/2025 10:10am, 
-		window_type: Timestamp(00:05:00), 
-		window_start: 6/1/2025 10:00am, 
-		window_end: 6/1/2025 10:05am, 
-		grouping: [
-			{
-				key: resource.attributes[service.name],
-				value: MyService
-			},	
-			{
-				key: instrumentation_scope.name,
-				value: CategoryNameB
-			},
-			{
-				key: attributes[event_id],
-				value: 1
-			}
-		],
-		included_count: 2,
-		total_count: 4
-	},
-	{ 
-		id: 7aeb, 
-		observed_timestamp: 6/1/2025 10:10am, 
-		window_type: Timestamp(00:05:00), 
-		window_start: 6/1/2025 10:00am, 
-		window_end: 6/1/2025 10:05am, 
-		grouping: [
-			{
-				key: resource.attributes[service.name],
-				value: MyService
-			},	
-			{
-				key: instrumentation_scope.name,
-				value: CategoryNameB
-			},
-			{
-				key: attributes[event_id],
-				value: 2
-			}
-		],
-		included_count: 1,
-		total_count: 1
-	}
+ {
+  id: 9aa6,
+  observed_timestamp: 6/1/2025 10:10am,
+  window_type: Timestamp(00:05:00),
+  window_start: 6/1/2025 10:00am,
+  window_end: 6/1/2025 10:05am,
+  grouping: [
+   {
+    key: resource.attributes[service.name],
+    value: MyService
+   },
+   {
+    key: instrumentation_scope.name,
+    value: CategoryNameB
+   },
+   {
+    key: attributes[event_id],
+    value: 1
+   }
+  ],
+  included_count: 2,
+  total_count: 4
+ },
+ {
+  id: 7aeb,
+  observed_timestamp: 6/1/2025 10:10am,
+  window_type: Timestamp(00:05:00),
+  window_start: 6/1/2025 10:00am,
+  window_end: 6/1/2025 10:05am,
+  grouping: [
+   {
+    key: resource.attributes[service.name],
+    value: MyService
+   },
+   {
+    key: instrumentation_scope.name,
+    value: CategoryNameB
+   },
+   {
+    key: attributes[event_id],
+    value: 2
+   }
+  ],
+  included_count: 1,
+  total_count: 1
+ }
 ]
 ```
 
@@ -146,7 +146,7 @@ it is assigned the summary id.
 Let's look at late-arriving data. Say the engine receives this data the next
 day:
 
-```
+```text
 resourceMyService { attributes: { service.name: MyService } }
 resourceOtherService { attributes: { service.name: OtherService } }
 
@@ -164,88 +164,88 @@ log5 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:03am, attributes: { 
 
 The engine will output:
 
-```
+```text
 included_records: [
-	log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
-	log2 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:02am, attributes: { event_id: 1 }, summary_id: 1bce }
-	log4 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:02am, attributes: { event_id: 2 }, summary_id: f0ae }
-	log5 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:03am, attributes: { event_id: 1 }, summary_id: 1bce }
+ log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
+ log2 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:02am, attributes: { event_id: 1 }, summary_id: 1bce }
+ log4 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:02am, attributes: { event_id: 2 }, summary_id: f0ae }
+ log5 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:03am, attributes: { event_id: 1 }, summary_id: 1bce }
 ]
 
 dropped_records: [
-	log3 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:02am, attributes: { event_id: 1 } }
+ log3 [ resourceMyService, scopeB ] { timestamp: 6/2/2025 11:02am, attributes: { event_id: 1 } }
 ]
 
 summaries: [
-	{ 
-		id: 9aa6, 
-		observed_timestamp: 6/1/2025 10:10am, 
-		window_type: Timestamp(00:05:00), 
-		window_start: 6/1/2025 10:00am, 
-		window_end: 6/1/2025 10:05am, 
-		grouping: [
-			{
-				key: resource.attributes[service.name],
-				value: MyService
-			},	
-			{
-				key: instrumentation_scope.name,
-				value: CategoryNameB
-			},
-			{
-				key: attributes[event_id],
-				value: 1
-			}
-		],
-		included_count: 1,
-		total_count: 1
-	},
-	{ 
-		id: 1bce, 
-		observed_timestamp: 6/2/2025 11:10am, 
-		window_type: Timestamp(00:05:00), 
-		window_start: 6/2/2025 11:00am, 
-		window_end: 6/2/2025 11:05am, 
-		grouping: [
-			{
-				key: resource.attributes[service.name],
-				value: MyService
-			},	
-			{
-				key: instrumentation_scope.name,
-				value: CategoryNameB
-			},
-			{
-				key: attributes[event_id],
-				value: 1
-			}
-		],
-		included_count: 2,
-		total_count: 3
-	},
-	{ 
-		id: f0ae, 
-		observed_timestamp: 6/2/2025 11:10am, 
-		window_type: Timestamp(00:05:00), 
-		window_start: 6/2/2025 11:00am, 
-		window_end: 6/2/2025 11:05am, 
-		grouping: [
-			{
-				key: resource.attributes[service.name],
-				value: MyService
-			},	
-			{
-				key: instrumentation_scope.name,
-				value: CategoryNameB
-			},
-			{
-				key: attributes[event_id],
-				value: 2
-			}
-		],
-		included_count: 1,
-		total_count: 1
-	}
+ {
+  id: 9aa6,
+  observed_timestamp: 6/1/2025 10:10am,
+  window_type: Timestamp(00:05:00),
+  window_start: 6/1/2025 10:00am,
+  window_end: 6/1/2025 10:05am,
+  grouping: [
+   {
+    key: resource.attributes[service.name],
+    value: MyService
+   },
+   {
+    key: instrumentation_scope.name,
+    value: CategoryNameB
+   },
+   {
+    key: attributes[event_id],
+    value: 1
+   }
+  ],
+  included_count: 1,
+  total_count: 1
+ },
+ {
+  id: 1bce,
+  observed_timestamp: 6/2/2025 11:10am,
+  window_type: Timestamp(00:05:00),
+  window_start: 6/2/2025 11:00am,
+  window_end: 6/2/2025 11:05am,
+  grouping: [
+   {
+    key: resource.attributes[service.name],
+    value: MyService
+   },
+   {
+    key: instrumentation_scope.name,
+    value: CategoryNameB
+   },
+   {
+    key: attributes[event_id],
+    value: 1
+   }
+  ],
+  included_count: 2,
+  total_count: 3
+ },
+ {
+  id: f0ae,
+  observed_timestamp: 6/2/2025 11:10am,
+  window_type: Timestamp(00:05:00),
+  window_start: 6/2/2025 11:00am,
+  window_end: 6/2/2025 11:05am,
+  grouping: [
+   {
+    key: resource.attributes[service.name],
+    value: MyService
+   },
+   {
+    key: instrumentation_scope.name,
+    value: CategoryNameB
+   },
+   {
+    key: attributes[event_id],
+    value: 2
+   }
+  ],
+  included_count: 1,
+  total_count: 1
+ }
 ]
 For this run 3 summaries were output. The late-arriving record was included in
 its own summary with the same id as the previous run. This is due to the
@@ -260,37 +260,37 @@ The engine may be run in multiple locations. Perhaps a collector close to where
 telemetry is originating sends to a collector for a region which sends to a
 collector in a cloud. Summaries are designed to be forwarded and combined.
 
-```
+```text
 records: [
-	log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
-	log2 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 }, summary_id: 9aa6 },
-	log3 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:04am, attributes: { event_id: 1 } }
+ log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
+ log2 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 }, summary_id: 9aa6 },
+ log3 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:04am, attributes: { event_id: 1 } }
 ]
 
 summaries: [
-	{ 
-		id: 9aa6, 
-		observed_timestamp: 6/1/2025 10:10am, 
-		window_type: Timestamp(00:05:00), 
-		window_start: 6/1/2025 10:00am, 
-		window_end: 6/1/2025 10:05am, 
-		grouping: [
-			{
-				key: resource.attributes[service.name],
-				value: MyService
-			},	
-			{
-				key: instrumentation_scope.name,
-				value: CategoryNameB
-			},
-			{
-				key: attributes[event_id],
-				value: 1
-			}
-		],
-		included_count: 2,
-		total_count: 4
-	},
+ {
+  id: 9aa6,
+  observed_timestamp: 6/1/2025 10:10am,
+  window_type: Timestamp(00:05:00),
+  window_start: 6/1/2025 10:00am,
+  window_end: 6/1/2025 10:05am,
+  grouping: [
+   {
+    key: resource.attributes[service.name],
+    value: MyService
+   },
+   {
+    key: instrumentation_scope.name,
+    value: CategoryNameB
+   },
+   {
+    key: attributes[event_id],
+    value: 1
+   }
+  ],
+  included_count: 2,
+  total_count: 4
+ },
 ]
 ```
 
@@ -299,40 +299,40 @@ new log.
 
 The output will look something like this:
 
-```
+```text
 included_records: [
-	log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
-	log3 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:04am, attributes: { event_id: 1 }, summary_id: 9aa6 }
+ log1 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:01am, attributes: { event_id: 1 }, summary_id: 9aa6 }
+ log3 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:04am, attributes: { event_id: 1 }, summary_id: 9aa6 }
 ]
 
 dropped_records: [
-	log2 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 }, summary_id: 9aa6 },
+ log2 [ resourceMyService, scopeB ] { timestamp: 6/1/2025 10:03am, attributes: { event_id: 1 }, summary_id: 9aa6 },
 ]
 
 summaries: [
-	{ 
-		id: 9aa6, 
-		observed_timestamp: 6/1/2025 10:10am, 
-		window_type: Timestamp(00:05:00), 
-		window_start: 6/1/2025 10:00am, 
-		window_end: 6/1/2025 10:05am, 
-		grouping: [
-			{
-				key: resource.attributes[service.name],
-				value: MyService
-			},	
-			{
-				key: instrumentation_scope.name,
-				value: CategoryNameB
-			},
-			{
-				key: attributes[event_id],
-				value: 1
-			}
-		],
-		included_count: 2,
-		total_count: 5
-	},
+ {
+  id: 9aa6,
+  observed_timestamp: 6/1/2025 10:10am,
+  window_type: Timestamp(00:05:00),
+  window_start: 6/1/2025 10:00am,
+  window_end: 6/1/2025 10:05am,
+  grouping: [
+   {
+    key: resource.attributes[service.name],
+    value: MyService
+   },
+   {
+    key: instrumentation_scope.name,
+    value: CategoryNameB
+   },
+   {
+    key: attributes[event_id],
+    value: 1
+   }
+  ],
+  included_count: 2,
+  total_count: 5
+ },
 ]
 ```
 
