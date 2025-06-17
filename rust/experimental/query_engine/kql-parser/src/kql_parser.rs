@@ -771,6 +771,39 @@ pub(crate) fn parse_project_expression(
     Ok(expressions)
 }
 
+#[allow(dead_code)]
+pub(crate) fn parse_project_keep_expression(
+    project_keep_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<TransformExpression, ParserError> {
+    let query_location = to_query_location(&project_keep_expression_rule);
+
+    let project_keep_rules = project_keep_expression_rule.into_inner();
+
+    let mut keys_to_keep: HashSet<Box<str>> = HashSet::new();
+
+    for rule in project_keep_rules {
+        let rule_location = to_query_location(&rule);
+
+        match rule.as_rule() {
+            Rule::pattern_literal => {
+            },
+            Rule::accessor_expression => {
+            },
+            _ => panic!("Unexpected rule in project_keep_expression: {}", rule),
+        }
+    }
+
+    Ok(TransformExpression::Clear(ClearTransformExpression::new(
+        query_location.clone(),
+        MutableValueExpression::Source(SourceScalarExpression::new(
+            query_location,
+            ValueAccessor::new(),
+        )),
+        keys_to_keep,
+    )))
+}
+
 #[cfg(test)]
 mod pest_tests {
     use super::*;

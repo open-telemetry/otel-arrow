@@ -47,14 +47,14 @@ impl Expression for SetTransformExpression {
 pub struct ClearTransformExpression {
     query_location: QueryLocation,
     target: MutableValueExpression,
-    keys_to_keep: HashSet<Box<str>>,
+    keys_to_keep: HashSet<SourceKey>,
 }
 
 impl ClearTransformExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-        keys_to_keep: HashSet<Box<str>>,
+        keys_to_keep: HashSet<SourceKey>,
     ) -> ClearTransformExpression {
         Self {
             query_location,
@@ -67,7 +67,7 @@ impl ClearTransformExpression {
         &self.target
     }
 
-    pub fn get_keys_to_keep(&self) -> &HashSet<Box<str>> {
+    pub fn get_keys_to_keep(&self) -> &HashSet<SourceKey> {
         &self.keys_to_keep
     }
 }
@@ -76,4 +76,10 @@ impl Expression for ClearTransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub enum SourceKey {
+    Identifier(Box<str>),
+    Pattern(Box<str>)
 }
