@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "expressions",
+    "parser-abstractions",
     "kql-parser",
+    "ottl-parser",
     "engine-columnar",
     "engine-recordset",
 ]
@@ -18,4 +20,5 @@ rust-version = "1.86.0"
 
 [workspace.dependencies]
 chrono = "0.4.40"
+regex = "1.11.1"
 thiserror = "2.0.12"
