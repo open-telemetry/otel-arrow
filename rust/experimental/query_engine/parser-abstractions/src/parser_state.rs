@@ -5,8 +5,8 @@ use data_engine_expressions::QueryLocation;
 pub struct ParserState<'a> {
     query: &'a str,
     default_source_map_key: Option<Box<str>>,
-    pub attached_data_names: HashSet<Box<str>>,
-    pub variable_names: HashSet<Box<str>>,
+    attached_data_names: HashSet<Box<str>>,
+    variable_names: HashSet<Box<str>>,
 }
 
 impl<'a> ParserState<'a> {
@@ -47,6 +47,14 @@ impl<'a> ParserState<'a> {
 
     pub fn get_default_source_map_key(&self) -> Option<&str> {
         self.default_source_map_key.as_ref().map(|f| f.as_ref())
+    }
+
+    pub fn is_attached_data_defined(&self, name: &str) -> bool {
+        self.attached_data_names.contains(name)
+    }
+
+    pub fn is_variable_defined(&self, name: &str) -> bool {
+        self.variable_names.contains(name)
     }
 
     pub fn push_variable_name(&mut self, name: &str) {
