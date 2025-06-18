@@ -7,14 +7,16 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::LOCAL_EXPORTERS;
-use crate::debug_exporter::marshaler::{
-    DetailedOTLPMarshaler, NormalOTLPMarshaler, PDataMarshaler,
-};
+use crate::debug_exporter::marshaler::{NormalOTLPMarshaler, PDataMarshaler};
 use crate::debug_exporter::verbosity::Verbosity;
 use crate::grpc::OTLPData;
-use crate::proto::opentelemetry::collector::{
-    logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceReques,
-    profiles::v1development::ExportProfilesServiceRequest, trace::v1::ExportTraceServiceRequest,
+use crate::proto::opentelemetry::{
+    collector::{
+        logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+        profiles::v1development::ExportProfilesServiceRequest,
+        trace::v1::ExportTraceServiceRequest,
+    },
+    metrics::v1::metric::Data,
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -69,12 +71,12 @@ impl local::Exporter<OTLPData> for DebugExporter {
         let mut profile_count: u64 = 0;
         let mut span_count: u64 = 0;
         let mut log_count: u64 = 0;
-        let mut marshaler;
-        if verbosity == Verbosity::Normal {
-            marshaler = NormalOTLPMarshaler;
-        } else if verbosity == Verbosity::Detailed {
-            marshaler = DetailedOTLPMarshaler;
-        }
+        let mut marshaler = NormalOTLPMarshaler::default();
+        // if verbosity == Verbosity::Normal {
+        //     marshaler = NormalOTLPMarshaler;
+        // } else if verbosity == Verbosity::Detailed {
+        //     marshaler = DetailedOTLPMarshaler;
+        // }
 
         // Loop until a Shutdown event is received.
         loop {
@@ -109,19 +111,19 @@ impl local::Exporter<OTLPData> for DebugExporter {
                         // ToDo: Add Ack/Nack handling, send a signal that data has been exported
                         // check what message
                         OTLPData::Metrics(req) => {
-                            push_metric(self.verbosity, req, marshaler);
+                            push_metric(&self.verbosity, req, &marshaler);
                             metric_count += 1;
                         }
                         OTLPData::Logs(req) => {
-                            push_log(self.verbosity, req, marshaler);
+                            push_log(&self.verbosity, req, &marshaler);
                             log_count += 1;
                         }
                         OTLPData::Traces(req) => {
-                            push_trace(self.verbosity, req, marshaler);
+                            push_trace(&self.verbosity, req, &marshaler);
                             span_count += 1;
                         }
                         OTLPData::Profiles(req) => {
-                            push_profile(self.verbosity, req, marshaler);
+                            push_profile(&self.verbosity, req, &marshaler);
                             profile_count += 1;
                         }
                     }
@@ -139,36 +141,36 @@ impl local::Exporter<OTLPData> for DebugExporter {
 }
 
 fn push_metric(
-    verbosity: Verbosity,
-    metric: ExportMetricsServiceRequest,
+    verbosity: &Verbosity,
+    metric_request: ExportMetricsServiceRequest,
     marshaler: &dyn PDataMarshaler,
 ) {
     // collect number of resource metrics
     // collect number of metrics
     // collect number of datapoints
-    let resouce_metrics = metric.resource_metrics().len();
+    let resouce_metrics = metric_request.resource_metrics.len();
     let mut data_points = 0;
     let mut metrics = 0;
-    for resource_metrics in md.resource_metrics() {
-        for scope_metrics in resource_metrics.scope_metrics() {
-            metrics += scope_metrics.metrics().len();
-            for metric in metrics.metrics() {
-                if let Some(data) = metric.data() {
+    for resource_metrics in &metric_request.resource_metrics {
+        for scope_metrics in &resource_metrics.scope_metrics {
+            metrics += scope_metrics.metrics.len();
+            for metric in &scope_metrics.metrics {
+                if let Some(data) = &metric.data {
                     match data {
-                        metric::Data::Gauge(gauge) => {
-                            data_points += gauge.DataPoints().len();
+                        Data::Gauge(gauge) => {
+                            data_points += gauge.data_points.len();
                         }
-                        metric::Data::Sum(sum) => {
-                            data_points += sum.DataPoints().len();
+                        Data::Sum(sum) => {
+                            data_points += sum.data_points.len();
                         }
-                        metric::Data::Histogram(histogram) => {
-                            data_points += histogram.DataPoints().len();
+                        Data::Histogram(histogram) => {
+                            data_points += histogram.data_points.len();
                         }
-                        metric::Data::ExponentialHistogram(exponential_histogram) => {
-                            data_points += exponential_histogram.DataPoints().len();
+                        Data::ExponentialHistogram(exponential_histogram) => {
+                            data_points += exponential_histogram.data_points.len();
                         }
-                        metric::Data::Summary(summary) => {
-                            data_points += summary.DataPoints().len();
+                        Data::Summary(summary) => {
+                            data_points += summary.data_points.len();
                         }
                     }
                 }
@@ -180,90 +182,94 @@ fn push_metric(
     println!("Received {} metrics", metrics);
     println!("Received {} data points", data_points);
 
-    if verbosity == Verbosity::Basic {
-        return nil;
+    if *verbosity == Verbosity::Basic {
+        return;
     }
 
-    report = marshaler.marshal_metrics(metric);
-    println!(report);
-    return nil;
+    let report = marshaler.marshal_metrics(metric_request);
+    println!("{}", report);
+    return;
 }
 
 fn push_trace(
-    verbosity: Verbosity,
-    trace: ExportTraceServiceRequest,
+    verbosity: &Verbosity,
+    trace_request: ExportTraceServiceRequest,
     marshaler: &dyn PDataMarshaler,
 ) {
     // collect number of resource spans
     // collect number of spans
-    let resource_spans = trace.resource_spans().len();
+    let resource_spans = trace_request.resource_spans.len();
     let mut spans = 0;
-    for resource_span in trace.resource_spans() {
-        for scope_span in resource_span.scope_spans() {
-            spans += scope_span.spans().len();
+    for resource_span in &trace_request.resource_spans {
+        for scope_span in &resource_span.scope_spans {
+            spans += scope_span.spans.len();
         }
     }
     println!("Received {} resource spans", resource_spans);
     println!("Received {} spans", spans);
-    if verbosity == Verbosity::Basic {
-        return nil;
+    if *verbosity == Verbosity::Basic {
+        return;
     }
 
-    report = marshaler.marshal_trace(trace);
-    println!(report);
+    let report = marshaler.marshal_traces(trace_request);
+    println!("{}", report);
 
-    return nil;
+    return;
 }
 
-fn push_log(verbosity: Verbosity, log: ExportLogsServiceRequest, marshaler: &dyn PDataMarshaler) {
-    let resource_logs = log.resource_logs().len();
+fn push_log(
+    verbosity: &Verbosity,
+    log_request: ExportLogsServiceRequest,
+    marshaler: &dyn PDataMarshaler,
+) {
+    let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
-    for resource_log in log.resource_logs() {
-        for scope_log in resource_log.scope_logs() {
-            log_records += scope_log.log_records().len();
+    for resource_log in &log_request.resource_logs {
+        for scope_log in &resource_log.scope_logs {
+            log_records += scope_log.log_records.len();
         }
     }
     println!("Received {} resource logs", resource_logs);
     println!("Received {} log records", log_records);
 
-    if verbosity == Verbosity::Basic {
-        return nil;
+    if *verbosity == Verbosity::Basic {
+        return;
     }
 
-    report = marshaler.marshal_logs(log);
-    println!(report);
+    let report = marshaler.marshal_logs(log_request);
+    println!("{}", report);
 
-    return nil;
+    return;
 }
 
 fn push_profile(
-    verbosity: Verbosity,
-    profile: ExportProfilesServiceRequest,
+    verbosity: &Verbosity,
+    profile_request: ExportProfilesServiceRequest,
     marshaler: &dyn PDataMarshaler,
 ) {
     // collect number of resource profiles
     // collect number of sample records
-    let resource_profiles = profile.resource_profiles().len();
+    let resource_profiles = profile_request.resource_profiles.len();
     let mut samples = 0;
-    for resource_profile in profile.resource_profiles() {
-        for scope_profile in resource_profile.scope_profiles() {
-            for profile in scope_profile.profiles() {
-                sample += profile.sample().len();
+    for resource_profile in &profile_request.resource_profiles {
+        for scope_profile in &resource_profile.scope_profiles {
+            for profile in &scope_profile.profiles {
+                samples += profile.sample.len();
             }
         }
     }
 
     println!("Received {} resource profiles", resource_profiles);
-    println!("Received {} samples", sample);
+    println!("Received {} samples", samples);
 
-    if verbosity == Verbosity::Basic {
-        return nil;
+    if *verbosity == Verbosity::Basic {
+        return;
     }
 
-    report = marshaler.marshal_profiles(profile);
-    println!(report);
+    let report = marshaler.marshal_profiles(profile_request);
+    println!("{}", report);
 
-    return nil;
+    return;
 }
 
 // #[cfg(test)]
