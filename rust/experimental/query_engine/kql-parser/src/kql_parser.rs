@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chrono::{FixedOffset, NaiveDate};
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
@@ -524,16 +526,6 @@ pub(crate) fn parse_accessor_expression(
             )),
         );
 
-        if state.default_source_map_key.is_some() {
-            value_accessor.insert_selector(
-                0,
-                ValueSelector::MapKey(StringScalarExpression::new(
-                    query_location.clone(),
-                    state.default_source_map_key.as_ref().unwrap(),
-                )),
-            );
-        }
-
         return Ok(ScalarExpression::Source(SourceScalarExpression::new(
             query_location,
             value_accessor,
@@ -569,7 +561,7 @@ pub(crate) fn parse_assignment_expression(
             return Err(ParserError::SyntaxError(
                 destination_rule_location,
                 format!(
-                    "'{}' destination accessor must refer to a mutable source or variable to be used in an assignment expression",
+                    "'{}' destination accessor must refer to source or a variable to be used in an assignment expression",
                     destination_rule_str
                 ),
             ));
@@ -602,25 +594,19 @@ pub(crate) fn parse_extend_expression(
     for rule in extend_rules {
         match rule.as_rule() {
             Rule::assignment_expression => {
-                let rule_span = rule.as_span();
-
                 let assignment_expression = parse_assignment_expression(rule, state)?;
 
-                // todo: Remove when another TransformExpression is added
-                #[allow(irrefutable_let_patterns)]
                 if let TransformExpression::Set(s) = &assignment_expression {
                     match s.get_destination() {
                         MutableValueExpression::Source(_) => {}
                         MutableValueExpression::Variable(v) => {
-                            let location = v.get_query_location().clone();
-                            let (start, end) = location.get_start_and_end_positions();
-                            let raw_accessor = &rule_span.as_str()
-                                [(start - rule_span.start())..(end - rule_span.start())];
+                            let location = v.get_query_location();
+
                             return Err(ParserError::SyntaxError(
-                                location,
+                                location.clone(),
                                 format!(
-                                    "'{}' destination accessor must refer to a mutable source to be used in an extend expression",
-                                    raw_accessor.trim()
+                                    "'{}' destination accessor must refer to source to be used in an extend expression",
+                                    state.get_query_slice(location).trim()
                                 ),
                             ));
                         }
@@ -640,13 +626,211 @@ pub(crate) fn parse_extend_expression(
     Ok(set_expressions)
 }
 
+#[allow(dead_code)]
+pub(crate) fn parse_project_expression(
+    project_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<Vec<TransformExpression>, ParserError> {
+    let query_location = to_query_location(&project_expression_rule);
+
+    let project_rules = project_expression_rule.into_inner();
+
+    let mut keys_to_keep: HashSet<SourceKey> = HashSet::new();
+    let mut expressions = Vec::new();
+
+    for rule in project_rules {
+        let rule_location = to_query_location(&rule);
+
+        match rule.as_rule() {
+            Rule::assignment_expression => {
+                let assignment_expression = parse_assignment_expression(rule, state)?;
+
+                if let TransformExpression::Set(s) = &assignment_expression {
+                    match s.get_destination() {
+                        MutableValueExpression::Source(s) => {
+                            let location = s.get_query_location();
+                            let map_key = get_root_map_key_from_source_scalar_expression(state, s);
+
+                            if map_key.is_none() {
+                                return Err(ParserError::SyntaxError(
+                                    location.clone(),
+                                    format!(
+                                        "The '{}' accessor expression should refer to a top-level map key on the source when used in a project expression",
+                                        state.get_query_slice(location).trim()
+                                    ),
+                                ));
+                            }
+
+                            keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
+                        }
+                        MutableValueExpression::Variable(v) => {
+                            let location = v.get_query_location();
+
+                            return Err(ParserError::SyntaxError(
+                                location.clone(),
+                                format!(
+                                    "'{}' destination accessor must refer to source to be used in a project expression",
+                                    state.get_query_slice(location).trim()
+                                ),
+                            ));
+                        }
+                    }
+                    expressions.push(assignment_expression);
+                } else {
+                    panic!(
+                        "Unexpected transformation in project_expression: {:?}",
+                        assignment_expression
+                    )
+                }
+            }
+            Rule::accessor_expression => {
+                let accessor_expression = parse_accessor_expression(rule, state)?;
+
+                if let ScalarExpression::Source(s) = &accessor_expression {
+                    let map_key = get_root_map_key_from_source_scalar_expression(state, s);
+
+                    if map_key.is_none() {
+                        return Err(ParserError::SyntaxError(
+                            rule_location.clone(),
+                            format!(
+                                "The '{}' accessor expression should refer to a top-level map key on the source when used in a project expression",
+                                state.get_query_slice(&rule_location).trim()
+                            ),
+                        ));
+                    }
+
+                    keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
+                } else {
+                    return Err(ParserError::SyntaxError(
+                        rule_location.clone(),
+                        format!(
+                            "To be valid in a project expression '{}' should be an assignment expression or an accessor expression which refers to the source",
+                            state.get_query_slice(&rule_location).trim()
+                        ),
+                    ));
+                }
+            }
+            _ => panic!("Unexpected rule in project_expression: {}", rule),
+        }
+    }
+
+    expressions.push(TransformExpression::Clear(ClearTransformExpression::new(
+        query_location.clone(),
+        MutableValueExpression::Source(SourceScalarExpression::new(
+            query_location,
+            ValueAccessor::new(),
+        )),
+        keys_to_keep,
+    )));
+
+    Ok(expressions)
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_project_keep_expression(
+    project_keep_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<TransformExpression, ParserError> {
+    let query_location = to_query_location(&project_keep_expression_rule);
+
+    let project_keep_rules = project_keep_expression_rule.into_inner();
+
+    let mut keys_to_keep: HashSet<SourceKey> = HashSet::new();
+
+    for rule in project_keep_rules {
+        let rule_location = to_query_location(&rule);
+
+        match rule.as_rule() {
+            Rule::identifier_or_pattern_literal => {
+                let v = rule.as_str();
+                if v.contains("*") {
+                    keys_to_keep.insert(SourceKey::Pattern(StringScalarExpression::new(
+                        rule_location,
+                        v,
+                    )));
+                } else {
+                    keys_to_keep.insert(SourceKey::Identifier(StringScalarExpression::new(
+                        rule_location,
+                        v,
+                    )));
+                }
+            }
+            Rule::accessor_expression => {
+                let accessor_expression = parse_accessor_expression(rule, state)?;
+
+                if let ScalarExpression::Source(s) = &accessor_expression {
+                    let map_key = get_root_map_key_from_source_scalar_expression(state, s);
+
+                    if map_key.is_none() {
+                        return Err(ParserError::SyntaxError(
+                            rule_location.clone(),
+                            format!(
+                                "The '{}' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+                                state.get_query_slice(&rule_location).trim()
+                            ),
+                        ));
+                    }
+
+                    keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
+                } else {
+                    return Err(ParserError::SyntaxError(
+                        rule_location.clone(),
+                        format!(
+                            "To be valid in a project-keep expression '{}' should be an accessor expression which refers to the source",
+                            state.get_query_slice(&rule_location).trim()
+                        ),
+                    ));
+                }
+            }
+            _ => panic!("Unexpected rule in project_keep_expression: {}", rule),
+        }
+    }
+
+    Ok(TransformExpression::Clear(ClearTransformExpression::new(
+        query_location.clone(),
+        MutableValueExpression::Source(SourceScalarExpression::new(
+            query_location,
+            ValueAccessor::new(),
+        )),
+        keys_to_keep,
+    )))
+}
+
+fn get_root_map_key_from_source_scalar_expression(
+    state: &ParserState,
+    source_scalar_expression: &SourceScalarExpression,
+) -> Option<StringScalarExpression> {
+    let selectors = source_scalar_expression.get_selectors();
+
+    if selectors.len() == 1 {
+        if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
+            return Some(k.clone());
+        }
+    } else if selectors.len() == 2 {
+        // Note: If state has default_source_map_key we allow it
+        // to be referenced. For example key2, source.key2,
+        // attributes['key2'], and source.attributes['key2'] may
+        // all refer to the same thing when
+        // default_source_map_key=attributes.
+        if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
+            let root_key = k.get_value();
+
+            if Some(root_key) == state.get_default_source_map_key() {
+                if let ValueSelector::MapKey(k) = selectors.get(1).unwrap() {
+                    return Some(k.clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod pest_tests {
-    use std::mem::discriminant;
-
     use super::*;
     use data_engine_parser_abstractions::pest_test_helpers;
-    use pest::{Parser, iterators::Pairs};
+    use pest::Parser;
 
     #[test]
     fn test_true_literal() {
@@ -668,134 +852,160 @@ mod pest_tests {
 
     #[test]
     fn test_datetime_literal() {
-        assert!(KqlParser::parse(Rule::datetime_literal, "").is_err());
-        assert!(KqlParser::parse(Rule::datetime_literal, "\"").is_err());
-        assert!(KqlParser::parse(Rule::datetime_literal, "'").is_err());
-        assert!(KqlParser::parse(Rule::datetime_literal, "\\").is_err());
-
-        assert!(KqlParser::parse(Rule::datetime_literal, "12/31/2025").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "12/31/2025 10 AM").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "12-31-2025 10:00PM").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "12-31-2025 13:00:00").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2025-12-13 13:00:00 +08:00").is_ok());
-
-        assert!(KqlParser::parse(Rule::datetime_literal, "November 7, 2025").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "Nov 7 25").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &[
+                "12/31/2025",
+                "12/31/2025 10 AM",
+                "12-31-2025 10:00PM",
+                "12-31-2025 13:00:00",
+                "2025-12-13 13:00:00 +08:00",
+                "November 7, 2025",
+                "Nov 7 25",
+            ],
+            &["", "\"", "'", "\\"],
+        );
 
         // ISO 8601
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-05-25T08:20:03.123456Z").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08 15:55:55.123456Z").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08 15:55:55").is_ok());
-        // RFC 822
-        assert!(KqlParser::parse(Rule::datetime_literal, "Sat, 8 Nov 14 15:05:02 GMT").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "8 Nov 14 15:05 GMT").is_ok());
-        // RFC 850
-        assert!(
-            KqlParser::parse(Rule::datetime_literal, "Saturday, 08-Nov-14 15:05:02 GMT").is_ok()
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &[
+                "2014-05-25T08:20:03.123456Z",
+                "2014-11-08 15:55:55.123456Z",
+                "2014-11-08 15:55:55",
+            ],
+            &[],
         );
-        assert!(KqlParser::parse(Rule::datetime_literal, "08-Nov-14 15:05:02 GMT").is_ok());
+        // RFC 822
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &["Sat, 8 Nov 14 15:05:02 GMT", "8 Nov 14 15:05 GMT"],
+            &[],
+        );
+        // RFC 850
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &["Saturday, 08-Nov-14 15:05:02 GMT", "08-Nov-14 15:05:02 GMT"],
+            &[],
+        );
         // Sortable
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08 15:05:25 GMT").is_ok());
-        assert!(KqlParser::parse(Rule::datetime_literal, "2014-11-08T15:05:25 GMT").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::datetime_literal,
+            &["2014-11-08 15:05:25 GMT", "2014-11-08T15:05:25 GMT"],
+            &[],
+        );
     }
 
     #[test]
     fn test_double_literal() {
-        assert!(KqlParser::parse(Rule::double_literal, "1.0").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "-1.0").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1.0e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "-1.0e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "-1e1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1e+1").is_ok());
-        assert!(KqlParser::parse(Rule::double_literal, "1e-1").is_ok());
-
-        assert!(KqlParser::parse(Rule::double_literal, "1").is_err());
-        assert!(KqlParser::parse(Rule::double_literal, ".1").is_err());
-        assert!(KqlParser::parse(Rule::double_literal, "abc").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::double_literal,
+            &[
+                "1.0", "-1.0", "1.0e1", "-1.0e1", "1e1", "-1e1", "1e+1", "1e-1",
+            ],
+            &["1", ".1", "abc"],
+        );
     }
 
     #[test]
     fn test_integer_literal() {
-        assert!(KqlParser::parse(Rule::integer_literal, "123").is_ok());
-        assert!(KqlParser::parse(Rule::integer_literal, "-123").is_ok());
-        assert!(KqlParser::parse(Rule::integer_literal, ".53").is_err());
-        assert!(KqlParser::parse(Rule::integer_literal, "abc").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::integer_literal,
+            &["123", "-123"],
+            &[".53", "abc"],
+        );
     }
 
     #[test]
     fn test_string_literal() {
-        assert!(KqlParser::parse(Rule::string_literal, "\"hello\"").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "\"he\\\"llo\"").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "'hello'").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "'he\"llo'").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, "'he\\'llo'").is_ok());
-        assert!(KqlParser::parse(Rule::string_literal, r#""hello"#).is_err());
-        assert!(KqlParser::parse(Rule::string_literal, r#"hello""#).is_err());
-        assert!(KqlParser::parse(Rule::string_literal, r#""""#).is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::string_literal,
+            &[
+                "\"hello\"",
+                "\"he\\\"llo\"",
+                "'hello'",
+                "'he\"llo'",
+                "'he\\'llo'",
+                r#""""#,
+            ],
+            &[r#""hello"#, r#"hello""#],
+        );
     }
 
     #[test]
     fn test_identifier_literal() {
-        assert!(KqlParser::parse(Rule::identifier_literal, "Abc").is_ok());
-        assert!(KqlParser::parse(Rule::identifier_literal, "abc_123").is_ok());
-        assert!(KqlParser::parse(Rule::identifier_literal, "_abc").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::identifier_literal,
+            &["Abc", "abc_123", "_abc"],
+            &[],
+        );
     }
 
     #[test]
     fn test_real_expression() {
-        assert!(KqlParser::parse(Rule::real_expression, "real(1.0)").is_ok());
-        assert!(KqlParser::parse(Rule::real_expression, "real(1)").is_ok());
-        assert!(KqlParser::parse(Rule::real_expression, "real(+inf)").is_ok());
-        assert!(KqlParser::parse(Rule::real_expression, "real(-inf)").is_ok());
-
-        assert!(KqlParser::parse(Rule::real_expression, "real(.1)").is_err());
-        assert!(KqlParser::parse(Rule::real_expression, "real()").is_err());
-        assert!(KqlParser::parse(Rule::real_expression, "real(abc)").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::real_expression,
+            &["real(1.0)", "real(1)", "real(+inf)", "real(-inf)"],
+            &["real(.1)", "real()", "real(abc)"],
+        );
     }
 
     #[test]
     fn test_comparison_expression() {
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 == 1").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "(1) != true").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "(1==1) > false").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 >= 1").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 < 1").is_ok());
-        assert!(KqlParser::parse(Rule::comparison_expression, "1 <= 1").is_ok());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::comparison_expression,
+            &[
+                "1 == 1",
+                "(1) != true",
+                "(1==1) > false",
+                "1 >= 1",
+                "1 < 1",
+                "1 <= 1",
+            ],
+            &[],
+        );
     }
 
     #[test]
     fn test_scalar_expression() {
-        assert!(KqlParser::parse(Rule::scalar_expression, "1").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "1e1").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "real(1)").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "datetime(6/9/2025)").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "true").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "false").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "(true == true)").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "\"hello world\"").is_ok());
-        assert!(KqlParser::parse(Rule::scalar_expression, "variable").is_ok());
-
-        assert!(KqlParser::parse(Rule::scalar_expression, "!").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::scalar_expression,
+            &[
+                "1",
+                "1e1",
+                "real(1)",
+                "datetime(6/9/2025)",
+                "true",
+                "false",
+                "(true == true)",
+                "\"hello world\"",
+                "variable",
+            ],
+            &["!"],
+        );
     }
 
     #[test]
     fn test_logical_expression() {
-        assert!(KqlParser::parse(Rule::logical_expression, "true").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "false").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "variable").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "a == b").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "a == b or 10 < 1").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "(true)").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "(true or variable['a'])").is_ok());
-        assert!(KqlParser::parse(Rule::logical_expression, "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)").is_ok());
-
-        assert!(KqlParser::parse(Rule::logical_expression, "1").is_err());
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::logical_expression,
+            &[
+                "true",
+                "false",
+                "variable",
+                "a == b",
+                "a == b or 10 < 1",
+                "(true)",
+                "(true or variable['a'])",
+                "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)",
+            ],
+            &["1"],
+        );
     }
 
     #[test]
     fn test_accessor_expression() {
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "Abc").unwrap(),
             &[
                 (Rule::accessor_expression, "Abc"),
@@ -803,7 +1013,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "abc_123").unwrap(),
             &[
                 (Rule::accessor_expression, "abc_123"),
@@ -811,7 +1021,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "_abc").unwrap(),
             &[
                 (Rule::accessor_expression, "_abc"),
@@ -819,7 +1029,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "array[0]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[0]"),
@@ -828,7 +1038,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "array[-1]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[-1]"),
@@ -837,7 +1047,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "abc.name").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name"),
@@ -846,7 +1056,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "abc.name1.name2").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name1.name2"),
@@ -856,7 +1066,7 @@ mod pest_tests {
             ],
         );
 
-        validate_rule(
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(
                 Rule::accessor_expression,
                 "abc['~name-!'].name1[0][-sub].name2",
@@ -878,24 +1088,11 @@ mod pest_tests {
             ],
         );
 
-        assert!(KqlParser::parse(Rule::accessor_expression, "123").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, "+name").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, "-name").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, "~name").is_err());
-        assert!(KqlParser::parse(Rule::accessor_expression, ".name").is_err());
-    }
-
-    fn validate_rule(parsed: Pairs<'_, Rule>, expected: &[(Rule, &str)]) {
-        let flat = parsed.flatten();
-
-        assert_eq!(flat.len(), expected.len());
-
-        for (index, rule) in flat.enumerate() {
-            let expected = expected.get(index).unwrap();
-
-            assert!(discriminant(&rule.as_rule()) == discriminant(&expected.0));
-            assert_eq!(rule.as_str(), expected.1);
-        }
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::accessor_expression,
+            &[],
+            &["123", "+name", "-name", "~name", ".name"],
+        );
     }
 }
 
@@ -1233,21 +1430,20 @@ mod parse_tests {
 
     #[test]
     fn test_parse_comparison_expression() {
-        let run_test = |input: &str, state: &ParserState, expected: LogicalExpression| {
+        let run_test = |input: &str, expected: LogicalExpression| {
+            let mut state = ParserState::new(input).with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
             let mut result = KqlParser::parse(Rule::comparison_expression, input).unwrap();
 
-            let expression = parse_comparison_expression(result.next().unwrap(), state).unwrap();
+            let expression = parse_comparison_expression(result.next().unwrap(), &state).unwrap();
 
             assert_eq!(expected, expression);
         };
 
-        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
-
-        state.push_variable_name("variable");
-
         run_test(
             "variable == 'hello world'",
-            &state,
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
@@ -1263,7 +1459,6 @@ mod parse_tests {
 
         run_test(
             "(true == true) != true",
-            &state,
             LogicalExpression::Not(NotLogicalExpression::new(
                 QueryLocation::new_fake(),
                 LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -1296,7 +1491,6 @@ mod parse_tests {
 
         run_test(
             "1 > source_path",
-            &state,
             LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
@@ -1318,7 +1512,6 @@ mod parse_tests {
 
         run_test(
             "(1) >= resource.key",
-            &state,
             LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
@@ -1334,7 +1527,6 @@ mod parse_tests {
 
         run_test(
             "0 < (1)",
-            &state,
             LogicalExpression::Not(NotLogicalExpression::new(
                 QueryLocation::new_fake(),
                 LogicalExpression::GreaterThanOrEqualTo(
@@ -1353,7 +1545,6 @@ mod parse_tests {
 
         run_test(
             "0 <= (true == true)",
-            &state,
             LogicalExpression::Not(NotLogicalExpression::new(
                 QueryLocation::new_fake(),
                 LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
@@ -1380,21 +1571,20 @@ mod parse_tests {
 
     #[test]
     fn test_parse_logical_expression() {
-        let run_test = |input: &str, state: &ParserState, expected: LogicalExpression| {
+        let run_test = |input: &str, expected: LogicalExpression| {
+            let mut state = ParserState::new(input).with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
             let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
 
-            let expression = parse_logical_expression(result.next().unwrap(), state).unwrap();
+            let expression = parse_logical_expression(result.next().unwrap(), &state).unwrap();
 
             assert_eq!(expected, expression);
         };
 
-        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
-
-        state.push_variable_name("variable");
-
         run_test(
             "true",
-            &state,
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(QueryLocation::new_fake(), true),
             ))),
@@ -1402,7 +1592,6 @@ mod parse_tests {
 
         run_test(
             "false",
-            &state,
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(QueryLocation::new_fake(), false),
             ))),
@@ -1416,7 +1605,6 @@ mod parse_tests {
 
         run_test(
             "source.name",
-            &state,
             LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 source_accessor,
@@ -1435,7 +1623,6 @@ mod parse_tests {
 
         run_test(
             "resource.attributes['service.name']",
-            &state,
             LogicalExpression::Scalar(ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
                 "resource",
@@ -1447,7 +1634,6 @@ mod parse_tests {
 
         run_test(
             "variable",
-            &state,
             LogicalExpression::Scalar(ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
                 "variable",
@@ -1457,7 +1643,6 @@ mod parse_tests {
 
         run_test(
             "variable == 'hello world'",
-            &state,
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
@@ -1509,7 +1694,6 @@ mod parse_tests {
 
         run_test(
             "variable == 'hello world' or SeverityText != 'Info'",
-            &state,
             LogicalExpression::Chain(chain),
         );
 
@@ -1562,7 +1746,6 @@ mod parse_tests {
 
         run_test(
             "(variable == ('hello world') or (SeverityNumber) >= 0) and (true)",
-            &state,
             LogicalExpression::Chain(nested_chain),
         );
     }
@@ -1572,8 +1755,11 @@ mod parse_tests {
         let mut result =
             KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
 
-        let expression =
-            parse_accessor_expression(result.next().unwrap(), &ParserState::new()).unwrap();
+        let expression = parse_accessor_expression(
+            result.next().unwrap(),
+            &ParserState::new("source.subkey['array'][0]"),
+        )
+        .unwrap();
 
         if let ScalarExpression::Source(path) = expression {
             assert_eq!(
@@ -1604,7 +1790,7 @@ mod parse_tests {
         let mut result =
             KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]").unwrap();
 
-        let mut state = ParserState::new();
+        let mut state = ParserState::new("subkey[var][-neg_attr]");
 
         state.push_variable_name("var");
 
@@ -1654,28 +1840,16 @@ mod parse_tests {
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
-            &ParserState::new().with_default_source_map_key_name("attributes"),
+            &ParserState::new("subkey").with_default_source_map_key_name("attributes"),
         )
         .unwrap();
 
-        let mut v = ValueAccessor::new();
-        v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "neg_attr",
-        )));
-
         if let ScalarExpression::Source(s) = expression {
             assert_eq!(
-                &[
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "attributes"
-                    )),
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "subkey"
-                    ))
-                ]
+                &[ValueSelector::MapKey(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "subkey"
+                ))]
                 .to_vec(),
                 s.get_selectors()
             );
@@ -1691,7 +1865,7 @@ mod parse_tests {
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
-            &ParserState::new().with_attached_data_names(&["resource"]),
+            &ParserState::new("resource['~at\\'tr~']").with_attached_data_names(&["resource"]),
         )
         .unwrap();
 
@@ -1714,7 +1888,7 @@ mod parse_tests {
     fn test_parse_accessor_expression_from_variable() {
         let mut result = KqlParser::parse(Rule::accessor_expression, "a[-1]").unwrap();
 
-        let mut state = ParserState::new();
+        let mut state = ParserState::new("a[-1]");
 
         state.push_variable_name("a");
 
@@ -1737,18 +1911,26 @@ mod parse_tests {
 
     #[test]
     fn test_parse_assignment_expression() {
-        let run_test_success = |input: &str, state: &ParserState, expected: TransformExpression| {
+        let run_test_success = |input: &str, expected: TransformExpression| {
+            let mut state = ParserState::new(input).with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
             let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
 
-            let expression = parse_assignment_expression(result.next().unwrap(), state).unwrap();
+            let expression = parse_assignment_expression(result.next().unwrap(), &state).unwrap();
 
             assert_eq!(expected, expression);
         };
 
-        let run_test_failure = |input: &str, state: &ParserState, expected: &str| {
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input).with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
             let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
 
-            let error = parse_assignment_expression(result.next().unwrap(), state).unwrap_err();
+            let error = parse_assignment_expression(result.next().unwrap(), &state).unwrap_err();
 
             if let ParserError::SyntaxError(_, msg) = error {
                 assert_eq!(expected, msg);
@@ -1756,10 +1938,6 @@ mod parse_tests {
                 panic!("Expected SyntaxError");
             }
         };
-
-        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
-
-        state.push_variable_name("variable");
 
         let mut new_attribute_accessor = ValueAccessor::new();
 
@@ -1770,7 +1948,6 @@ mod parse_tests {
 
         run_test_success(
             "new_attribute = 1",
-            &state,
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
                 ImmutableValueExpression::Scalar(ScalarExpression::Static(
@@ -1788,7 +1965,6 @@ mod parse_tests {
 
         run_test_success(
             "variable = 'hello world'",
-            &state,
             TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
                 ImmutableValueExpression::Scalar(ScalarExpression::Static(
@@ -1807,26 +1983,32 @@ mod parse_tests {
 
         run_test_failure(
             "resource.attributes['new_attribute'] = 1",
-            &state,
-            "'resource.attributes['new_attribute']' destination accessor must refer to a mutable source or variable to be used in an assignment expression",
+            "'resource.attributes['new_attribute']' destination accessor must refer to source or a variable to be used in an assignment expression",
         );
     }
 
     #[test]
     fn test_parse_extend_expression() {
-        let run_test_success =
-            |input: &str, state: &ParserState, expected: Vec<TransformExpression>| {
-                let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let mut state = ParserState::new(input).with_attached_data_names(&["resource"]);
 
-                let expression = parse_extend_expression(result.next().unwrap(), state).unwrap();
+            state.push_variable_name("variable");
 
-                assert_eq!(expected, expression);
-            };
-
-        let run_test_failure = |input: &str, state: &ParserState, expected: &str| {
             let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
 
-            let error = parse_extend_expression(result.next().unwrap(), state).unwrap_err();
+            let expression = parse_extend_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input).with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+
+            let error = parse_extend_expression(result.next().unwrap(), &state).unwrap_err();
 
             if let ParserError::SyntaxError(_, msg) = error {
                 assert_eq!(expected, msg);
@@ -1834,10 +2016,6 @@ mod parse_tests {
                 panic!("Expected SyntaxError");
             }
         };
-
-        let mut state = ParserState::new().with_attached_data_names(&["resource"]);
-
-        state.push_variable_name("variable");
 
         let mut new_attribute1_accessor = ValueAccessor::new();
 
@@ -1848,7 +2026,6 @@ mod parse_tests {
 
         run_test_success(
             "extend new_attribute1 = 1",
-            &state,
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
                 ImmutableValueExpression::Scalar(ScalarExpression::Static(
@@ -1873,7 +2050,6 @@ mod parse_tests {
 
         run_test_success(
             "extend new_attribute1 = 1, new_attribute2 = 2",
-            &state,
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
@@ -1906,8 +2082,318 @@ mod parse_tests {
 
         run_test_failure(
             "extend variable.key = 1",
-            &state,
-            "'variable.key' destination accessor must refer to a mutable source to be used in an extend expression",
+            "'variable.key' destination accessor must refer to source to be used in an extend expression",
+        );
+    }
+
+    #[test]
+    fn test_parse_project_expression() {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
+
+            let expression = parse_project_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
+
+            let error = parse_project_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project key1",
+            vec![TransformExpression::Clear(ClearTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key1",
+                ))]),
+            ))],
+        );
+
+        run_test_success(
+            "project key1, key2",
+            vec![TransformExpression::Clear(ClearTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                HashSet::from([
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key2",
+                    )),
+                ]),
+            ))],
+        );
+
+        let mut key1_accessor = ValueAccessor::new();
+
+        key1_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new_fake(),
+            "key1",
+        )));
+
+        run_test_success(
+            "project key1 = variable",
+            vec![
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Variable(
+                        VariableScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "variable",
+                            ValueAccessor::new(),
+                        ),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        key1_accessor.clone(),
+                    )),
+                )),
+                TransformExpression::Clear(ClearTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    ))]),
+                )),
+            ],
+        );
+
+        let mut key2_accessor = ValueAccessor::new();
+
+        key2_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new_fake(),
+            "attributes",
+        )));
+
+        key2_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new_fake(),
+            "key2",
+        )));
+
+        run_test_success(
+            "project key1 = variable, source.attributes['key2'] = resource['key1'], source.attributes['key3']",
+            vec![
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Variable(
+                        VariableScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "variable",
+                            ValueAccessor::new(),
+                        ),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        key1_accessor.clone(),
+                    )),
+                )),
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Attached(
+                        AttachedScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "resource",
+                            key1_accessor.clone(),
+                        ),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        key2_accessor,
+                    )),
+                )),
+                TransformExpression::Clear(ClearTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    HashSet::from([
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key2",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key3",
+                        )),
+                    ]),
+                )),
+            ],
+        );
+
+        run_test_failure(
+            "project body.complex",
+            "The 'body.complex' accessor expression should refer to a top-level map key on the source when used in a project expression",
+        );
+
+        run_test_failure(
+            "project a[0]",
+            "The 'a[0]' accessor expression should refer to a top-level map key on the source when used in a project expression",
+        );
+
+        run_test_failure(
+            "project variable = 1",
+            "'variable' destination accessor must refer to source to be used in a project expression",
+        );
+
+        run_test_failure(
+            "project resource.attributes['key']",
+            "To be valid in a project expression 'resource.attributes['key']' should be an assignment expression or an accessor expression which refers to the source",
+        );
+
+        run_test_failure(
+            "project source",
+            "The 'source' accessor expression should refer to a top-level map key on the source when used in a project expression",
+        );
+
+        run_test_failure(
+            "project body['name'] = 'hello world'",
+            "The 'body['name']' accessor expression should refer to a top-level map key on the source when used in a project expression",
+        );
+
+        run_test_failure(
+            "project source.body['some_attr']",
+            "The 'source.body['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project expression",
+        );
+    }
+
+    #[test]
+    fn test_parse_project_keep_expression() {
+        let run_test_success = |input: &str, expected: TransformExpression| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let expression = parse_project_keep_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let error = parse_project_keep_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-keep key*",
+            TransformExpression::Clear(ClearTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                HashSet::from([SourceKey::Pattern(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key*",
+                ))]),
+            )),
+        );
+
+        run_test_success(
+            "project-keep *key*value*, *, key1, attributes['key2'], source.attributes['key3']",
+            TransformExpression::Clear(ClearTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                HashSet::from([
+                    SourceKey::Pattern(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "*key*value*",
+                    )),
+                    SourceKey::Pattern(StringScalarExpression::new(QueryLocation::new_fake(), "*")),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key2",
+                    )),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key3",
+                    )),
+                ]),
+            )),
+        );
+
+        run_test_failure(
+            "project-keep source[0]",
+            "The 'source[0]' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep source.attributes[0]",
+            "The 'source.attributes[0]' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep source.body.map['some_attr']",
+            "The 'source.body.map['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep resource.attributes['key']",
+            "To be valid in a project-keep expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
         );
     }
 }
