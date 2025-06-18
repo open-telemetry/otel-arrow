@@ -2377,8 +2377,18 @@ mod parse_tests {
         );
 
         run_test_failure(
-            "project-keep source.body['some_attr']",
-            "The 'source.body['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+            "project-keep source[0]",
+            "The 'source[0]' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep source.attributes[0]",
+            "The 'source.attributes[0]' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep source.body.map['some_attr']",
+            "The 'source.body.map['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
         );
 
         run_test_failure(
