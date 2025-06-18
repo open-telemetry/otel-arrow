@@ -635,7 +635,7 @@ pub(crate) fn parse_project_expression(
 
     let project_rules = project_expression_rule.into_inner();
 
-    let mut keys_to_keep: HashSet<Box<str>> = HashSet::new();
+    let mut keys_to_keep: HashSet<SourceKey> = HashSet::new();
     let mut expressions = Vec::new();
 
     for rule in project_rules {
@@ -649,30 +649,7 @@ pub(crate) fn parse_project_expression(
                     match s.get_destination() {
                         MutableValueExpression::Source(s) => {
                             let location = s.get_query_location();
-                            let selectors = s.get_selectors();
-
-                            let mut map_key = None;
-                            if selectors.len() == 1 {
-                                if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
-                                    map_key = Some(k.get_value());
-                                }
-                            } else if selectors.len() == 2 {
-                                // Note: If state has default_source_map_key we allow it
-                                // to be referenced. For example key2, source.key2,
-                                // attributes['key2'], and source.attributes['key2'] may
-                                // all refer to the same thing when
-                                // default_source_map_key=attributes.
-                                if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
-                                    let root_key = k.get_value();
-
-                                    if Some(root_key) == state.get_default_source_map_key() {
-                                        if let ValueSelector::MapKey(k) = selectors.get(1).unwrap()
-                                        {
-                                            map_key = Some(k.get_value())
-                                        }
-                                    }
-                                }
-                            }
+                            let map_key = get_root_map_key_from_source_scalar_expression(state, s);
 
                             if map_key.is_none() {
                                 return Err(ParserError::SyntaxError(
@@ -684,7 +661,7 @@ pub(crate) fn parse_project_expression(
                                 ));
                             }
 
-                            keys_to_keep.insert(map_key.unwrap().into());
+                            keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
                         }
                         MutableValueExpression::Variable(v) => {
                             let location = v.get_query_location();
@@ -709,30 +686,8 @@ pub(crate) fn parse_project_expression(
             Rule::accessor_expression => {
                 let accessor_expression = parse_accessor_expression(rule, state)?;
 
-                if let ScalarExpression::Source(s) = accessor_expression {
-                    let selectors = s.get_selectors();
-
-                    let mut map_key = None;
-                    if selectors.len() == 1 {
-                        if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
-                            map_key = Some(k.get_value());
-                        }
-                    } else if selectors.len() == 2 {
-                        // Note: If state has default_source_map_key we allow it
-                        // to be referenced. For example key2, source.key2,
-                        // attributes['key2'], and source.attributes['key2'] may
-                        // all refer to the same thing when
-                        // default_source_map_key=attributes.
-                        if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
-                            let root_key = k.get_value();
-
-                            if Some(root_key) == state.get_default_source_map_key() {
-                                if let ValueSelector::MapKey(k) = selectors.get(1).unwrap() {
-                                    map_key = Some(k.get_value())
-                                }
-                            }
-                        }
-                    }
+                if let ScalarExpression::Source(s) = &accessor_expression {
+                    let map_key = get_root_map_key_from_source_scalar_expression(state, s);
 
                     if map_key.is_none() {
                         return Err(ParserError::SyntaxError(
@@ -744,7 +699,7 @@ pub(crate) fn parse_project_expression(
                         ));
                     }
 
-                    keys_to_keep.insert(map_key.unwrap().into());
+                    keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
                 } else {
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
@@ -769,6 +724,106 @@ pub(crate) fn parse_project_expression(
     )));
 
     Ok(expressions)
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_project_keep_expression(
+    project_keep_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<TransformExpression, ParserError> {
+    let query_location = to_query_location(&project_keep_expression_rule);
+
+    let project_keep_rules = project_keep_expression_rule.into_inner();
+
+    let mut keys_to_keep: HashSet<SourceKey> = HashSet::new();
+
+    for rule in project_keep_rules {
+        let rule_location = to_query_location(&rule);
+
+        match rule.as_rule() {
+            Rule::identifier_or_pattern_literal => {
+                let v = rule.as_str();
+                if v.contains("*") {
+                    keys_to_keep.insert(SourceKey::Pattern(StringScalarExpression::new(
+                        rule_location,
+                        v,
+                    )));
+                } else {
+                    keys_to_keep.insert(SourceKey::Identifier(StringScalarExpression::new(
+                        rule_location,
+                        v,
+                    )));
+                }
+            }
+            Rule::accessor_expression => {
+                let accessor_expression = parse_accessor_expression(rule, state)?;
+
+                if let ScalarExpression::Source(s) = &accessor_expression {
+                    let map_key = get_root_map_key_from_source_scalar_expression(state, s);
+
+                    if map_key.is_none() {
+                        return Err(ParserError::SyntaxError(
+                            rule_location.clone(),
+                            format!(
+                                "The '{}' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+                                state.get_query_slice(&rule_location).trim()
+                            ),
+                        ));
+                    }
+
+                    keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
+                } else {
+                    return Err(ParserError::SyntaxError(
+                        rule_location.clone(),
+                        format!(
+                            "To be valid in a project-keep expression '{}' should be an accessor expression which refers to the source",
+                            state.get_query_slice(&rule_location).trim()
+                        ),
+                    ));
+                }
+            }
+            _ => panic!("Unexpected rule in project_keep_expression: {}", rule),
+        }
+    }
+
+    Ok(TransformExpression::Clear(ClearTransformExpression::new(
+        query_location.clone(),
+        MutableValueExpression::Source(SourceScalarExpression::new(
+            query_location,
+            ValueAccessor::new(),
+        )),
+        keys_to_keep,
+    )))
+}
+
+fn get_root_map_key_from_source_scalar_expression(
+    state: &ParserState,
+    source_scalar_expression: &SourceScalarExpression,
+) -> Option<StringScalarExpression> {
+    let selectors = source_scalar_expression.get_selectors();
+
+    if selectors.len() == 1 {
+        if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
+            return Some(k.clone());
+        }
+    } else if selectors.len() == 2 {
+        // Note: If state has default_source_map_key we allow it
+        // to be referenced. For example key2, source.key2,
+        // attributes['key2'], and source.attributes['key2'] may
+        // all refer to the same thing when
+        // default_source_map_key=attributes.
+        if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
+            let root_key = k.get_value();
+
+            if Some(root_key) == state.get_default_source_map_key() {
+                if let ValueSelector::MapKey(k) = selectors.get(1).unwrap() {
+                    return Some(k.clone());
+                }
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -2073,7 +2128,10 @@ mod parse_tests {
                     QueryLocation::new_fake(),
                     ValueAccessor::new(),
                 )),
-                HashSet::from(["key1".into()]),
+                HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key1",
+                ))]),
             ))],
         );
 
@@ -2085,7 +2143,16 @@ mod parse_tests {
                     QueryLocation::new_fake(),
                     ValueAccessor::new(),
                 )),
-                HashSet::from(["key1".into(), "key2".into()]),
+                HashSet::from([
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key2",
+                    )),
+                ]),
             ))],
         );
 
@@ -2119,7 +2186,10 @@ mod parse_tests {
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
-                    HashSet::from(["key1".into()]),
+                    HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    ))]),
                 )),
             ],
         );
@@ -2173,7 +2243,20 @@ mod parse_tests {
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
-                    HashSet::from(["key1".into(), "key2".into(), "key3".into()]),
+                    HashSet::from([
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key2",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key3",
+                        )),
+                    ]),
                 )),
             ],
         );
@@ -2211,6 +2294,106 @@ mod parse_tests {
         run_test_failure(
             "project source.body['some_attr']",
             "The 'source.body['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project expression",
+        );
+    }
+
+    #[test]
+    fn test_parse_project_keep_expression() {
+        let run_test_success = |input: &str, expected: TransformExpression| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let expression = parse_project_keep_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+
+            let error = parse_project_keep_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-keep key*",
+            TransformExpression::Clear(ClearTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                HashSet::from([SourceKey::Pattern(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key*",
+                ))]),
+            )),
+        );
+
+        run_test_success(
+            "project-keep *key*value*, *, key1, attributes['key2'], source.attributes['key3']",
+            TransformExpression::Clear(ClearTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                HashSet::from([
+                    SourceKey::Pattern(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "*key*value*",
+                    )),
+                    SourceKey::Pattern(StringScalarExpression::new(QueryLocation::new_fake(), "*")),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key2",
+                    )),
+                    SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key3",
+                    )),
+                ]),
+            )),
+        );
+
+        run_test_failure(
+            "project-keep source[0]",
+            "The 'source[0]' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep source.attributes[0]",
+            "The 'source.attributes[0]' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep source.body.map['some_attr']",
+            "The 'source.body.map['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
+        );
+
+        run_test_failure(
+            "project-keep resource.attributes['key']",
+            "To be valid in a project-keep expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
         );
     }
 }
