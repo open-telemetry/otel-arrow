@@ -2134,9 +2134,18 @@ mod parse_tests {
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
                     ValueAccessor::new_with_selectors(vec![
-                        ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new_fake(), "body")),
-                        ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new_fake(), "nested")),
-                        ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new_fake(), "field")),
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "body",
+                        )),
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "nested",
+                        )),
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "field",
+                        )),
                     ]),
                 )),
             ))],
