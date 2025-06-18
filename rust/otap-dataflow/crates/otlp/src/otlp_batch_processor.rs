@@ -1,7 +1,21 @@
+//! OTLP Batch Processor
+//!
+//! This module provides batching logic for OpenTelemetry Protocol (OTLP) data, including traces, metrics, and logs.
+//! It supports splitting large OTLP requests into smaller batches while preserving resource and scope boundaries.
+//! The batching logic is configurable by item count, request count, or byte size, and is used by the generic batch processor
+//! to efficiently buffer and flush telemetry data in high-throughput pipelines.
+//!
+//! Key components:
+//! - [`otlp_batch_processor::HierarchicalBatchSplit`]: Trait for splitting OTLP requests into batches.
+//! - [`otlp_batch_processor::BatchSizer`] and [`otlp_batch_processor::BatchConfig`]: Configuration for batch sizing strategies.
+//! - [`otlp_batch_processor::GenericBatcher`]: Batch processor implementation for traces, metrics, and logs.
+//! - Unit and integration tests to ensure correct batching and boundary preservation.
+
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+/// Re-export of the OTLP trace export request type.
+pub use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
@@ -18,6 +32,7 @@ use std::time::{Duration, Instant};
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
+    /// Splits the batch into smaller batches, each with at most `max_batch_size` leaf items.
     fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
 }
 
@@ -287,6 +302,7 @@ pub struct BatchConfig {
     pub timeout: Duration,
 }
 impl Default for BatchConfig {
+    /// Provides a default configuration for the batch processor.
     fn default() -> Self {
         Self {
             sizer: BatchSizer::Items,
@@ -336,6 +352,7 @@ impl GenericBatcher {
 impl GenericBatcher {
     /// Creates a new `GenericBatcher` with the given configuration.
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
         Self {
