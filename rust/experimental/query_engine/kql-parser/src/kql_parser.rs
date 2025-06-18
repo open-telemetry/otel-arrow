@@ -77,7 +77,7 @@ pub(crate) fn parse_double_literal(
             to_query_location(&double_literal_rule),
             format!(
                 "'{}' could not be parsed as a literal of type 'double'",
-                raw_value
+                raw_value.trim()
             ),
         ));
     }
@@ -101,7 +101,7 @@ pub(crate) fn parse_integer_literal(
             to_query_location(&integer_literal_rule),
             format!(
                 "'{}' could not be parsed as a literal of type 'integer'",
-                raw_value
+                raw_value.trim()
             ),
         ));
     }
@@ -130,7 +130,7 @@ pub(crate) fn parse_datetime_expression(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value
+                        original_value.trim()
                     ),
                 ));
             }
@@ -145,7 +145,7 @@ pub(crate) fn parse_datetime_expression(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value
+                        original_value.trim()
                     ),
                 ));
             }
@@ -162,7 +162,7 @@ pub(crate) fn parse_datetime_expression(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value
+                        original_value.trim()
                     ),
                 ));
             }
@@ -174,7 +174,7 @@ pub(crate) fn parse_datetime_expression(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value
+                        original_value.trim()
                     ),
                 ));
             }
@@ -185,7 +185,7 @@ pub(crate) fn parse_datetime_expression(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value
+                        original_value.trim()
                     ),
                 ));
             }
@@ -202,7 +202,7 @@ pub(crate) fn parse_datetime_expression(
                     to_query_location(&datetime_rule),
                     format!(
                         "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value
+                        original_value.trim()
                     ),
                 )),
             }
@@ -562,7 +562,7 @@ pub(crate) fn parse_assignment_expression(
                 destination_rule_location,
                 format!(
                     "'{}' destination accessor must refer to source or a variable to be used in an assignment expression",
-                    destination_rule_str
+                    destination_rule_str.trim()
                 ),
             ));
         }
@@ -598,7 +598,19 @@ pub(crate) fn parse_extend_expression(
 
                 if let TransformExpression::Set(s) = &assignment_expression {
                     match s.get_destination() {
-                        MutableValueExpression::Source(_) => {}
+                        MutableValueExpression::Source(s) => {
+                            let location = s.get_query_location();
+
+                            if !s.get_value_accessor().has_selectors() {
+                                return Err(ParserError::SyntaxError(
+                                    location.clone(),
+                                    format!(
+                                        "The '{}' accessor expression should refer to a top-level map key or path on the source when used in an extend expression",
+                                        state.get_query_slice(location).trim()
+                                    ),
+                                ));
+                            }
+                        }
                         MutableValueExpression::Variable(v) => {
                             let location = v.get_query_location();
 
@@ -744,17 +756,18 @@ pub(crate) fn parse_project_keep_expression(
 
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
-                let v = rule.as_str();
-                if v.contains("*") {
-                    keys_to_keep.insert(SourceKey::Pattern(StringScalarExpression::new(
-                        rule_location,
-                        v,
-                    )));
+                if let Some(key) =
+                    parse_identifier_or_pattern(state, rule_location.clone(), rule.as_str())
+                {
+                    keys_to_keep.insert(key);
                 } else {
-                    keys_to_keep.insert(SourceKey::Identifier(StringScalarExpression::new(
-                        rule_location,
-                        v,
-                    )));
+                    return Err(ParserError::SyntaxError(
+                        rule_location.clone(),
+                        format!(
+                            "To be valid in a project-keep expression '{}' should be an accessor expression which refers to data on the source",
+                            state.get_query_slice(&rule_location).trim()
+                        ),
+                    ));
                 }
             }
             Rule::accessor_expression => {
@@ -817,17 +830,18 @@ pub(crate) fn parse_project_away_expression(
 
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
-                let v = rule.as_str();
-                if v.contains("*") {
-                    keys_to_remove.insert(SourceKey::Pattern(StringScalarExpression::new(
-                        rule_location,
-                        v,
-                    )));
+                if let Some(key) =
+                    parse_identifier_or_pattern(state, rule_location.clone(), rule.as_str())
+                {
+                    keys_to_remove.insert(key);
                 } else {
-                    keys_to_remove.insert(SourceKey::Identifier(StringScalarExpression::new(
-                        rule_location,
-                        v,
-                    )));
+                    return Err(ParserError::SyntaxError(
+                        rule_location.clone(),
+                        format!(
+                            "To be valid in a project-away expression '{}' should be an accessor expression which refers to data on the source",
+                            state.get_query_slice(&rule_location).trim()
+                        ),
+                    ));
                 }
             }
             Rule::accessor_expression => {
@@ -888,7 +902,9 @@ fn get_root_map_key_from_source_scalar_expression(
     state: &ParserState,
     source_scalar_expression: &SourceScalarExpression,
 ) -> Option<StringScalarExpression> {
-    let selectors = source_scalar_expression.get_selectors();
+    let selectors = source_scalar_expression
+        .get_value_accessor()
+        .get_selectors();
 
     if selectors.len() == 1 {
         if let ValueSelector::MapKey(k) = selectors.first().unwrap() {
@@ -912,6 +928,24 @@ fn get_root_map_key_from_source_scalar_expression(
     }
 
     None
+}
+
+fn parse_identifier_or_pattern(
+    state: &ParserState,
+    location: QueryLocation,
+    value: &str,
+) -> Option<SourceKey> {
+    if value.contains("*") {
+        Some(SourceKey::Pattern(StringScalarExpression::new(
+            location, value,
+        )))
+    } else if state.is_well_defined_identifier(value) {
+        None
+    } else {
+        Some(SourceKey::Identifier(StringScalarExpression::new(
+            location, value,
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -1822,7 +1856,7 @@ mod parse_tests {
         )
         .unwrap();
 
-        if let ScalarExpression::Source(path) = expression {
+        if let ScalarExpression::Source(s) = expression {
             assert_eq!(
                 &[
                     ValueSelector::MapKey(StringScalarExpression::new(
@@ -1839,7 +1873,7 @@ mod parse_tests {
                     ))
                 ]
                 .to_vec(),
-                path.get_selectors()
+                s.get_value_accessor().get_selectors()
             );
         } else {
             panic!("Expected SourceScalarExpression");
@@ -1887,7 +1921,7 @@ mod parse_tests {
                     ))
                 ]
                 .to_vec(),
-                s.get_selectors()
+                s.get_value_accessor().get_selectors()
             );
         } else {
             panic!("Expected SourceScalarExpression");
@@ -1911,7 +1945,7 @@ mod parse_tests {
                     "subkey"
                 ))]
                 .to_vec(),
-                s.get_selectors()
+                s.get_value_accessor().get_selectors()
             );
         } else {
             panic!("Expected SourceScalarExpression");
@@ -2161,6 +2195,11 @@ mod parse_tests {
                     ]),
                 )),
             ))],
+        );
+
+        run_test_failure(
+            "extend source = 1",
+            "The 'source' accessor expression should refer to a top-level map key or path on the source when used in an extend expression",
         );
 
         run_test_failure(
@@ -2460,6 +2499,11 @@ mod parse_tests {
         );
 
         run_test_failure(
+            "project-keep source",
+            "To be valid in a project-keep expression 'source' should be an accessor expression which refers to data on the source",
+        );
+
+        run_test_failure(
             "project-keep source[0]",
             "The 'source[0]' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
         );
@@ -2608,6 +2652,11 @@ mod parse_tests {
                     ]),
                 )),
             ],
+        );
+
+        run_test_failure(
+            "project-away source",
+            "To be valid in a project-away expression 'source' should be an accessor expression which refers to data on the source",
         );
 
         run_test_failure(
