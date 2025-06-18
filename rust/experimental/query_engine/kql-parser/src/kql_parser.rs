@@ -835,6 +835,14 @@ pub(crate) fn parse_project_away_expression(
                     {
                         keys_to_remove.insert(SourceKey::Identifier(root_map_key));
                     } else {
+                        // todo: If query is removing two accessors for example
+                        // project-away body.map['key1'], body.map['key2'] we
+                        // will currently use 2 RemoveTransformExpressions for
+                        // that. It could be improved to be a single
+                        // RemoveKeysTransformExpressions using body.map as the
+                        // target and a list of 'key1' & 'key2'. This logic
+                        // needs to be improved to reason about the accessors
+                        // more deeply to make that work
                         expressions.push(TransformExpression::Remove(
                             RemoveTransformExpression::new(
                                 rule_location,
