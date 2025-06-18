@@ -2,64 +2,53 @@
 Module: test_definition
 
 This module defines the `TestDefinition` class, which encapsulates a test scenario in a
-testbed. The `TestDefinition` class allows for defining a sequence of test steps, executing them, and
-reporting the results through specified reporting strategies.
+testbed. The `TestDefinition` class allows for defining a sequence of test steps, with optional
+hooks for modifying the behavior or reporting results.
 
-The class provides the functionality to aggregate monitoring data during the test execution and apply
-different reporting strategies to the results.
 
 Classes:
-    TestDefinition: A class that defines a test, including the steps to run and the reporting strategies to use.
+    TestDefinition: A class that defines a test, including the steps to run.
 """
 
 from typing import List, Optional, TYPE_CHECKING
 
-from ..component.component_data import ComponentData
 from ..context.base import ExecutionStatus
 from ..context.test_contexts import TestExecutionContext, TestStepContext
 from ..context.test_element_hook_context import HookableTestPhase
-from .test_data import TestData
 from .test_element import TestFrameworkElement
 
 if TYPE_CHECKING:
-    from ..strategies.reporting_strategy import ReportingStrategy
     from .test_step import TestStep
     from ..context.base import BaseContext
 
 
 class TestDefinition(TestFrameworkElement):
     """
-    Defines a test scenario composed of sequential steps and reporting strategies.
+    Defines a test scenario composed of sequential steps.
 
     Attributes:
         name (str): The test's name.
         steps (List[TestStep]): Ordered list of test steps.
-        reporting_strategies (List[ReportingStrategy]): Strategies for reporting test results.
 
     Methods:
-        run(ctx): Executes all steps and applies reporting strategies.
-        get_test_data(ctx) Compile and return a TestData object from components and steps.
+        run(ctx): Executes all steps.
     """
 
     def __init__(
         self,
         name: str,
         steps: List["TestStep"],
-        reporting_strategies: Optional[List["ReportingStrategy"]] = None,
     ):
         """
-        Initializes the test definition with the given name, steps, and reporting strategies.
+        Initializes the test definition with the given name and steps.
 
         Args:
             name (str): The name of the test.
             steps (List[TestStep]): A list of test steps to be executed in sequence.
-            reporting_strategies (List[ReportingStrategy], optional): A list of reporting strategies to apply
-                                                                     after the test. Defaults to an empty list.
         """
         super().__init__()
         self.name = name
         self.steps = steps
-        self.reporting_strategies = reporting_strategies or []
 
     def run(self, ctx: Optional["BaseContext"] = None) -> None:
         """
@@ -89,19 +78,3 @@ class TestDefinition(TestFrameworkElement):
                     raise  # or continue, based on policy
 
         self._run_hooks(HookableTestPhase.POST_RUN, ctx)
-
-    def get_test_data(self, ctx: "TestExecutionContext") -> TestData:
-        """
-        Aggregates test data, including the current test context and monitoring data from all components.
-
-        Returns:
-            TestData: A dictionary of aggregated monitoring data, indexed by component name along with the context
-        """
-
-        component_data = {}
-        for component_name, component in ctx.get_components().items():
-            component_data[component_name] = ComponentData.from_component(
-                component, ctx
-            )
-
-        return TestData(context=ctx, component_data=component_data)
