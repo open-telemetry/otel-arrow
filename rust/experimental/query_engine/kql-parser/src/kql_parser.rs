@@ -555,7 +555,19 @@ pub(crate) fn parse_assignment_expression(
     };
 
     let destination = match accessor {
-        ScalarExpression::Source(s) => MutableValueExpression::Source(s),
+        ScalarExpression::Source(s) => {
+            if !s.get_value_accessor().has_selectors() {
+                return Err(ParserError::SyntaxError(
+                    destination_rule_location,
+                    format!(
+                        "Cannot write directly to '{}' in an assignment expression use an accessor expression referencing a path on source instead",
+                        destination_rule_str.trim()
+                    ),
+                ));
+            }
+
+            MutableValueExpression::Source(s)
+        }
         ScalarExpression::Variable(v) => MutableValueExpression::Variable(v),
         _ => {
             return Err(ParserError::SyntaxError(
@@ -598,19 +610,7 @@ pub(crate) fn parse_extend_expression(
 
                 if let TransformExpression::Set(s) = &assignment_expression {
                     match s.get_destination() {
-                        MutableValueExpression::Source(s) => {
-                            let location = s.get_query_location();
-
-                            if !s.get_value_accessor().has_selectors() {
-                                return Err(ParserError::SyntaxError(
-                                    location.clone(),
-                                    format!(
-                                        "The '{}' accessor expression should refer to a top-level map key or path on the source when used in an extend expression",
-                                        state.get_query_slice(location).trim()
-                                    ),
-                                ));
-                            }
-                        }
+                        MutableValueExpression::Source(_) => {}
                         MutableValueExpression::Variable(v) => {
                             let location = v.get_query_location();
 
@@ -2071,6 +2071,11 @@ mod parse_tests {
         );
 
         run_test_failure(
+            "source = 1",
+            "Cannot write directly to 'source' in an assignment expression use an accessor expression referencing a path on source instead",
+        );
+
+        run_test_failure(
             "resource.attributes['new_attribute'] = 1",
             "'resource.attributes['new_attribute']' destination accessor must refer to source or a variable to be used in an assignment expression",
         );
@@ -2195,11 +2200,6 @@ mod parse_tests {
                     ]),
                 )),
             ))],
-        );
-
-        run_test_failure(
-            "extend source = 1",
-            "The 'source' accessor expression should refer to a top-level map key or path on the source when used in an extend expression",
         );
 
         run_test_failure(
