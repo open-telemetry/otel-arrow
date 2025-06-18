@@ -796,6 +796,90 @@ pub(crate) fn parse_project_keep_expression(
     )))
 }
 
+#[allow(dead_code)]
+pub(crate) fn parse_project_away_expression(
+    project_away_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<Vec<TransformExpression>, ParserError> {
+    let query_location = to_query_location(&project_away_expression_rule);
+
+    let project_away_rules = project_away_expression_rule.into_inner();
+
+    let mut keys_to_remove: HashSet<SourceKey> = HashSet::new();
+    let mut expressions = Vec::new();
+
+    for rule in project_away_rules {
+        let rule_location = to_query_location(&rule);
+
+        match rule.as_rule() {
+            Rule::identifier_or_pattern_literal => {
+                let v = rule.as_str();
+                if v.contains("*") {
+                    keys_to_remove.insert(SourceKey::Pattern(StringScalarExpression::new(
+                        rule_location,
+                        v,
+                    )));
+                } else {
+                    keys_to_remove.insert(SourceKey::Identifier(StringScalarExpression::new(
+                        rule_location,
+                        v,
+                    )));
+                }
+            }
+            Rule::accessor_expression => {
+                let accessor_expression = parse_accessor_expression(rule, state)?;
+
+                if let ScalarExpression::Source(s) = accessor_expression {
+                    if let Some(root_map_key) =
+                        get_root_map_key_from_source_scalar_expression(state, &s)
+                    {
+                        keys_to_remove.insert(SourceKey::Identifier(root_map_key));
+                    } else {
+                        // todo: If query is removing two accessors for example
+                        // project-away body.map['key1'], body.map['key2'] we
+                        // will currently use 2 RemoveTransformExpressions for
+                        // that. It could be improved to be a single
+                        // RemoveKeysTransformExpressions using body.map as the
+                        // target and a list of 'key1' & 'key2'. This logic
+                        // needs to be improved to reason about the accessors
+                        // more deeply to make that work
+                        expressions.push(TransformExpression::Remove(
+                            RemoveTransformExpression::new(
+                                rule_location,
+                                MutableValueExpression::Source(s),
+                            ),
+                        ));
+                    }
+                } else {
+                    return Err(ParserError::SyntaxError(
+                        rule_location.clone(),
+                        format!(
+                            "To be valid in a project-away expression '{}' should be an accessor expression which refers to the source",
+                            state.get_query_slice(&rule_location).trim()
+                        ),
+                    ));
+                }
+            }
+            _ => panic!("Unexpected rule in project_away_expression: {}", rule),
+        }
+    }
+
+    if !keys_to_remove.is_empty() {
+        expressions.push(TransformExpression::RemoveKeys(
+            RemoveKeysTransformExpression::new(
+                query_location.clone(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location,
+                    ValueAccessor::new(),
+                )),
+                keys_to_remove,
+            ),
+        ));
+    }
+
+    Ok(expressions)
+}
+
 fn get_root_map_key_from_source_scalar_expression(
     state: &ParserState,
     source_scalar_expression: &SourceScalarExpression,
@@ -1482,13 +1566,6 @@ mod parse_tests {
             )),
         );
 
-        let mut source_accessor = ValueAccessor::new();
-
-        source_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "source_path",
-        )));
-
         run_test(
             "1 > source_path",
             LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
@@ -1498,17 +1575,12 @@ mod parse_tests {
                 )),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    source_accessor,
+                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "source_path"),
+                    )]),
                 )),
             )),
         );
-
-        let mut resource_accessor = ValueAccessor::new();
-
-        resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "key",
-        )));
 
         run_test(
             "(1) >= resource.key",
@@ -1520,7 +1592,9 @@ mod parse_tests {
                 ScalarExpression::Attached(AttachedScalarExpression::new(
                     QueryLocation::new_fake(),
                     "resource",
-                    resource_accessor,
+                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                    )]),
                 )),
             )),
         );
@@ -1597,47 +1671,40 @@ mod parse_tests {
             ))),
         );
 
-        let mut source_accessor = ValueAccessor::new();
-        source_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "name",
-        )));
-
         run_test(
             "source.name",
             LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
-                source_accessor,
+                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "name"),
+                )]),
             ))),
         );
-
-        let mut resource_accessor = ValueAccessor::new();
-        resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "attributes",
-        )));
-        resource_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "service.name",
-        )));
 
         run_test(
             "resource.attributes['service.name']",
             LogicalExpression::Scalar(ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
                 "resource",
-                resource_accessor,
+                ValueAccessor::new_with_selectors(vec![
+                    ValueSelector::MapKey(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "attributes",
+                    )),
+                    ValueSelector::MapKey(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "service.name",
+                    )),
+                ]),
             ))),
         );
-
-        let variable_accessor = ValueAccessor::new();
 
         run_test(
             "variable",
             LogicalExpression::Scalar(ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
                 "variable",
-                variable_accessor.clone(),
+                ValueAccessor::new(),
             ))),
         );
 
@@ -1648,7 +1715,7 @@ mod parse_tests {
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
                     "variable",
-                    variable_accessor.clone(),
+                    ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
@@ -1663,7 +1730,7 @@ mod parse_tests {
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
                     "variable",
-                    variable_accessor.clone(),
+                    ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
@@ -1671,20 +1738,15 @@ mod parse_tests {
             )),
         );
 
-        let mut severity_text_accessor = ValueAccessor::new();
-
-        severity_text_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "SeverityText",
-        )));
-
         chain.push_or(LogicalExpression::Not(NotLogicalExpression::new(
             QueryLocation::new_fake(),
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    severity_text_accessor,
+                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "SeverityText"),
+                    )]),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "Info"),
@@ -1704,7 +1766,7 @@ mod parse_tests {
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
                     "variable",
-                    variable_accessor.clone(),
+                    ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
@@ -1712,19 +1774,14 @@ mod parse_tests {
             )),
         );
 
-        let mut severity_text_accessor = ValueAccessor::new();
-
-        severity_text_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "SeverityNumber",
-        )));
-
         nested_logical.push_or(LogicalExpression::GreaterThanOrEqualTo(
             GreaterThanOrEqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    severity_text_accessor,
+                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "SeverityNumber"),
+                    )]),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
@@ -1796,12 +1853,6 @@ mod parse_tests {
 
         let expression = parse_accessor_expression(result.next().unwrap(), &state).unwrap();
 
-        let mut v = ValueAccessor::new();
-        v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "neg_attr",
-        )));
-
         if let ScalarExpression::Source(s) = expression {
             assert_eq!(
                 &[
@@ -1821,7 +1872,12 @@ mod parse_tests {
                             QueryLocation::new_fake(),
                             ScalarExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                v
+                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "neg_attr"
+                                    )
+                                )]),
                             ))
                         )
                     ))
@@ -1939,13 +1995,6 @@ mod parse_tests {
             }
         };
 
-        let mut new_attribute_accessor = ValueAccessor::new();
-
-        new_attribute_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "new_attribute",
-        )));
-
         run_test_success(
             "new_attribute = 1",
             TransformExpression::Set(SetTransformExpression::new(
@@ -1958,7 +2007,9 @@ mod parse_tests {
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    new_attribute_accessor,
+                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "new_attribute"),
+                    )]),
                 )),
             )),
         );
@@ -2017,13 +2068,6 @@ mod parse_tests {
             }
         };
 
-        let mut new_attribute1_accessor = ValueAccessor::new();
-
-        new_attribute1_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "new_attribute1",
-        )));
-
         run_test_success(
             "extend new_attribute1 = 1",
             vec![TransformExpression::Set(SetTransformExpression::new(
@@ -2036,17 +2080,12 @@ mod parse_tests {
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    new_attribute1_accessor.clone(),
+                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "new_attribute1"),
+                    )]),
                 )),
             ))],
         );
-
-        let mut new_attribute2_accessor = ValueAccessor::new();
-
-        new_attribute2_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "new_attribute2",
-        )));
 
         run_test_success(
             "extend new_attribute1 = 1, new_attribute2 = 2",
@@ -2061,7 +2100,12 @@ mod parse_tests {
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        new_attribute1_accessor,
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "new_attribute1",
+                            ),
+                        )]),
                     )),
                 )),
                 TransformExpression::Set(SetTransformExpression::new(
@@ -2074,10 +2118,45 @@ mod parse_tests {
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        new_attribute2_accessor,
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "new_attribute2",
+                            ),
+                        )]),
                     )),
                 )),
             ],
+        );
+
+        run_test_success(
+            "extend body.nested.field = 1",
+            vec![TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "body",
+                        )),
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "nested",
+                        )),
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "field",
+                        )),
+                    ]),
+                )),
+            ))],
         );
 
         run_test_failure(
@@ -2156,13 +2235,6 @@ mod parse_tests {
             ))],
         );
 
-        let mut key1_accessor = ValueAccessor::new();
-
-        key1_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "key1",
-        )));
-
         run_test_success(
             "project key1 = variable",
             vec![
@@ -2177,7 +2249,9 @@ mod parse_tests {
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        key1_accessor.clone(),
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        )]),
                     )),
                 )),
                 TransformExpression::Clear(ClearTransformExpression::new(
@@ -2194,18 +2268,6 @@ mod parse_tests {
             ],
         );
 
-        let mut key2_accessor = ValueAccessor::new();
-
-        key2_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "attributes",
-        )));
-
-        key2_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-            QueryLocation::new_fake(),
-            "key2",
-        )));
-
         run_test_success(
             "project key1 = variable, source.attributes['key2'] = resource['key1'], source.attributes['key3']",
             vec![
@@ -2220,7 +2282,9 @@ mod parse_tests {
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        key1_accessor.clone(),
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        )]),
                     )),
                 )),
                 TransformExpression::Set(SetTransformExpression::new(
@@ -2229,12 +2293,23 @@ mod parse_tests {
                         AttachedScalarExpression::new(
                             QueryLocation::new_fake(),
                             "resource",
-                            key1_accessor.clone(),
+                            ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )]),
                         ),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        key2_accessor,
+                        ValueAccessor::new_with_selectors(vec![
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "attributes",
+                            )),
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key2",
+                            )),
+                        ]),
                     )),
                 )),
                 TransformExpression::Clear(ClearTransformExpression::new(
@@ -2394,6 +2469,142 @@ mod parse_tests {
         run_test_failure(
             "project-keep resource.attributes['key']",
             "To be valid in a project-keep expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
+        );
+    }
+
+    #[test]
+    fn test_parse_project_away_expression() {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
+
+            let expression = parse_project_away_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let mut state = ParserState::new(input)
+                .with_default_source_map_key_name("attributes")
+                .with_attached_data_names(&["resource"]);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
+
+            let error = parse_project_away_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_success(
+            "project-away key1",
+            vec![TransformExpression::RemoveKeys(
+                RemoveKeysTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    ))]),
+                ),
+            )],
+        );
+
+        run_test_success(
+            "project-away body.nested",
+            vec![TransformExpression::Remove(RemoveTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "body",
+                        )),
+                        ValueSelector::MapKey(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "nested",
+                        )),
+                    ]),
+                )),
+            ))],
+        );
+
+        run_test_success(
+            "project-away key1, body.nested, attributes['key2'], source.attributes['key3'], body.other_nested",
+            vec![
+                TransformExpression::Remove(RemoveTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "body",
+                            )),
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "nested",
+                            )),
+                        ]),
+                    )),
+                )),
+                TransformExpression::Remove(RemoveTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "body",
+                            )),
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "other_nested",
+                            )),
+                        ]),
+                    )),
+                )),
+                TransformExpression::RemoveKeys(RemoveKeysTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    HashSet::from([
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key2",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key3",
+                        )),
+                    ]),
+                )),
+            ],
+        );
+
+        run_test_failure(
+            "project-away resource.attributes['key']",
+            "To be valid in a project-away expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
         );
     }
 }
