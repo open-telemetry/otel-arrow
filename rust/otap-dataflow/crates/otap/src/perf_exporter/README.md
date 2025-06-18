@@ -65,4 +65,3 @@ Network Interface: anpi0
     - total errors on received          : 0 B
     - errors on transmitted             : 0 B/s
     - total errors on transmitted       : 0 B
-

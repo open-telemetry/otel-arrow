@@ -303,7 +303,7 @@ fn bench_exporter(c: &mut Criterion) {
             .add_service(mock_trace_service)
             .serve_with_incoming_shutdown(tcp_stream, async {
                 // Wait for the shutdown signal
-                _ = drop(otap_shutdown_signal.await.ok())
+                let _ = otap_shutdown_signal.await;
             })
             .await
             .expect("Test gRPC server has failed");
@@ -329,7 +329,7 @@ fn bench_exporter(c: &mut Criterion) {
             .add_service(mock_trace_service)
             .serve_with_incoming_shutdown(tcp_stream, async {
                 // Wait for the shutdown signal
-                _ = drop(otlp_shutdown_signal.await.ok())
+                let _ = otlp_shutdown_signal.await;
             })
             .await
             .expect("Test gRPC server has failed");
