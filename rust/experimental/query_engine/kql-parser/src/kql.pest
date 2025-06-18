@@ -43,7 +43,7 @@ string_literal = @{
 }
 datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
-pattern_literal = @{ ("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|".")}
+identifier_or_pattern_literal = @{ ("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|".")}
 
 // Expressions
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
@@ -67,4 +67,4 @@ assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
 
 extend_expression = { "extend" ~ assignment_expression ~ ("," ~ assignment_expression)* }
 project_expression = { "project" ~ (assignment_expression|accessor_expression) ~ ("," ~ (assignment_expression|accessor_expression))* }
-project_keep_expression = { "project-keep" ~ (pattern_literal|accessor_expression) ~ ("," ~ (pattern_literal|accessor_expression))* }
+project_keep_expression = { "project-keep" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }

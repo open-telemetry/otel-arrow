@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use crate::{Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation};
+use crate::{
+    Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation,
+    StringScalarExpression,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransformExpression {
@@ -80,6 +83,6 @@ impl Expression for ClearTransformExpression {
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum SourceKey {
-    Identifier(Box<str>),
-    Pattern(Box<str>)
+    Identifier(StringScalarExpression),
+    Pattern(StringScalarExpression),
 }
