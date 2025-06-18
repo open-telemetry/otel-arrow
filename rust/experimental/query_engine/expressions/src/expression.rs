@@ -1,8 +1,10 @@
+use std::hash::{Hash, Hasher};
+
 pub trait Expression {
     fn get_query_location(&self) -> &QueryLocation;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq)]
 pub struct QueryLocation {
     start: usize,
     end: usize,
@@ -44,6 +46,10 @@ impl QueryLocation {
     pub fn get_line_and_column_numbers(&self) -> (usize, usize) {
         (self.line_number, self.column_number)
     }
+}
+
+impl Hash for QueryLocation {
+    fn hash<H: Hasher>(&self, _: &mut H) {}
 }
 
 impl PartialEq for QueryLocation {

@@ -123,7 +123,7 @@ impl Expression for IntegerScalarExpression {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct StringScalarExpression {
     query_location: QueryLocation,
     value: Box<str>,
