@@ -18,18 +18,22 @@ Classes:
     ExecutionStrategy (ABC): Abstract interface for starting and stopping a component's workload execution.
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
+from typing import TYPE_CHECKING
 
-from ..component.component import Component
 from ..context.test_contexts import TestStepContext
-from .base import BaseStrategyConfig
+from .base import BaseStrategyConfig, BaseStrategy
+
+
+if TYPE_CHECKING:
+    from ..component.component import Component
 
 
 class ExecutionStrategyConfig(BaseStrategyConfig):
     """Base model for Execution Strategy config, passed to strategy init."""
 
 
-class ExecutionStrategy(ABC):
+class ExecutionStrategy(BaseStrategy):
     """
     Abstract base class for execution strategies.
 
@@ -47,7 +51,7 @@ class ExecutionStrategy(ABC):
         """All execution strategies must be initialized with a config object."""
 
     @abstractmethod
-    def start(self, component: Component, ctx: TestStepContext):
+    def start(self, component: "Component", ctx: TestStepContext):
         """
         Start executing the component's workload.
 
@@ -57,7 +61,7 @@ class ExecutionStrategy(ABC):
         """
 
     @abstractmethod
-    def stop(self, component: Component, ctx: TestStepContext):
+    def stop(self, component: "Component", ctx: TestStepContext):
         """
         Stop executing the component's workload.
 

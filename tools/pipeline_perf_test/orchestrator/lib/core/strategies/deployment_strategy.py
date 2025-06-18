@@ -18,25 +18,29 @@ Classes:
     DeploymentStrategy (ABC): Abstract base class for defining component deployment behavior.
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
+from typing import TYPE_CHECKING
 
-from ..component.component import Component
 from ..context.test_contexts import TestStepContext
-from .base import BaseStrategyConfig
+from .base import BaseStrategyConfig, BaseStrategy
+
+
+if TYPE_CHECKING:
+    from ..component.component import Component
 
 
 class DeploymentStrategyConfig(BaseStrategyConfig):
     """Base model for Deployment Strategy config, passed to strategy init."""
 
 
-class DeploymentStrategy(ABC):
+class DeploymentStrategy(BaseStrategy):
 
     @abstractmethod
     def __init__(self, config: DeploymentStrategyConfig) -> None:
         """All deployment strategies must be initialized with a config object."""
 
     @abstractmethod
-    def start(self, component: Component, ctx: TestStepContext):
+    def start(self, component: "Component", ctx: TestStepContext):
         """
         Deploy the component to the target environment.
 
@@ -46,7 +50,7 @@ class DeploymentStrategy(ABC):
         """
 
     @abstractmethod
-    def stop(self, component: Component, ctx: TestStepContext):
+    def stop(self, component: "Component", ctx: TestStepContext):
         """
         Tear down and remove the deployed component.
 

@@ -103,13 +103,5 @@ class TestSuite(TestFrameworkElement):
                         test_execution_context.error = e
                         logger.error("Test %s failed %s", test_definition.name, e)
                         raise
-
-                logger.debug(
-                    "Test %s finished. Running reports...", test_definition.name
-                )
-                # Report using all defined reporting strategies
-                test_data = test_definition.get_test_data(test_execution_context)
-                for strategy in test_definition.reporting_strategies:
-                    strategy.report(test_data)
             self._run_hooks(HookableTestPhase.POST_RUN, self.context)
             self.context.status = ExecutionStatus.SUCCESS
