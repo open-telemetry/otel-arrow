@@ -46,8 +46,8 @@ pub mod otlp_receiver;
 pub mod proto;
 
 /// grpc mock server for testing
-// #[cfg(test)]
-pub mod mock;
+#[cfg(test)]
+mod mock;
 
 /// A slice of local receiver factories for OTLP data.
 #[distributed_slice]

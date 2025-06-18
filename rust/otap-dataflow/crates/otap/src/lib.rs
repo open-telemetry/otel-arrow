@@ -24,9 +24,8 @@ pub mod parquet_exporter;
 pub mod perf_exporter;
 
 /// testing utilities
-// #[cfg(test)]
-pub mod mock;
-
+#[cfg(test)]
+mod mock;
 
 /// A slice of local receiver factories for OTAP data.
 #[distributed_slice]

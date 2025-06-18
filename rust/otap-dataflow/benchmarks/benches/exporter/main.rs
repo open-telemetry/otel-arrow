@@ -16,28 +16,32 @@ use otap_df_engine::{
 };
 use otap_df_otap::{
     grpc::OTAPData,
-    mock::{ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock},
     otap_exporter::OTAPExporter,
     perf_exporter::{config::Config, exporter::PerfExporter},
     proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
-        arrow_logs_service_server::ArrowLogsServiceServer,
-        arrow_metrics_service_server::ArrowMetricsServiceServer,
-        arrow_traces_service_server::ArrowTracesServiceServer,
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+        arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
+        arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
+        arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
     },
 };
 
 use otap_df_otlp::{
     grpc::OTLPData,
-    mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock},
     otlp_exporter::OTLPExporter,
     proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
-        profiles::v1development::{
-            ExportProfilesServiceRequest, profiles_service_server::ProfilesServiceServer,
+        logs::v1::{
+            ExportLogsServiceRequest, ExportLogsServiceResponse,
+            logs_service_server::{LogsService, LogsServiceServer},
         },
-        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
+        metrics::v1::{
+            ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+            metrics_service_server::{MetricsService, MetricsServiceServer},
+        },
+        trace::v1::{
+            ExportTraceServiceRequest, ExportTraceServiceResponse,
+            trace_service_server::{TraceService, TraceServiceServer},
+        },
     },
 };
 
@@ -50,14 +54,176 @@ use tokio::time::Duration;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
+use tonic::{Request, Response, Status};
+
+use std::pin::Pin;
+use tokio_stream::Stream;
+use tokio_stream::wrappers::ReceiverStream;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 const TRACES_BATCH_ID: i64 = 0;
 const LOGS_BATCH_ID: i64 = 1;
 const METRICS_BATCH_ID: i64 = 2;
-const ROW_SIZE: usize = 10;
-const MESSAGE_LEN: usize = 5;
+
+/// struct that implements the ArrowLogsService trait
+#[derive(Default)]
+pub struct ArrowLogsServiceMock {}
+
+/// struct that implements the ArrowMetricsService trait
+#[derive(Default)]
+pub struct ArrowMetricsServiceMock {}
+
+/// struct that implements the ArrowTracesService trait
+#[derive(Default)]
+pub struct ArrowTracesServiceMock {}
+
+#[tonic::async_trait]
+impl ArrowLogsService for ArrowLogsServiceMock {
+    type ArrowLogsStream =
+        Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
+    async fn arrow_logs(
+        &self,
+        request: Request<tonic::Streaming<BatchArrowRecords>>,
+    ) -> Result<Response<Self::ArrowLogsStream>, Status> {
+        let mut input_stream = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        // Provide client a stream to listen to
+        let output = ReceiverStream::new(rx);
+
+        // write to the channel
+        _ = tokio::spawn(async move {
+            // Process messages until stream ends or error occurs
+            while let Ok(Some(batch)) = input_stream.message().await {
+                // Process batch and send status, break on client disconnection
+                let batch_id = batch.batch_id;
+                _ = tx
+                    .send(Ok(BatchStatus {
+                        batch_id,
+                        status_code: StatusCode::Ok as i32,
+                        status_message: "Successfully received".to_string(),
+                    }))
+                    .await;
+            }
+        });
+
+        Ok(Response::new(Box::pin(output) as Self::ArrowLogsStream))
+    }
+}
+
+#[tonic::async_trait]
+impl ArrowMetricsService for ArrowMetricsServiceMock {
+    type ArrowMetricsStream =
+        Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
+    async fn arrow_metrics(
+        &self,
+        request: Request<tonic::Streaming<BatchArrowRecords>>,
+    ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
+        let mut input_stream = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        // Provide client a stream to listen to
+        let output = ReceiverStream::new(rx);
+
+        // write to the channel
+        _ = tokio::spawn(async move {
+            // Process messages until stream ends or error occurs
+            while let Ok(Some(batch)) = input_stream.message().await {
+                // Process batch and send status, break on client disconnection
+                let batch_id = batch.batch_id;
+                _ = tx
+                    .send(Ok(BatchStatus {
+                        batch_id,
+                        status_code: StatusCode::Ok as i32,
+                        status_message: "Successfully received".to_string(),
+                    }))
+                    .await;
+            }
+        });
+
+        Ok(Response::new(Box::pin(output) as Self::ArrowMetricsStream))
+    }
+}
+
+#[tonic::async_trait]
+impl ArrowTracesService for ArrowTracesServiceMock {
+    type ArrowTracesStream =
+        Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
+    async fn arrow_traces(
+        &self,
+        request: Request<tonic::Streaming<BatchArrowRecords>>,
+    ) -> Result<Response<Self::ArrowTracesStream>, Status> {
+        let mut input_stream = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        // create a stream to output result to
+        let output = ReceiverStream::new(rx);
+
+        // write to the channel
+        _ = tokio::spawn(async move {
+            // Process messages until stream ends or error occurs
+            while let Ok(Some(batch)) = input_stream.message().await {
+                // Process batch and send status, break on client disconnection
+                let batch_id = batch.batch_id;
+                _ = tx
+                    .send(Ok(BatchStatus {
+                        batch_id,
+                        status_code: StatusCode::Ok as i32,
+                        status_message: "Successfully received".to_string(),
+                    }))
+                    .await;
+            }
+        });
+        Ok(Response::new(Box::pin(output) as Self::ArrowTracesStream))
+    }
+}
+
+/// struct that implements the Log Service trait
+#[derive(Default)]
+pub struct LogsServiceMock {}
+
+/// struct that implements the Metrics Service trait
+#[derive(Default)]
+pub struct MetricsServiceMock {}
+
+/// struct that implements the Trace Service trait
+#[derive(Default)]
+pub struct TraceServiceMock {}
+
+#[tonic::async_trait]
+impl LogsService for LogsServiceMock {
+    async fn export(
+        &self,
+        request: Request<ExportLogsServiceRequest>,
+    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        Ok(Response::new(ExportLogsServiceResponse {
+            partial_success: None,
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl MetricsService for MetricsServiceMock {
+    async fn export(
+        &self,
+        request: Request<ExportMetricsServiceRequest>,
+    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+        Ok(Response::new(ExportMetricsServiceResponse {
+            partial_success: None,
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl TraceService for TraceServiceMock {
+    async fn export(
+        &self,
+        request: Request<ExportTraceServiceRequest>,
+    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
+        Ok(Response::new(ExportTraceServiceResponse {
+            partial_success: None,
+        }))
+    }
+}
 
 pub fn create_batch_arrow_record_helper(
     batch_id: i64,
@@ -111,86 +277,21 @@ fn bench_exporter(c: &mut Criterion) {
     let core = cores.iter().last().expect("no cores found");
     _ = core_affinity::set_for_current(*core);
 
-    let mut batches = Vec::new();
-    let mut otap_signals = Vec::new();
-    let mut otlp_signals = Vec::new();
-    // let mut group = c.benchmark_group("exporter");
-    // _ = group.throughput(Throughput::Elements(MSG_COUNT as u64));
-
-    // create data that will be used to benchmark the exporters
-    for _ in 0..3 {
-        let traces_batch_data = create_batch_arrow_record_helper(
-            TRACES_BATCH_ID,
-            ArrowPayloadType::Spans,
-            MESSAGE_LEN,
-            ROW_SIZE,
-        );
-        let logs_batch_data = create_batch_arrow_record_helper(
-            LOGS_BATCH_ID,
-            ArrowPayloadType::Logs,
-            MESSAGE_LEN,
-            ROW_SIZE,
-        );
-        let metrics_batch_data = create_batch_arrow_record_helper(
-            METRICS_BATCH_ID,
-            ArrowPayloadType::UnivariateMetrics,
-            MESSAGE_LEN,
-            ROW_SIZE,
-        );
-
-        batches.push(traces_batch_data);
-        batches.push(logs_batch_data);
-        batches.push(metrics_batch_data);
-
-        let arrow_traces_batch_data = create_batch_arrow_record_helper(
-            TRACES_BATCH_ID,
-            ArrowPayloadType::Spans,
-            MESSAGE_LEN,
-            ROW_SIZE,
-        );
-        let arrow_logs_batch_data = create_batch_arrow_record_helper(
-            LOGS_BATCH_ID,
-            ArrowPayloadType::Logs,
-            MESSAGE_LEN,
-            ROW_SIZE,
-        );
-        let arrow_metrics_batch_data = create_batch_arrow_record_helper(
-            METRICS_BATCH_ID,
-            ArrowPayloadType::UnivariateMetrics,
-            MESSAGE_LEN,
-            ROW_SIZE,
-        );
-
-        otap_signals.push(OTAPData::ArrowTraces(arrow_traces_batch_data));
-        otap_signals.push(OTAPData::ArrowLogs(arrow_logs_batch_data));
-        otap_signals.push(OTAPData::ArrowMetrics(arrow_metrics_batch_data));
-
-        let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
-        let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
-        let trace_message = OTLPData::Traces(ExportTraceServiceRequest::default());
-        otlp_signals.push(metric_message);
-        otlp_signals.push(log_message);
-        otlp_signals.push(trace_message);
-    }
-
     // start grpc server to handle otap stream
     let grpc_addr = "127.0.0.1";
     let otap_grpc_port = portpicker::pick_unused_port().expect("No free ports");
     let otlp_grpc_port = portpicker::pick_unused_port().expect("No free ports");
     let otap_listening_addr: SocketAddr = format!("{grpc_addr}:{otap_grpc_port}").parse().unwrap();
     let (otap_shutdown_sender, otap_shutdown_signal) = tokio::sync::oneshot::channel();
-    let (otap_sender, otap_receiver) = tokio::sync::mpsc::channel(32);
 
     let tokio_rt = Runtime::new().unwrap();
     _ = tokio_rt.spawn(async move {
         let tcp_listener = TcpListener::bind(otap_listening_addr).await.unwrap();
         let tcp_stream = TcpListenerStream::new(tcp_listener);
-        let mock_logs_service =
-            ArrowLogsServiceServer::new(ArrowLogsServiceMock::new(otap_sender.clone()));
+        let mock_logs_service = ArrowLogsServiceServer::new(ArrowLogsServiceMock::default());
         let mock_metrics_service =
-            ArrowMetricsServiceServer::new(ArrowMetricsServiceMock::new(otap_sender.clone()));
-        let mock_trace_service =
-            ArrowTracesServiceServer::new(ArrowTracesServiceMock::new(otap_sender.clone()));
+            ArrowMetricsServiceServer::new(ArrowMetricsServiceMock::default());
+        let mock_trace_service = ArrowTracesServiceServer::new(ArrowTracesServiceMock::default());
         _ = Server::builder()
             .add_service(mock_logs_service)
             .add_service(mock_metrics_service)
@@ -207,15 +308,12 @@ fn bench_exporter(c: &mut Criterion) {
     let otlp_grpc_port = portpicker::pick_unused_port().expect("No free ports");
     let otlp_listening_addr: SocketAddr = format!("{grpc_addr}:{otlp_grpc_port}").parse().unwrap();
     let (otlp_shutdown_sender, otlp_shutdown_signal) = tokio::sync::oneshot::channel();
-    let (otlp_sender, otlp_receiver) = tokio::sync::mpsc::channel(32);
     _ = tokio_rt.spawn(async move {
         let tcp_listener = TcpListener::bind(otlp_listening_addr).await.unwrap();
         let tcp_stream = TcpListenerStream::new(tcp_listener);
-        let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(otlp_sender.clone()));
-        let mock_metrics_service =
-            MetricsServiceServer::new(MetricsServiceMock::new(otlp_sender.clone()));
-        let mock_trace_service =
-            TraceServiceServer::new(TraceServiceMock::new(otlp_sender.clone()));
+        let mock_logs_service = LogsServiceServer::new(LogsServiceMock::default());
+        let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::default());
+        let mock_trace_service = TraceServiceServer::new(TraceServiceMock::default());
         _ = Server::builder()
             .add_service(mock_logs_service)
             .add_service(mock_metrics_service)
@@ -228,146 +326,254 @@ fn bench_exporter(c: &mut Criterion) {
             .expect("Test gRPC server has failed");
     });
 
-    // Benchmark the `start` function
-    let _ = c.bench_with_input(
-        BenchmarkId::new("perf_exporter", "batch"),
-        &batches,
-        |b, batches| {
-            b.to_async(&rt).iter(|| async {
-                // start perf exporter
-                let config = Config::new(1000, 0.3, true, true, true, true, true);
-                let exporter_config = ExporterConfig::new("perf_exporter");
-                let exporter =
-                    ExporterWrapper::local(PerfExporter::new(config, None), &exporter_config);
+    let mut group = c.benchmark_group("exporter");
 
-                // create necessary senders and receivers to communicate with the exporter
-                let (control_tx, control_rx) = mpsc::Channel::new(100);
-                let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                let control_sender = Sender::Local(control_tx);
-                let control_receiver = Receiver::Local(control_rx);
-                let pdata_sender = Sender::Local(pdata_tx);
-                let pdata_receiver = Receiver::Local(pdata_rx);
+    let message_len = 50;
+    let row_size = 50;
+    for size in [2, 4, 8, 16, 32] {
+        // create data that will be used to benchmark the exporters
+        let mut batches = Vec::new();
+        let mut otap_signals = Vec::new();
+        let mut otlp_signals = Vec::new();
+        for _ in 0..size {
+            let traces_batch_data = create_batch_arrow_record_helper(
+                TRACES_BATCH_ID,
+                ArrowPayloadType::Spans,
+                message_len,
+                row_size,
+            );
+            let logs_batch_data = create_batch_arrow_record_helper(
+                LOGS_BATCH_ID,
+                ArrowPayloadType::Logs,
+                message_len,
+                row_size,
+            );
+            let metrics_batch_data = create_batch_arrow_record_helper(
+                METRICS_BATCH_ID,
+                ArrowPayloadType::UnivariateMetrics,
+                message_len,
+                row_size,
+            );
 
-                // start the exporter
-                let local = LocalSet::new();
-                let run_exporter_handle = local.spawn_local(async move {
-                    exporter
-                        .start(control_receiver, pdata_receiver)
-                        .await
-                        .expect("Exporter event loop failed");
+            batches.push(traces_batch_data);
+            batches.push(logs_batch_data);
+            batches.push(metrics_batch_data);
+
+            let arrow_traces_batch_data = create_batch_arrow_record_helper(
+                TRACES_BATCH_ID,
+                ArrowPayloadType::Spans,
+                message_len,
+                row_size,
+            );
+            let arrow_logs_batch_data = create_batch_arrow_record_helper(
+                LOGS_BATCH_ID,
+                ArrowPayloadType::Logs,
+                message_len,
+                row_size,
+            );
+            let arrow_metrics_batch_data = create_batch_arrow_record_helper(
+                METRICS_BATCH_ID,
+                ArrowPayloadType::UnivariateMetrics,
+                message_len,
+                row_size,
+            );
+
+            otap_signals.push(OTAPData::ArrowTraces(arrow_traces_batch_data));
+            otap_signals.push(OTAPData::ArrowLogs(arrow_logs_batch_data));
+            otap_signals.push(OTAPData::ArrowMetrics(arrow_metrics_batch_data));
+
+            let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
+            let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
+            let trace_message = OTLPData::Traces(ExportTraceServiceRequest::default());
+            otlp_signals.push(metric_message);
+            otlp_signals.push(log_message);
+            otlp_signals.push(trace_message);
+        }
+
+        // Benchmark the `start` function
+        let _ = group.bench_with_input(
+            BenchmarkId::new("perf_exporter_full_config_enabled", size),
+            &batches,
+            |b, batches| {
+                b.to_async(&rt).iter(|| async {
+                    // start perf exporter
+                    let config = Config::new(1000, 0.3, true, true, true, true, true);
+                    let exporter_config = ExporterConfig::new("perf_exporter");
+                    let exporter =
+                        ExporterWrapper::local(PerfExporter::new(config, None), &exporter_config);
+
+                    // create necessary senders and receivers to communicate with the exporter
+                    let (control_tx, control_rx) = mpsc::Channel::new(100);
+                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
+                    let control_sender = Sender::Local(control_tx);
+                    let control_receiver = Receiver::Local(control_rx);
+                    let pdata_sender = Sender::Local(pdata_tx);
+                    let pdata_receiver = Receiver::Local(pdata_rx);
+
+                    // start the exporter
+                    let local = LocalSet::new();
+                    let run_exporter_handle = local.spawn_local(async move {
+                        exporter
+                            .start(control_receiver, pdata_receiver)
+                            .await
+                            .expect("Exporter event loop failed");
+                    });
+
+                    // send signals to the exporter
+                    for batch in batches {
+                        _ = pdata_sender.send(batch.clone()).await;
+                    }
+
+                    _ = control_sender.send(ControlMsg::TimerTick {}).await;
+                    _ = control_sender
+                        .send(ControlMsg::Shutdown {
+                            deadline: Duration::from_millis(2000),
+                            reason: "shutdown".to_string(),
+                        })
+                        .await;
                 });
+            },
+        );
+        let _ = group.bench_with_input(
+            BenchmarkId::new("perf_exporter_full_config_disabled", size),
+            &batches,
+            |b, batches| {
+                b.to_async(&rt).iter(|| async {
+                    // start perf exporter
+                    let config = Config::new(1000, 0.3, false, false, false, false, false);
+                    let exporter_config = ExporterConfig::new("perf_exporter");
+                    let exporter =
+                        ExporterWrapper::local(PerfExporter::new(config, None), &exporter_config);
 
-                // send signals to the exporter
-                for batch in batches {
-                    _ = pdata_sender.send(batch.clone()).await;
-                }
+                    // create necessary senders and receivers to communicate with the exporter
+                    let (control_tx, control_rx) = mpsc::Channel::new(100);
+                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
+                    let control_sender = Sender::Local(control_tx);
+                    let control_receiver = Receiver::Local(control_rx);
+                    let pdata_sender = Sender::Local(pdata_tx);
+                    let pdata_receiver = Receiver::Local(pdata_rx);
 
-                _ = control_sender.send(ControlMsg::TimerTick {}).await;
-                _ = control_sender
-                    .send(ControlMsg::Shutdown {
-                        deadline: Duration::from_millis(2000),
-                        reason: "shutdown".to_string(),
-                    })
-                    .await;
-            });
-        },
-    );
+                    // start the exporter
+                    let local = LocalSet::new();
+                    let run_exporter_handle = local.spawn_local(async move {
+                        exporter
+                            .start(control_receiver, pdata_receiver)
+                            .await
+                            .expect("Exporter event loop failed");
+                    });
 
-    let _ = c.bench_with_input(
-        BenchmarkId::new("otap_exporter", "otap_signals"),
-        &(otap_signals, otap_grpc_port),
-        |b, input| {
-            b.to_async(&rt).iter(|| async {
-                // create otap exporter
-                let exporter_config = ExporterConfig::new("otap_exporter");
-                let grpc_addr = "127.0.0.1";
-                let (otap_signals, otlp_grpc_port) = input;
-                let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                let exporter = ExporterWrapper::local(
-                    OTAPExporter::new(grpc_endpoint, None),
-                    &exporter_config,
-                );
+                    // send signals to the exporter
+                    for batch in batches {
+                        _ = pdata_sender.send(batch.clone()).await;
+                    }
 
-                // create necessary senders and receivers to communicate with the exporter
-                let (control_tx, control_rx) = mpsc::Channel::new(100);
-                let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                let control_sender = Sender::Local(control_tx);
-                let control_receiver = Receiver::Local(control_rx);
-                let pdata_sender = Sender::Local(pdata_tx);
-                let pdata_receiver = Receiver::Local(pdata_rx);
-
-                // start the exporter
-                let local = LocalSet::new();
-                let run_exporter_handle = local.spawn_local(async move {
-                    exporter
-                        .start(control_receiver, pdata_receiver)
-                        .await
-                        .expect("Exporter event loop failed");
+                    _ = control_sender.send(ControlMsg::TimerTick {}).await;
+                    _ = control_sender
+                        .send(ControlMsg::Shutdown {
+                            deadline: Duration::from_millis(2000),
+                            reason: "shutdown".to_string(),
+                        })
+                        .await;
                 });
+            },
+        );
 
-                // send signals to the exporter
-                for otap_signal in otap_signals {
-                    _ = pdata_sender.send(otap_signal.clone()).await;
-                }
+        let _ = group.bench_with_input(
+            BenchmarkId::new("otap_exporter", size),
+            &(otap_signals, otap_grpc_port),
+            |b, input| {
+                b.to_async(&rt).iter(|| async {
+                    // create otap exporter
+                    let exporter_config = ExporterConfig::new("otap_exporter");
+                    let grpc_addr = "127.0.0.1";
+                    let (otap_signals, otlp_grpc_port) = input;
+                    let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
+                    let exporter = ExporterWrapper::local(
+                        OTAPExporter::new(grpc_endpoint, None),
+                        &exporter_config,
+                    );
 
-                _ = control_sender
-                    .send(ControlMsg::Shutdown {
-                        deadline: Duration::from_millis(2000),
-                        reason: "shutdown".to_string(),
-                    })
-                    .await;
-            });
-        },
-    );
+                    // create necessary senders and receivers to communicate with the exporter
+                    let (control_tx, control_rx) = mpsc::Channel::new(100);
+                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
+                    let control_sender = Sender::Local(control_tx);
+                    let control_receiver = Receiver::Local(control_rx);
+                    let pdata_sender = Sender::Local(pdata_tx);
+                    let pdata_receiver = Receiver::Local(pdata_rx);
 
-    let _ = c.bench_with_input(
-        BenchmarkId::new("otlp_exporter", "otlp_signals"),
-        &(otlp_signals, otlp_grpc_port),
-        |b, input| {
-            b.to_async(&rt).iter(|| async {
-                // create otlp exporter
-                let exporter_config = ExporterConfig::new("otap_exporter");
-                let (otlp_signals, otlp_grpc_port) = input;
-                let grpc_addr = "127.0.0.1";
-                let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                let exporter = ExporterWrapper::local(
-                    OTLPExporter::new(grpc_endpoint, None),
-                    &exporter_config,
-                );
+                    // start the exporter
+                    let local = LocalSet::new();
+                    let run_exporter_handle = local.spawn_local(async move {
+                        exporter
+                            .start(control_receiver, pdata_receiver)
+                            .await
+                            .expect("Exporter event loop failed");
+                    });
 
-                // create necessary senders and receivers to communicate with the exporter
-                let (control_tx, control_rx) = mpsc::Channel::new(100);
-                let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                let control_sender = Sender::Local(control_tx);
-                let control_receiver = Receiver::Local(control_rx);
-                let pdata_sender = Sender::Local(pdata_tx);
-                let pdata_receiver = Receiver::Local(pdata_rx);
+                    // send signals to the exporter
+                    for otap_signal in otap_signals {
+                        _ = pdata_sender.send(otap_signal.clone()).await;
+                    }
 
-                // start the exporter
-                let local = LocalSet::new();
-                let run_exporter_handle = local.spawn_local(async move {
-                    exporter
-                        .start(control_receiver, pdata_receiver)
-                        .await
-                        .expect("Exporter event loop failed");
+                    _ = control_sender
+                        .send(ControlMsg::Shutdown {
+                            deadline: Duration::from_millis(2000),
+                            reason: "shutdown".to_string(),
+                        })
+                        .await;
                 });
+            },
+        );
 
-                // send signals to the exporter
-                for otlp_signal in otlp_signals {
-                    _ = pdata_sender.send(otlp_signal.clone()).await;
-                }
+        let _ = group.bench_with_input(
+            BenchmarkId::new("otlp_exporter", size),
+            &(otlp_signals, otlp_grpc_port),
+            |b, input| {
+                b.to_async(&rt).iter(|| async {
+                    // create otlp exporter
+                    let exporter_config = ExporterConfig::new("otap_exporter");
+                    let (otlp_signals, otlp_grpc_port) = input;
+                    let grpc_addr = "127.0.0.1";
+                    let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
+                    let exporter = ExporterWrapper::local(
+                        OTLPExporter::new(grpc_endpoint, None),
+                        &exporter_config,
+                    );
 
-                _ = control_sender
-                    .send(ControlMsg::Shutdown {
-                        deadline: Duration::from_millis(2000),
-                        reason: "shutdown".to_string(),
-                    })
-                    .await;
-            });
-        },
-    );
+                    // create necessary senders and receivers to communicate with the exporter
+                    let (control_tx, control_rx) = mpsc::Channel::new(100);
+                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
+                    let control_sender = Sender::Local(control_tx);
+                    let control_receiver = Receiver::Local(control_rx);
+                    let pdata_sender = Sender::Local(pdata_tx);
+                    let pdata_receiver = Receiver::Local(pdata_rx);
 
-    // group.finish();
+                    // start the exporter
+                    let local = LocalSet::new();
+                    let run_exporter_handle = local.spawn_local(async move {
+                        exporter
+                            .start(control_receiver, pdata_receiver)
+                            .await
+                            .expect("Exporter event loop failed");
+                    });
+
+                    // send signals to the exporter
+                    for otlp_signal in otlp_signals {
+                        _ = pdata_sender.send(otlp_signal.clone()).await;
+                    }
+
+                    _ = control_sender
+                        .send(ControlMsg::Shutdown {
+                            deadline: Duration::from_millis(2000),
+                            reason: "shutdown".to_string(),
+                        })
+                        .await;
+                });
+            },
+        );
+    }
+
+    group.finish();
 
     // shutdown the grpc servers
     _ = otlp_shutdown_sender.send("Shutdown");

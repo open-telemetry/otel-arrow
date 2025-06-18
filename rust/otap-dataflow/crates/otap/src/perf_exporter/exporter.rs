@@ -198,29 +198,29 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     total_received_otlp_signal_count += received_otlp_signal_count as u128;
 
                     // ToDo: Remove these lines, used to debugging
-                    _ = writeln!(writer, "Arrow Records {}", received_arrow_records_count);
-                    _ = writeln!(writer, "Otlp Data Count {}", received_otlp_signal_count);
-                    _ = writeln!(writer, "Pdata Count {}", received_pdata_batch_count);
-                    _ = writeln!(
-                        writer,
-                        "Total Records Count {}",
-                        total_received_arrow_records_count
-                    );
-                    _ = writeln!(
-                        writer,
-                        "Total Otlp Count {}",
-                        total_received_otlp_signal_count
-                    );
-                    _ = writeln!(
-                        writer,
-                        "Total Pdata Count {}",
-                        total_received_pdata_batch_count
-                    );
-                    _ = writeln!(
-                        writer,
-                        "Average Pipeline Latency {}",
-                        average_pipeline_latency
-                    );
+                    // _ = writeln!(writer, "Arrow Records {}", received_arrow_records_count);
+                    // _ = writeln!(writer, "Otlp Data Count {}", received_otlp_signal_count);
+                    // _ = writeln!(writer, "Pdata Count {}", received_pdata_batch_count);
+                    // _ = writeln!(
+                    //     writer,
+                    //     "Total Records Count {}",
+                    //     total_received_arrow_records_count
+                    // );
+                    // _ = writeln!(
+                    //     writer,
+                    //     "Total Otlp Count {}",
+                    //     total_received_otlp_signal_count
+                    // );
+                    // _ = writeln!(
+                    //     writer,
+                    //     "Total Pdata Count {}",
+                    //     total_received_pdata_batch_count
+                    // );
+                    // _ = writeln!(
+                    //     writer,
+                    //     "Average Pipeline Latency {}",
+                    //     average_pipeline_latency
+                    // );
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -473,7 +473,7 @@ fn display_report_pipeline(
 ) {
     _ = writeln!(
         writer,
-        "\t- arrow records throughput          : {:.2} records/s",
+        "\t- arrow records throughput          : {:.2} arrow-records/s",
         (received_arrow_records_count as f64 / duration.as_secs_f64())
     );
     _ = writeln!(

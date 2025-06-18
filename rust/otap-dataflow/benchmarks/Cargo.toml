@@ -30,6 +30,7 @@ async-unsync = "0.3.0"
 unsync = "0.1.2"
 tonic = "0.13.1"
 portpicker = "0.1.1"
+tokio-stream = "0.1.17"
 [lints]
 workspace = true
 
