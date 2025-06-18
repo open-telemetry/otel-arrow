@@ -765,7 +765,7 @@ pub(crate) fn parse_project_keep_expression(
                         return Err(ParserError::SyntaxError(
                             rule_location.clone(),
                             format!(
-                                "The '{}' accessor expression should refer to a top-level map key on the source when used in a project_keep expression",
+                                "The '{}' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
                                 state.get_query_slice(&rule_location).trim()
                             ),
                         ));
@@ -776,7 +776,7 @@ pub(crate) fn parse_project_keep_expression(
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
                         format!(
-                            "To be valid in a project_keep expression '{}' should be an accessor expression which refers to the source",
+                            "To be valid in a project-keep expression '{}' should be an accessor expression which refers to the source",
                             state.get_query_slice(&rule_location).trim()
                         ),
                     ));
@@ -2378,12 +2378,12 @@ mod parse_tests {
 
         run_test_failure(
             "project-keep source.body['some_attr']",
-            "The 'source.body['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project_keep expression",
+            "The 'source.body['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project-keep expression",
         );
 
         run_test_failure(
             "project-keep resource.attributes['key']",
-            "To be valid in a project_keep expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
+            "To be valid in a project-keep expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
         );
     }
 }
