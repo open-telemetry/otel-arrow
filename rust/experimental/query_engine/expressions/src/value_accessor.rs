@@ -47,6 +47,16 @@ impl ValueAccessor {
         }
     }
 
+    pub fn new_with_selectors(selectors: Vec<ValueSelector>) -> ValueAccessor {
+        let mut accessor = ValueAccessor::new();
+
+        for selector in selectors {
+            accessor.push_selector(selector);
+        }
+
+        accessor
+    }
+
     pub fn get_selectors(&self) -> &Vec<ValueSelector> {
         &self.selectors
     }
