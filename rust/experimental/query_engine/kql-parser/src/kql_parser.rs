@@ -714,14 +714,16 @@ pub(crate) fn parse_project_expression(
         }
     }
 
-    expressions.push(TransformExpression::Clear(ClearTransformExpression::new(
-        query_location.clone(),
-        MutableValueExpression::Source(SourceScalarExpression::new(
-            query_location,
-            ValueAccessor::new(),
-        )),
-        keys_to_keep,
-    )));
+    expressions.push(TransformExpression::ClearKeys(
+        ClearKeysTransformExpression::new(
+            query_location.clone(),
+            MutableValueExpression::Source(SourceScalarExpression::new(
+                query_location,
+                ValueAccessor::new(),
+            )),
+            keys_to_keep,
+        ),
+    ));
 
     Ok(expressions)
 }
@@ -786,14 +788,16 @@ pub(crate) fn parse_project_keep_expression(
         }
     }
 
-    Ok(TransformExpression::Clear(ClearTransformExpression::new(
-        query_location.clone(),
-        MutableValueExpression::Source(SourceScalarExpression::new(
-            query_location,
-            ValueAccessor::new(),
-        )),
-        keys_to_keep,
-    )))
+    Ok(TransformExpression::ClearKeys(
+        ClearKeysTransformExpression::new(
+            query_location.clone(),
+            MutableValueExpression::Source(SourceScalarExpression::new(
+                query_location,
+                ValueAccessor::new(),
+            )),
+            keys_to_keep,
+        ),
+    ))
 }
 
 #[allow(dead_code)]
@@ -2201,38 +2205,42 @@ mod parse_tests {
 
         run_test_success(
             "project key1",
-            vec![TransformExpression::Clear(ClearTransformExpression::new(
-                QueryLocation::new_fake(),
-                MutableValueExpression::Source(SourceScalarExpression::new(
+            vec![TransformExpression::ClearKeys(
+                ClearKeysTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new(),
-                )),
-                HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "key1",
-                ))]),
-            ))],
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    ))]),
+                ),
+            )],
         );
 
         run_test_success(
             "project key1, key2",
-            vec![TransformExpression::Clear(ClearTransformExpression::new(
-                QueryLocation::new_fake(),
-                MutableValueExpression::Source(SourceScalarExpression::new(
+            vec![TransformExpression::ClearKeys(
+                ClearKeysTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new(),
-                )),
-                HashSet::from([
-                    SourceKey::Identifier(StringScalarExpression::new(
+                    MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        "key1",
+                        ValueAccessor::new(),
                     )),
-                    SourceKey::Identifier(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "key2",
-                    )),
-                ]),
-            ))],
+                    HashSet::from([
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key2",
+                        )),
+                    ]),
+                ),
+            )],
         );
 
         run_test_success(
@@ -2254,7 +2262,7 @@ mod parse_tests {
                         )]),
                     )),
                 )),
-                TransformExpression::Clear(ClearTransformExpression::new(
+                TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2312,7 +2320,7 @@ mod parse_tests {
                         ]),
                     )),
                 )),
-                TransformExpression::Clear(ClearTransformExpression::new(
+                TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2408,7 +2416,7 @@ mod parse_tests {
 
         run_test_success(
             "project-keep key*",
-            TransformExpression::Clear(ClearTransformExpression::new(
+            TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
                 QueryLocation::new_fake(),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -2423,7 +2431,7 @@ mod parse_tests {
 
         run_test_success(
             "project-keep *key*value*, *, key1, attributes['key2'], source.attributes['key3']",
-            TransformExpression::Clear(ClearTransformExpression::new(
+            TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
                 QueryLocation::new_fake(),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),

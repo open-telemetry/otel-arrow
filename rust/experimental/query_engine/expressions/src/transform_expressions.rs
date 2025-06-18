@@ -7,10 +7,23 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransformExpression {
+    /// Set data transformation.
     Set(SetTransformExpression),
+
+    /// Remove data transformation.
     Remove(RemoveTransformExpression),
+
+    /// Remove keys transformation.
+    ///
+    /// Note: Remove keys is a specialized form of the remove transformation
+    /// which takes a target map and a list of keys to be removed.
     RemoveKeys(RemoveKeysTransformExpression),
-    Clear(ClearTransformExpression),
+
+    /// Clear keys transformation.
+    ///
+    /// Note: Clear keys is used to remove all keys from a target map with an
+    /// optional list of keys to retain.
+    ClearKeys(ClearKeysTransformExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,18 +125,18 @@ impl Expression for RemoveKeysTransformExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClearTransformExpression {
+pub struct ClearKeysTransformExpression {
     query_location: QueryLocation,
     target: MutableValueExpression,
     keys_to_keep: HashSet<SourceKey>,
 }
 
-impl ClearTransformExpression {
+impl ClearKeysTransformExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
         keys_to_keep: HashSet<SourceKey>,
-    ) -> ClearTransformExpression {
+    ) -> ClearKeysTransformExpression {
         Self {
             query_location,
             target,
@@ -140,7 +153,7 @@ impl ClearTransformExpression {
     }
 }
 
-impl Expression for ClearTransformExpression {
+impl Expression for ClearKeysTransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
