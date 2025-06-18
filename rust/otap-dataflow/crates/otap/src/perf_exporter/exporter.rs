@@ -174,7 +174,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         let timestamp =
                             decode_timestamp(value).map_err(|error| Error::ExporterError {
                                 exporter: effect_handler.exporter_name(),
-                                error: error,
+                                error,
                             })?;
                         let current_unix_time = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
