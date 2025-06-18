@@ -522,10 +522,10 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-    use tokio::time::{Duration, sleep, timeout};
+    use tokio::time::{Duration, sleep};
 
     use std::fs::{File, remove_file};
-    use std::io::{self, BufReader, prelude::*};
+    use std::io::{BufReader, prelude::*};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const TRACES_BATCH_ID: i64 = 0;
@@ -569,8 +569,8 @@ mod tests {
         let mut encoder = Encoder::new();
         let encoded_headers = encoder.encode(headers);
         BatchArrowRecords {
-            batch_id: batch_id,
-            arrow_payloads: arrow_payloads,
+            batch_id,
+            arrow_payloads,
             headers: encoded_headers,
         }
     }
@@ -616,7 +616,7 @@ mod tests {
                 }
 
                 // TODO ADD DELAY BETWEEN HERE
-                let _ = sleep(Duration::from_millis(5000));
+                _ = sleep(Duration::from_millis(5000));
 
                 // send timertick to generate the report
                 ctx.send_timer_tick()
@@ -722,6 +722,6 @@ mod tests {
             .run_validation(validation_procedure(output_file.clone()));
 
         // remove the created file, prevent accidental check in of report
-        // remove_file(output_file).expect("Failed to remove file");
+        remove_file(output_file).expect("Failed to remove file");
     }
 }

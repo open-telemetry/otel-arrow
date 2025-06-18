@@ -4,10 +4,8 @@ Status: **Skeleton**
 
 This crate will contain the implementation of the perf exporter.
 
-
 ## Example Output
 
-```
 ====================Pipeline Report====================
     - arrow records throughput          : 0.00 arrow-records/s
     - average pipeline latency          : 0.00 s
@@ -67,4 +65,4 @@ Network Interface: anpi0
     - total errors on received          : 0 B
     - errors on transmitted             : 0 B/s
     - total errors on transmitted       : 0 B
-```
+

@@ -4,14 +4,13 @@
 
 #![allow(missing_docs)]
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
 use otap_df_engine::{
     config::ExporterConfig,
     exporter::ExporterWrapper,
-    local::exporter::Exporter,
     message::{ControlMsg, Receiver, Sender},
 };
 use otap_df_otap::{
@@ -193,7 +192,7 @@ pub struct TraceServiceMock {}
 impl LogsService for LogsServiceMock {
     async fn export(
         &self,
-        request: Request<ExportLogsServiceRequest>,
+        _request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
@@ -205,7 +204,7 @@ impl LogsService for LogsServiceMock {
 impl MetricsService for MetricsServiceMock {
     async fn export(
         &self,
-        request: Request<ExportMetricsServiceRequest>,
+        _request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
@@ -217,7 +216,7 @@ impl MetricsService for MetricsServiceMock {
 impl TraceService for TraceServiceMock {
     async fn export(
         &self,
-        request: Request<ExportTraceServiceRequest>,
+        _request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
@@ -225,6 +224,7 @@ impl TraceService for TraceServiceMock {
     }
 }
 
+#[must_use]
 pub fn create_batch_arrow_record_helper(
     batch_id: i64,
     payload_type: ArrowPayloadType,
@@ -245,7 +245,9 @@ pub fn create_batch_arrow_record_helper(
 
     // create timestamp
     // unix timestamp -> number -> byte array &[u8]
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("failed to get duration");
 
     let secs = timestamp.as_secs().to_string();
     let nanos = timestamp.subsec_nanos().to_string();
@@ -259,8 +261,8 @@ pub fn create_batch_arrow_record_helper(
     let mut encoder = Encoder::new();
     let encoded_headers = encoder.encode(headers);
     BatchArrowRecords {
-        batch_id: batch_id,
-        arrow_payloads: arrow_payloads,
+        batch_id,
+        arrow_payloads,
         headers: encoded_headers,
     }
 }
@@ -280,25 +282,28 @@ fn bench_exporter(c: &mut Criterion) {
     // start grpc server to handle otap stream
     let grpc_addr = "127.0.0.1";
     let otap_grpc_port = portpicker::pick_unused_port().expect("No free ports");
-    let otlp_grpc_port = portpicker::pick_unused_port().expect("No free ports");
-    let otap_listening_addr: SocketAddr = format!("{grpc_addr}:{otap_grpc_port}").parse().unwrap();
+    let otap_listening_addr: SocketAddr = format!("{grpc_addr}:{otap_grpc_port}")
+        .parse()
+        .expect("failed to parse otap address");
     let (otap_shutdown_sender, otap_shutdown_signal) = tokio::sync::oneshot::channel();
 
-    let tokio_rt = Runtime::new().unwrap();
+    let tokio_rt = Runtime::new().expect("failed to create tokio runtime");
     _ = tokio_rt.spawn(async move {
-        let tcp_listener = TcpListener::bind(otap_listening_addr).await.unwrap();
+        let tcp_listener = TcpListener::bind(otap_listening_addr)
+            .await
+            .expect("failed to bind to otap address");
         let tcp_stream = TcpListenerStream::new(tcp_listener);
         let mock_logs_service = ArrowLogsServiceServer::new(ArrowLogsServiceMock::default());
         let mock_metrics_service =
             ArrowMetricsServiceServer::new(ArrowMetricsServiceMock::default());
         let mock_trace_service = ArrowTracesServiceServer::new(ArrowTracesServiceMock::default());
-        _ = Server::builder()
+        Server::builder()
             .add_service(mock_logs_service)
             .add_service(mock_metrics_service)
             .add_service(mock_trace_service)
             .serve_with_incoming_shutdown(tcp_stream, async {
                 // Wait for the shutdown signal
-                drop(otap_shutdown_signal.await.ok())
+                _ = drop(otap_shutdown_signal.await.ok())
             })
             .await
             .expect("Test gRPC server has failed");
@@ -306,21 +311,25 @@ fn bench_exporter(c: &mut Criterion) {
 
     // start grpc server to handle otlp requests
     let otlp_grpc_port = portpicker::pick_unused_port().expect("No free ports");
-    let otlp_listening_addr: SocketAddr = format!("{grpc_addr}:{otlp_grpc_port}").parse().unwrap();
+    let otlp_listening_addr: SocketAddr = format!("{grpc_addr}:{otlp_grpc_port}")
+        .parse()
+        .expect("failed to parse OTLP address");
     let (otlp_shutdown_sender, otlp_shutdown_signal) = tokio::sync::oneshot::channel();
     _ = tokio_rt.spawn(async move {
-        let tcp_listener = TcpListener::bind(otlp_listening_addr).await.unwrap();
+        let tcp_listener = TcpListener::bind(otlp_listening_addr)
+            .await
+            .expect("failed to bind to otlp address");
         let tcp_stream = TcpListenerStream::new(tcp_listener);
         let mock_logs_service = LogsServiceServer::new(LogsServiceMock::default());
         let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::default());
         let mock_trace_service = TraceServiceServer::new(TraceServiceMock::default());
-        _ = Server::builder()
+        Server::builder()
             .add_service(mock_logs_service)
             .add_service(mock_metrics_service)
             .add_service(mock_trace_service)
             .serve_with_incoming_shutdown(tcp_stream, async {
                 // Wait for the shutdown signal
-                drop(otlp_shutdown_signal.await.ok())
+                _ = drop(otlp_shutdown_signal.await.ok())
             })
             .await
             .expect("Test gRPC server has failed");
@@ -412,7 +421,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let run_exporter_handle = local.spawn_local(async move {
+                    let _run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(control_receiver, pdata_receiver)
                             .await
@@ -455,7 +464,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let run_exporter_handle = local.spawn_local(async move {
+                    let _run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(control_receiver, pdata_receiver)
                             .await
@@ -503,7 +512,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let run_exporter_handle = local.spawn_local(async move {
+                    let _run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(control_receiver, pdata_receiver)
                             .await
@@ -550,7 +559,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let run_exporter_handle = local.spawn_local(async move {
+                    let _run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(control_receiver, pdata_receiver)
                             .await
