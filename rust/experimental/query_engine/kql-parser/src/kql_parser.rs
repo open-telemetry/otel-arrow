@@ -2164,7 +2164,7 @@ mod parse_tests {
         );
 
         run_test_success(
-            "extend body.nested.field = 1",
+            "extend body.nested[0] = 1",
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
                 ImmutableValueExpression::Scalar(ScalarExpression::Static(
@@ -2184,9 +2184,9 @@ mod parse_tests {
                             QueryLocation::new_fake(),
                             "nested",
                         )),
-                        ValueSelector::MapKey(StringScalarExpression::new(
+                        ValueSelector::ArrayIndex(IntegerScalarExpression::new(
                             QueryLocation::new_fake(),
-                            "field",
+                            0,
                         )),
                     ]),
                 )),
@@ -2712,7 +2712,7 @@ mod parse_tests {
         );
 
         run_test_success(
-            "project-away key1, body.nested, attributes['key2'], source.attributes['key3'], body.other_nested",
+            "project-away key1, body.nested, attributes['key2'], source.attributes['key3'], body.other_nested[0]",
             vec![
                 TransformExpression::Remove(RemoveTransformExpression::new(
                     QueryLocation::new_fake(),
@@ -2742,6 +2742,10 @@ mod parse_tests {
                             ValueSelector::MapKey(StringScalarExpression::new(
                                 QueryLocation::new_fake(),
                                 "other_nested",
+                            )),
+                            ValueSelector::ArrayIndex(IntegerScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                0,
                             )),
                         ]),
                     )),
