@@ -7,7 +7,7 @@
 
 use crate::control::ControlMsg;
 use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
+use otap_df_config::{NodeId, PortName};
 use std::borrow::Cow;
 
 /// All errors that can occur in the pipeline engine infrastructure.
@@ -29,6 +29,19 @@ pub enum Error<T> {
 
         /// The error that occurred.
         error: SendError<ControlMsg>,
+    },
+
+    /// The specified hyper-edge is invalid.
+    #[error("Invalid hyper-edge in node {source} with out port {out_port}: {error}")]
+    InvalidHyperEdge {
+        /// The name of the node that contains the invalid hyper-edge.
+        r#source: NodeId,
+
+        /// The invalid out port.
+        out_port: PortName,
+
+        /// The reason why the hyper-edge is invalid.
+        error: String,
     },
 
     /// A wrapper for the IO errors.
@@ -121,6 +134,25 @@ pub enum Error<T> {
     UnknownNode {
         /// The id of the unknown node.
         node_id: NodeId,
+    },
+
+    /// Pdata receiver is not supported for receiver nodes. Receiver nodes only support
+    /// control sender and pdata sender.
+    #[error("Pdata receiver is not supported for a receiver node.")]
+    PdataReceiverNotSupported,
+
+    /// Pdata sender is not supported for exporter nodes. Exporter nodes only support
+    /// control sender and pdata receiver.
+    #[error("Pdata sender is not supported for exporter nodes.")]
+    PdataSenderNotSupported,
+
+    /// SPMC shared channels are not yet supported.
+    #[error("SPMC shared channels are not yet supported. Source: {source_id}, Port: {port_name}")]
+    SpmcSharedNotSupported {
+        /// The id of the source node.
+        source_id: NodeId,
+        /// The name of the port.
+        port_name: PortName,
     },
 
     /// Unsupported node kind.

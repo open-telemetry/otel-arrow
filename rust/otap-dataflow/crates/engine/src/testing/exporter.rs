@@ -195,12 +195,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             ExporterWrapper::Local { .. } => {
                 let (pdata_tx, pdata_rx) =
                     create_not_send_channel(self.config.control_channel.capacity);
-                (Sender::Local(pdata_tx), Receiver::Local(pdata_rx))
+                (Sender::LocalMpsc(pdata_tx), Receiver::LocalMpsc(pdata_rx))
             }
             ExporterWrapper::Shared { .. } => {
                 let (pdata_tx, pdata_rx) =
                     tokio::sync::mpsc::channel(self.config.control_channel.capacity);
-                (Sender::Shared(pdata_tx), Receiver::Shared(pdata_rx))
+                (Sender::SharedMpsc(pdata_tx), Receiver::SharedMpsc(pdata_rx))
             }
         };
 

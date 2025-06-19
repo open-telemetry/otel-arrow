@@ -4,7 +4,7 @@
 
 use crate::control::ControlMsg;
 use otap_df_channel::error::{RecvError, SendError};
-use otap_df_channel::mpsc;
+use otap_df_channel::{mpmc, mpsc};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
@@ -87,17 +87,23 @@ impl<Data> Message<Data> {
 /// A generic channel Sender supporting both local and shared semantic (i.e. !Send and Send).
 #[must_use = "A `Sender` is requested but not used."]
 pub enum Sender<T> {
-    /// Local channel sender.
-    Local(mpsc::Sender<T>),
-    /// Shared channel sender.
-    Shared(tokio::sync::mpsc::Sender<T>),
+    /// Sender of a MPSC local channel.
+    LocalMpsc(mpsc::Sender<T>),
+    /// Sender of a MPMC local channel.
+    LocalMpmc(mpmc::Sender<T>),
+    /// Sender of a MPSC shared channel.
+    SharedMpsc(tokio::sync::mpsc::Sender<T>),
+    /// Sender of a MPMC shared channel.
+    SharedMpmc(flume::Sender<T>),
 }
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         match self {
-            Sender::Local(sender) => Sender::Local(sender.clone()),
-            Sender::Shared(sender) => Sender::Shared(sender.clone()),
+            Sender::LocalMpsc(sender) => Sender::LocalMpsc(sender.clone()),
+            Sender::LocalMpmc(sender) => Sender::LocalMpmc(sender.clone()),
+            Sender::SharedMpsc(sender) => Sender::SharedMpsc(sender.clone()),
+            Sender::SharedMpmc(sender) => Sender::SharedMpmc(sender.clone()),
         }
     }
 }
@@ -106,34 +112,46 @@ impl<T> Sender<T> {
     /// Sends a message to the channel.
     pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
         match self {
-            Sender::Local(sender) => sender.send_async(msg).await,
-            Sender::Shared(sender) => sender.send(msg).await.map_err(|e| SendError::Closed(e.0)),
+            Sender::LocalMpsc(sender) => sender.send_async(msg).await,
+            Sender::LocalMpmc(sender) => sender.send_async(msg).await,
+            Sender::SharedMpsc(sender) => {
+                sender.send(msg).await.map_err(|e| SendError::Closed(e.0))
+            }
+            Sender::SharedMpmc(sender) => sender.send(msg).map_err(|e| SendError::Closed(e.0)),
         }
     }
 }
 
 /// A generic channel Receiver supporting both local and shared semantic (i.e. !Send and Send).
 pub enum Receiver<T> {
-    /// Local channel receiver.
-    Local(mpsc::Receiver<T>),
-    /// Shared channel receiver.
-    Shared(tokio::sync::mpsc::Receiver<T>),
+    /// Receiver of a MPSC local channel.
+    LocalMpsc(mpsc::Receiver<T>),
+    /// Receiver of a MPMC local channel.
+    LocalMpmc(mpmc::Receiver<T>),
+    /// Receiver of a MPSC shared channel.
+    SharedMpsc(tokio::sync::mpsc::Receiver<T>),
+    /// Receiver of a MPMC shared channel.
+    SharedMpmc(flume::Receiver<T>),
 }
 
 impl<T> Receiver<T> {
     /// Receives a message from the channel.
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         match self {
-            Receiver::Local(receiver) => receiver.recv().await,
-            Receiver::Shared(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
+            Receiver::LocalMpsc(receiver) => receiver.recv().await,
+            Receiver::LocalMpmc(receiver) => receiver.recv().await,
+            Receiver::SharedMpsc(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
+            Receiver::SharedMpmc(receiver) => receiver.recv().map_err(|_| RecvError::Closed),
         }
     }
 
     /// Tries to receive a message from the channel.
     pub fn try_recv(&mut self) -> Result<T, RecvError> {
         match self {
-            Receiver::Local(receiver) => receiver.try_recv(),
-            Receiver::Shared(receiver) => receiver.try_recv().map_err(|_| RecvError::Closed),
+            Receiver::LocalMpsc(receiver) => receiver.try_recv(),
+            Receiver::LocalMpmc(receiver) => receiver.try_recv(),
+            Receiver::SharedMpsc(receiver) => receiver.try_recv().map_err(|_| RecvError::Closed),
+            Receiver::SharedMpmc(receiver) => receiver.try_recv().map_err(|_| RecvError::Closed),
         }
     }
 }

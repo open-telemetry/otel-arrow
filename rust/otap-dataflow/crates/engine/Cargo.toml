@@ -23,3 +23,4 @@ linkme = { workspace = true }
 async-trait = { workspace = true }
 
 socket2 = "0.5.9"
+flume = { version = "0.11.1", default-features = false, features = ["async"] }

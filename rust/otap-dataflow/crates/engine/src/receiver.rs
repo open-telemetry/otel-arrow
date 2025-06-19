@@ -58,9 +58,11 @@ impl<PData> Controllable for ReceiverWrapper<PData> {
     /// Returns the control message sender for the receiver.
     fn control_sender(&self) -> Sender<ControlMsg> {
         match self {
-            ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ReceiverWrapper::Local { control_sender, .. } => {
+                Sender::LocalMpsc(control_sender.clone())
+            }
             ReceiverWrapper::Shared { control_sender, .. } => {
-                Sender::Shared(control_sender.clone())
+                Sender::SharedMpsc(control_sender.clone())
             }
         }
     }
@@ -80,12 +82,12 @@ impl<PData> ReceiverWrapper<PData> {
         ReceiverWrapper::Local {
             effect_handler: local::EffectHandler::new(
                 config.name.clone(),
-                Sender::Local(pdata_sender),
+                Sender::LocalMpsc(pdata_sender),
             ),
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
-            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
+            pdata_receiver: Some(Receiver::LocalMpsc(pdata_receiver)),
         }
     }
 
@@ -117,7 +119,8 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 ..
             } => {
-                let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
+                let ctrl_msg_chan =
+                    local::ControlChannel::new(Receiver::LocalMpsc(control_receiver));
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
@@ -139,7 +142,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver.take().expect("pdata_receiver is None")
             }
             ReceiverWrapper::Shared { pdata_receiver, .. } => {
-                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::SharedMpsc(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }

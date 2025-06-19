@@ -55,9 +55,11 @@ impl<PData> Controllable for ExporterWrapper<PData> {
     /// Returns the control message sender for the exporter.
     fn control_sender(&self) -> Sender<ControlMsg> {
         match self {
-            ExporterWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ExporterWrapper::Local { control_sender, .. } => {
+                Sender::LocalMpsc(control_sender.clone())
+            }
             ExporterWrapper::Shared { control_sender, .. } => {
-                Sender::Shared(control_sender.clone())
+                Sender::SharedMpsc(control_sender.clone())
             }
         }
     }
@@ -113,7 +115,7 @@ impl<PData> ExporterWrapper<PData> {
                 // Both cases are invalid for an exporter.
                 let control_rx = control_receiver.expect("control_receiver must be set");
                 let message_channel =
-                    message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
+                    message::MessageChannel::new(Receiver::LocalMpsc(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             ExporterWrapper::Shared {
@@ -127,7 +129,7 @@ impl<PData> ExporterWrapper<PData> {
                 // a control channel or the receiver was already consumed somewhere else.
                 // Both cases are invalid for an exporter.
                 let control_rx = control_receiver.expect("control_receiver must be set");
-                if let Receiver::Shared(pdata_rx) = pdata_rx {
+                if let Receiver::SharedMpsc(pdata_rx) = pdata_rx {
                     let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
                     exporter.start(message_channel, effect_handler).await
                 } else {
@@ -330,8 +332,8 @@ mod tests {
             control_tx,
             pdata_tx,
             message::MessageChannel::new(
-                message::Receiver::Local(control_rx),
-                message::Receiver::Local(pdata_rx),
+                message::Receiver::LocalMpsc(control_rx),
+                message::Receiver::LocalMpsc(pdata_rx),
             ),
         )
     }

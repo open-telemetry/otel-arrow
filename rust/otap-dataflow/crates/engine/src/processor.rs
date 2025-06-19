@@ -63,11 +63,11 @@ impl<PData> ProcessorWrapper<PData> {
             processor: Box::new(processor),
             effect_handler: local::EffectHandler::new(
                 config.name.clone(),
-                Sender::Local(pdata_sender),
+                Sender::LocalMpsc(pdata_sender),
             ),
-            control_sender: Sender::Local(control_sender),
-            control_receiver: Receiver::Local(control_receiver),
-            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
+            control_sender: Sender::LocalMpsc(control_sender),
+            control_receiver: Receiver::LocalMpsc(control_receiver),
+            pdata_receiver: Some(Receiver::LocalMpsc(pdata_receiver)),
         }
     }
 
@@ -113,7 +113,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver.take().expect("pdata_receiver is None")
             }
             ProcessorWrapper::Shared { pdata_receiver, .. } => {
-                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::SharedMpsc(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }

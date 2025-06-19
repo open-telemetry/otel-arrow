@@ -2,10 +2,6 @@
 
 //! Async Pipeline Engine
 
-use serde_json::Value;
-use std::rc::Rc;
-use std::{collections::HashMap, sync::OnceLock};
-
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     error::Error,
@@ -15,6 +11,10 @@ use crate::{
     receiver::ReceiverWrapper,
     runtime_config::{RuntimeNode, RuntimePipeline},
 };
+use serde_json::Value;
+use std::num::NonZeroUsize;
+use std::rc::Rc;
+use std::{collections::HashMap, sync::OnceLock};
 
 pub mod error;
 pub mod exporter;
@@ -32,6 +32,7 @@ pub mod shared;
 pub mod control;
 pub mod testing;
 
+use crate::message::Receiver;
 pub use linkme::distributed_slice;
 use otap_df_config::node::{DispatchStrategy, NodeConfig};
 use otap_df_config::{NodeId, PortName};
@@ -145,7 +146,7 @@ where
 /// static FACTORY_REGISTRY: PipelineFactory<MyData> = build_factory();
 /// ```
 #[must_use]
-pub const fn build_factory<PData: 'static>() -> PipelineFactory<PData> {
+pub const fn build_factory<PData: 'static + Clone>() -> PipelineFactory<PData> {
     // This function should never actually be called since the macro replaces it entirely.
     // If it is called, that indicates a bug in the macro system.
     panic!(
@@ -157,7 +158,7 @@ pub const fn build_factory<PData: 'static>() -> PipelineFactory<PData> {
 ///
 /// This factory contains a registry of all the micro-factories for receivers, processors, and
 /// exporters, as well as the logic for creating pipelines based on a given configuration.
-pub struct PipelineFactory<PData: 'static> {
+pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
@@ -166,7 +167,7 @@ pub struct PipelineFactory<PData: 'static> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static> PipelineFactory<PData> {
+impl<PData: 'static + Clone> PipelineFactory<PData> {
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(
@@ -235,7 +236,7 @@ impl<PData: 'static> PipelineFactory<PData> {
                     self.create_exporter(&mut nodes, node_id.clone(), node_config.clone())?
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
-                    // ToDo(LQ): Implement processor chain support.
+                    // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
                     });
@@ -243,85 +244,126 @@ impl<PData: 'static> PipelineFactory<PData> {
             }
         }
 
-        // Create pdata channels
-        // For each hyper-edge in the runtime DAG, create the appropriate channels according to the
-        // following rules:
-        // - If both the source and destination nodes are local, create local MPSC channels.
-        // - If either node is shared, create shared Tokio MPSC channels.
-        //
-        // The sender and receiver will be assigned to the corresponding runtime nodes at the
-        // extremities of the hyper-edge.
-        for hyper_edge in iter_hyper_edges_runtime(&nodes) {
-            // Determine if we need local or shared channels based on node types
-            let source_is_shared = hyper_edge.source.is_shared();
-            let any_dest_is_shared = hyper_edge.destinations.iter().any(|dest| dest.is_shared());
-            let use_shared_channels = source_is_shared || any_dest_is_shared;
+        // First pass: collect all channel assignments to avoid multiple mutable borrows
+        struct ChannelAssignment<PData> {
+            source_id: NodeId,
+            port: PortName,
+            sender: Sender<PData>,
+            destinations: Vec<(NodeId, Receiver<PData>)>,
+        }
+        let mut assignments = Vec::new();
+        for hyper_edge in collect_hyper_edges_runtime(&nodes) {
+            // Get source node
+            let src_node = nodes
+                .get(&hyper_edge.source)
+                .ok_or_else(|| Error::UnknownNode {
+                    node_id: hyper_edge.source.clone(),
+                })?;
+            // Get destination nodes
+            let mut dest_nodes = Vec::with_capacity(hyper_edge.destinations.len());
+            for id in &hyper_edge.destinations {
+                let node = nodes.get(id).ok_or_else(|| Error::UnknownNode {
+                    node_id: id.clone(),
+                })?;
+                dest_nodes.push(node);
+            }
 
-            // Create channels based on dispatch strategy
-            match hyper_edge.dispatch_strategy {
-                DispatchStrategy::Broadcast
-                | DispatchStrategy::Random
-                | DispatchStrategy::LeastLoaded => {
-                    if use_shared_channels {
-                        // For shared channels with broadcast/random/least-loaded, we need a broadcast channel
-                        // Since tokio::sync::mpsc is single-consumer, we create separate channels for each destination
-                        let mut senders: Vec<Sender<PData>> = Vec::new();
+            // Select channel type
+            let (sender, receivers) = Self::select_channel_type(
+                src_node,
+                dest_nodes,
+                NonZeroUsize::new(1000).expect("Buffer size must be non-zero"),
+            )?;
 
-                        for _destination in &hyper_edge.destinations {
-                            let (pdata_sender, _pdata_receiver) =
-                                tokio::sync::mpsc::channel::<PData>(1000);
-                            senders.push(Sender::Shared(pdata_sender));
+            // Prepare assignments
+            let destinations = hyper_edge
+                .destinations
+                .iter()
+                .cloned()
+                .zip(receivers.into_iter())
+                .collect();
+            assignments.push(ChannelAssignment {
+                source_id: hyper_edge.source,
+                port: hyper_edge.port,
+                sender,
+                destinations,
+            });
+        }
 
-                            // TODO: Assign receiver to destination node
-                            // This would require modifying the RuntimeNode to accept the receiver
-                        }
-
-                        // TODO: Assign senders to source node for fan-out logic
-                        // The source would need to broadcast to all senders
-                    } else {
-                        // For local channels with broadcast/random/least-loaded, create separate MPSC channels
-                        // Note: MPMC is not publicly available, so we use MPSC instead
-                        let mut senders: Vec<Sender<PData>> = Vec::new();
-
-                        for _destination in &hyper_edge.destinations {
-                            let (pdata_sender, _pdata_receiver) =
-                                otap_df_channel::mpsc::Channel::new(1000);
-                            senders.push(Sender::Local(pdata_sender));
-
-                            // TODO: Assign receiver to destination node
-                            // This would require modifying the RuntimeNode to accept the receiver
-                        }
-
-                        // TODO: Assign senders to source node for fan-out logic
-                        // The source would need to broadcast to all senders
-                    }
-                }
-                DispatchStrategy::RoundRobin => {
-                    // For round-robin, create separate channels to each destination
-                    let mut senders: Vec<Sender<PData>> = Vec::new();
-
-                    for _destination in &hyper_edge.destinations {
-                        if use_shared_channels {
-                            let (pdata_sender, _pdata_receiver) =
-                                tokio::sync::mpsc::channel::<PData>(1000);
-                            senders.push(Sender::Shared(pdata_sender));
-
-                            // TODO: Assign receiver to destination node
-                        } else {
-                            let (pdata_sender, _pdata_receiver) =
-                                otap_df_channel::mpsc::Channel::new(1000);
-                            senders.push(Sender::Local(pdata_sender));
-
-                            // TODO: Assign receiver to destination node
-                        }
-                    }
-
-                    // TODO: Assign senders to source node for round-robin dispatch logic
-                    // The source would cycle through senders in round-robin fashion
-                }
+        // Second pass: perform all assignments
+        for assignment in assignments {
+            let src_node =
+                nodes
+                    .get_mut(&assignment.source_id)
+                    .ok_or_else(|| Error::UnknownNode {
+                        node_id: assignment.source_id.clone(),
+                    })?;
+            src_node.set_pdata_sender(assignment.port.clone(), assignment.sender)?;
+            for (dest_id, receiver) in assignment.destinations {
+                let dest_node = nodes.get_mut(&dest_id).ok_or_else(|| Error::UnknownNode {
+                    node_id: dest_id.clone(),
+                })?;
+                dest_node.set_pdata_receiver(receiver)?;
             }
         }
         Ok(RuntimePipeline::new(config, nodes))
+    }
+
+    /// Determines the best channel type from the following parameters:
+    /// - Flag specifying if the channel is shared (true) or local (false).
+    /// - The number of destinations connected to the channel.
+    /// - The dispatch strategy for the channel (not yet supported).
+    ///
+    /// This function returns a tuple containing the selected sender and one receiver per
+    /// destination.
+    ///
+    /// ToDo (LQ): Support dispatch strategies.
+    fn select_channel_type(
+        src_node: &RuntimeNode<PData>,
+        dest_nodes: Vec<&RuntimeNode<PData>>,
+        buffer_size: NonZeroUsize,
+    ) -> Result<(Sender<PData>, Vec<Receiver<PData>>), Error<PData>> {
+        let source_is_shared = src_node.is_shared();
+        let any_dest_is_shared = dest_nodes.iter().any(|dest| dest.is_shared());
+        let use_shared_channels = source_is_shared || any_dest_is_shared;
+        let num_destinations = dest_nodes.len();
+
+        if use_shared_channels {
+            // Shared channels
+            if num_destinations > 1 {
+                let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
+                let pdata_receivers = (0..num_destinations)
+                    .map(|_| Receiver::SharedMpmc(pdata_receiver.clone()))
+                    .collect::<Vec<_>>();
+                Ok((Sender::SharedMpmc(pdata_sender), pdata_receivers))
+            } else {
+                let (pdata_sender, pdata_receiver) =
+                    tokio::sync::mpsc::channel::<PData>(buffer_size.get());
+                Ok((
+                    Sender::SharedMpsc(pdata_sender),
+                    vec![Receiver::SharedMpsc(pdata_receiver)],
+                ))
+            }
+        } else {
+            // Local channels
+            if num_destinations > 1 {
+                // ToDo(LQ): Use a local SPMC channel when available.
+                let (pdata_sender, pdata_receiver) =
+                    otap_df_channel::mpmc::Channel::new(buffer_size);
+                let pdata_receivers = (0..num_destinations)
+                    .map(|_| Receiver::LocalMpmc(pdata_receiver.clone()))
+                    .collect::<Vec<_>>();
+                Ok((Sender::LocalMpmc(pdata_sender), pdata_receivers))
+            } else {
+                // ToDo(LQ): Use a local SPSC channel when available.
+                let (pdata_sender, pdata_receiver) =
+                    otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                Ok((
+                    Sender::LocalMpsc(pdata_sender),
+                    vec![Receiver::LocalMpsc(pdata_receiver)],
+                ))
+            }
+        }
     }
 
     /// Creates a receiver node and adds it to the list of runtime nodes.
@@ -345,6 +387,7 @@ impl<PData: 'static> PipelineFactory<PData> {
             RuntimeNode::Receiver {
                 config: node_config.clone(),
                 instance: create(&node_config.config, &receiver_config),
+                pdata_sender: None,
             },
         );
         if prev_node.is_some() {
@@ -407,7 +450,6 @@ impl<PData: 'static> PipelineFactory<PData> {
             RuntimeNode::Exporter {
                 config: node_config.clone(),
                 instance: create(&node_config.config, &exporter_config),
-                pdata_sender: None,
                 pdata_receiver: None,
             },
         );
@@ -421,47 +463,47 @@ impl<PData: 'static> PipelineFactory<PData> {
 }
 
 /// Represents a hyper-edge in the runtime graph, corresponding to a source node's output port,
-/// its dispatch strategy, and the set of destination runtime nodes connected to that port.
-struct HyperEdgeRuntime<'a, PData> {
-    source: &'a RuntimeNode<PData>,
+/// its dispatch strategy, and the set of destination node ids connected to that port.
+struct HyperEdgeRuntime {
+    source: NodeId,
     // ToDo(LQ): Use port name for telemetry and debugging purposes.
+    port: PortName,
     #[allow(dead_code)]
-    port: &'a PortName,
-    dispatch_strategy: &'a DispatchStrategy,
-    destinations: Vec<&'a RuntimeNode<PData>>,
+    dispatch_strategy: DispatchStrategy,
+    destinations: Vec<NodeId>,
 }
 
-/// Returns an iterator over all hyper-edges in the runtime graph.
+/// Returns a vector of all hyper-edges in the runtime graph.
 ///
-/// Each item represents a source node, one of its output ports, the dispatch strategy for that port,
-/// and the destination runtime nodes connected to it.
-fn iter_hyper_edges_runtime<'a, PData>(
-    nodes: &'a HashMap<NodeId, RuntimeNode<PData>>,
-) -> impl Iterator<Item = HyperEdgeRuntime<'a, PData>> + 'a {
-    nodes.iter().flat_map(move |(_, node)| {
+/// Each item represents a hyper-edge with source node id, port, dispatch strategy, and destination
+/// node ids.
+fn collect_hyper_edges_runtime<PData>(
+    nodes: &HashMap<NodeId, RuntimeNode<PData>>,
+) -> Vec<HyperEdgeRuntime> {
+    let mut edges = Vec::new();
+    for (node_id, node) in nodes.iter() {
         let config = match node {
             RuntimeNode::Receiver { config, .. }
             | RuntimeNode::Processor { config, .. }
             | RuntimeNode::Exporter { config, .. } => config,
         };
-
-        config.out_ports.iter().filter_map(move |(port, port_cfg)| {
-            let destinations = port_cfg
+        for (port, hyper_edge_cfg) in &config.out_ports {
+            let destinations = hyper_edge_cfg
                 .destinations
                 .iter()
-                .filter_map(|dest_id| nodes.get(dest_id))
+                .cloned()
                 .collect::<Vec<_>>();
-
             if destinations.is_empty() {
-                return None;
+                // Skip hyper-edges with no destinations
+                continue;
             }
-
-            Some(HyperEdgeRuntime {
-                source: node,
-                port,
-                dispatch_strategy: &port_cfg.dispatch_strategy,
+            edges.push(HyperEdgeRuntime {
+                source: node_id.clone(),
+                port: port.clone(),
+                dispatch_strategy: hyper_edge_cfg.dispatch_strategy.clone(),
                 destinations,
-            })
-        })
-    })
+            });
+        }
+    }
+    edges
 }
