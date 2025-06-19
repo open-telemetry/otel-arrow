@@ -51,8 +51,8 @@ impl SourceScalarExpression {
         }
     }
 
-    pub fn get_selectors(&self) -> &Vec<ValueSelector> {
-        self.accessor.get_selectors()
+    pub fn get_value_accessor(&self) -> &ValueAccessor {
+        &self.accessor
     }
 }
 

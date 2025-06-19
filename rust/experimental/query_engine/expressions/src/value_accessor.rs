@@ -57,6 +57,10 @@ impl ValueAccessor {
         accessor
     }
 
+    pub fn has_selectors(&self) -> bool {
+        !self.selectors.is_empty()
+    }
+
     pub fn get_selectors(&self) -> &Vec<ValueSelector> {
         &self.selectors
     }
