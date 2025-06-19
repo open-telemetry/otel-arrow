@@ -16,19 +16,17 @@ Classes:
     HookStrategy (ABC): Abstract interface for executing a hook with access to runtime context.
 """
 
-from typing import Optional
-from abc import ABC, abstractmethod
-
-from pydantic import BaseModel
+from abc import abstractmethod
 
 from ..context.base import BaseContext
+from .base import BaseStrategyConfig, BaseStrategy
 
 
-class HookStrategyConfig(BaseModel):
+class HookStrategyConfig(BaseStrategyConfig):
     """Base model for Execution Strategy config, passed to strategy init."""
 
 
-class HookStrategy(ABC):
+class HookStrategy(BaseStrategy):
     @abstractmethod
     def __init__(self, config: HookStrategyConfig):
         """All hook strategies must be initialized with a config object."""

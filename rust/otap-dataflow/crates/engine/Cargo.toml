@@ -12,6 +12,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }

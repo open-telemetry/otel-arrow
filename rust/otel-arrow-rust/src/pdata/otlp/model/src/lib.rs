@@ -1,14 +1,5 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -19,22 +10,42 @@ pub struct OneofCase {
     pub name: &'static str,
     pub type_param: &'static str,
     pub value_variant: &'static str,
-    pub extra_call: Option<&'static str>,
+    pub is_primitive: bool,
+    pub tag: u32,
+    pub proto_type: &'static str,
 }
 
 fn oneof(
     name: &'static str,
     type_param: &'static str,
     value_variant: &'static str,
-    extra_call: Option<&'static str>,
+    tag: u32,
+    proto_type: &'static str,
 ) -> OneofCase {
+    let is_primitive = matches!(
+        type_param,
+        "bool"
+            | "i32"
+            | "i64"
+            | "u32"
+            | "u64"
+            | "f32"
+            | "f64"
+            | "::prost::alloc::string::String"
+            | "Vec<u8>"
+    );
+
     OneofCase {
         name,
         type_param,
         value_variant,
-        extra_call,
+        is_primitive,
+        tag,
+        proto_type,
     }
 }
+
+pub type OneofMapping = Option<(String, Vec<OneofCase>)>;
 
 /// This provides detail about the underlying type of protobuf enum values.
 #[derive(Clone, Debug, Default)]
@@ -210,62 +221,96 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
     });
 
 /// This lists all the known oneof fields in OpenTelemetry, with their cases.
-pub static ONEOF_MAPPINGS: LazyLock<HashMap<&'static str, Vec<OneofCase>>> = LazyLock::new(|| {
+pub static ONEOF_MAPPINGS: LazyLock<HashMap<String, Vec<OneofCase>>> = LazyLock::new(|| {
     HashMap::from([
         (
-            "opentelemetry.proto.common.v1.AnyValue.value",
+            "opentelemetry.proto.common.v1.AnyValue.value".into(),
             vec![
                 oneof(
                     "string",
                     "::prost::alloc::string::String",
                     "any_value::Value::StringValue",
-                    None,
+                    1,
+                    "string",
                 ),
-                oneof("bool", "bool", "any_value::Value::BoolValue", None),
-                oneof("int", "i64", "any_value::Value::IntValue", None),
-                oneof("double", "f64", "any_value::Value::DoubleValue", None),
+                oneof("bool", "bool", "any_value::Value::BoolValue", 2, "bool"),
+                oneof("int", "i64", "any_value::Value::IntValue", 3, "int64"),
                 oneof(
-                    "kvlist",
-                    "Vec<KeyValue>",
-                    "any_value::Value::KvlistValue",
-                    Some("KeyValueList::new"),
+                    "double",
+                    "f64",
+                    "any_value::Value::DoubleValue",
+                    4,
+                    "double",
                 ),
                 oneof(
                     "array",
-                    "Vec<AnyValue>",
+                    "ArrayValue",
                     "any_value::Value::ArrayValue",
-                    Some("ArrayValue::new"),
+                    5,
+                    "message",
                 ),
-                oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", None),
+                oneof(
+                    "kvlist",
+                    "KeyValueList",
+                    "any_value::Value::KvlistValue",
+                    6,
+                    "message",
+                ),
+                oneof(
+                    "bytes",
+                    "Vec<u8>",
+                    "any_value::Value::BytesValue",
+                    7,
+                    "bytes",
+                ),
             ],
         ),
         (
-            "opentelemetry.proto.metrics.v1.Metric.data",
+            "opentelemetry.proto.metrics.v1.Metric.data".into(),
             vec![
-                oneof("sum", "Sum", "metric::Data::Sum", None),
-                oneof("gauge", "Gauge", "metric::Data::Gauge", None),
-                oneof("histogram", "Histogram", "metric::Data::Histogram", None),
+                oneof("sum", "Sum", "metric::Data::Sum", 5, "message"),
+                oneof("gauge", "Gauge", "metric::Data::Gauge", 6, "message"),
+                oneof(
+                    "histogram",
+                    "Histogram",
+                    "metric::Data::Histogram",
+                    7,
+                    "message",
+                ),
                 oneof(
                     "exponential_histogram",
                     "ExponentialHistogram",
                     "metric::Data::ExponentialHistogram",
-                    None,
+                    8,
+                    "message",
                 ),
-                oneof("summary", "Summary", "metric::Data::Summary", None),
+                oneof("summary", "Summary", "metric::Data::Summary", 11, "message"),
             ],
         ),
         (
-            "opentelemetry.proto.metrics.v1.NumberDataPoint.value",
+            "opentelemetry.proto.metrics.v1.NumberDataPoint.value".into(),
             vec![
-                oneof("int", "i64", "number_data_point::Value::AsInt", None),
-                oneof("double", "f64", "number_data_point::Value::AsDouble", None),
+                oneof(
+                    "int",
+                    "i64",
+                    "number_data_point::Value::AsInt",
+                    4,
+                    "sfixed64",
+                ),
+                oneof(
+                    "double",
+                    "f64",
+                    "number_data_point::Value::AsDouble",
+                    5,
+                    "double",
+                ),
             ],
         ),
         (
-            "opentelemetry.proto.metrics.v1.Exemplar.value",
+            "opentelemetry.proto.metrics.v1.Exemplar.value".into(),
             vec![
-                oneof("int", "i64", "exemplar::Value::AsInt", None),
-                oneof("double", "f64", "exemplar::Value::AsDouble", None),
+                oneof("int", "i64", "exemplar::Value::AsInt", 4, "sfixed64"),
+                oneof("double", "f64", "exemplar::Value::AsDouble", 5, "double"),
             ],
         ),
     ])

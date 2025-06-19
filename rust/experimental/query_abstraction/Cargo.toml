@@ -6,3 +6,12 @@ members = [
     "cli"
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["OpenTelemetry"]
+edition = "2024"
+repository = "https://github.com/open-telemetry/otel-arrow"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.86.0"

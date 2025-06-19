@@ -2,7 +2,14 @@ name: Rust-CI
 permissions:
   contents: read
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +29,7 @@ jobs:
           - beaubourg
           - otel-arrow-rust
           - experimental/query_abstraction
+          - experimental/query_engine
           - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -35,7 +43,7 @@ jobs:
         with:
           toolchain: stable
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@941e8a4d9d7cdb696bd4f017cf54aca281f8ffff # v2.51.2
+        uses: taiki-e/install-action@d12e869b89167df346dd0ff65da342d1fb1202fb # v2.53.2
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
@@ -59,6 +67,7 @@ jobs:
         - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -85,6 +94,7 @@ jobs:
         - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -99,12 +109,14 @@ jobs:
           toolchain: stable
           components: clippy
       - name: cargo clippy ${{ matrix.folder }}
-        # To not block initial checkin of CI, removing build break on warnings for now
-        # TODO: re-enable '-- -D warnings' when we have fixed all clippy warnings
-        run: cargo clippy --all-targets --all-features
+        # beaubourg is a reference implementation without active development, so don't break the build on warnings
+        run: |
+          if [ "${{ matrix.folder }}" = "beaubourg" ]; then
+            cargo clippy --all-targets --all-features --workspace
+          else
+            cargo clippy --all-targets --all-features --workspace -- -D warnings
+          fi
         working-directory: ./rust/${{ matrix.folder }}
-
-
 
   deny:
     strategy:
@@ -115,6 +127,7 @@ jobs:
         - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -161,6 +174,7 @@ jobs:
         - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -186,6 +200,7 @@ jobs:
         - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:

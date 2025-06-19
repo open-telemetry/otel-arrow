@@ -44,11 +44,15 @@ harness = false
 name = "materialize_parent_id"
 harness = false
 
+[[bench]]
+name = "item_count"
+harness = false
+
 [dev-dependencies]
 rand = "0.9"
-nix = { version = "0.29.0", features = ["process", "signal"] }
+nix = { version = "0.30.0", features = ["process", "signal"] }
 tokio-stream = "0.1.17"
-criterion = { version = "0.5" }
+criterion = { version = "0.6" }
 
 [build-dependencies]
 tonic-build = "0.13"

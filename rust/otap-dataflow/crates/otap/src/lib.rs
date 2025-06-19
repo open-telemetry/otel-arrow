@@ -18,6 +18,8 @@ pub mod proto;
 
 pub mod parquet_exporter;
 
+pub mod perf_exporter;
+
 /// testing utilities
 #[cfg(test)]
 mod mock;

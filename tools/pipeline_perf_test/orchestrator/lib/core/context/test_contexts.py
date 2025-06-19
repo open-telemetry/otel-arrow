@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ..context.base import BaseContext
+from ..telemetry.test_event import TestEvent
+
 
 if TYPE_CHECKING:
     from ..test_framework.test_definition import TestDefinition
@@ -57,6 +59,20 @@ class TestFrameworkElementContext(BaseContext, ABC):
             "TestSuiteContext.test_suite must be set to access the root test suite."
         )
 
+    def get_component_by_name(self, name: str) -> Optional["Component"]:
+        """Get a component instance from the test suite context by the name of the component.
+
+        Args:
+            name: The name of the component to return
+
+        Returns: The named component or none if not found.
+        """
+        if self.parent_ctx:
+            return self.parent_ctx.get_component_by_name(name)
+        raise RuntimeError(
+            f"Can't get parent context fetching component by name: {name}"
+        )
+
 
 @dataclass
 class TestSuiteContext(TestFrameworkElementContext):
@@ -67,6 +83,15 @@ class TestSuiteContext(TestFrameworkElementContext):
     components: Dict[str, Component] = field(default_factory=dict)
     child_contexts: List["TestExecutionContext"] = field(default_factory=list)
     test_suite: Optional["TestSuite"] = None
+
+    def __post_init__(self):
+        """
+        Performs additional initialization after object creation.
+        """
+        self.start_event_type = TestEvent.SUITE_START
+        self.end_event_type = TestEvent.SUITE_END
+        self.metadata["test.suite"] = self.name
+        self.span_name = f"Run Test Suite: {self.name}"
 
     def get_test_element(self) -> Optional["TestFrameworkElement"]:
         """Test Suite has no direct TestElement, return None."""
@@ -112,6 +137,19 @@ class TestExecutionContext(TestFrameworkElementContext):
     child_contexts: List["TestStepContext"] = field(default_factory=list)
     test_definition: Optional["TestDefinition"] = None
 
+    def __post_init__(self):
+        """
+        Performs additional initialization after object creation.
+        """
+        super().__post_init__()
+        self.start_event_type = TestEvent.TEST_START
+        self.end_event_type = TestEvent.TEST_END
+        if self.parent_ctx:
+            merged_metadata = {**self.parent_ctx.metadata, **self.metadata}
+            self.metadata = merged_metadata
+        self.metadata["test.name"] = self.test_definition.name
+        self.span_name = f"Run Test: {self.test_definition.name}"
+
     def get_test_element(self) -> Optional["TestFrameworkElement"]:
         """Get the TestDefinition associated with this execution context."""
         return self.test_definition
@@ -127,9 +165,31 @@ class TestStepContext(TestFrameworkElementContext):
     child_contexts: List["ComponentHookContext"] = field(default_factory=list)
     step: Optional["TestStep"] = None
 
+    def __post_init__(self):
+        """
+        Performs additional initialization after object creation.
+        """
+        super().__post_init__()
+        self.start_event_type = TestEvent.STEP_START
+        self.end_event_type = TestEvent.STEP_END
+        if self.parent_ctx:
+            merged_metadata = {**self.parent_ctx.metadata, **self.metadata}
+            self.metadata = merged_metadata
+        self.metadata["test.step"] = self.step.name
+        self.span_name = f"Run Test Step: {self.step.name}"
+
     def get_step_component(self) -> Optional["Component"]:
         "Get the component targeted for this step (if applicable)."
         return self.step.component
+
+    def set_step_component(self, component: "Component"):
+        """
+        Set the component targeted for this step.
+
+        Args:
+            component: The Component associated with the step.
+        """
+        self.step.set_component(component)
 
     def get_test_element(self) -> Optional["TestFrameworkElement"]:
         """Get the TestStep associated with this context."""
