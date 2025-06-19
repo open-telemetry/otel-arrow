@@ -45,6 +45,7 @@ pub mod otlp_receiver;
 /// Generated protobuf files
 pub mod proto;
 
+/// grpc mock server for testing
 #[cfg(test)]
 mod mock;
 
