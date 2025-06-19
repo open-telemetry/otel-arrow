@@ -15,7 +15,7 @@ use byte_unit::Byte;
 use fluke_hpack::Decoder;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::exporter as local;
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use otap_df_engine::message::{Message, MessageChannel};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +24,7 @@ use sysinfo::{
     System, get_current_pid,
 };
 use tokio::time::{Duration, Instant};
+use otap_df_engine::control::ControlMsg;
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
