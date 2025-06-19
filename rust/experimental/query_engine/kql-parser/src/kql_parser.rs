@@ -649,6 +649,9 @@ pub(crate) fn parse_project_expression(
 
     let mut expressions = Vec::new();
 
+    // `map_key_tree` is used to accumulate selectors from source expressions and
+    // generate clear-keys transforms, ensuring proper handling of map keys in the
+    // project expression parsing flow.
     let mut map_key_tree = MapKeyTree::new();
 
     for rule in project_rules {
