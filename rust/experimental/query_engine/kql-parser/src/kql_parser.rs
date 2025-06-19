@@ -6,7 +6,7 @@ use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 use pest_derive::Parser;
 
-use crate::date_utils;
+use crate::{map_key_tree::MapKeyTree, *};
 
 #[derive(Parser)]
 #[grammar = "kql.pest"]
@@ -647,8 +647,9 @@ pub(crate) fn parse_project_expression(
 
     let project_rules = project_expression_rule.into_inner();
 
-    let mut keys_to_keep: HashSet<SourceKey> = HashSet::new();
     let mut expressions = Vec::new();
+
+    let mut map_key_tree = MapKeyTree::new();
 
     for rule in project_rules {
         let rule_location = to_query_location(&rule);
@@ -660,20 +661,20 @@ pub(crate) fn parse_project_expression(
                 if let TransformExpression::Set(s) = &assignment_expression {
                     match s.get_destination() {
                         MutableValueExpression::Source(s) => {
-                            let location = s.get_query_location();
-                            let map_key = get_root_map_key_from_source_scalar_expression(state, s);
+                            let selectors = s.get_value_accessor().get_selectors();
 
-                            if map_key.is_none() {
+                            if !map_key_tree
+                                .push_selectors(state.get_default_source_map_key(), selectors)
+                            {
+                                let location = s.get_query_location();
                                 return Err(ParserError::SyntaxError(
                                     location.clone(),
                                     format!(
-                                        "The '{}' accessor expression should refer to a top-level map key on the source when used in a project expression",
+                                        "The '{}' accessor expression should refer to a map key on the source when used in a project expression",
                                         state.get_query_slice(location).trim()
                                     ),
                                 ));
                             }
-
-                            keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
                         }
                         MutableValueExpression::Variable(v) => {
                             let location = v.get_query_location();
@@ -699,19 +700,18 @@ pub(crate) fn parse_project_expression(
                 let accessor_expression = parse_accessor_expression(rule, state)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
-                    let map_key = get_root_map_key_from_source_scalar_expression(state, s);
+                    let selectors = s.get_value_accessor().get_selectors();
 
-                    if map_key.is_none() {
+                    if !map_key_tree.push_selectors(state.get_default_source_map_key(), selectors) {
+                        let location = s.get_query_location();
                         return Err(ParserError::SyntaxError(
-                            rule_location.clone(),
+                            location.clone(),
                             format!(
-                                "The '{}' accessor expression should refer to a top-level map key on the source when used in a project expression",
-                                state.get_query_slice(&rule_location).trim()
+                                "The '{}' accessor expression should refer to a map key on the source when used in a project expression",
+                                state.get_query_slice(location).trim()
                             ),
                         ));
                     }
-
-                    keys_to_keep.insert(SourceKey::Identifier(map_key.unwrap()));
                 } else {
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
@@ -726,16 +726,7 @@ pub(crate) fn parse_project_expression(
         }
     }
 
-    expressions.push(TransformExpression::ClearKeys(
-        ClearKeysTransformExpression::new(
-            query_location.clone(),
-            MutableValueExpression::Source(SourceScalarExpression::new(
-                query_location,
-                ValueAccessor::new(),
-            )),
-            keys_to_keep,
-        ),
-    ));
+    map_key_tree.build_clear_keys_expressions(&query_location, &mut expressions);
 
     Ok(expressions)
 }
@@ -2383,14 +2374,149 @@ mod parse_tests {
             ],
         );
 
-        run_test_failure(
+        run_test_success(
             "project body.complex",
-            "The 'body.complex' accessor expression should refer to a top-level map key on the source when used in a project expression",
+            vec![
+                TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "body",
+                    ))]),
+                )),
+                TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "body"),
+                        )]),
+                    )),
+                    HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "complex",
+                    ))]),
+                )),
+            ],
+        );
+
+        run_test_success(
+            "project key1, body['name'] = 'hello world', body.complex.field = 1",
+            vec![
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hello world",
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "body",
+                            )),
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "name",
+                            )),
+                        ]),
+                    )),
+                )),
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "body",
+                            )),
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "complex",
+                            )),
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "field",
+                            )),
+                        ]),
+                    )),
+                )),
+                TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    HashSet::from([
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "body",
+                        )),
+                    ]),
+                )),
+                TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "body"),
+                        )]),
+                    )),
+                    HashSet::from([
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "name",
+                        )),
+                        SourceKey::Identifier(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "complex",
+                        )),
+                    ]),
+                )),
+                TransformExpression::ClearKeys(ClearKeysTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "body",
+                            )),
+                            ValueSelector::MapKey(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "complex",
+                            )),
+                        ]),
+                    )),
+                    HashSet::from([SourceKey::Identifier(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "field",
+                    ))]),
+                )),
+            ],
         );
 
         run_test_failure(
             "project a[0]",
-            "The 'a[0]' accessor expression should refer to a top-level map key on the source when used in a project expression",
+            "The 'a[0]' accessor expression should refer to a map key on the source when used in a project expression",
         );
 
         run_test_failure(
@@ -2405,17 +2531,7 @@ mod parse_tests {
 
         run_test_failure(
             "project source",
-            "The 'source' accessor expression should refer to a top-level map key on the source when used in a project expression",
-        );
-
-        run_test_failure(
-            "project body['name'] = 'hello world'",
-            "The 'body['name']' accessor expression should refer to a top-level map key on the source when used in a project expression",
-        );
-
-        run_test_failure(
-            "project source.body['some_attr']",
-            "The 'source.body['some_attr']' accessor expression should refer to a top-level map key on the source when used in a project expression",
+            "The 'source' accessor expression should refer to a map key on the source when used in a project expression",
         );
     }
 
