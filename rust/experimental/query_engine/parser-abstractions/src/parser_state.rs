@@ -49,6 +49,10 @@ impl<'a> ParserState<'a> {
         self.default_source_map_key.as_ref().map(|f| f.as_ref())
     }
 
+    pub fn is_well_defined_identifier(&self, name: &str) -> bool {
+        name == "source" || self.is_attached_data_defined(name) || self.is_variable_defined(name)
+    }
+
     pub fn is_attached_data_defined(&self, name: &str) -> bool {
         self.attached_data_names.contains(name)
     }
