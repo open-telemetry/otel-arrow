@@ -171,10 +171,10 @@ pub enum SourceKey {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReduceMapTransformExpression {
     /// A map reduction providing the data to keep. All other data is removed.
-    Keep(MapReductionExpression),
+    Keep(MapSelectionExpression),
 
     /// A map reduction providing the data to remove. All other data is retained.
-    Remove(MapReductionExpression),
+    Remove(MapSelectionExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,17 +193,17 @@ pub enum MapSelector {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MapReductionExpression {
+pub struct MapSelectionExpression {
     query_location: QueryLocation,
     target: MutableValueExpression,
     selectors: Vec<MapSelector>,
 }
 
-impl MapReductionExpression {
+impl MapSelectionExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-    ) -> MapReductionExpression {
+    ) -> MapSelectionExpression {
         Self {
             query_location,
             target,
@@ -215,7 +215,7 @@ impl MapReductionExpression {
         query_location: QueryLocation,
         target: MutableValueExpression,
         selectors: Vec<MapSelector>,
-    ) -> MapReductionExpression {
+    ) -> MapSelectionExpression {
         Self {
             query_location,
             target,
@@ -257,7 +257,7 @@ impl MapReductionExpression {
     }
 }
 
-impl Expression for MapReductionExpression {
+impl Expression for MapSelectionExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
