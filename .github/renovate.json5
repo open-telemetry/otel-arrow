@@ -33,7 +33,33 @@
       "schedule": [
         "before 8am on Monday"
       ]
+    },
+    {
+      // this directory has generated code, don't send updates to it
+      "ignorePaths": ["collector/cmd/otelarrowcol/**]
     }
+    {
+      // group together all github action workflow changes
+      // it is very rare to have issues with these upgrades
+      // fine to take them together
+      "groupName": "github workflow action updates",
+      "matchFileNames": [".github/workflows/*.yml"],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
+      // group together all golang package updates
+      // note that these changes often cannot be taken as-is
+      // need to run genotelarrowcol again manually
+      // to properly update collector/cmd/otelarrowcol
+      // grouping them together reduces pain of this manual work
+      "groupName": "golang dependency updates",
+      "matchFileNames": ["go.mod"],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
   ],
   "postUpdateOptions": [
     // see https://docs.renovatebot.com/golang/#module-tidying
