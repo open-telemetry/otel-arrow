@@ -37,7 +37,7 @@
     {
       // this directory has generated code, don't send updates to it
       "ignorePaths": ["collector/cmd/otelarrowcol/**]
-    }
+    },
     {
       // group together all github action workflow changes
       // it is very rare to have issues with these upgrades
