@@ -13,7 +13,7 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
-use crate::message::ControlMsg;
+use crate::control::ControlMsg;
 use otap_df_channel::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;

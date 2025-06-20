@@ -4,23 +4,23 @@
 //!
 //! Data Model:
 //! - data plane
-//!   - tenants
+//!   - namespaces
 //!     - pipelines
 //!       - nodes
 //!
-//! A data plane is a collection of tenants, where each tenant can have multiple pipelines.
+//! A data plane is a collection of namespaces, where each namespace can have multiple pipelines.
 //! A pipeline is a collection of nodes interconnected in a directed acyclic graph (DAG).
 
 use std::borrow::Cow;
 pub mod engine;
 pub mod error;
 pub mod experimental;
+pub mod namespace;
 pub mod node;
 pub mod pipeline;
-pub mod tenant;
 
-/// The id of a tenant.
-pub type TenantId = Cow<'static, str>;
+/// The id of a namespace.
+pub type NamespaceId = Cow<'static, str>;
 
 /// The id of a pipeline.
 pub type PipelineId = Cow<'static, str>;

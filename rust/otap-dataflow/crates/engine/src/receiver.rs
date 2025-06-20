@@ -7,10 +7,12 @@
 //! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::local::receiver as local;
-use crate::message::{ControlMsg, Receiver, Sender};
+use crate::message::{Receiver, Sender};
 use crate::shared::receiver as shared;
+use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
@@ -46,6 +48,26 @@ pub enum ReceiverWrapper<PData> {
     },
 }
 
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ReceiverWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        self.control_sender().send(msg).await
+    }
+
+    /// Returns the control message sender for the receiver.
+    fn control_sender(&self) -> Sender<ControlMsg> {
+        match self {
+            ReceiverWrapper::Local { control_sender, .. } => {
+                Sender::LocalMpsc(control_sender.clone())
+            }
+            ReceiverWrapper::Shared { control_sender, .. } => {
+                Sender::SharedMpsc(control_sender.clone())
+            }
+        }
+    }
+}
+
 impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn local<R>(receiver: R, config: &ReceiverConfig) -> Self
@@ -60,12 +82,12 @@ impl<PData> ReceiverWrapper<PData> {
         ReceiverWrapper::Local {
             effect_handler: local::EffectHandler::new(
                 config.name.clone(),
-                Sender::Local(pdata_sender),
+                Sender::LocalMpsc(pdata_sender),
             ),
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
-            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
+            pdata_receiver: Some(Receiver::LocalMpsc(pdata_receiver)),
         }
     }
 
@@ -88,17 +110,6 @@ impl<PData> ReceiverWrapper<PData> {
         }
     }
 
-    /// Returns the control message sender for the receiver.
-    #[must_use]
-    pub fn control_sender(&self) -> Sender<ControlMsg> {
-        match self {
-            ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
-            ReceiverWrapper::Shared { control_sender, .. } => {
-                Sender::Shared(control_sender.clone())
-            }
-        }
-    }
-
     /// Starts the receiver and begins receiver incoming data.
     pub async fn start(self) -> Result<(), Error<PData>> {
         match self {
@@ -108,7 +119,8 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 ..
             } => {
-                let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
+                let ctrl_msg_chan =
+                    local::ControlChannel::new(Receiver::LocalMpsc(control_receiver));
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
@@ -130,7 +142,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver.take().expect("pdata_receiver is None")
             }
             ReceiverWrapper::Shared { pdata_receiver, .. } => {
-                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::SharedMpsc(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }

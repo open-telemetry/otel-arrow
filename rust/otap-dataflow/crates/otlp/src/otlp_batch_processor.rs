@@ -8,10 +8,11 @@ use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::{ControlMsg, Message};
+use otap_df_engine::message::Message;
 use prost::Message as ProstMessage;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
+use otap_df_engine::control::ControlMsg;
 
 /// Trait for hierarchical batch splitting
 ///
@@ -637,6 +638,7 @@ mod tests {
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::Span;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::control::ControlMsg;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
 
@@ -1888,6 +1890,7 @@ mod integration_tests {
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::time::Duration;
+    use otap_df_engine::control::ControlMsg;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
