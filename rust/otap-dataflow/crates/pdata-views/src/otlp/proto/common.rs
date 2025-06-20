@@ -171,35 +171,6 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
             None
         }
     }
-
-    // fn as_array(&self) -> Option<ValSlice<'a, Self>>
-    // where
-    //     Self: Sized,
-    // {
-    //     if let Some(any_value::Value::ArrayValue(ref vec)) = self.0.value {
-    //         let vals = &vec.values;
-    //         // SAFETY: ObjAny is a repr-transparent wrapper around &AnyValue,
-    //         // so &[AnyValue] and &[ObjAny] share the same ABI.
-    //         #[allow(unsafe_code)]
-    //         let slice = unsafe { core::mem::transmute::<&[AnyValue], &[Self]>(vals.as_slice()) };
-    //         Some(ValSlice(slice))
-    //     } else {
-    //         None
-    //     }
-    // }
-
-    // fn as_kvlist(&self) -> Option<ValSlice<'a, Self::KeyValue>> {
-    //     if let Some(any_value::Value::KvlistValue(ref vec)) = self.0.value {
-    //         let vals = &vec.values;
-    //         // SAFETY: same reasoning as above for KeyValue → ObjKV.
-    //         #[allow(unsafe_code)]
-    //         let slice =
-    //             unsafe { core::mem::transmute::<&[KeyValue], &[ObjKeyValue<'a>]>(vals.as_slice()) };
-    //         Some(ValSlice(slice))
-    //     } else {
-    //         None
-    //     }
-    // }
 }
 
 impl From<&any_value::Value> for ValueType {

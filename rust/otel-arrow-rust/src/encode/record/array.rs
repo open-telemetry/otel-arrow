@@ -398,6 +398,10 @@ where
         + DictionaryBuilder<UInt16Type>,
     <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
 {
+    // generic function to handle doing an append and upgrading the array. There are some types
+    // that have an optimized append mechanism, for example to avoid cloning str and slice so
+    // we try to use the optimized append functions here while having one generic function that
+    // contains logic for how/when to upgrade the inner builder
     fn handle_append_checked<FIsDefault, FNative, FDict, FRetry>(
         &mut self,
         is_default: FIsDefault,
