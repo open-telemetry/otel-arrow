@@ -123,7 +123,12 @@ impl Expression for RemoveKeysTransformExpression {
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum MapKey {
+    /// A pattern used to resolve keys.
+    ///
+    /// Examples: `name*`, `*`, `*_value`
     Pattern(StringScalarExpression),
+
+    /// A static key value.
     Value(StringScalarExpression),
 }
 
