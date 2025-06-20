@@ -42,7 +42,7 @@
       // group together all github action workflow changes
       // it is very rare to have issues with these upgrades
       // fine to take them together
-      "groupName": "github workflow action updates",
+      "groupName": "github workflow dependencies",
       "matchFileNames": [".github/workflows/*.yml"],
       "schedule": [
         "before 8am on Monday"
@@ -54,7 +54,7 @@
       // need to run genotelarrowcol again manually
       // to properly update collector/cmd/otelarrowcol
       // grouping them together reduces pain of this manual work
-      "groupName": "golang dependency updates",
+      "groupName": "golang module dependencies",
       "matchFileNames": ["go.mod"],
       "schedule": [
         "before 8am on Monday"
