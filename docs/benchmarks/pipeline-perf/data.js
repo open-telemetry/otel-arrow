@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1750361909966,
+  "lastUpdate": 1750451350090,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6307,6 +6307,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 127.62,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "280672d2c77531dc16795b079aeca3af835b64ea",
+          "message": "[query-engine] Introduce ReduceMap expression and update KQL project (#627)\n\n## Changes\n\n* Introduce `ReduceMap` expression and use that to drive KQL `project`\nexpressions\n\n## Details\n\nMy first attempt at this was #620. Worked fine for map accessors. Could\nwork for array accessors. But those are statically known in the query.\nWhat I realized is that design would just not work at all for accessors\nwhich reference something that is not known until evaluation. For\nexample `body[my_variable]` could resolve a string (map key) or int\n(array index) or some other scalar (error).\n\nWhat this PR is doing is adding a `ReduceMap` operation which is able to\nexpress a) patterns, b) static keys, and c) accessor expressions. My\nplan is to use this for `project`, `project-keep`, and `project-away`\nand then remove `ClearKeys`.",
+          "timestamp": "2025-06-20T20:13:58Z",
+          "tree_id": "84c546a77ca2ff87ffdfb3177e9c8574a93355c1",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/280672d2c77531dc16795b079aeca3af835b64ea"
+        },
+        "date": 1750451347576,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 471333.3333333333,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 14140000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 14140000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 2.51,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 2.83,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 141.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 164.04,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 447166.6666666667,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 13415000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 13415000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 2.34,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 2.82,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 113.07,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 129.75,
             "unit": "MiB"
           }
         ]
