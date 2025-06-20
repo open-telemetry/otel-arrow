@@ -649,10 +649,12 @@ pub(crate) fn parse_project_expression(
 
     let mut expressions = Vec::new();
 
+    let mut keys_to_keep = Some(HashSet::<MapKey>::new());
+
     let mut map_selection = MapSelectionExpression::new(
         query_location.clone(),
         MutableValueExpression::Source(SourceScalarExpression::new(
-            query_location,
+            query_location.clone(),
             ValueAccessor::new(),
         )),
     );
@@ -667,6 +669,16 @@ pub(crate) fn parse_project_expression(
                 if let TransformExpression::Set(s) = &assignment_expression {
                     match s.get_destination() {
                         MutableValueExpression::Source(s) => {
+                            if let Some(map_key) =
+                                get_root_map_key_from_source_scalar_expression(state, s)
+                            {
+                                if let Some(keys) = &mut keys_to_keep {
+                                    keys.insert(map_key);
+                                }
+                            } else {
+                                keys_to_keep = None
+                            }
+
                             let accessor = s.get_value_accessor();
 
                             if !map_selection.push_value_accessor(accessor) {
@@ -704,6 +716,15 @@ pub(crate) fn parse_project_expression(
                 let accessor_expression = parse_accessor_expression(rule, state)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
+                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)
+                    {
+                        if let Some(keys) = &mut keys_to_keep {
+                            keys.insert(map_key);
+                        }
+                    } else {
+                        keys_to_keep = None
+                    }
+
                     let accessor = s.get_value_accessor();
 
                     if !map_selection.push_value_accessor(accessor) {
@@ -730,9 +751,22 @@ pub(crate) fn parse_project_expression(
         }
     }
 
-    expressions.push(TransformExpression::ReduceMap(
-        ReduceMapTransformExpression::Retain(map_selection),
-    ));
+    if let Some(keys) = keys_to_keep {
+        expressions.push(TransformExpression::RemoveMapKeys(
+            RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
+                query_location.clone(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location,
+                    ValueAccessor::new(),
+                )),
+                keys,
+            )),
+        ));
+    } else {
+        expressions.push(TransformExpression::ReduceMap(
+            ReduceMapTransformExpression::Retain(map_selection),
+        ));
+    }
 
     Ok(expressions)
 }
@@ -2301,40 +2335,40 @@ mod parse_tests {
 
         run_test_success(
             "project key1",
-            vec![TransformExpression::ReduceMap(
-                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
+            vec![TransformExpression::RemoveMapKeys(
+                RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
-                    vec![MapSelector::Key(StringScalarExpression::new(
+                    HashSet::from([MapKey::Value(StringScalarExpression::new(
                         QueryLocation::new_fake(),
                         "key1",
-                    ))],
+                    ))]),
                 )),
             )],
         );
 
         run_test_success(
             "project key1, key2",
-            vec![TransformExpression::ReduceMap(
-                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
+            vec![TransformExpression::RemoveMapKeys(
+                RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
-                    vec![
-                        MapSelector::Key(StringScalarExpression::new(
+                    HashSet::from([
+                        MapKey::Value(StringScalarExpression::new(
                             QueryLocation::new_fake(),
                             "key1",
                         )),
-                        MapSelector::Key(StringScalarExpression::new(
+                        MapKey::Value(StringScalarExpression::new(
                             QueryLocation::new_fake(),
                             "key2",
                         )),
-                    ],
+                    ]),
                 )),
             )],
         );
@@ -2358,17 +2392,17 @@ mod parse_tests {
                         )]),
                     )),
                 )),
-                TransformExpression::ReduceMap(ReduceMapTransformExpression::Retain(
-                    MapSelectionExpression::new_with_selectors(
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
                             ValueAccessor::new(),
                         )),
-                        vec![MapSelector::Key(StringScalarExpression::new(
+                        HashSet::from([MapKey::Value(StringScalarExpression::new(
                             QueryLocation::new_fake(),
                             "key1",
-                        ))],
+                        ))]),
                     ),
                 )),
             ],
@@ -2424,39 +2458,27 @@ mod parse_tests {
                         ]),
                     )),
                 )),
-                TransformExpression::ReduceMap(ReduceMapTransformExpression::Retain(
-                    MapSelectionExpression::new_with_selectors(
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
                             ValueAccessor::new(),
                         )),
-                        vec![
-                            MapSelector::Key(StringScalarExpression::new(
+                        HashSet::from([
+                            MapKey::Value(StringScalarExpression::new(
                                 QueryLocation::new_fake(),
                                 "key1",
                             )),
-                            MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
-                                ValueSelector::MapKey(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "attributes",
-                                )),
-                                ValueSelector::MapKey(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "key2",
-                                )),
-                            ])),
-                            MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
-                                ValueSelector::MapKey(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "attributes",
-                                )),
-                                ValueSelector::MapKey(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "key3",
-                                )),
-                            ])),
-                        ],
+                            MapKey::Value(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key2",
+                            )),
+                            MapKey::Value(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key3",
+                            )),
+                        ]),
                     ),
                 )),
             ],
