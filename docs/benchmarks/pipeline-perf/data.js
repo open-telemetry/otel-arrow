@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1750451350090,
+  "lastUpdate": 1750453790870,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6411,6 +6411,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 129.75,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f7ea9d77a62ca179266f12a2df24c4afc1ba3eda",
+          "message": "[query-engine] Update KQL project-keep and project-away to use ReduceMap (#628)\n\nFollow-up to #627\n\n## Changes\n\n* Update `project-away` and `project-keep` KQL expressions to use\n`ReduceMap` expression\n* Remove `ClearKeys` expression",
+          "timestamp": "2025-06-20T20:54:33Z",
+          "tree_id": "17420b18f521d21fc2baaef403f68b8af88012d7",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f7ea9d77a62ca179266f12a2df24c4afc1ba3eda"
+        },
+        "date": 1750453789084,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 460666.6666666667,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 13820000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 13820000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 2.45,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 2.81,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 143.68,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 172.55,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 435833.3333333333,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 13075000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 13075000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 2.29,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 2.79,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 114.44,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 146.02,
             "unit": "MiB"
           }
         ]
