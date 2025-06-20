@@ -19,12 +19,18 @@ use otap_df_engine::message::{Message, MessageChannel};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::Value;
 use sysinfo::{
     CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
     System, get_current_pid,
 };
 use tokio::time::{Duration, Instant};
 use otap_df_engine::control::ControlMsg;
+use otap_df_engine::{distributed_slice, ExporterFactory};
+use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::exporter::ExporterWrapper;
+use crate::grpc::OTAPData;
+use crate::EXPORTER_FACTORIES;
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
@@ -32,21 +38,44 @@ pub struct PerfExporter {
     output: Option<String>,
 }
 
+/// Declares the Perf exporter as a local exporter factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+// #[allow(unsafe_code)]
+// #[distributed_slice(EXPORTER_FACTORIES)]
+// pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
+//     name: "urn:otel:otap:perf:exporter",
+//     create: |config: &Value, exporter_config: &ExporterConfig| {
+//         ExporterWrapper::local(PerfExporter::from_config(config), exporter_config)
+//     },
+// };
+
 impl PerfExporter {
     /// creates a perf exporter with the provided config
     #[must_use]
     pub fn new(config: Config, output: Option<String>) -> Self {
         PerfExporter { config, output }
     }
+
+    /// Creates a new PerfExporter from a configuration object
+    #[must_use]
+    pub fn from_config(config: &Value) -> Self {
+        PerfExporter {
+            // ToDo (LQ) : Handle config errors
+            config: serde_json::from_value(config.clone()).unwrap(),
+            output: None,
+        }
+    }
 }
 
 #[async_trait(?Send)]
-impl local::Exporter<BatchArrowRecords> for PerfExporter {
+impl local::Exporter<OTAPData> for PerfExporter {
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<BatchArrowRecords>,
-        effect_handler: local::EffectHandler<BatchArrowRecords>,
-    ) -> Result<(), Error<BatchArrowRecords>> {
+        mut msg_chan: MessageChannel<OTAPData>,
+        effect_handler: local::EffectHandler<OTAPData>,
+    ) -> Result<(), Error<OTAPData>> {
         // init variables for tracking
         let mut average_pipeline_latency: f64 = 0.0;
         let mut received_arrow_records_count: u64 = 0;
@@ -152,7 +181,9 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                 Message::Control(ControlMsg::Shutdown { .. }) => {
                     break;
                 }
-                Message::PData(batch) => {
+                Message::PData(OTAPData::ArrowMetrics(batch)) |
+                Message::PData(OTAPData::ArrowLogs(batch)) |
+                Message::PData(OTAPData::ArrowTraces(batch)) => {
                     // keep track of batches received
                     received_pdata_batch_count += 1;
                     total_received_pdata_batch_count += 1;
@@ -528,6 +559,7 @@ mod tests {
     use std::fs::{File, remove_file};
     use std::io::{BufReader, prelude::*};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::grpc::OTAPData;
 
     const TRACES_BATCH_ID: i64 = 0;
     const LOGS_BATCH_ID: i64 = 1;
@@ -580,7 +612,7 @@ mod tests {
     /// data message, and shutdown control messages.
     ///
     fn scenario()
-    -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |ctx| {
             Box::pin(async move {
@@ -605,13 +637,13 @@ mod tests {
                         ROW_SIZE,
                     );
                     // // Send a data message
-                    ctx.send_pdata(traces_batch_data)
+                    ctx.send_pdata(OTAPData::ArrowTraces(traces_batch_data))
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(logs_batch_data)
+                    ctx.send_pdata(OTAPData::ArrowLogs(logs_batch_data))
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(metrics_batch_data)
+                    ctx.send_pdata(OTAPData::ArrowMetrics(metrics_batch_data))
                         .await
                         .expect("Failed to send data message");
                 }
@@ -635,7 +667,7 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         output_file: String,
-    ) -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    ) -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |_| {
             Box::pin(async move {

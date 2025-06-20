@@ -88,3 +88,4 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 
     output.into()
 }
+
