@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from ..context.base import BaseContext
 from ..context.test_contexts import TestStepContext
 from ..context.test_element_hook_context import HookableTestPhase
+from ..telemetry.test_event import TestEvent
 from .test_element import TestFrameworkElement
 
 if TYPE_CHECKING:
@@ -108,6 +109,11 @@ class TestStep(TestFrameworkElement):
         """
         assert isinstance(ctx, TestStepContext), "Expected TestExecutionContext"
 
+        logger = ctx.get_logger(__name__)
         self._run_hooks(HookableTestPhase.PRE_RUN, ctx)
+        ctx.record_event(TestEvent.STEP_EXECUTE_START.namespaced())
+        logger.info("Executing main step action...")
         self.action.execute(ctx)
+        logger.debug("Main step action complete...")
+        ctx.record_event(TestEvent.STEP_EXECUTE_END.namespaced())
         self._run_hooks(HookableTestPhase.POST_RUN, ctx)
