@@ -13,14 +13,14 @@ pub enum TransformExpression {
     /// Remove data transformation.
     Remove(RemoveTransformExpression),
 
-    /// Remove keys transformation.
-    ///
-    /// Note: Remove keys is a specialized form of the remove transformation
-    /// which takes a target map and a list of keys to be removed.
-    RemoveKeys(RemoveKeysTransformExpression),
-
     /// Remove data from a target map.
     ReduceMap(ReduceMapTransformExpression),
+
+    /// Remove top-level keys from a target map.
+    ///
+    /// Note: Remove map keys is a specialized form of the reduce map
+    /// transformation which only operates on top-level keys.
+    RemoveMapKeys(RemoveMapKeysTransformExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,22 +87,31 @@ impl Expression for RemoveTransformExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RemoveKeysTransformExpression {
-    query_location: QueryLocation,
-    target: MutableValueExpression,
-    keys_to_remove: HashSet<MapKey>,
+pub enum RemoveMapKeysTransformExpression {
+    /// A map key transformation providing the top-level keys to remove. All other data is retained.
+    Remove(MapKeyListExpression),
+
+    /// A map key transformation providing the top-level keys to retain. All other data is removed.
+    Retain(MapKeyListExpression),
 }
 
-impl RemoveKeysTransformExpression {
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapKeyListExpression {
+    query_location: QueryLocation,
+    target: MutableValueExpression,
+    keys: HashSet<MapKey>,
+}
+
+impl MapKeyListExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-        keys_to_remove: HashSet<MapKey>,
-    ) -> RemoveKeysTransformExpression {
+        keys: HashSet<MapKey>,
+    ) -> MapKeyListExpression {
         Self {
             query_location,
             target,
-            keys_to_remove,
+            keys,
         }
     }
 
@@ -110,12 +119,12 @@ impl RemoveKeysTransformExpression {
         &self.target
     }
 
-    pub fn get_keys_to_remove(&self) -> &HashSet<MapKey> {
-        &self.keys_to_remove
+    pub fn get_keys(&self) -> &HashSet<MapKey> {
+        &self.keys
     }
 }
 
-impl Expression for RemoveKeysTransformExpression {
+impl Expression for MapKeyListExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
@@ -134,11 +143,11 @@ pub enum MapKey {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReduceMapTransformExpression {
-    /// A map reduction providing the data to keep. All other data is removed.
-    Keep(MapSelectionExpression),
-
     /// A map reduction providing the data to remove. All other data is retained.
     Remove(MapSelectionExpression),
+
+    /// A map reduction providing the data to retain. All other data is removed.
+    Retain(MapSelectionExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
