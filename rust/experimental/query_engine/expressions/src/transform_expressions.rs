@@ -170,14 +170,25 @@ pub enum SourceKey {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReduceMapTransformExpression {
+    /// A map reduction providing the data to keep. All other data is removed.
     Keep(KeepMapReductionExpression),
+
+    /// A map reduction providing the data to remove. All other data is retained.
     Remove(RemoveMapReductionExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MapSelector {
+    /// Top-level key pattern.
     KeyPattern(StringScalarExpression),
+
+    /// Static top-level key.
     Key(StringScalarExpression),
+
+    /// A [`ValueAccessor`] representing a path to data on the map.
+    ///
+    /// Note: The [`ValueAccessor`] could refer to top-level keys or nested
+    /// elements.
     ValueAccessor(ValueAccessor),
 }
 
