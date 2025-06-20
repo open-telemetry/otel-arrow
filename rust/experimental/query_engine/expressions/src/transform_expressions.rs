@@ -19,12 +19,6 @@ pub enum TransformExpression {
     /// which takes a target map and a list of keys to be removed.
     RemoveKeys(RemoveKeysTransformExpression),
 
-    /// Clear keys transformation.
-    ///
-    /// Note: Clear keys is used to remove all keys from a target map with an
-    /// optional list of keys to retain.
-    ClearKeys(ClearKeysTransformExpression),
-
     /// Remove data from a target map.
     ReduceMap(ReduceMapTransformExpression),
 }
@@ -96,14 +90,14 @@ impl Expression for RemoveTransformExpression {
 pub struct RemoveKeysTransformExpression {
     query_location: QueryLocation,
     target: MutableValueExpression,
-    keys_to_remove: HashSet<SourceKey>,
+    keys_to_remove: HashSet<MapKey>,
 }
 
 impl RemoveKeysTransformExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-        keys_to_remove: HashSet<SourceKey>,
+        keys_to_remove: HashSet<MapKey>,
     ) -> RemoveKeysTransformExpression {
         Self {
             query_location,
@@ -116,7 +110,7 @@ impl RemoveKeysTransformExpression {
         &self.target
     }
 
-    pub fn get_keys_to_remove(&self) -> &HashSet<SourceKey> {
+    pub fn get_keys_to_remove(&self) -> &HashSet<MapKey> {
         &self.keys_to_remove
     }
 }
@@ -127,45 +121,10 @@ impl Expression for RemoveKeysTransformExpression {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ClearKeysTransformExpression {
-    query_location: QueryLocation,
-    target: MutableValueExpression,
-    keys_to_keep: HashSet<SourceKey>,
-}
-
-impl ClearKeysTransformExpression {
-    pub fn new(
-        query_location: QueryLocation,
-        target: MutableValueExpression,
-        keys_to_keep: HashSet<SourceKey>,
-    ) -> ClearKeysTransformExpression {
-        Self {
-            query_location,
-            target,
-            keys_to_keep,
-        }
-    }
-
-    pub fn get_target(&self) -> &MutableValueExpression {
-        &self.target
-    }
-
-    pub fn get_keys_to_keep(&self) -> &HashSet<SourceKey> {
-        &self.keys_to_keep
-    }
-}
-
-impl Expression for ClearKeysTransformExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        &self.query_location
-    }
-}
-
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub enum SourceKey {
-    Identifier(StringScalarExpression),
+pub enum MapKey {
     Pattern(StringScalarExpression),
+    Value(StringScalarExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
