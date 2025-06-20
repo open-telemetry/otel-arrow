@@ -6,11 +6,12 @@ use otap_df_channel::error::SendError;
 use otap_df_config::{NodeId, PortName, node::NodeConfig, pipeline::PipelineConfig};
 use std::collections::HashMap;
 use std::rc::Rc;
-
+use tokio::runtime::Builder;
+use tokio::task::LocalSet;
 use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
-use crate::message::{Receiver, Sender};
-use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
+use crate::message::{MessageChannel, Receiver, Sender};
+use crate::{error, exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 pub struct RuntimePipeline<PData> {
@@ -164,6 +165,56 @@ impl<PData> RuntimePipeline<PData> {
     #[must_use]
     pub fn config(&self) -> &PipelineConfig {
         &self.config
+    }
+
+    /// Starts the pipeline by
+    pub async fn start(self) -> Result<(), Error<PData>> {
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create runtime");
+        let local_tasks = LocalSet::new();
+
+        for (node_id, node) in self.nodes.into_iter() {
+            match node {
+                RuntimeNode::Receiver { instance, .. } => {
+                    local_tasks.spawn_local(async move {
+                        instance.start().await.map_err(|e| Error::ReceiverError {
+                            receiver: node_id,
+                            error: e.to_string(),
+                        })
+                    });
+                }
+                RuntimeNode::Processor { mut instance, pdata_receiver, .. } => {
+                    // ToDo(LQ): Il n'y a pas de control_receiver pour le processor.
+                    // ToDo(LQ): C'est le bordel entre ProcessorWrapper et le RuntimeMode qui contiennent tous les deux des senders/receivers.
+                    // let mut msg_channel = MessageChannel::new(pdata_receiver);
+                    // loop {
+                    //     let msg = msg_channel.recv().await?;
+                    //     instance.process(msg).await.map_err(|e| Error::ProcessorError {
+                    //         processor: node_id,
+                    //         error: e.to_string(),
+                    //     })?;
+                    // }
+                    unimplemented!()
+                }
+                RuntimeNode::Exporter { instance, pdata_receiver, .. } => {
+                    local_tasks.spawn_local(async move {
+                        // ToDo(LQ): We could probably eliminate the Option here
+                        let pdata_receiver = pdata_receiver.expect("Exporter should have a receiver");
+                        instance.start(pdata_receiver).await.map_err(|e| Error::ExporterError {
+                            exporter: node_id,
+                            error: e.to_string(),
+                        })
+                    });
+                }
+            }
+        }
+
+        // Block on the local set to run all tasks to completion
+        rt.block_on(local_tasks);
+
+        Ok(())
     }
 
     /// Sends a control message to the specified node.
