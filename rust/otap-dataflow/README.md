@@ -73,6 +73,7 @@ TBD
 - [Developer/Contributing Guide](CONTRIBUTING.md)
 - [Design Principles](docs/design-principles.md)
 - [Architecture](docs/architecture.md)
+- [Tracing Proposal](docs/tracing-proposal.md)
 - [Glossary](docs/glossary.md)
 
 ## Development Setup
