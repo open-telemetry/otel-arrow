@@ -171,10 +171,10 @@ pub enum SourceKey {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReduceMapTransformExpression {
     /// A map reduction providing the data to keep. All other data is removed.
-    Keep(KeepMapReductionExpression),
+    Keep(MapReductionExpression),
 
     /// A map reduction providing the data to remove. All other data is retained.
-    Remove(RemoveMapReductionExpression),
+    Remove(MapReductionExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,14 +192,50 @@ pub enum MapSelector {
     ValueAccessor(ValueAccessor),
 }
 
-pub trait MapReductionExpression: Expression {
-    fn get_target(&self) -> &MutableValueExpression;
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapReductionExpression {
+    query_location: QueryLocation,
+    target: MutableValueExpression,
+    selectors: Vec<MapSelector>,
+}
 
-    fn get_selectors(&self) -> &Vec<MapSelector>;
+impl MapReductionExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        target: MutableValueExpression,
+    ) -> MapReductionExpression {
+        Self {
+            query_location,
+            target,
+            selectors: Vec::new(),
+        }
+    }
 
-    fn push_selector(&mut self, selector: MapSelector);
+    pub fn new_with_selectors(
+        query_location: QueryLocation,
+        target: MutableValueExpression,
+        selectors: Vec<MapSelector>,
+    ) -> MapReductionExpression {
+        Self {
+            query_location,
+            target,
+            selectors,
+        }
+    }
 
-    fn push_value_accessor(&mut self, value_accessor: &ValueAccessor) -> bool {
+    pub fn get_target(&self) -> &MutableValueExpression {
+        &self.target
+    }
+
+    pub fn get_selectors(&self) -> &Vec<MapSelector> {
+        &self.selectors
+    }
+
+    pub fn push_selector(&mut self, selector: MapSelector) {
+        self.selectors.push(selector)
+    }
+
+    pub fn push_value_accessor(&mut self, value_accessor: &ValueAccessor) -> bool {
         let selectors = value_accessor.get_selectors();
         if selectors.is_empty() {
             return false;
@@ -221,94 +257,8 @@ pub trait MapReductionExpression: Expression {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct KeepMapReductionExpression {
-    query_location: QueryLocation,
-    target: MutableValueExpression,
-    selectors: Vec<MapSelector>,
-}
-
-impl KeepMapReductionExpression {
-    pub fn new(
-        query_location: QueryLocation,
-        target: MutableValueExpression,
-    ) -> KeepMapReductionExpression {
-        Self {
-            query_location,
-            target,
-            selectors: Vec::new(),
-        }
-    }
-
-    pub fn new_with_selectors(
-        query_location: QueryLocation,
-        target: MutableValueExpression,
-        selectors: Vec<MapSelector>,
-    ) -> KeepMapReductionExpression {
-        Self {
-            query_location,
-            target,
-            selectors,
-        }
-    }
-}
-
-impl Expression for KeepMapReductionExpression {
+impl Expression for MapReductionExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
-    }
-}
-
-impl MapReductionExpression for KeepMapReductionExpression {
-    fn get_target(&self) -> &MutableValueExpression {
-        &self.target
-    }
-
-    fn get_selectors(&self) -> &Vec<MapSelector> {
-        &self.selectors
-    }
-
-    fn push_selector(&mut self, selector: MapSelector) {
-        self.selectors.push(selector)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RemoveMapReductionExpression {
-    query_location: QueryLocation,
-    target: MutableValueExpression,
-    selectors: Vec<MapSelector>,
-}
-
-impl RemoveMapReductionExpression {
-    pub fn new(
-        query_location: QueryLocation,
-        target: MutableValueExpression,
-    ) -> RemoveMapReductionExpression {
-        Self {
-            query_location,
-            target,
-            selectors: Vec::new(),
-        }
-    }
-}
-
-impl Expression for RemoveMapReductionExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        &self.query_location
-    }
-}
-
-impl MapReductionExpression for RemoveMapReductionExpression {
-    fn get_target(&self) -> &MutableValueExpression {
-        &self.target
-    }
-
-    fn get_selectors(&self) -> &Vec<MapSelector> {
-        &self.selectors
-    }
-
-    fn push_selector(&mut self, selector: MapSelector) {
-        self.selectors.push(selector)
     }
 }

@@ -649,7 +649,7 @@ pub(crate) fn parse_project_expression(
 
     let mut expressions = Vec::new();
 
-    let mut map_reduce = KeepMapReductionExpression::new(
+    let mut map_reduce = MapReductionExpression::new(
         query_location.clone(),
         MutableValueExpression::Source(SourceScalarExpression::new(
             query_location,
@@ -2242,7 +2242,7 @@ mod parse_tests {
         run_test_success(
             "project key1",
             vec![TransformExpression::ReduceMap(
-                ReduceMapTransformExpression::Keep(KeepMapReductionExpression::new_with_selectors(
+                ReduceMapTransformExpression::Keep(MapReductionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2259,7 +2259,7 @@ mod parse_tests {
         run_test_success(
             "project key1, key2",
             vec![TransformExpression::ReduceMap(
-                ReduceMapTransformExpression::Keep(KeepMapReductionExpression::new_with_selectors(
+                ReduceMapTransformExpression::Keep(MapReductionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2299,7 +2299,7 @@ mod parse_tests {
                     )),
                 )),
                 TransformExpression::ReduceMap(ReduceMapTransformExpression::Keep(
-                    KeepMapReductionExpression::new_with_selectors(
+                    MapReductionExpression::new_with_selectors(
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
@@ -2365,7 +2365,7 @@ mod parse_tests {
                     )),
                 )),
                 TransformExpression::ReduceMap(ReduceMapTransformExpression::Keep(
-                    KeepMapReductionExpression::new_with_selectors(
+                    MapReductionExpression::new_with_selectors(
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
@@ -2405,7 +2405,7 @@ mod parse_tests {
         run_test_success(
             "project body['complex'], source.body.nested[0], body[variable]",
             vec![TransformExpression::ReduceMap(
-                ReduceMapTransformExpression::Keep(KeepMapReductionExpression::new_with_selectors(
+                ReduceMapTransformExpression::Keep(MapReductionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -2480,7 +2480,7 @@ mod parse_tests {
                     )),
                 )),
                 TransformExpression::ReduceMap(ReduceMapTransformExpression::Keep(
-                    KeepMapReductionExpression::new_with_selectors(
+                    MapReductionExpression::new_with_selectors(
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
