@@ -25,19 +25,20 @@ pub mod perf_exporter;
 mod mock;
 
 /// Factory for OTAP-based pipeline
-#[pipeline_factory(OTAPData)]
+#[pipeline_factory(OTAP, OTAPData)]
 static OTAP_PIPELINE_FACTORY: PipelineFactory<OTAPData> = build_factory();
 
 #[cfg(test)]
 mod tests {
     use crate::OTAP_PIPELINE_FACTORY;
     use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
+    use serde_json::json;
 
     #[test]
     fn test_build_runtime_pipeline() {
         let config = PipelineConfigBuilder::new()
             .add_receiver("receiver", "urn:otel:otap:receiver", None)
-            .add_exporter("exporter1", "urn:otel:otap:exporter", None)
+            .add_exporter("exporter1", "urn:otel:otap:perf:exporter", Some(json!({})))
             .add_exporter("exporter2", "urn:otel:otap:exporter", None)
             // ToDo(LQ): Check the validity of the outport.
             .broadcast(

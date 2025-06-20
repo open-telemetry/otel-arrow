@@ -6,7 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use crate::EXPORTER_FACTORIES;
+use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OTAPData;
 use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
@@ -37,7 +37,7 @@ pub struct OTAPExporter {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(EXPORTER_FACTORIES)]
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
     name: "urn:otel:otap:exporter",
     create: |config: &Value, exporter_config: &ExporterConfig| {

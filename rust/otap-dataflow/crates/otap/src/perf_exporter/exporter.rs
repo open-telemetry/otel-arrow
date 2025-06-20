@@ -30,7 +30,7 @@ use otap_df_engine::{distributed_slice, ExporterFactory};
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::exporter::ExporterWrapper;
 use crate::grpc::OTAPData;
-use crate::EXPORTER_FACTORIES;
+use crate::OTAP_EXPORTER_FACTORIES;
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
@@ -38,18 +38,18 @@ pub struct PerfExporter {
     output: Option<String>,
 }
 
-/// Declares the Perf exporter as a local exporter factory
+/// Declares the OTAP Perf exporter as a local exporter factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
-// #[allow(unsafe_code)]
-// #[distributed_slice(EXPORTER_FACTORIES)]
-// pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
-//     name: "urn:otel:otap:perf:exporter",
-//     create: |config: &Value, exporter_config: &ExporterConfig| {
-//         ExporterWrapper::local(PerfExporter::from_config(config), exporter_config)
-//     },
-// };
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
+    name: "urn:otel:otap:perf:exporter",
+    create: |config: &Value, exporter_config: &ExporterConfig| {
+        ExporterWrapper::local(PerfExporter::from_config(config), exporter_config)
+    },
+};
 
 impl PerfExporter {
     /// creates a perf exporter with the provided config

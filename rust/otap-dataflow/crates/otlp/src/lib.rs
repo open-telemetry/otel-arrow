@@ -46,7 +46,7 @@ pub mod proto;
 mod mock;
 
 /// Factory for OTLP-based pipeline
-#[pipeline_factory(OTLPData)]
+#[pipeline_factory(OTLP, OTLPData)]
 static OTLP_PIPELINE_FACTORY: PipelineFactory<OTLPData> = build_factory();
 
 #[cfg(test)]

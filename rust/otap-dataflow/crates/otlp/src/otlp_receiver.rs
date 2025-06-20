@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::RECEIVER_FACTORIES;
+use crate::OTLP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::grpc::{
     LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl, TraceServiceImpl,
@@ -43,7 +43,7 @@ pub struct OTLPReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(RECEIVER_FACTORIES)]
+#[distributed_slice(OTLP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: "urn:otel:otlp:receiver",
     create: |config: &Value, receiver_config: &ReceiverConfig| {
