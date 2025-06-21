@@ -23,6 +23,17 @@ pub enum TransformExpression {
     RemoveMapKeys(RemoveMapKeysTransformExpression),
 }
 
+impl TransformExpression {
+    pub fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            TransformExpression::Set(s) => s.get_query_location(),
+            TransformExpression::Remove(r) => r.get_query_location(),
+            TransformExpression::ReduceMap(r) => r.get_query_location(),
+            TransformExpression::RemoveMapKeys(r) => r.get_query_location(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetTransformExpression {
     query_location: QueryLocation,
@@ -95,6 +106,15 @@ pub enum RemoveMapKeysTransformExpression {
     Retain(MapKeyListExpression),
 }
 
+impl RemoveMapKeysTransformExpression {
+    pub fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            RemoveMapKeysTransformExpression::Remove(m) => m.get_query_location(),
+            RemoveMapKeysTransformExpression::Retain(m) => m.get_query_location(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapKeyListExpression {
     query_location: QueryLocation,
@@ -148,6 +168,15 @@ pub enum ReduceMapTransformExpression {
 
     /// A map reduction providing the data to retain. All other data is removed.
     Retain(MapSelectionExpression),
+}
+
+impl ReduceMapTransformExpression {
+    pub fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            ReduceMapTransformExpression::Remove(m) => m.get_query_location(),
+            ReduceMapTransformExpression::Retain(m) => m.get_query_location(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

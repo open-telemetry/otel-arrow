@@ -8,4 +8,7 @@ pub enum ParserError {
 
     #[error("{1}")]
     SyntaxError(QueryLocation, String),
+
+    #[error("{1}: {2}")]
+    QueryLanguageDiagnostic(QueryLocation, &'static str, String),
 }

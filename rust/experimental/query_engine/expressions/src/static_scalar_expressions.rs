@@ -20,6 +20,18 @@ pub enum StaticScalarExpression {
     String(StringScalarExpression),
 }
 
+impl StaticScalarExpression {
+    pub fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            StaticScalarExpression::Boolean(b) => b.get_query_location(),
+            StaticScalarExpression::DateTime(d) => d.get_query_location(),
+            StaticScalarExpression::Double(d) => d.get_query_location(),
+            StaticScalarExpression::Integer(i) => i.get_query_location(),
+            StaticScalarExpression::String(s) => s.get_query_location(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BooleanScalarExpression {
     query_location: QueryLocation,
