@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation,
-    StringScalarExpression,
+    StringScalarExpression, ValueAccessor, ValueSelector,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,17 +13,14 @@ pub enum TransformExpression {
     /// Remove data transformation.
     Remove(RemoveTransformExpression),
 
-    /// Remove keys transformation.
-    ///
-    /// Note: Remove keys is a specialized form of the remove transformation
-    /// which takes a target map and a list of keys to be removed.
-    RemoveKeys(RemoveKeysTransformExpression),
+    /// Remove data from a target map.
+    ReduceMap(ReduceMapTransformExpression),
 
-    /// Clear keys transformation.
+    /// Remove top-level keys from a target map.
     ///
-    /// Note: Clear keys is used to remove all keys from a target map with an
-    /// optional list of keys to retain.
-    ClearKeys(ClearKeysTransformExpression),
+    /// Note: Remove map keys is a specialized form of the reduce map
+    /// transformation which only operates on top-level keys.
+    RemoveMapKeys(RemoveMapKeysTransformExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,57 +87,31 @@ impl Expression for RemoveTransformExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RemoveKeysTransformExpression {
-    query_location: QueryLocation,
-    target: MutableValueExpression,
-    keys_to_remove: HashSet<SourceKey>,
-}
+pub enum RemoveMapKeysTransformExpression {
+    /// A map key transformation providing the top-level keys to remove. All other data is retained.
+    Remove(MapKeyListExpression),
 
-impl RemoveKeysTransformExpression {
-    pub fn new(
-        query_location: QueryLocation,
-        target: MutableValueExpression,
-        keys_to_remove: HashSet<SourceKey>,
-    ) -> RemoveKeysTransformExpression {
-        Self {
-            query_location,
-            target,
-            keys_to_remove,
-        }
-    }
-
-    pub fn get_target(&self) -> &MutableValueExpression {
-        &self.target
-    }
-
-    pub fn get_keys_to_remove(&self) -> &HashSet<SourceKey> {
-        &self.keys_to_remove
-    }
-}
-
-impl Expression for RemoveKeysTransformExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        &self.query_location
-    }
+    /// A map key transformation providing the top-level keys to retain. All other data is removed.
+    Retain(MapKeyListExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClearKeysTransformExpression {
+pub struct MapKeyListExpression {
     query_location: QueryLocation,
     target: MutableValueExpression,
-    keys_to_keep: HashSet<SourceKey>,
+    keys: HashSet<MapKey>,
 }
 
-impl ClearKeysTransformExpression {
+impl MapKeyListExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-        keys_to_keep: HashSet<SourceKey>,
-    ) -> ClearKeysTransformExpression {
+        keys: HashSet<MapKey>,
+    ) -> MapKeyListExpression {
         Self {
             query_location,
             target,
-            keys_to_keep,
+            keys,
         }
     }
 
@@ -148,19 +119,119 @@ impl ClearKeysTransformExpression {
         &self.target
     }
 
-    pub fn get_keys_to_keep(&self) -> &HashSet<SourceKey> {
-        &self.keys_to_keep
+    pub fn get_keys(&self) -> &HashSet<MapKey> {
+        &self.keys
     }
 }
 
-impl Expression for ClearKeysTransformExpression {
+impl Expression for MapKeyListExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub enum SourceKey {
-    Identifier(StringScalarExpression),
+pub enum MapKey {
+    /// A pattern used to resolve keys.
+    ///
+    /// Examples: `name*`, `*`, `*_value`
     Pattern(StringScalarExpression),
+
+    /// A static key value.
+    Value(StringScalarExpression),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReduceMapTransformExpression {
+    /// A map reduction providing the data to remove. All other data is retained.
+    Remove(MapSelectionExpression),
+
+    /// A map reduction providing the data to retain. All other data is removed.
+    Retain(MapSelectionExpression),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapSelector {
+    /// Top-level key pattern.
+    KeyPattern(StringScalarExpression),
+
+    /// Static top-level key.
+    Key(StringScalarExpression),
+
+    /// A [`ValueAccessor`] representing a path to data on the map.
+    ///
+    /// Note: The [`ValueAccessor`] could refer to top-level keys or nested
+    /// elements.
+    ValueAccessor(ValueAccessor),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapSelectionExpression {
+    query_location: QueryLocation,
+    target: MutableValueExpression,
+    selectors: Vec<MapSelector>,
+}
+
+impl MapSelectionExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        target: MutableValueExpression,
+    ) -> MapSelectionExpression {
+        Self {
+            query_location,
+            target,
+            selectors: Vec::new(),
+        }
+    }
+
+    pub fn new_with_selectors(
+        query_location: QueryLocation,
+        target: MutableValueExpression,
+        selectors: Vec<MapSelector>,
+    ) -> MapSelectionExpression {
+        Self {
+            query_location,
+            target,
+            selectors,
+        }
+    }
+
+    pub fn get_target(&self) -> &MutableValueExpression {
+        &self.target
+    }
+
+    pub fn get_selectors(&self) -> &Vec<MapSelector> {
+        &self.selectors
+    }
+
+    pub fn push_selector(&mut self, selector: MapSelector) {
+        self.selectors.push(selector)
+    }
+
+    pub fn push_value_accessor(&mut self, value_accessor: &ValueAccessor) -> bool {
+        let selectors = value_accessor.get_selectors();
+        if selectors.is_empty() {
+            return false;
+        }
+
+        if selectors.len() == 1 {
+            match selectors.first().unwrap() {
+                ValueSelector::ArrayIndex(_) => return false,
+                ValueSelector::MapKey(s) => self.push_selector(MapSelector::Key(s.clone())),
+                ValueSelector::ScalarExpression(_) => {
+                    self.push_selector(MapSelector::ValueAccessor(value_accessor.clone()))
+                }
+            }
+        } else {
+            self.push_selector(MapSelector::ValueAccessor(value_accessor.clone()));
+        }
+
+        true
+    }
+}
+
+impl Expression for MapSelectionExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
 }
