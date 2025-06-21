@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// TODO remove allow(dead_code) when we use what's in this module to encode OTAP
-#[allow(dead_code)]
+//! This module contains builders for record batches and arrays of encoded OTAP data.
+
+pub mod attributes;
+pub mod logs;
+
 mod array;
