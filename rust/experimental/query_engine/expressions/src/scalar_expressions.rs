@@ -46,10 +46,7 @@ impl ScalarExpression {
             ScalarExpression::Source(_) => true,
             ScalarExpression::Attached(_) => true,
             ScalarExpression::Variable(_) => true,
-            ScalarExpression::Static(s) => match s {
-                StaticScalarExpression::Boolean(_) => true,
-                _ => false,
-            },
+            ScalarExpression::Static(s) => matches!(s, StaticScalarExpression::Boolean(_)),
             ScalarExpression::Negate(_) => false,
             ScalarExpression::Logical(_) => true,
             ScalarExpression::Conditional(_) => true,
