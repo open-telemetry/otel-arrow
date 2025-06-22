@@ -23,8 +23,8 @@ pub enum TransformExpression {
     RemoveMapKeys(RemoveMapKeysTransformExpression),
 }
 
-impl TransformExpression {
-    pub fn get_query_location(&self) -> &QueryLocation {
+impl Expression for TransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
         match self {
             TransformExpression::Set(s) => s.get_query_location(),
             TransformExpression::Remove(r) => r.get_query_location(),
@@ -106,8 +106,8 @@ pub enum RemoveMapKeysTransformExpression {
     Retain(MapKeyListExpression),
 }
 
-impl RemoveMapKeysTransformExpression {
-    pub fn get_query_location(&self) -> &QueryLocation {
+impl Expression for RemoveMapKeysTransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
         match self {
             RemoveMapKeysTransformExpression::Remove(m) => m.get_query_location(),
             RemoveMapKeysTransformExpression::Retain(m) => m.get_query_location(),
@@ -170,8 +170,8 @@ pub enum ReduceMapTransformExpression {
     Retain(MapSelectionExpression),
 }
 
-impl ReduceMapTransformExpression {
-    pub fn get_query_location(&self) -> &QueryLocation {
+impl Expression for ReduceMapTransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
         match self {
             ReduceMapTransformExpression::Remove(m) => m.get_query_location(),
             ReduceMapTransformExpression::Retain(m) => m.get_query_location(),

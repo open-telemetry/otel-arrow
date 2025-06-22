@@ -41,18 +41,6 @@ pub enum ScalarExpression {
 }
 
 impl ScalarExpression {
-    pub fn get_query_location(&self) -> &QueryLocation {
-        match self {
-            ScalarExpression::Source(s) => s.get_query_location(),
-            ScalarExpression::Attached(a) => a.get_query_location(),
-            ScalarExpression::Variable(v) => v.get_query_location(),
-            ScalarExpression::Static(s) => s.get_query_location(),
-            ScalarExpression::Negate(n) => n.get_query_location(),
-            ScalarExpression::Logical(l) => l.get_query_location(),
-            ScalarExpression::Conditional(c) => c.get_query_location(),
-        }
-    }
-
     pub fn is_bool_compatible(&self) -> bool {
         match self {
             ScalarExpression::Source(_) => true,
@@ -65,6 +53,20 @@ impl ScalarExpression {
             ScalarExpression::Negate(_) => false,
             ScalarExpression::Logical(_) => true,
             ScalarExpression::Conditional(_) => true,
+        }
+    }
+}
+
+impl Expression for ScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            ScalarExpression::Source(s) => s.get_query_location(),
+            ScalarExpression::Attached(a) => a.get_query_location(),
+            ScalarExpression::Variable(v) => v.get_query_location(),
+            ScalarExpression::Static(s) => s.get_query_location(),
+            ScalarExpression::Negate(n) => n.get_query_location(),
+            ScalarExpression::Logical(l) => l.get_query_location(),
+            ScalarExpression::Conditional(c) => c.get_query_location(),
         }
     }
 }

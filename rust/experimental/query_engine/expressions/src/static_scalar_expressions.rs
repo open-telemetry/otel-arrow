@@ -20,8 +20,8 @@ pub enum StaticScalarExpression {
     String(StringScalarExpression),
 }
 
-impl StaticScalarExpression {
-    pub fn get_query_location(&self) -> &QueryLocation {
+impl Expression for StaticScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
         match self {
             StaticScalarExpression::Boolean(b) => b.get_query_location(),
             StaticScalarExpression::DateTime(d) => d.get_query_location(),

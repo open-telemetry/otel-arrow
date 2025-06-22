@@ -30,8 +30,8 @@ pub enum LogicalExpression {
     Chain(ChainLogicalExpression),
 }
 
-impl LogicalExpression {
-    pub fn get_query_location(&self) -> &QueryLocation {
+impl Expression for LogicalExpression {
+    fn get_query_location(&self) -> &QueryLocation {
         match self {
             LogicalExpression::Scalar(s) => s.get_query_location(),
             LogicalExpression::EqualTo(e) => e.get_query_location(),
