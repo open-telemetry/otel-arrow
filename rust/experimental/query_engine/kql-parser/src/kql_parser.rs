@@ -346,15 +346,23 @@ pub(crate) fn parse_logical_expression(
                 Rule::comparison_expression => {
                     Ok(parse_comparison_expression(logical_expression_rule, state)?)
                 }
-                Rule::logical_expression => {
-                    Ok(parse_logical_expression(logical_expression_rule, state)?)
+                Rule::scalar_expression => {
+                    let scalar = parse_scalar_expression(logical_expression_rule, state)?;
+
+                    if let ScalarExpression::Logical(l) = scalar {
+                        Ok(*l)
+                    } else {
+                        if !scalar.is_bool_compatible() {
+                            return Err(ParserError::QueryLanguageDiagnostic(
+                                scalar.get_query_location().clone(),
+                                "KS141",
+                                "The expression must have the type bool".into(),
+                            ));
+                        }
+
+                        Ok(LogicalExpression::Scalar(scalar))
+                    }
                 }
-                Rule::true_literal | Rule::false_literal => Ok(LogicalExpression::Scalar(
-                    ScalarExpression::Static(parse_standard_bool_literal(logical_expression_rule)),
-                )),
-                Rule::accessor_expression => Ok(LogicalExpression::Scalar(
-                    parse_accessor_expression(logical_expression_rule, state)?,
-                )),
                 _ => panic!(
                     "Unexpected rule in logical_expression_rule: {}",
                     logical_expression_rule
@@ -539,29 +547,7 @@ pub(crate) fn parse_conditional_expression(
 
     let mut conditional_rules = conditional_expression_rule.into_inner();
 
-    let condition = conditional_rules.next().unwrap();
-
-    let condition_scalar = match condition.as_rule() {
-        Rule::logical_expression => {
-            let logical_expression = parse_logical_expression(condition, state)?;
-            match logical_expression {
-                LogicalExpression::Scalar(s) => s,
-                _ => ScalarExpression::Logical(logical_expression.into()),
-            }
-        }
-        Rule::scalar_expression => {
-            let scalar_expression = parse_scalar_expression(condition, state)?;
-            if !scalar_expression.is_bool_compatible() {
-                return Err(ParserError::QueryLanguageDiagnostic {
-                    location: scalar_expression.get_query_location().clone(),
-                    diagnostic_id: "KS107",
-                    message: "A value of type bool expected".into(),
-                });
-            }
-            scalar_expression
-        }
-        _ => panic!("Unexpected rule in conditional_expression: {}", condition),
-    };
+    let condition_logical = conditional_rules.next().unwrap();
 
     let true_scalar = conditional_rules.next().unwrap();
 
@@ -570,7 +556,7 @@ pub(crate) fn parse_conditional_expression(
     Ok(ScalarExpression::Conditional(
         ConditionalScalarExpression::new(
             query_location,
-            condition_scalar,
+            parse_logical_expression(condition_logical, state)?,
             parse_scalar_expression(true_scalar, state)?,
             parse_scalar_expression(false_scalar, state)?,
         ),
@@ -1030,6 +1016,25 @@ pub(crate) fn parse_project_away_expression(
 
     Ok(TransformExpression::ReduceMap(
         ReduceMapTransformExpression::Remove(map_selection),
+    ))
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_where_expression(
+    where_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<DataExpression, ParserError> {
+    let query_location = to_query_location(&where_expression_rule);
+
+    let where_rule = where_expression_rule.into_inner().next().unwrap();
+
+    let predicate = match where_rule.as_rule() {
+        Rule::logical_expression => parse_logical_expression(where_rule, state)?,
+        _ => panic!("Unexpected rule in where_expression: {}", where_rule),
+    };
+
+    Ok(DataExpression::Discard(
+        DiscardDataExpression::new(query_location).with_predicate(predicate),
     ))
 }
 
@@ -1818,7 +1823,7 @@ mod parse_tests {
 
     #[test]
     fn test_parse_logical_expression() {
-        let run_test = |input: &str, expected: LogicalExpression| {
+        let run_test_success = |input: &str, expected: LogicalExpression| {
             let mut state = ParserState::new(input).with_attached_data_names(&["resource"]);
 
             state.push_variable_name("variable");
@@ -1830,21 +1835,36 @@ mod parse_tests {
             assert_eq!(expected, expression);
         };
 
-        run_test(
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
+
+            let error = parse_logical_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::QueryLanguageDiagnostic(_, id, msg) = error {
+                assert_eq!(expected_id, id);
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected QueryLanguageDiagnostic");
+            }
+        };
+
+        run_test_success(
             "true",
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(QueryLocation::new_fake(), true),
             ))),
         );
 
-        run_test(
+        run_test_success(
             "false",
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(QueryLocation::new_fake(), false),
             ))),
         );
 
-        run_test(
+        run_test_success(
             "source.name",
             LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1854,7 +1874,7 @@ mod parse_tests {
             ))),
         );
 
-        run_test(
+        run_test_success(
             "resource.attributes['service.name']",
             LogicalExpression::Scalar(ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1872,7 +1892,7 @@ mod parse_tests {
             ))),
         );
 
-        run_test(
+        run_test_success(
             "variable",
             LogicalExpression::Scalar(ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1881,7 +1901,7 @@ mod parse_tests {
             ))),
         );
 
-        run_test(
+        run_test_success(
             "variable == 'hello world'",
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -1927,7 +1947,7 @@ mod parse_tests {
             )),
         )));
 
-        run_test(
+        run_test_success(
             "variable == 'hello world' or SeverityText != 'Info'",
             LogicalExpression::Chain(chain),
         );
@@ -1974,9 +1994,15 @@ mod parse_tests {
             )),
         )));
 
-        run_test(
+        run_test_success(
             "(variable == ('hello world') or (SeverityNumber) >= 0) and (true)",
             LogicalExpression::Chain(nested_chain),
+        );
+
+        run_test_failure(
+            "'hello world'",
+            "KS141",
+            "The expression must have the type bool",
         );
     }
 
@@ -2355,32 +2381,15 @@ mod parse_tests {
             assert_eq!(expected, expression);
         };
 
-        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
-            let state = ParserState::new(input);
-
-            let mut result = KqlParser::parse(Rule::conditional_expression, input).unwrap();
-
-            let error = parse_conditional_expression(result.next().unwrap(), &state).unwrap_err();
-
-            if let ParserError::QueryLanguageDiagnostic {
-                location: _,
-                diagnostic_id: id,
-                message: msg,
-            } = error
-            {
-                assert_eq!(expected_id, id);
-                assert_eq!(expected_msg, msg);
-            } else {
-                panic!("Expected QueryLanguageDiagnostic");
-            }
-        };
-
         run_test_success(
             "iff(true, 1, 0)",
             ScalarExpression::Conditional(ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Boolean(
-                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
@@ -2395,18 +2404,15 @@ mod parse_tests {
             "iif(1 > 0, 1, 0)",
             ScalarExpression::Conditional(ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::Logical(
-                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                        )),
-                    ))
-                    .into(),
-                ),
+                LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                    )),
+                )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 )),
@@ -2420,22 +2426,22 @@ mod parse_tests {
             "iif(1 > 0, iif(true, 'a', 'b'), iff(false, 'c', 'd'))",
             ScalarExpression::Conditional(ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::Logical(
-                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                        )),
-                    ))
-                    .into(),
-                ),
+                LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                    )),
+                )),
                 ScalarExpression::Conditional(ConditionalScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Static(StaticScalarExpression::Boolean(
-                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
                     )),
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "a"),
@@ -2446,8 +2452,11 @@ mod parse_tests {
                 )),
                 ScalarExpression::Conditional(ConditionalScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Static(StaticScalarExpression::Boolean(
-                        BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            false,
+                        )),
                     )),
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "c"),
@@ -2458,8 +2467,6 @@ mod parse_tests {
                 )),
             )),
         );
-
-        run_test_failure("iff('a', 0, 1)", "KS107", "A value of type bool expected");
     }
 
     #[test]
@@ -3082,6 +3089,53 @@ mod parse_tests {
         run_test_failure(
             "project-away resource.attributes['key']",
             "To be valid in a project-away expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
+        );
+    }
+
+    #[test]
+    pub fn test_parse_where_expression() {
+        let run_test_success = |input: &str, expected: DataExpression| {
+            let mut state = ParserState::new(input);
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlParser::parse(Rule::where_expression, input).unwrap();
+
+            let expression = parse_where_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "where variable",
+            DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::Scalar(ScalarExpression::Variable(
+                        VariableScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "variable",
+                            ValueAccessor::new(),
+                        ),
+                    )),
+                ),
+            ),
+        );
+
+        run_test_success(
+            "where 1 > 0",
+            DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                        )),
+                    )),
+                ),
+            ),
         );
     }
 }
