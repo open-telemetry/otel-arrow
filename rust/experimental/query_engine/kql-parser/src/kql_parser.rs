@@ -1261,7 +1261,7 @@ mod pest_tests {
                 "(true or variable['a'])",
                 "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)",
             ],
-            &["1"],
+            &["!"],
         );
     }
 
