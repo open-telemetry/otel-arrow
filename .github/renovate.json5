@@ -11,6 +11,8 @@
     "docker:pinDigests",
     "helpers:pinGitHubActionDigestsToSemver"
   ],
+  // this directory has generated code, don't send updates to it
+  "ignorePaths": ["collector/cmd/otelarrowcol/**"],
   "packageRules": [
     {
       // reduces the number of Renovate PRs
@@ -33,10 +35,6 @@
       "schedule": [
         "before 8am on Monday"
       ]
-    },
-    {
-      // this directory has generated code, don't send updates to it
-      "ignorePaths": ["collector/cmd/otelarrowcol/**]
     },
     {
       // group together all github action workflow changes
