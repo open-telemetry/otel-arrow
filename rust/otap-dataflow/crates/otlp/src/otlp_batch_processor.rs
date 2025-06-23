@@ -41,7 +41,9 @@ impl Batch for ExportTraceServiceRequest {
         &mut self.resource_spans
     }
     fn new_empty() -> Self {
-        ExportTraceServiceRequest { resource_spans: Vec::new() }
+        ExportTraceServiceRequest {
+            resource_spans: Vec::new(),
+        }
     }
 }
 
@@ -147,7 +149,9 @@ impl Batch for ExportMetricsServiceRequest {
         &mut self.resource_metrics
     }
     fn new_empty() -> Self {
-        ExportMetricsServiceRequest { resource_metrics: Vec::new() }
+        ExportMetricsServiceRequest {
+            resource_metrics: Vec::new(),
+        }
     }
 }
 
@@ -214,7 +218,9 @@ impl Batch for ExportLogsServiceRequest {
         &mut self.resource_logs
     }
     fn new_empty() -> Self {
-        ExportLogsServiceRequest { resource_logs: Vec::new() }
+        ExportLogsServiceRequest {
+            resource_logs: Vec::new(),
+        }
     }
 }
 
