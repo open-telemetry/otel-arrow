@@ -1033,6 +1033,9 @@ pub(crate) fn parse_where_expression(
         _ => panic!("Unexpected rule in where_expression: {}", where_rule),
     };
 
+    // Note: KQL "where" describes data to retain. Query engine "discard"
+    // describes data to remove. When mapping KQL "where" onto "discard" we use
+    // a "Not" expression to flip the KQL logic to match.
     Ok(DataExpression::Discard(
         DiscardDataExpression::new(query_location.clone()).with_predicate(LogicalExpression::Not(
             NotLogicalExpression::new(query_location, predicate),
