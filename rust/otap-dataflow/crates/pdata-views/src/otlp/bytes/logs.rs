@@ -1,0 +1,436 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
+//! bytes for messages defined in logs.proto
+
+use std::borrow::Cow;
+
+use crate::otlp::bytes::common::{KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue};
+use crate::otlp::bytes::consts::field_num::logs::{
+    LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS,
+    LOG_RECORD_OBSERVED_TIME_UNIX_NANO, LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT,
+    LOG_RECORD_SPAN_ID, LOG_RECORD_TIME_UNIX_NANO, LOG_RECORD_TRACE_ID, LOGS_DATA_RESOURCE,
+    RESOURCE_LOGS_RESOURCE, RESOURCE_LOGS_SCHEMA_URL, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE,
+    SCOPE_LOGS_LOG_RECORDS, SCOPE_LOGS_SCHEMA_URL,
+};
+use crate::otlp::bytes::consts::wire_types;
+use crate::otlp::bytes::decode::{FieldOffsets, ProtoBytesParser, read_len_delim, read_varint};
+use crate::otlp::bytes::resource::RawResource;
+use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+
+/// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
+pub struct RawLogsData<'a> {
+    /// bytes of the serialized message
+    buf: &'a [u8],
+}
+
+impl<'a> RawLogsData<'a> {
+    /// Create a new instance of `RawLogsData`
+    #[must_use]
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self { buf }
+    }
+}
+
+/// Implementation of `ResourceLogsView` backed by protobuf serialized `ResourceLogs` message
+pub struct RawResourceLogs<'a> {
+    byte_parser: ProtoBytesParser<'a, ResourceLogsFieldOffsets>,
+}
+
+/// Known field offsets within byte buffer for fields in ResourceLogs message
+pub struct ResourceLogsFieldOffsets {
+    resource: Option<usize>,
+    schema_url: Option<usize>,
+    scope_logs: Vec<usize>,
+}
+
+impl FieldOffsets for ResourceLogsFieldOffsets {
+    fn new() -> Self {
+        Self {
+            resource: None,
+            schema_url: None,
+            scope_logs: Vec::new(),
+        }
+    }
+
+    fn get_field_offset(&self, field_num: u64) -> Option<usize> {
+        match field_num {
+            RESOURCE_LOGS_RESOURCE => self.resource,
+            RESOURCE_LOGS_SCHEMA_URL => self.schema_url,
+            _ => None,
+        }
+    }
+
+    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
+        if field_num == RESOURCE_LOGS_SCOPE_LOGS {
+            self.scope_logs.get(index).copied()
+        } else {
+            None
+        }
+    }
+
+    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
+        match field_num {
+            RESOURCE_LOGS_RESOURCE => self.resource = Some(offset),
+            RESOURCE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
+            RESOURCE_LOGS_SCOPE_LOGS => {
+                self.scope_logs.push(offset);
+            }
+            _ => {
+                // ignore invalid field_num
+            }
+        }
+    }
+}
+
+/// Implementation of `ScopeLogsView` backed by protobuf serialized `ScopeLogs` message
+pub struct RawScopeLogs<'a> {
+    byte_parser: ProtoBytesParser<'a, ScopeLogsFieldOffsets>,
+}
+
+/// Known field offsets within byte buffer for fields in ResourceLogs message
+pub struct ScopeLogsFieldOffsets {
+    scope: Option<usize>,
+    schema_url: Option<usize>,
+    log_records: Vec<usize>,
+}
+
+impl FieldOffsets for ScopeLogsFieldOffsets {
+    fn new() -> Self {
+        Self {
+            scope: None,
+            schema_url: None,
+            log_records: Vec::new(),
+        }
+    }
+
+    fn get_field_offset(&self, field_num: u64) -> Option<usize> {
+        match field_num {
+            SCOPE_LOG_SCOPE => self.scope,
+            SCOPE_LOGS_SCHEMA_URL => self.schema_url,
+            _ => None,
+        }
+    }
+
+    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
+        if field_num == SCOPE_LOGS_LOG_RECORDS {
+            self.log_records.get(index).copied()
+        } else {
+            None
+        }
+    }
+
+    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
+        match field_num {
+            SCOPE_LOG_SCOPE => self.scope = Some(offset),
+            SCOPE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
+            SCOPE_LOGS_LOG_RECORDS => self.log_records.push(offset),
+            _ => {
+                // ignore invalid field_num
+            }
+        }
+    }
+}
+
+/// Implementation of `LogRecordView` backed by protobuf serialized `LogRecord` message
+pub struct RawLogRecord<'a> {
+    bytes_parser: ProtoBytesParser<'a, LogFieldOffsets>,
+}
+
+/// Known field offsets within byte buffer for fields in ResourceLogs message
+pub struct LogFieldOffsets {
+    scalar_fields: [Option<usize>; 13],
+    attributes: Vec<usize>,
+}
+
+impl FieldOffsets for LogFieldOffsets {
+    fn new() -> Self {
+        Self {
+            scalar_fields: [None; 13],
+            attributes: Vec::new(),
+        }
+    }
+
+    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
+        if field_num == LOG_RECORD_ATTRIBUTES {
+            self.attributes.push(offset)
+        } else if field_num < 13 {
+            self.scalar_fields[field_num as usize] = Some(offset);
+        }
+    }
+
+    fn get_field_offset(&self, field_num: u64) -> Option<usize> {
+        *self.scalar_fields.get(field_num as usize).unwrap_or(&None)
+    }
+
+    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
+        if field_num == LOG_RECORD_ATTRIBUTES {
+            self.attributes.get(index).copied()
+        } else {
+            None
+        }
+    }
+}
+
+/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+
+/// Iterator of ResourceLogs - produces implementation of `ResourceLogs` view from byte array
+/// containing a serialized LogsData message
+pub struct ResourceLogsIter<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Iterator for ResourceLogsIter<'a> {
+    type Item = RawResourceLogs<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.pos < self.buf.len() {
+            let (tag, next_pos) = read_varint(self.buf, self.pos)?;
+            self.pos = next_pos;
+            let field = tag >> 3;
+            let wire_type = tag & 7;
+            if field == LOGS_DATA_RESOURCE && wire_type == wire_types::LEN_DELIMITED {
+                let (slice, next_pos) = read_len_delim(self.buf, self.pos)?;
+                self.pos = next_pos;
+                return Some(RawResourceLogs {
+                    byte_parser: ProtoBytesParser::new(slice),
+                });
+            }
+        }
+
+        None
+    }
+}
+
+/// Iterator of ScopeLogs - produces implementation of `ResourceLogs` view from byte array
+/// containing a serialized LogsData message
+pub struct ScopeLogsIter<'a> {
+    field_index: usize,
+    byte_parser: ProtoBytesParser<'a, ResourceLogsFieldOffsets>,
+}
+
+impl<'a> Iterator for ScopeLogsIter<'a> {
+    type Item = RawScopeLogs<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.advance_to_find_next_repeated(
+            RESOURCE_LOGS_SCOPE_LOGS,
+            self.field_index,
+            wire_types::LEN_DELIMITED,
+        )?;
+        self.field_index += 1;
+
+        Some(RawScopeLogs {
+            byte_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/// Iterator of LogsRecord - produces implementation of `ResourceLogs` view from byte array
+/// containing a serialized LogsData message
+pub struct LogRecordsIter<'a> {
+    field_index: usize,
+    byte_parser: ProtoBytesParser<'a, ScopeLogsFieldOffsets>,
+}
+
+impl<'a> Iterator for LogRecordsIter<'a> {
+    type Item = RawLogRecord<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.byte_parser.advance_to_find_next_repeated(
+            SCOPE_LOGS_LOG_RECORDS,
+            self.field_index,
+            wire_types::LEN_DELIMITED,
+        )?;
+        self.field_index += 1;
+
+        Some(RawLogRecord {
+            bytes_parser: ProtoBytesParser::new(slice),
+        })
+    }
+}
+
+/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+
+impl LogsDataView for RawLogsData<'_> {
+    type ResourceLogs<'a>
+        = RawResourceLogs<'a>
+    where
+        Self: 'a;
+
+    type ResourcesIter<'a>
+        = ResourceLogsIter<'a>
+    where
+        Self: 'a;
+
+    fn resources(&self) -> Self::ResourcesIter<'_> {
+        ResourceLogsIter {
+            buf: self.buf,
+            pos: 0,
+        }
+    }
+}
+
+impl ResourceLogsView for RawResourceLogs<'_> {
+    type Resource<'res>
+        = RawResource<'res>
+    where
+        Self: 'res;
+    type ScopeLogs<'scp>
+        = RawScopeLogs<'scp>
+    where
+        Self: 'scp;
+    type ScopesIter<'scp>
+        = ScopeLogsIter<'scp>
+    where
+        Self: 'scp;
+
+    fn resource(&self) -> Option<Self::Resource<'_>> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(RESOURCE_LOGS_RESOURCE, wire_types::LEN_DELIMITED)?;
+
+        Some(RawResource::new(ProtoBytesParser::new(slice)))
+    }
+
+    fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN_DELIMITED)?;
+        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+    }
+
+    fn scopes(&self) -> Self::ScopesIter<'_> {
+        ScopeLogsIter {
+            field_index: 0,
+            byte_parser: self.byte_parser.clone(),
+        }
+    }
+}
+
+impl ScopeLogsView for RawScopeLogs<'_> {
+    type LogRecord<'rec>
+        = RawLogRecord<'rec>
+    where
+        Self: 'rec;
+    type LogRecordsIter<'rec>
+        = LogRecordsIter<'rec>
+    where
+        Self: 'rec;
+    type Scope<'scp>
+        = RawInstrumentationScope<'scp>
+    where
+        Self: 'scp;
+
+    fn log_records(&self) -> Self::LogRecordsIter<'_> {
+        LogRecordsIter {
+            field_index: 0,
+            byte_parser: self.byte_parser.clone(),
+        }
+    }
+
+    fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN_DELIMITED)?;
+        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+    }
+
+    fn scope(&self) -> Option<Self::Scope<'_>> {
+        let slice = self
+            .byte_parser
+            .advance_to_find_field(SCOPE_LOG_SCOPE, wire_types::LEN_DELIMITED)?;
+        Some(RawInstrumentationScope::new(ProtoBytesParser::new(slice)))
+    }
+}
+
+impl LogRecordView for RawLogRecord<'_> {
+    type Attribute<'att>
+        = RawKeyValue<'att>
+    where
+        Self: 'att;
+
+    type AttributeIter<'att>
+        = KeyValueIter<'att, LogFieldOffsets>
+    where
+        Self: 'att;
+
+    type Body<'bod>
+        = RawAnyValue<'bod>
+    where
+        Self: 'bod;
+
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        KeyValueIter::new(self.bytes_parser.clone(), LOG_RECORD_ATTRIBUTES)
+    }
+
+    fn body(&self) -> Option<Self::Body<'_>> {
+        self.bytes_parser
+            .advance_to_find_field(LOG_RECORD_BODY, wire_types::LEN_DELIMITED)
+            .map(RawAnyValue::new)
+    }
+
+    fn dropped_attributes_count(&self) -> u32 {
+        match self
+            .bytes_parser
+            .advance_to_find_field(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)
+        {
+            Some(slice) => match read_varint(slice, 0) {
+                Some((val, _)) => val as u32,
+                None => 0,
+            },
+            None => 0,
+        }
+    }
+
+    fn flags(&self) -> Option<u32> {
+        let slice = self
+            .bytes_parser
+            .advance_to_find_field(LOG_RECORD_FLAGS, wire_types::FIXED_32)?;
+        let byte_arr: [u8; 4] = slice.try_into().ok()?;
+        Some(u32::from_le_bytes(byte_arr))
+    }
+
+    fn observed_time_unix_nano(&self) -> Option<u64> {
+        let slice = self
+            .bytes_parser
+            .advance_to_find_field(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64)?;
+        let byte_arr: [u8; 8] = slice.try_into().ok()?;
+        Some(u64::from_le_bytes(byte_arr))
+    }
+
+    fn severity_number(&self) -> Option<i32> {
+        let slice = self
+            .bytes_parser
+            .advance_to_find_field(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT)?;
+        let (val, _) = read_varint(slice, 0)?;
+        Some(val as i32)
+    }
+
+    fn severity_text(&self) -> Option<crate::views::common::Str<'_>> {
+        let slice = self
+            .bytes_parser
+            .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN_DELIMITED)?;
+        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+    }
+
+    fn span_id(&self) -> Option<&[u8]> {
+        self.bytes_parser
+            .advance_to_find_field(LOG_RECORD_SPAN_ID, wire_types::LEN_DELIMITED)
+    }
+
+    fn time_unix_nano(&self) -> Option<u64> {
+        let slice = self
+            .bytes_parser
+            .advance_to_find_field(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+        let byte_arr: [u8; 8] = slice.try_into().ok()?;
+        Some(u64::from_le_bytes(byte_arr))
+    }
+
+    fn trace_id(&self) -> Option<&[u8]> {
+        self.bytes_parser
+            .advance_to_find_field(LOG_RECORD_TRACE_ID, wire_types::LEN_DELIMITED)
+    }
+}

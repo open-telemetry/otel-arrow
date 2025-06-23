@@ -37,51 +37,64 @@ where
 
     for (curr_resource_id, resource_logs) in logs_view.resources().enumerate() {
         let curr_resource_id = curr_resource_id as u16;
-        if let Some(resource) = resource_logs.resource() {
+
+        // keep reference to resource dropped attributes, which will be appended to log later
+        let resource_dropped_attrs_count = if let Some(resource) = resource_logs.resource() {
+            // append resource attributes
             for kv in resource.attributes() {
                 resource_attrs.append_parent_id(&curr_resource_id);
                 append_attribute_value(&mut resource_attrs, &kv)?;
             }
-        }
+            resource.dropped_attributes_count()
+        } else {
+            0
+        };
+
+        let resource_schema_url = resource_logs.schema_url();
 
         for scope_logs in resource_logs.scopes() {
-            if let Some(scope) = scope_logs.scope() {
-                for kv in scope.attributes() {
-                    scope_attrs.append_parent_id(&curr_scope_id);
-                    append_attribute_value(&mut scope_attrs, &kv)?;
-                }
-            }
+            let scope = scope_logs.scope();
+
+            let (scope_name, scope_version, scope_dropped_attributes_count) =
+                if let Some(scope) = scope.as_ref() {
+                    // since there is an instrumentations cope present, append the the attributes
+                    for kv in scope.attributes() {
+                        scope_attrs.append_parent_id(&curr_scope_id);
+                        append_attribute_value(&mut scope_attrs, &kv)?;
+                    }
+
+                    // keep track of scope fields, which will be appended to log later on
+                    (
+                        scope.name(),
+                        scope.version(),
+                        scope.dropped_attributes_count(),
+                    )
+                } else {
+                    (None, None, 0)
+                };
+
+            let scope_schema_url = scope_logs.schema_url();
 
             for log_record in scope_logs.log_records() {
                 // set the resource
                 logs.resource.append_id(Some(curr_resource_id));
                 logs.resource
-                    .append_schema_url(resource_logs.schema_url().as_deref());
-                logs.resource.append_dropped_attributes_count(
-                    resource_logs
-                        .resource()
-                        .map(|r| r.dropped_attributes_count())
-                        .unwrap_or(0),
-                );
+                    .append_schema_url(resource_schema_url.as_deref());
+                logs.resource
+                    .append_dropped_attributes_count(resource_dropped_attrs_count);
 
                 // set the scope
                 logs.scope.append_id(Some(curr_scope_id));
-                if let Some(scope) = scope_logs.scope() {
-                    logs.scope.append_name(scope.name().as_deref());
-                    logs.scope.append_version(scope.version().as_deref());
-                    logs.scope
-                        .append_dropped_attributes_count(scope.dropped_attributes_count());
-                } else {
-                    logs.scope.append_name(None);
-                    logs.scope.append_version(None);
-                    logs.scope.append_dropped_attributes_count(0);
-                }
+                logs.scope.append_name(scope_name.as_deref());
+                logs.scope.append_version(scope_version.as_deref());
+                logs.scope
+                    .append_dropped_attributes_count(scope_dropped_attributes_count);
 
                 logs.append_time_unix_nano(log_record.time_unix_nano().map(|v| v as i64));
                 logs.append_observed_time_unix_nano(
                     log_record.observed_time_unix_nano().map(|v| v as i64),
                 );
-                logs.append_schema_url(scope_logs.schema_url().as_deref());
+                logs.append_schema_url(scope_schema_url.as_deref());
                 logs.append_severity_number(log_record.severity_number());
                 logs.append_severity_text(log_record.severity_text().as_deref());
                 logs.append_dropped_attributes_count(log_record.dropped_attributes_count());
@@ -246,6 +259,7 @@ mod test {
     };
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type, UInt16Type};
+    use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
@@ -255,11 +269,10 @@ mod test {
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_rust::schema::consts;
+    use prost::Message;
 
-    #[test]
-    fn test_encode_logs_verify_all_columns() {
-        // verify that every column for each record batch gets encoded as the correct type
-        let logs_data = LogsData::new(vec![
+    fn _generate_logs_for_verify_all_columns() -> LogsData {
+        LogsData::new(vec![
             ResourceLogs::build(
                 Resource::build(vec![KeyValue::new(
                     "resource_attr1",
@@ -298,8 +311,14 @@ mod test {
                 .finish(),
             ])
             .finish(),
-        ]);
+        ])
+    }
 
+    fn _test_encode_logs_verify_all_columns_generic<T>(logs_data: T)
+    where
+        T: LogsDataView,
+    {
+        // verify that every column for each record batch gets encoded as the correct type
         let result = encode_logs_otap_batch(&logs_data);
         assert!(result.is_ok());
         let otap_batch = result.unwrap();
@@ -683,15 +702,22 @@ mod test {
     }
 
     #[test]
-    fn test_encode_logs_verify_nullability() {
-        // check that every column handles nulls correctly through the correct strategy which for
-        // various columns consists of one of the following:
-        // - not being present in the record batch
-        // - having nulls in the columns
-        // - using default values
+    fn test_encode_logs_verify_all_columns_proto_struct() {
+        let logs_data = _generate_logs_for_verify_all_columns();
+        _test_encode_logs_verify_all_columns_generic(logs_data);
+    }
 
+    #[test]
+    fn test_encode_logs_verify_all_columns_proto_bytes() {
+        let logs_data = _generate_logs_for_verify_all_columns();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_encode_logs_verify_all_columns_generic(RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_logs_for_verify_nullability() -> LogsData {
         // logs data with all empty/default fields
-        let logs_data = LogsData::new(vec![ResourceLogs {
+        LogsData::new(vec![ResourceLogs {
             resource: None,
             schema_url: "".to_string(),
             scope_logs: vec![ScopeLogs {
@@ -711,8 +737,20 @@ mod test {
                     event_name: "".to_string(),
                 }],
             }],
-        }]);
-        let result = encode_logs_otap_batch(&logs_data);
+        }])
+    }
+
+    fn _test_encode_logs_verify_nullability_generic<T>(logs_data: &T)
+    where
+        T: LogsDataView,
+    {
+        // check that every column handles nulls correctly through the correct strategy which for
+        // various columns consists of one of the following:
+        // - not being present in the record batch
+        // - having nulls in the columns
+        // - using default values
+
+        let result = encode_logs_otap_batch(logs_data);
         assert!(result.is_ok());
         let otap_batch = result.unwrap();
 
@@ -761,8 +799,20 @@ mod test {
     }
 
     #[test]
-    fn test_encode_logs_body_all_field_types() {
-        // check that all the field types allowed for a body are able to be encoded
+    fn test_encode_logs_verify_nullability_proto_struct() {
+        let logs_data = _generate_logs_for_verify_nullability();
+        _test_encode_logs_verify_nullability_generic(&logs_data);
+    }
+
+    #[test]
+    fn test_encode_logs_verify_nullability_proto_bytes() {
+        let logs_data = _generate_logs_for_verify_nullability();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_encode_logs_verify_nullability_generic(&RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_log_body_all_field_types_data() -> LogsData {
         let log_bodies = vec![
             AnyValue::new_string("terry"),
             AnyValue::new_bool(true),
@@ -792,7 +842,7 @@ mod test {
                 })
                 .collect::<Vec<_>>(),
         );
-        let logs_data = LogsData::new(vec![ResourceLogs {
+        LogsData::new(vec![ResourceLogs {
             resource: None,
             schema_url: "".to_string(),
             scope_logs: vec![ScopeLogs {
@@ -800,9 +850,15 @@ mod test {
                 schema_url: "".to_string(),
                 log_records,
             }],
-        }]);
+        }])
+    }
 
-        let result = encode_logs_otap_batch(&logs_data);
+    fn _test_encode_logs_body_all_field_types_generic<T>(logs_data: &T)
+    where
+        T: LogsDataView,
+    {
+        // check that all the field types allowed for a body are able to be encoded
+        let result = encode_logs_otap_batch(logs_data);
         assert!(result.is_ok());
 
         let otap_batch = result.unwrap();
@@ -962,7 +1018,20 @@ mod test {
     }
 
     #[test]
-    fn test_attributes_all_field_types() {
+    fn test_encode_logs_body_all_field_types_proto_struct() {
+        let logs_data = _generate_log_body_all_field_types_data();
+        _test_encode_logs_body_all_field_types_generic(&logs_data);
+    }
+
+    #[test]
+    fn test_encode_logs_body_all_fields_proto_bytes() {
+        let logs_data = _generate_log_body_all_field_types_data();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_encode_logs_body_all_field_types_generic(&RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_test_data_all_field_types() -> LogsData {
         let attr_values = vec![
             AnyValue::new_string("terry"),
             AnyValue::new_bool(true),
@@ -988,7 +1057,7 @@ mod test {
             value: None,
         });
 
-        let logs_data = LogsData::new(vec![ResourceLogs {
+        LogsData::new(vec![ResourceLogs {
             resource: None,
             schema_url: "".to_string(),
             scope_logs: vec![ScopeLogs {
@@ -1000,8 +1069,13 @@ mod test {
                         .finish(),
                 ],
             }],
-        }]);
+        }])
+    }
 
+    fn _test_attributes_all_field_types_generic<T>(logs_data: T)
+    where
+        T: LogsDataView,
+    {
         let result = encode_logs_otap_batch(&logs_data);
         assert!(result.is_ok());
 
@@ -1172,5 +1246,19 @@ mod test {
         .unwrap();
 
         assert_eq!(logs_attrs, &expected_attrs);
+    }
+
+    #[test]
+    fn test_attributes_all_field_types_proto_struct() {
+        let logs_data = _generate_test_data_all_field_types();
+        _test_attributes_all_field_types_generic(logs_data)
+    }
+
+    #[test]
+    fn test_attributes_all_field_types_proto_bytes() {
+        let logs_data = _generate_test_data_all_field_types();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
     }
 }
