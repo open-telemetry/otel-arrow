@@ -1,11 +1,16 @@
 # Component Module
 
-This module defines the abstract base class `Component`, used in a test orchestrator framework to manage the lifecycle of testable components. It offers a standardized structure and hook system to implement and trace component behavior across various lifecycle phases.
+This module defines the abstract base class `Component`, used in a test
+orchestrator framework to manage the lifecycle of testable components.
+It offers a standardized structure and hook system to implement and trace
+component behavior across various lifecycle phases.
 
 ## Overview
 
 - **Component** is an abstract base class that:
-  - Manages lifecycle phases: `configure`, `deploy`, `start`, `stop`, `destroy`, `start_monitoring`, `stop_monitoring`, and `collect_monitoring_data`.
+  - Manages lifecycle phases: `configure`, `deploy`, `start`, `stop`,
+    `destroy`, `start_monitoring`, `stop_monitoring`, and
+    `collect_monitoring_data`.
   - Supports registration and execution of hooks around these phases.
   - Supports observability via OpenTelemetry tracing.
   - Provides runtime data management.
@@ -68,7 +73,8 @@ Integrates with opentelemetry.trace for observability.
 
 Uses a hook strategy pattern from strategies.hook_strategy.
 
-Depends on internal context and runtime modules (context.base, context.test_contexts, etc.).
+Depends on internal context and runtime modules (context.base,
+context.test_contexts, etc.).
 
 ### Example Usage
 
@@ -84,4 +90,6 @@ class MyComponent(Component):
     def _collect_monitoring_data(self, ctx): ...
 ```
 
-This file is the foundation for defining orchestrated test components and provides extensibility and instrumentation for complex testing scenarios.
+This file is the foundation for defining orchestrated test
+components and provides extensibility and instrumentation
+for complex testing scenarios.

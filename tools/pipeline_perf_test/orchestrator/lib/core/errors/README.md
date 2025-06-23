@@ -4,13 +4,19 @@ Error handling utilities for test components and plugin execution.
 
 ## Overview
 
-The `lib.core.errors` module provides a lightweight, configurable framework for error handling in test and plugin execution contexts. It supports flexible retry mechanisms, optional continuation after failure, and seamless integration with logging and tracing systems. This utility is designed to improve the reliability and observability of automated testing workflows.
+The `lib.core.errors` module provides a lightweight, configurable
+framework for error handling in test and plugin execution contexts.
+It supports flexible retry mechanisms, optional continuation after
+failure, and seamless integration with logging and tracing systems.
+This utility is designed to improve the reliability and observability
+of automated testing workflows.
 
 ## Structure
 
 This directory contains the following file:
 
-- `error_handler.py` - Implements configurable error handling behavior with support for retries, delayed retries, and optional continuation.
+- `error_handler.py` - Implements configurable error handling behavior
+with support for retries, delayed retries, and optional continuation.
 
 ## Contents
 
@@ -18,24 +24,32 @@ This directory contains the following file:
 
 #### `OnErrorConfig`
 
-A Pydantic-based model that defines how errors should be handled when executing test components or plugins.
+A Pydantic-based model that defines how errors should be handled when
+executing test components or plugins.
+
 **Fields:**
 
-- `retries` (`Optional[int]`): Number of retry attempts after a failure. Default is `0`.
-- `retry_delay_seconds` (`Optional[int]`): Delay in seconds between retry attempts. Default is `10`.
-- `continue_` (`Optional[bool]`): If `True`, execution continues even after all retries fail. Default is `False`.
+- `retries` (`Optional[int]`): Number of retry attempts after a failure.
+    Default is `0`.
+- `retry_delay_seconds` (`Optional[int]`): Delay in seconds between retry
+    attempts. Default is `10`.
+- `continue_` (`Optional[bool]`): If `True`, execution continues even after
+    all retries fail. Default is `False`.
 
 ### Functions
 
 #### `handle_with_policy(ctx, func, on_error)`
 
-Wraps a callable function with retry logic and error handling, based on the provided `OnErrorConfig`.
+Wraps a callable function with retry logic and error handling, based on the
+provided `OnErrorConfig`.
 
 **Parameters:**
 
-- `ctx` (`BaseContext`): Context object providing logger, execution status, and tracing span.
+- `ctx` (`BaseContext`): Context object providing logger, execution status,
+    and tracing span.
 - `func` (`Callable`): The function to execute.
-- `on_error` (`OnErrorConfig`): Configuration object specifying retry and continuation behavior.
+- `on_error` (`OnErrorConfig`): Configuration object specifying retry
+    and continuation behavior.
 
 **Behavior:**
 

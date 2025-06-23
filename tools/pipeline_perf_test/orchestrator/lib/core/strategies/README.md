@@ -1,8 +1,12 @@
 # `core.strategies` - Pluggable Strategy Interfaces
 
-The `core.strategies` package defines a modular and extensible strategy pattern for key behaviors in a load generator testbed and test orchestration environment. It separates concerns like configuration, deployment, execution, monitoring, hooks, and reporting into independently pluggable components.
+The `core.strategies` package defines a modular and extensible strategy pattern
+for key behaviors in a load generator testbed and test orchestration
+environment. It separates concerns like configuration, deployment, execution,
+monitoring, hooks, and reporting into independently pluggable components.
 
-These strategies provide clear, interchangeable abstractions for customizing the behavior of testbed components without modifying their core logic.
+These strategies provide clear, interchangeable abstractions for customizing
+the behavior of testbed components without modifying their core logic.
 
 ---
 
@@ -158,4 +162,8 @@ This design promotes:
 
 ## Summary
 
-The `core.strategies` package enables a robust, modular architecture for building test orchestration systems that are adaptable, extensible, and environment-agnostic. By leveraging strategy patterns across major operational domains, it supports sophisticated test workflows while maintaining clean separation and composability.
+The `core.strategies` package enables a robust, modular architecture for
+building test orchestration systems that are adaptable, extensible, and
+environment-agnostic. By leveraging strategy patterns across major
+operational domains, it supports sophisticated test workflows while
+maintaining clean separation and composability.

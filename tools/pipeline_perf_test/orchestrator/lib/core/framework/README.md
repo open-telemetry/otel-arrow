@@ -1,8 +1,12 @@
 # `core.framework` - Test Orchestration Framework
 
-The `core.framework` package defines the core abstractions and execution model for a modular test orchestration system. It provides a flexible structure to define, organize, run, and report on tests composed of suites, scenarios, and steps, with full support for lifecycle hooks, extensibility, and reporting.
+The `core.framework` package defines the core abstractions and execution
+model for a modular test orchestration system. It provides a flexible structure
+to define, organize, run, and report on tests composed of suites, scenarios,
+and steps, with full support for lifecycle hooks, extensibility, and reporting.
 
-This package is central to the orchestrator's functionality and acts as the execution engine for all test logic.
+This package is central to the orchestrator's functionality and acts as the
+execution engine for all test logic.
 
 ---
 
@@ -10,11 +14,13 @@ This package is central to the orchestrator's functionality and acts as the exec
 
 ### `element.py` - **Framework Execution Backbone**
 
-Defines the abstract base class `FrameworkElement`, which represents the foundational unit of test execution (e.g., test suite, scenario, or step).
+Defines the abstract base class `FrameworkElement`, which represents the
+foundational unit of test execution (e.g., test suite, scenario, or step).
 
 **Key Concepts:**
 
-- **Lifecycle Hooks**: Attach behaviors (setup, teardown, etc.) at any phase using `HookStrategy`.
+- **Lifecycle Hooks**: Attach behaviors (setup, teardown, etc.) at any phase
+    using `HookStrategy`.
 - **Lifecycle Phases**: Modeled via the `TestLifecyclePhase` enum.
 - **Extensibility**: Subclass and override `run()` to define specific execution logic.
 
@@ -24,7 +30,8 @@ Defines the abstract base class `FrameworkElement`, which represents the foundat
 
 ### `suite.py` - **Test Suite Orchestration**
 
-The `Suite` class manages execution of a collection of tests and the components they depend on.
+The `Suite` class manages execution of a collection of tests and the
+components they depend on.
 
 - Initializes test environments and injects required components.
 - Runs each test (typically a `Scenario`) in sequence.
@@ -42,7 +49,8 @@ Encapsulates a specific test scenario within a test suite.
 - Supports execution hooks for customization and reporting.
 - Represents the logical structure of a single test case.
 
-> Scenarios provide mid-level orchestration: they define *what* to test within a suite.
+> Scenarios provide mid-level orchestration: they define
+    *what* to test within a suite.
 
 ---
 
@@ -80,7 +88,8 @@ Suite
         |-- Action (callable)
 ```
 
-- `FrameworkElement` is the base for all these layers, enabling common lifecycle hook support.
+- `FrameworkElement` is the base for all these layers, enabling common
+    lifecycle hook support.
 - Hooks can be applied to any `FrameworkElement` to extend behavior dynamically.
 - `Report` collects results from any level for persistence and analysis.
 
@@ -88,4 +97,8 @@ Suite
 
 ## Summary
 
-The `core.framework` module is the heart of the orchestrator's test system, combining flexibility, modularity, and structured execution. Whether you're running a high-level suite of systems tests or granular step-based validations, this framework provides the foundation for consistent and extensible test automation.
+The `core.framework` module is the heart of the orchestrator's test system,
+combining flexibility, modularity, and structured execution. Whether you're
+running a high-level suite of systems tests or granular step-based
+validations, this framework provides the foundation for consistent and
+extensible test automation.
