@@ -5,8 +5,13 @@ use crate::proto::opentelemetry::{
         trace::v1::ExportTraceServiceRequest,
     },
     common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value},
+    metrics::v1::{
+        ExponentialHistogramDataPoint, HistogramDataPoint, Metric, NumberDataPoint,
+        SummaryDataPoint, metric::Data, number_data_point::Value as NumberValue,
+    },
 };
 use std::fmt;
+use std::fmt::Write;
 pub trait PDataMarshaler {
     fn marshal_logs(&self, logs: ExportLogsServiceRequest) -> String;
     fn marshal_metrics(&self, metrics: ExportMetricsServiceRequest) -> String;
@@ -29,13 +34,22 @@ impl PDataMarshaler for NormalOTLPMarshaler {
                 resource_attributes = write_attributes(&resource.attributes);
             }
 
-            let resource_string = format!(
+            // let resource_string = format!(
+            //     "ResourceLog #{index} {schema} {attributes}",
+            //     index = resource_index,
+            //     schema = resource_log.schema_url.clone(),
+            //     attributes = resource_attributes,
+            // );
+            // report.push_str(&resource_string);
+
+            write!(
+                &mut report,
                 "ResourceLog #{index} {schema} {attributes}",
                 index = resource_index,
                 schema = resource_log.schema_url.clone(),
-                attributes = resource_attributes,
-            );
-            report.push_str(&resource_string);
+                attributes = resource_attributes
+            )
+            .unwrap();
 
             for (scope_index, scope_log) in resource_log.scope_logs.iter().enumerate() {
                 let mut scope_name = String::new();
@@ -48,28 +62,46 @@ impl PDataMarshaler for NormalOTLPMarshaler {
                     scope_attributes = write_attributes(&scope.attributes);
                 }
 
-                let scope_string = format!(
+                // let scope_string = format!(
+                //     "ScopeLog #{index} {name} @{version} [{schema}] {attributes}",
+                //     index = scope_index,
+                //     name = scope_name,
+                //     version = scope_version,
+                //     schema = scope_log.schema_url.clone(),
+                //     attributes = scope_attributes,
+                // );
+                // report.push_str(&scope_string);
+
+                write!(
+                    &mut report,
                     "ScopeLog #{index} {name} @{version} [{schema}] {attributes}",
                     index = scope_index,
                     name = scope_name,
                     version = scope_version,
                     schema = scope_log.schema_url.clone(),
-                    attributes = scope_attributes,
-                );
-                report.push_str(&scope_string);
+                    attributes = scope_attributes
+                )
+                .unwrap();
 
-                for (log_index, log_record) in scope_log.log_records.iter().enumerate() {
+                for log_record in scope_log.log_records.iter() {
                     let mut log_body = String::new();
                     if let Some(body) = &log_record.body {
                         log_body = body.to_string();
                     }
 
-                    let string = format!(
-                        "{body} {attributes}",
+                    // let string = format!(
+                    //     "{body} {attributes}",
+                    //     body = log_body,
+                    //     attributes = write_attributes(&log_record.attributes)
+                    // );
+                    // report.push_str(&string);
+                    write!(
+                        &mut report,
+                        " {body} {attributes}",
                         body = log_body,
                         attributes = write_attributes(&log_record.attributes)
-                    );
-                    report.push_str(&string);
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -84,17 +116,26 @@ impl PDataMarshaler for NormalOTLPMarshaler {
                 resource_attributes = write_attributes(&resource.attributes);
             }
 
-            let resource_string = format!(
+            // let resource_string = format!(
+            //     "ResourceLog #{index} {schema} {attributes}",
+            //     index = resource_index,
+            //     schema = resource_metric.schema_url.clone(),
+            //     attributes = resource_attributes,
+            // );
+            // report.push_str(&resource_string);
+
+            write!(
+                &mut report,
                 "ResourceLog #{index} {schema} {attributes}",
                 index = resource_index,
                 schema = resource_metric.schema_url.clone(),
-                attributes = resource_attributes,
-            );
-            report.push_str(&resource_string);
+                attributes = resource_attributes
+            )
+            .unwrap();
+
             for (scope_index, scope_metric) in resource_metric.scope_metrics.iter().enumerate() {
                 let mut scope_name = String::new();
                 let mut scope_version = String::new();
-                // let scope_schema_url = scope_metric.schema_url;
                 let mut scope_attributes = String::new();
                 if let Some(scope) = &scope_metric.scope {
                     scope_name = scope.name.clone();
@@ -102,38 +143,56 @@ impl PDataMarshaler for NormalOTLPMarshaler {
                     scope_attributes = write_attributes(&scope.attributes);
                 }
 
-                let scope_string = format!(
+                // let scope_string = format!(
+                //     "ScopeLog #{index} {name} {version} {schema} {attributes}",
+                //     index = scope_index,
+                //     name = scope_name,
+                //     version = scope_version,
+                //     schema = scope_metric.schema_url.clone(),
+                //     attributes = scope_attributes
+                // );
+                // report.push_str(&scope_string);
+                write!(
+                    &mut report,
                     "ScopeLog #{index} {name} {version} {schema} {attributes}",
                     index = scope_index,
                     name = scope_name,
                     version = scope_version,
                     schema = scope_metric.schema_url.clone(),
                     attributes = scope_attributes
-                );
-                report.push_str(&scope_string);
+                )
+                .unwrap();
+
                 for (metric_index, metric) in scope_metric.metrics.iter().enumerate() {
                     let metric_name = metric.name.clone();
 
-                    // if let Some(data) = metric.data() {
-                    //     let data_point_lines = match data {
-                    //         metric::Data::Gauge(gauge) => {
-                    //             writeNumberDataPoints(&metric, gauge.data_points);
-                    //         }
-                    //         metric::Data::Sum(sum) => {
-                    //             writeNumberDataPoints(&metric, sum.data_points);
-                    //         }
-                    //         metric::Data::Histogram(histogram) => {
-                    //             writeHistogramDataPoints(&metric);
-                    //         }
-                    //         metric::Data::ExponentialHistogram(exponential_histogram) => {
-                    //             writeExponentialDataPoints(&metric);
-                    //         }
-                    //         metric::Data::Summary(summary) => {
-                    //             writeSummaryDataPoints(&metric);
-                    //         }
-                    //     };
-                    // }
-                    // ToDo: put data_points into report
+                    if let Some(data) = &metric.data {
+                        let data_point_lines = match data {
+                            Data::Gauge(gauge) => {
+                                write_number_datapoints(&metric, &gauge.data_points)
+                            }
+                            Data::Sum(sum) => write_number_datapoints(&metric, &sum.data_points),
+                            Data::Histogram(histogram) => {
+                                write_histogram_datapoints(&metric, &histogram.data_points)
+                            }
+                            Data::ExponentialHistogram(exponential_histogram) => {
+                                write_exponential_histogram_datapoints(
+                                    &metric,
+                                    &exponential_histogram.data_points,
+                                )
+                            }
+                            Data::Summary(summary) => {
+                                write_summary_datapoints(&metric, &summary.data_points)
+                            }
+                        };
+                        write!(
+                            &mut report,
+                            "{datapoint_lines}",
+                            datapoint_lines = data_point_lines
+                        )
+                        .unwrap();
+                        // report.push_str(&data_point_lines);
+                    }
                 }
             }
         }
@@ -146,13 +205,22 @@ impl PDataMarshaler for NormalOTLPMarshaler {
             if let Some(resource) = &resource_span.resource {
                 resource_attributes = write_attributes(&resource.attributes);
             }
-            let resource_string = format!(
+            // let resource_string = format!(
+            //     "ResourceLog #{index} {schema} {attributes}",
+            //     index = resource_index,
+            //     schema = resource_span.schema_url.clone(),
+            //     attributes = resource_attributes,
+            // );
+            // report.push_str(&resource_string);
+            write!(
+                &mut report,
                 "ResourceLog #{index} {schema} {attributes}",
                 index = resource_index,
                 schema = resource_span.schema_url.clone(),
-                attributes = resource_attributes,
-            );
-            report.push_str(&resource_string);
+                attributes = resource_attributes
+            )
+            .unwrap();
+
             for (scope_index, scope_span) in resource_span.scope_spans.iter().enumerate() {
                 let mut scope_name = String::new();
                 let mut scope_version = String::new();
@@ -164,37 +232,54 @@ impl PDataMarshaler for NormalOTLPMarshaler {
                     scope_attributes = write_attributes(&scope.attributes);
                 }
 
-                let scope_string = format!(
+                // let scope_string = format!(
+                //     "ScopeLog #{index} {name} {version} {schema} {attributes}",
+                //     index = scope_index,
+                //     name = scope_name,
+                //     version = scope_version,
+                //     schema = scope_span.schema_url.clone(),
+                //     attributes = scope_attributes,
+                // );
+                // report.push_str(&scope_string);
+                write!(
+                    &mut report,
                     "ScopeLog #{index} {name} {version} {schema} {attributes}",
                     index = scope_index,
                     name = scope_name,
                     version = scope_version,
                     schema = scope_span.schema_url.clone(),
-                    attributes = scope_attributes,
-                );
-                report.push_str(&scope_string);
-                for (span_index, span) in scope_span.spans.iter().enumerate() {
-                    let span_name = &span.name;
-                    let span_trace_id = String::from_utf8(span.trace_id.clone());
-                    let span_span_id = String::from_utf8(span.span_id.clone());
+                    attributes = scope_attributes
+                )
+                .unwrap();
+                for span in scope_span.spans.iter() {
+                    let mut span_trace_id = String::new();
+                    let mut span_span_id = String::new();
+                    if let Ok(trace_id) = String::from_utf8(span.trace_id.clone()) {
+                        span_trace_id = trace_id;
+                    }
+                    if let Ok(span_id) = String::from_utf8(span.span_id.clone()) {
+                        span_span_id = span_id;
+                    }
 
-                    // check len of attributes
                     let span_attributes = write_attributes(&span.attributes);
 
-                    // if span.Attributes().Len() > 0 {
-                    // 	spanAttributes := write_attributes(span.Attributes())
-                    // 	buffer.WriteString(" ")
-                    // 	buffer.WriteString(strings.Join(spanAttributes, " "))
-                    // }
-
-                    let span_string = format!(
+                    // let span_string = format!(
+                    //     "{name} {trace_id} {span_id} {attributes}",
+                    //     name = &span.name,
+                    //     trace_id = span_trace_id,
+                    //     span_id = span_span_id,
+                    //     attributes = span_attributes
+                    // );
+                    // report.push_str(&span_string);
+                    write!(
+                        &mut report,
                         "{name} {trace_id} {span_id} {attributes}",
                         name = &span.name,
                         trace_id = span_trace_id,
                         span_id = span_span_id,
                         attributes = span_attributes
-                    );
-                    report.push_str(&span_string);
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -209,13 +294,21 @@ impl PDataMarshaler for NormalOTLPMarshaler {
             if let Some(resource) = &resource_profile.resource {
                 resource_attributes = write_attributes(&resource.attributes);
             }
-            let resource_string = format!(
+            // let resource_string = format!(
+            //     "ResourceLog #{index} {schema} {attributes}",
+            //     index = resource_index,
+            //     schema = resource_profile.schema_url.clone(),
+            //     attributes = resource_attributes,
+            // );
+            // report.push_str(&resource_string);
+            write!(
+                &mut report,
                 "ResourceLog #{index} {schema} {attributes}",
                 index = resource_index,
                 schema = resource_profile.schema_url.clone(),
-                attributes = resource_attributes,
-            );
-            report.push_str(&resource_string);
+                attributes = resource_attributes
+            )
+            .unwrap();
             for (scope_index, scope_profile) in resource_profile.scope_profiles.iter().enumerate() {
                 let mut scope_name = String::new();
                 let mut scope_version = String::new();
@@ -226,27 +319,37 @@ impl PDataMarshaler for NormalOTLPMarshaler {
                     scope_version = scope.version.clone();
                     scope_attributes = write_attributes(&scope.attributes);
                 }
-                let scope_string = format!(
+                // let scope_string = format!(
+                //     "ScopeLog #{index} {name} {version} {schema} {attributes}",
+                //     index = scope_index,
+                //     name = scope_name,
+                //     version = scope_version,
+                //     schema = scope_profile.schema_url.clone(),
+                //     attributes = scope_attributes
+                // );
+                // report.push_str(&scope_string);
+                write!(
+                    &mut report,
                     "ScopeLog #{index} {name} {version} {schema} {attributes}",
                     index = scope_index,
                     name = scope_name,
                     version = scope_version,
                     schema = scope_profile.schema_url.clone(),
                     attributes = scope_attributes
-                );
-                report.push_str(&scope_string);
-                for (profile_index, profile) in scope_profile.profiles.iter().enumerate() {
+                )
+                .unwrap();
+                for profile in scope_profile.profiles.iter() {
                     let profile_id = String::from_utf8(profile.profile_id.clone());
                     let profile_samples = profile.sample.len();
                     if profile.attribute_indices.len() > 0 {
                         // attrs := []string{}
 
-                        // for index in profile.attribute_indices {
-                        //     let attribute = resource_profile.attribute_table[index];
-                        //     let attribute_key = attribute.key;
-                        //     let attribute_value = attribute.value.to_string();
-                        //     // attrs = append(attrs, fmt.Sprintf("%s=%s", a.Key(), a.Value().AsString()))
-                        // }
+                        for index in profile.attribute_indices {
+                            let attribute = resource_profile.attribute_table[index];
+                            let attribute_key = attribute.key;
+                            let attribute_value = attribute.value.to_string();
+                            // attrs = append(attrs, fmt.Sprintf("%s=%s", a.Key(), a.Value().AsString()))
+                        }
 
                         // buffer.WriteString(" ")
                         // buffer.WriteString(strings.Join(attrs, " "))
@@ -388,24 +491,6 @@ impl PDataMarshaler for NormalOTLPMarshaler {
 //     }
 // }
 
-// writeAttributes returns a slice of strings in the form "attrKey=attrValue"
-// func writeAttributes(attributes pcommon.Map) (attributeStrings []string) {
-// 	for k, v := range attributes.All() {
-// 		attribute := fmt.Sprintf("%s=%s", k, v.AsString())
-// 		attributeStrings = append(attributeStrings, attribute)
-// 	}
-// 	return attributeStrings
-// }
-
-// // writeAttributesString returns a string in the form " attrKey=attrValue attr2=value2"
-// func writeAttributesString(attributesMap pcommon.Map) (attributesString string) {
-// 	attributes := writeAttributes(attributesMap)
-// 	if len(attributes) > 0 {
-// 		attributesString = " " + strings.Join(attributes, " ")
-// 	}
-// 	return attributesString
-// }
-
 fn write_attributes(attributes: &Vec<KeyValue>) -> String {
     let mut attribute_string = String::new();
     for attribute in attributes.iter() {
@@ -413,128 +498,179 @@ fn write_attributes(attributes: &Vec<KeyValue>) -> String {
         if let Some(value) = &attribute.value {
             attribute_value = value.to_string();
         }
-        let attribute = format!(
+        write!(
+            &mut attribute_string,
             "{key}={value} ",
             key = attribute.key,
-            value = attribute_value,
-        );
-        attribute_string.push_str(&attribute);
+            value = attribute_value
+        )
+        .unwrap();
     }
 
     attribute_string
 }
 
-// func writeNumberDataPoints(metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice) (lines []string) {
-// 	for i := 0; i < dataPoints.Len(); i++ {
-// 		dataPoint := dataPoints.At(i)
-// 		dataPointAttributes := writeAttributes(dataPoint.Attributes())
+fn write_number_datapoints(metric: &Metric, datapoints: &Vec<NumberDataPoint>) -> String {
+    let mut lines = String::new();
 
-// 		var value string
-// 		switch dataPoint.ValueType() {
-// 		case pmetric.NumberDataPointValueTypeInt:
-// 			value = strconv.FormatInt(dataPoint.IntValue(), 10)
-// 		case pmetric.NumberDataPointValueTypeDouble:
-// 			value = fmt.Sprintf("%v", dataPoint.DoubleValue())
-// 		}
+    for datapoint in datapoints.iter() {
+        let datapoint_attributes = write_attributes(&datapoint.attributes);
+        if let Some(value) = datapoint.value {
+            match value {
+                NumberValue::AsDouble(double) => {
+                    // let datapoint_line = format!(
+                    //     "{name} {attributes} {value}",
+                    //     name = metric.name,
+                    //     attributes = datapoint_attributes,
+                    //     value = double
+                    // );
+                    // lines = lines.push_str(&datapoint_line);
+                    write!(
+                        &mut lines,
+                        "{name} {attributes} {value}\n",
+                        name = metric.name,
+                        attributes = datapoint_attributes,
+                        value = double
+                    )
+                    .unwrap();
+                }
+                NumberValue::AsInt(int) => {
+                    // let datapoint_line = format!(
+                    //     "{name} {attributes} {value}",
+                    //     name = metric.name,
+                    //     attributes = datapoint_attributes,
+                    //     value = int
+                    // );
+                    // lines = lines.push_str(&datapoint_line);
+                    write!(
+                        &mut lines,
+                        "{name} {attributes} {value}\n",
+                        name = metric.name,
+                        attributes = datapoint_attributes,
+                        value = int
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
 
-// 		dataPointLine := fmt.Sprintf("%s{%s} %s\n", metric.Name(), strings.Join(dataPointAttributes, ","), value)
-// 		lines = append(lines, dataPointLine)
-// 	}
-// 	return lines
-// }
+    return lines;
+}
 
-// fn writeNumberDataPoints(metric, datapoints) -> String {
-//     let mut lines = String::new()
-//     for (index, datapoint) in datapoints.iter().enumerate() {
-//         let attributes = writeAttributes(datapoint.attributes)
-//         let value = if datapoint.value.is_int {
-//             datapoint.value.to_string()
-//             } else {
-//                 datapoint.value.to_string()
-//                 }
-//                 format!("{metric_name}{{{attributes}}} {value}", metric_name = metric.name, attributes = attributes.join(","), value = value)
-//                 }
-//                 lines.push_str(&dataPointLine);
-//                 }
+fn write_histogram_datapoints(metric: &Metric, datapoints: &Vec<HistogramDataPoint>) -> String {
+    let mut lines = String::new();
+    for datapoint in datapoints.iter() {
+        let datapoint_attributes = write_attributes(&datapoint.attributes);
+        let mut values = String::new();
+        // values.push_str(&format!("count={} ", datapoint.count));
+        write!(&mut values, "count={} ", datapoint.count).unwrap();
+        if let Some(sum) = datapoint.sum {
+            // values.push_str(&format!("sum={} ", sum));
+            write!(&mut values, "sum={} ", sum).unwrap();
+        }
+        if let Some(min) = datapoint.min {
+            // values.push_str(&format!("min={} ", min));
+            write!(&mut values, "min={} ", min).unwrap();
+        }
+        if let Some(max) = datapoint.max {
+            // values.push_str(&format!("max={} ", max));
+            write!(&mut values, "max={} ", max).unwrap();
+        }
 
-// }
+        for (i, bucket) in datapoint.bucket_counts.iter().enumerate() {
+            let mut bucket_bound = String::new();
+            if i < datapoint.explicit_bounds.len() {
+                bucket_bound = format!("le{}=", datapoint.explicit_bounds[i]);
+            }
+            write!(&mut values, "{}{} ", bucket_bound, bucket).unwrap();
+            // values.push_str(&format!(" {}{} ", bucket_bound, bucket));
+        }
 
-// func writeHistogramDataPoints(metric pmetric.Metric) (lines []string) {
-// 	for i := 0; i < metric.Histogram().DataPoints().Len(); i++ {
-// 		dataPoint := metric.Histogram().DataPoints().At(i)
-// 		dataPointAttributes := writeAttributes(dataPoint.Attributes())
+        // let datapoint_line = format!("{} {} {}\n", metric.name, datapoint_attributes, values);
+        // lines.push_str(&datapoint_line);
+        write!(
+            &mut lines,
+            "{name} {attributes} {values}\n",
+            name = metric.name,
+            attributes = datapoint_attributes,
+            values = values
+        )
+        .unwrap();
+    }
 
-// 		var value string
-// 		value = fmt.Sprintf("count=%d", dataPoint.Count())
-// 		if dataPoint.HasSum() {
-// 			value += fmt.Sprintf(" sum=%v", dataPoint.Sum())
-// 		}
-// 		if dataPoint.HasMin() {
-// 			value += fmt.Sprintf(" min=%v", dataPoint.Min())
-// 		}
-// 		if dataPoint.HasMax() {
-// 			value += fmt.Sprintf(" max=%v", dataPoint.Max())
-// 		}
+    return lines;
+}
 
-// 		for bucketIndex := 0; bucketIndex < dataPoint.BucketCounts().Len(); bucketIndex++ {
-// 			bucketBound := ""
-// 			if bucketIndex < dataPoint.ExplicitBounds().Len() {
-// 				bucketBound = fmt.Sprintf("le%v=", dataPoint.ExplicitBounds().At(bucketIndex))
-// 			}
-// 			bucketCount := dataPoint.BucketCounts().At(bucketIndex)
-// 			value += fmt.Sprintf(" %s%d", bucketBound, bucketCount)
-// 		}
+fn write_exponential_histogram_datapoints(
+    metric: &Metric,
+    datapoints: &Vec<ExponentialHistogramDataPoint>,
+) -> String {
+    let mut lines = String::new();
+    for datapoint in datapoints.iter() {
+        let datapoint_attributes = write_attributes(&datapoint.attributes);
 
-// 		dataPointLine := fmt.Sprintf("%s{%s} %s\n", metric.Name(), strings.Join(dataPointAttributes, ","), value)
-// 		lines = append(lines, dataPointLine)
-// 	}
-// 	return lines
-// }
+        let mut values = String::new();
 
-// func writeExponentialHistogramDataPoints(metric pmetric.Metric) (lines []string) {
-// 	for i := 0; i < metric.ExponentialHistogram().DataPoints().Len(); i++ {
-// 		dataPoint := metric.ExponentialHistogram().DataPoints().At(i)
-// 		dataPointAttributes := writeAttributes(dataPoint.Attributes())
+        // values.push_str(&format!("count={}", datapoint.count));
+        write!(&mut values, "count={} ", datapoint.count).unwrap();
 
-// 		var value string
-// 		value = fmt.Sprintf("count=%d", dataPoint.Count())
-// 		if dataPoint.HasSum() {
-// 			value += fmt.Sprintf(" sum=%v", dataPoint.Sum())
-// 		}
-// 		if dataPoint.HasMin() {
-// 			value += fmt.Sprintf(" min=%v", dataPoint.Min())
-// 		}
-// 		if dataPoint.HasMax() {
-// 			value += fmt.Sprintf(" max=%v", dataPoint.Max())
-// 		}
+        if let Some(sum) = datapoint.sum {
+            // values.push_str(&format!(" sum={}", sum));
+            write!(&mut values, "sum={} ", sum).unwrap();
+        }
+        if let Some(min) = datapoint.min {
+            // values.push_str(&format!("min={} ", min));
+            write!(&mut values, "min={} ", min).unwrap();
+        }
+        if let Some(max) = datapoint.max {
+            // values.push_str(&format!("max={} ", max));
+            write!(&mut values, "max={} ", max).unwrap();
+        }
 
-// 		// TODO display buckets
+        // let datapoint_line = format!("{} {} {}\n", metric.name, datapoint_attributes, values);
+        // lines.push_str(&datapoint_line);
+        write!(
+            &mut lines,
+            "{name} {attributes} {values}\n",
+            name = metric.name,
+            attributes = datapoint_attributes,
+            values = values
+        )
+        .unwrap();
+    }
+    return lines;
+}
 
-// 		dataPointLine := fmt.Sprintf("%s{%s} %s\n", metric.Name(), strings.Join(dataPointAttributes, ","), value)
-// 		lines = append(lines, dataPointLine)
-// 	}
-// 	return lines
-// }
+fn write_summary_datapoints(metric: &Metric, datapoints: &Vec<SummaryDataPoint>) -> String {
+    let mut lines = String::new();
+    for datapoint in datapoints.iter() {
+        let datapoint_attributes = write_attributes(&datapoint.attributes);
+        let mut values = String::new();
+        // values.push_str(&format!("count={}", datapoint.count));
+        // values.push_str(&format!(" sum={}", datapoint.sum));
 
-// func writeSummaryDataPoints(metric pmetric.Metric) (lines []string) {
-// 	for i := 0; i < metric.Summary().DataPoints().Len(); i++ {
-// 		dataPoint := metric.Summary().DataPoints().At(i)
-// 		dataPointAttributes := writeAttributes(dataPoint.Attributes())
+        write!(&mut values, "count={} ", datapoint.count).unwrap();
+        write!(&mut values, "sum={} ", datapoint.sum).unwrap();
 
-// 		var value string
-// 		value = fmt.Sprintf("count=%d", dataPoint.Count())
-// 		value += fmt.Sprintf(" sum=%f", dataPoint.Sum())
+        for quantile in datapoint.quantile_values.iter() {
+            // values.push_str(&format!(" q{}={} ", quantile.quantile, quantile.value));
+            write!(&mut values, "q{}={} ", quantile.quantile, quantile.value).unwrap();
+        }
 
-// 		for quantileIndex := 0; quantileIndex < dataPoint.QuantileValues().Len(); quantileIndex++ {
-// 			quantile := dataPoint.QuantileValues().At(quantileIndex)
-// 			value += fmt.Sprintf(" q%v=%v", quantile.Quantile(), quantile.Value())
-// 		}
-
-// 		dataPointLine := fmt.Sprintf("%s{%s} %s\n", metric.Name(), strings.Join(dataPointAttributes, ","), value)
-// 		lines = append(lines, dataPointLine)
-// 	}
-// 	return lines
-// }
+        // let datapoint_line = format!("{} {} {}\n", metric.name, datapoint_attributes, values);
+        // lines.push_str(&datapoint_line);
+        write!(
+            &mut lines,
+            "{name} {attributes} {values}\n",
+            name = metric.name,
+            attributes = datapoint_attributes,
+            values = values
+        )
+        .unwrap();
+    }
+    return lines;
+}
 
 // // func (normalMetricsMarshaler) MarshalMetrics(md pmetric.Metrics) ([]byte, error) {
 // // 	var buffer bytes.Buffer
@@ -596,8 +732,7 @@ impl fmt::Display for AnyValue {
                     }
                 }
                 Value::KvlistValue(kvlist) => {
-                    let values = &kvlist.values;
-                    let string = write_attributes(values);
+                    let string = write_attributes(&kvlist.values);
                     write!(f, "{}", string)?;
                 }
                 Value::BytesValue(bytes) => {
