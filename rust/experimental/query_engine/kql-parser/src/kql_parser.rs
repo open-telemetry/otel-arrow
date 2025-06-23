@@ -3,21 +3,19 @@ use std::collections::HashSet;
 use chrono::{FixedOffset, NaiveDate};
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{Parser, iterators::Pair};
 use pest_derive::Parser;
 
 use crate::date_utils;
 
 #[derive(Parser)]
 #[grammar = "kql.pest"]
-#[allow(dead_code)]
 pub(crate) struct KqlParser;
 
 /// The goal of this code is to unescape string literal values as they come in
 /// when parsed from pest:
 /// * `'some \\' string'` -> `some ' string`
 /// * `\"some \\\" string\"` -> `some \" string`
-#[allow(dead_code)]
 pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticScalarExpression {
     let query_location = to_query_location(&string_literal_rule);
 
@@ -64,7 +62,6 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
     StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_double_literal(
     double_literal_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
@@ -88,7 +85,6 @@ pub(crate) fn parse_double_literal(
     )))
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_integer_literal(
     integer_literal_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
@@ -111,7 +107,6 @@ pub(crate) fn parse_integer_literal(
     ))
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_datetime_expression(
     datetime_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
@@ -211,7 +206,6 @@ pub(crate) fn parse_datetime_expression(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_real_expression(
     real_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
@@ -237,7 +231,6 @@ pub(crate) fn parse_real_expression(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_scalar_expression(
     scalar_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -430,7 +423,6 @@ pub(crate) fn parse_logical_expression(
 ///   [`ParserState`].
 ///
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
-#[allow(dead_code)]
 pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -538,7 +530,6 @@ pub(crate) fn parse_accessor_expression(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_conditional_expression(
     conditional_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -563,7 +554,6 @@ pub(crate) fn parse_conditional_expression(
     ))
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_assignment_expression(
     assignment_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -624,7 +614,6 @@ pub(crate) fn parse_assignment_expression(
     )))
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_extend_expression(
     extend_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -668,7 +657,6 @@ pub(crate) fn parse_extend_expression(
     Ok(set_expressions)
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_project_expression(
     project_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -801,7 +789,6 @@ pub(crate) fn parse_project_expression(
     Ok(expressions)
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_project_keep_expression(
     project_keep_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -910,7 +897,6 @@ pub(crate) fn parse_project_keep_expression(
     ))
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_project_away_expression(
     project_away_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -1019,7 +1005,6 @@ pub(crate) fn parse_project_away_expression(
     ))
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_where_expression(
     where_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -1041,6 +1026,143 @@ pub(crate) fn parse_where_expression(
             NotLogicalExpression::new(query_location, predicate),
         )),
     ))
+}
+
+pub(crate) fn parse_let_expression(
+    let_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<TransformExpression, ParserError> {
+    let query_location = to_query_location(&let_expression_rule);
+
+    let mut let_rules = let_expression_rule.into_inner();
+
+    let identifier_rule = let_rules.next().unwrap();
+
+    let name = identifier_rule.as_str().trim();
+    if state.is_well_defined_identifier(name) {
+        return Err(ParserError::QueryLanguageDiagnostic(
+            to_query_location(&identifier_rule).clone(),
+            "KS201",
+            format!("A variable with the name '{name}' has already been declared"),
+        ));
+    }
+
+    let identifier = StringScalarExpression::new(to_query_location(&identifier_rule), name);
+
+    let scalar = parse_scalar_expression(let_rules.next().unwrap(), state)?;
+
+    Ok(TransformExpression::Set(SetTransformExpression::new(
+        query_location,
+        ImmutableValueExpression::Scalar(scalar),
+        MutableValueExpression::Variable(VariableScalarExpression::new(
+            identifier.get_query_location().clone(),
+            identifier.get_value(),
+            ValueAccessor::new(),
+        )),
+    )))
+}
+
+pub(crate) fn parse_tabular_expression(
+    tabular_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<Vec<DataExpression>, ParserError> {
+    let mut rules = tabular_expression_rule.into_inner();
+
+    // Note: This is the identifier. In a query like logs | extend a=b the
+    // indentifier is "logs" which is not currently used for anything.
+    let _ = rules.next().unwrap();
+
+    let mut expressions = Vec::new();
+
+    for rule in rules {
+        match rule.as_rule() {
+            Rule::extend_expression => {
+                let extend_expressions = parse_extend_expression(rule, state)?;
+
+                for e in extend_expressions {
+                    expressions.push(DataExpression::Transform(e));
+                }
+            }
+            Rule::project_expression => {
+                let project_expressions = parse_project_expression(rule, state)?;
+
+                for e in project_expressions {
+                    expressions.push(DataExpression::Transform(e));
+                }
+            }
+            Rule::project_keep_expression => expressions.push(DataExpression::Transform(
+                parse_project_keep_expression(rule, state)?,
+            )),
+            Rule::project_away_expression => expressions.push(DataExpression::Transform(
+                parse_project_away_expression(rule, state)?,
+            )),
+            Rule::where_expression => expressions.push(parse_where_expression(rule, state)?),
+            _ => panic!("Unexpected rule in tabular_expression: {}", rule),
+        }
+    }
+
+    Ok(expressions)
+}
+
+pub(crate) fn parse_query(
+    query_rule: Pair<Rule>,
+    state: &mut ParserState,
+) -> Result<PipelineExpression, ParserError> {
+    let query_location = to_query_location(&query_rule);
+
+    let query_rules = query_rule.into_inner();
+
+    let mut pipeline = PipelineExpression::new(query_location);
+
+    for rule in query_rules {
+        match rule.as_rule() {
+            Rule::let_expression => {
+                let let_expression = parse_let_expression(rule, state)?;
+
+                let mut validated = false;
+
+                if let TransformExpression::Set(s) = let_expression {
+                    if let MutableValueExpression::Variable(v) = s.get_destination() {
+                        let name = v.get_name();
+
+                        state.push_variable_name(name);
+                        validated = true;
+                    }
+                }
+
+                if !validated {
+                    panic!("Unexpected let_expression encountered");
+                }
+            }
+            Rule::tabular_expression => {
+                let expressions = parse_tabular_expression(rule, state)?;
+
+                for e in expressions {
+                    pipeline.push_expression(e);
+                }
+            }
+            Rule::EOI => {}
+            _ => panic!("Unexpected rule in query: {}", rule),
+        }
+    }
+
+    Ok(pipeline)
+}
+
+pub fn parse(query: &str) -> Result<PipelineExpression, ParserError> {
+    let mut state = ParserState::new(query);
+
+    let parse_result = KqlParser::parse(Rule::query, query);
+
+    if parse_result.is_err() {
+        let pest_error = parse_result.unwrap_err();
+        return Err(ParserError::SyntaxNotSupported(
+            QueryLocation::new_fake(), // todo: set location here
+            pest_error.to_string(),
+        ));
+    }
+
+    parse_query(parse_result.unwrap().next().unwrap(), &mut state)
 }
 
 fn get_root_map_key_from_source_scalar_expression(

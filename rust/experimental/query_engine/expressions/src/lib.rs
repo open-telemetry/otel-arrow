@@ -1,6 +1,7 @@
 pub(crate) mod data_expressions;
 pub(crate) mod expression;
 pub(crate) mod logical_expressions;
+pub(crate) mod pipeline_expression;
 pub(crate) mod scalar_expressions;
 pub(crate) mod static_scalar_expressions;
 pub(crate) mod transform_expressions;
@@ -9,6 +10,7 @@ pub(crate) mod value_expressions;
 
 pub use expression::Expression;
 pub use expression::QueryLocation;
+pub use pipeline_expression::PipelineExpression;
 
 pub use value_accessor::ValueAccessor;
 pub use value_accessor::ValueSelector;
