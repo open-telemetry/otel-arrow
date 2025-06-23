@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 def format_bytes(num: float) -> str:
     """
     Convert a numeric byte value to a human-readable string.
-    E.g. 123456 → "120.56 KB"
+    E.g. 123456 -> "120.56 KB"
     """
     if pd.isna(num):
         return ""
