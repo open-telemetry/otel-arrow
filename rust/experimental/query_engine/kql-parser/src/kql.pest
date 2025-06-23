@@ -109,5 +109,5 @@ query_expressions = _{
 }
 
 query = {
-    SOI ~ query_expressions ~ (";" ~ query_expressions)* ~ ";"? ~ EOI
+    SOI ~ (query_expressions ~ (";" ~ query_expressions)* ~ ";"?)? ~ EOI
 }

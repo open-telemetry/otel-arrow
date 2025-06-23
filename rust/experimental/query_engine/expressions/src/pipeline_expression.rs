@@ -14,6 +14,16 @@ impl PipelineExpression {
         }
     }
 
+    pub fn new_with_expressions(
+        query_location: QueryLocation,
+        expressions: Vec<DataExpression>,
+    ) -> PipelineExpression {
+        Self {
+            query_location,
+            expressions,
+        }
+    }
+
     pub fn push_expression(&mut self, expression: DataExpression) {
         self.expressions.push(expression);
     }
