@@ -17,7 +17,10 @@ criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
-otap-df-otlp = { path = "../crates/otlp" }
+otap-df-engine = { path = "../crates/engine"}
+otap-df-otap = { path="../crates/otap"}
+otap-df-otlp = { path="../crates/otlp"}
+fluke-hpack = "0.3.1"
 futures-channel = "0.3"
 futures = "0.3.31"
 flume = "0.11.1"
@@ -25,7 +28,9 @@ core_affinity = "0.8.3"
 local-sync = "0.1.1"
 async-unsync = "0.3.0"
 unsync = "0.1.2"
-
+tonic = "0.13.1"
+portpicker = "0.1.1"
+tokio-stream = "0.1.17"
 [lints]
 workspace = true
 
@@ -41,6 +46,10 @@ harness = false
 name = "otlp"
 harness = false
 
+[[bench ]]
+name = "exporter"
+harness = false
+
 [profile.bench]
 opt-level = 3
 debug = false
@@ -48,3 +57,4 @@ incremental = false
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
