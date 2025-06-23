@@ -194,7 +194,7 @@ impl Expression for NegateScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConditionalScalarExpression {
     query_location: QueryLocation,
-    condition: Box<ScalarExpression>,
+    condition: Box<LogicalExpression>,
     true_expression: Box<ScalarExpression>,
     false_expression: Box<ScalarExpression>,
 }
@@ -202,7 +202,7 @@ pub struct ConditionalScalarExpression {
 impl ConditionalScalarExpression {
     pub fn new(
         query_location: QueryLocation,
-        condition: ScalarExpression,
+        condition: LogicalExpression,
         true_expression: ScalarExpression,
         false_expression: ScalarExpression,
     ) -> ConditionalScalarExpression {
@@ -214,7 +214,7 @@ impl ConditionalScalarExpression {
         }
     }
 
-    pub fn get_condition(&self) -> &ScalarExpression {
+    pub fn get_condition(&self) -> &LogicalExpression {
         &self.condition
     }
 
