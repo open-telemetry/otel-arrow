@@ -426,7 +426,7 @@ impl LogsBodyBuilder {
     }
 
     /// Append a slice value to the body. The bytes should be the value serialized as CBOR
-    pub fn appned_slice(&mut self, val: &[u8]) {
+    pub fn append_slice(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Slice as u8));
         self.string_value.append_null();
