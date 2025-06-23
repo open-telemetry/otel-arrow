@@ -1034,7 +1034,9 @@ pub(crate) fn parse_where_expression(
     };
 
     Ok(DataExpression::Discard(
-        DiscardDataExpression::new(query_location).with_predicate(predicate),
+        DiscardDataExpression::new(query_location.clone()).with_predicate(LogicalExpression::Not(
+            NotLogicalExpression::new(query_location, predicate),
+        )),
     ))
 }
 
@@ -3115,12 +3117,15 @@ mod parse_tests {
             "where variable",
             DataExpression::Discard(
                 DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                    LogicalExpression::Scalar(ScalarExpression::Variable(
-                        VariableScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "variable",
-                            ValueAccessor::new(),
-                        ),
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::Scalar(ScalarExpression::Variable(
+                            VariableScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "variable",
+                                ValueAccessor::new(),
+                            ),
+                        )),
                     )),
                 ),
             ),
@@ -3130,13 +3135,16 @@ mod parse_tests {
             "where 1 > 0",
             DataExpression::Discard(
                 DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                    LogicalExpression::Not(NotLogicalExpression::new(
                         QueryLocation::new_fake(),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                        LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                            )),
                         )),
                     )),
                 ),
