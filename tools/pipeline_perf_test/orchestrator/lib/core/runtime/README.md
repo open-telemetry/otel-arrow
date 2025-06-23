@@ -23,14 +23,15 @@ This pattern is useful within lifecycle components that need to track execution-
 ## Class Reference
 
 Runtime
-* set(namespace: str, data: Any)
+- set(namespace: str, data: Any)
 Store arbitrary data under the given namespace.
 
-* get(namespace: str) -> Any
+- get(namespace: str) -> Any
 Retrieve data stored under the given namespace, or None if not found.
 
-* get_or_create(namespace: str, factory: Callable[[], Any]) -> Any
+- get_or_create(namespace: str, factory: Callable[[], Any]) -> Any
 Retrieve data under the namespace, or create and store a new value using the factory function if missing.
 
 ## Usage Context
+
 Runtime is designed for plugin-extensible systems where multiple strategies or plugins may need to attach execution-time state without collisions. It provides a clean and efficient way to manage such data during a component's lifecycle.

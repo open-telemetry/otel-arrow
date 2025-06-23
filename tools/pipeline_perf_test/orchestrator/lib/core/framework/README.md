@@ -13,6 +13,7 @@ This package is central to the orchestrator's functionality and acts as the exec
 Defines the abstract base class `FrameworkElement`, which represents the foundational unit of test execution (e.g., test suite, scenario, or step).
 
 **Key Concepts:**
+
 - **Lifecycle Hooks**: Attach behaviors (setup, teardown, etc.) at any phase using `HookStrategy`.
 - **Lifecycle Phases**: Modeled via the `TestLifecyclePhase` enum.
 - **Extensibility**: Subclass and override `run()` to define specific execution logic.
@@ -61,6 +62,7 @@ Defines the smallest executable unit in the test framework.
 Provides the `Report` class for capturing and serializing results from test executions.
 
 **Features:**
+
 - Structured results with metadata and timestamps.
 - JSON serialization support for portability and analysis.
 - Report aggregation (comparison, timeseries) for insight and trends.

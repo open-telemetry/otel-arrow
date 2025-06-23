@@ -20,6 +20,7 @@ This directory contains the following file:
 
 A Pydantic-based model that defines how errors should be handled when executing test components or plugins.
 **Fields:**
+
 - `retries` (`Optional[int]`): Number of retry attempts after a failure. Default is `0`.
 - `retry_delay_seconds` (`Optional[int]`): Delay in seconds between retry attempts. Default is `10`.
 - `continue_` (`Optional[bool]`): If `True`, execution continues even after all retries fail. Default is `False`.
@@ -31,11 +32,13 @@ A Pydantic-based model that defines how errors should be handled when executing 
 Wraps a callable function with retry logic and error handling, based on the provided `OnErrorConfig`.
 
 **Parameters:**
+
 - `ctx` (`BaseContext`): Context object providing logger, execution status, and tracing span.
 - `func` (`Callable`): The function to execute.
 - `on_error` (`OnErrorConfig`): Configuration object specifying retry and continuation behavior.
 
 **Behavior:**
+
 - Retries execution based on the configured retry count and delay.
 - If retries fail, and `continue_` is set to `True`, logs the error and continues.
 - If `continue_` is `False`, re-raises the last exception after retries are exhausted.

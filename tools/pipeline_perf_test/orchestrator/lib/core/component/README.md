@@ -22,6 +22,7 @@ This module defines the abstract base class `Component`, used in a test orchestr
 ## Key Features
 
 ### Lifecycle Management
+
 Each component subclass must implement the following abstract methods:
 
 - `_configure(ctx)`
@@ -46,20 +47,23 @@ component.add_hook(HookableComponentPhase.PRE_DEPLOY, my_hook)
 Hooks are executed with context tracking, error handling, and tracing.
 
 ### Tracing
+
 Lifecycle methods and hooks can emit OpenTelemetry traces using the provided StepContext.
 
 ### Runtime Support
+
 Components use a runtime object to store and manage state via:
 
-* get_or_create_runtime(namespace, factory)
-* set_runtime_data(namespace, data)
+- get_or_create_runtime(namespace, factory)
+- set_runtime_data(namespace, data)
 
 ### Classes
 
-* ComponentPhase: Enum representing lifecycle phases.
-* Component: Abstract base class for defining and managing test components.
+- ComponentPhase: Enum representing lifecycle phases.
+- Component: Abstract base class for defining and managing test components.
 
 ### Integration Notes
+
 Integrates with opentelemetry.trace for observability.
 
 Uses a hook strategy pattern from strategies.hook_strategy.
@@ -67,6 +71,7 @@ Uses a hook strategy pattern from strategies.hook_strategy.
 Depends on internal context and runtime modules (context.base, context.test_contexts, etc.).
 
 ### Example Usage
+
 ```python
 class MyComponent(Component):
     def _configure(self, ctx): ...

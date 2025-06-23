@@ -13,6 +13,7 @@ These strategies provide clear, interchangeable abstractions for customizing the
 Defines common base classes for all strategies.
 
 **Classes:**
+
 - `BaseStrategyConfig`: Pydantic model that holds shared configuration parameters.
 - `BaseStrategy`: Abstract base class for all strategies.
 
@@ -25,11 +26,13 @@ Defines common base classes for all strategies.
 Defines how a component is configured before execution.
 
 **Use Cases:**
+
 - Writing local config files.
 - Generating Kubernetes manifests.
 - Fetching remote configuration.
 
 **Classes:**
+
 - `ConfigurationStrategyConfig`: Base config model for configuration strategies.
 - `ConfigStrategy`: Abstract base with a required `start()` method.
 
@@ -42,11 +45,13 @@ Defines how a component is configured before execution.
 Defines the interface for deploying and managing component lifecycles.
 
 **Use Cases:**
+
 - Running containers with Docker.
 - Deploying to Kubernetes.
 - Launching local processes.
 
 **Classes:**
+
 - `DeploymentStrategyConfig`: Config model for deployment strategies.
 - `DeploymentStrategy`: Abstract base for deployment behavior.
 
@@ -59,11 +64,13 @@ Defines the interface for deploying and managing component lifecycles.
 Encapsulates runtime behavior for a component during a test.
 
 **Use Cases:**
+
 - Generating load (e.g., OTLP exporters).
 - Receiving load (e.g., receivers, sinks).
 - Coordinating workloads in a scenario.
 
 **Classes:**
+
 - `ExecutionStrategyConfig`: Config model for execution strategies.
 - `ExecutionStrategy`: Abstract base for starting/stopping workload execution.
 
@@ -76,11 +83,13 @@ Encapsulates runtime behavior for a component during a test.
 Defines injectable hooks that run during specific phases of a test lifecycle.
 
 **Use Cases:**
+
 - Setup/teardown routines.
 - Validation steps.
 - External service integrations.
 
 **Classes:**
+
 - `HookStrategyConfig`: Config passed into hook strategies.
 - `HookStrategy`: Abstract base class to execute hook logic.
 
@@ -93,11 +102,13 @@ Defines injectable hooks that run during specific phases of a test lifecycle.
 Provides interfaces for monitoring test components.
 
 **Use Cases:**
+
 - Gathering metrics or logs.
 - Watching system health or performance.
 - Integrating with observability platforms.
 
 **Classes:**
+
 - `MonitoringStrategyConfig`: Config model for monitoring strategies.
 - `MonitoringStrategy`: Abstract base for monitoring integration.
 
@@ -110,6 +121,7 @@ Provides interfaces for monitoring test components.
 Implements pluggable pipelines for formatting and exporting test results.
 
 **Components:**
+
 - `ReportFormatter`: Formats raw reports into desired output (e.g., JSON, HTML).
 - `DestinationWriter`: Writes formatted reports to a destination (e.g., file, database).
 - `ReportOutputPipeline`: Composes formatter and writer into a processing chain.
@@ -137,6 +149,7 @@ Each strategy type encapsulates one domain of behavior:
 ```
 
 This design promotes:
+
 - **Separation of concerns** between subsystems.
 - **Plug-and-play behavior** using abstract interfaces.
 - **Customizability** for different environments and needs.

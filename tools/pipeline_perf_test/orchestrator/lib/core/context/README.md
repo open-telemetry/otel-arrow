@@ -20,6 +20,7 @@ Defines context structures and enums for **component-level lifecycle hooks**.
 - **`ComponentHookContext(BaseContext)`**: A context object passed to component hooks, giving access to the relevant component and test step. Enables strategies to introspect and extend behavior at precise lifecycle points.
 
 **Use Cases:**
+
 - Inject validation or mocking before deployment.
 - Collect diagnostics after shutdown.
 - Set up monitoring during startup.
@@ -46,6 +47,7 @@ Supports **hook execution for test framework elements** such as suites, scenario
 - **`FrameworkElementHookContext(BaseContext)`**: Context passed to test framework element hooks, offering structured access to lifecycle phase info and the associated test object.
 
 **Use Cases:**
+
 - Run setup logic before a test starts.
 - Clean up or validate results after test completion.
 - Customize behavior dynamically based on test metadata or phase.
