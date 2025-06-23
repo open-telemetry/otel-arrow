@@ -263,6 +263,7 @@ pub(crate) fn parse_scalar_expression(
         )?)),
         Rule::string_literal => Ok(ScalarExpression::Static(parse_string_literal(scalar_rule))),
         Rule::accessor_expression => parse_accessor_expression(scalar_rule, state),
+        Rule::conditional_expression => parse_conditional_expression(scalar_rule, state),
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state),
         _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
     }
@@ -444,28 +445,24 @@ pub(crate) fn parse_accessor_expression(
 
         let pair = accessor.unwrap();
         match pair.as_rule() {
-            Rule::integer_literal => {
-                let location = to_query_location(&pair);
+            Rule::integer_literal => match parse_integer_literal(pair)? {
+                StaticScalarExpression::Integer(v) => {
+                    let i = v.get_value();
 
-                match parse_integer_literal(pair)? {
-                    StaticScalarExpression::Integer(v) => {
-                        let i = v.get_value();
-
-                        if i < i32::MIN as i64 || i > i32::MAX as i64 {
-                            return Err(ParserError::SyntaxError(
-                                location,
-                                format!(
-                                    "'{}' value for array index is too large to fit into a 32bit value",
-                                    i
-                                ),
-                            ));
-                        }
-
-                        value_accessor.push_selector(ValueSelector::ArrayIndex(v));
+                    if i < i32::MIN as i64 || i > i32::MAX as i64 {
+                        return Err(ParserError::SyntaxError(
+                            v.get_query_location().clone(),
+                            format!(
+                                "'{}' value for array index is too large to fit into a 32bit value",
+                                i
+                            ),
+                        ));
                     }
-                    _ => panic!("Unexpected type returned from parse_integer_literal"),
+
+                    value_accessor.push_selector(ValueSelector::ArrayIndex(v));
                 }
-            }
+                _ => panic!("Unexpected type returned from parse_integer_literal"),
+            },
             Rule::string_literal => match parse_string_literal(pair) {
                 StaticScalarExpression::String(v) => {
                     value_accessor.push_selector(ValueSelector::MapKey(v))
@@ -531,6 +528,53 @@ pub(crate) fn parse_accessor_expression(
             value_accessor,
         )));
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_conditional_expression(
+    conditional_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&conditional_expression_rule);
+
+    let mut conditional_rules = conditional_expression_rule.into_inner();
+
+    let condition = conditional_rules.next().unwrap();
+
+    let condition_scalar = match condition.as_rule() {
+        Rule::logical_expression => {
+            let logical_expression = parse_logical_expression(condition, state)?;
+            match logical_expression {
+                LogicalExpression::Scalar(s) => s,
+                _ => ScalarExpression::Logical(logical_expression.into()),
+            }
+        }
+        Rule::scalar_expression => {
+            let scalar_expression = parse_scalar_expression(condition, state)?;
+            if !scalar_expression.is_bool_compatible() {
+                return Err(ParserError::QueryLanguageDiagnostic {
+                    location: scalar_expression.get_query_location().clone(),
+                    diagnostic_id: "KS107",
+                    message: "A value of type bool expected".into(),
+                });
+            }
+            scalar_expression
+        }
+        _ => panic!("Unexpected rule in conditional_expression: {}", condition),
+    };
+
+    let true_scalar = conditional_rules.next().unwrap();
+
+    let false_scalar = conditional_rules.next().unwrap();
+
+    Ok(ScalarExpression::Conditional(
+        ConditionalScalarExpression::new(
+            query_location,
+            condition_scalar,
+            parse_scalar_expression(true_scalar, state)?,
+            parse_scalar_expression(false_scalar, state)?,
+        ),
+    ))
 }
 
 #[allow(dead_code)]
@@ -2297,6 +2341,125 @@ mod parse_tests {
             "extend variable.key = 1",
             "'variable.key' destination accessor must refer to source to be used in an extend expression",
         );
+    }
+
+    #[test]
+    fn test_parse_conditional_expression() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlParser::parse(Rule::conditional_expression, input).unwrap();
+
+            let expression = parse_conditional_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlParser::parse(Rule::conditional_expression, input).unwrap();
+
+            let error = parse_conditional_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
+                assert_eq!(expected_id, id);
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected QueryLanguageDiagnostic");
+            }
+        };
+
+        run_test_success(
+            "iff(true, 1, 0)",
+            ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            )),
+        );
+
+        run_test_success(
+            "iif(1 > 0, 1, 0)",
+            ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Logical(
+                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                        )),
+                    ))
+                    .into(),
+                ),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            )),
+        );
+
+        run_test_success(
+            "iif(1 > 0, iif(true, 'a', 'b'), iff(false, 'c', 'd'))",
+            ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Logical(
+                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                        )),
+                    ))
+                    .into(),
+                ),
+                ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                    )),
+                )),
+                ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "c"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "d"),
+                    )),
+                )),
+            )),
+        );
+
+        run_test_failure("iff('a', 0, 1)", "KS107", "A value of type bool expected");
     }
 
     #[test]

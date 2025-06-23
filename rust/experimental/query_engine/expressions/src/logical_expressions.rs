@@ -30,6 +30,19 @@ pub enum LogicalExpression {
     Chain(ChainLogicalExpression),
 }
 
+impl Expression for LogicalExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            LogicalExpression::Scalar(s) => s.get_query_location(),
+            LogicalExpression::EqualTo(e) => e.get_query_location(),
+            LogicalExpression::GreaterThan(g) => g.get_query_location(),
+            LogicalExpression::GreaterThanOrEqualTo(g) => g.get_query_location(),
+            LogicalExpression::Not(n) => n.get_query_location(),
+            LogicalExpression::Chain(c) => c.get_query_location(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainLogicalExpression {
     query_location: QueryLocation,
