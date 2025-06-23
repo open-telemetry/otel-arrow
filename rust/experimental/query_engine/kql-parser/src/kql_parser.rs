@@ -353,11 +353,11 @@ pub(crate) fn parse_logical_expression(
                         Ok(*l)
                     } else {
                         if !scalar.is_bool_compatible() {
-                            return Err(ParserError::QueryLanguageDiagnostic(
-                                scalar.get_query_location().clone(),
-                                "KS141",
-                                "The expression must have the type bool".into(),
-                            ));
+                            return Err(ParserError::QueryLanguageDiagnostic {
+                                location: scalar.get_query_location().clone(),
+                                diagnostic_id: "KS141",
+                                message: "The expression must have the type bool".into(),
+                            });
                         }
 
                         Ok(LogicalExpression::Scalar(scalar))
@@ -1842,7 +1842,12 @@ mod parse_tests {
 
             let error = parse_logical_expression(result.next().unwrap(), &state).unwrap_err();
 
-            if let ParserError::QueryLanguageDiagnostic(_, id, msg) = error {
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
                 assert_eq!(expected_id, id);
                 assert_eq!(expected_msg, msg);
             } else {
