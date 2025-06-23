@@ -10,6 +10,17 @@ pub enum Error {
     #[error("An arrow error occurred encoding error record batch: {0}")]
     ArrowError(#[from] arrow::error::ArrowError),
 
-    #[error("An error occured serializing value as CBOR: {0}")]
-    CborError(#[from] ciborium::ser::Error<std::io::Error>),
+    #[error("An error occurred serializing value as CBOR: {error}")]
+    CborError {
+        /// The error that occurred
+        error: String,
+    },
+}
+
+impl From<ciborium::ser::Error<std::io::Error>> for Error {
+    fn from(e: ciborium::ser::Error<std::io::Error>) -> Self {
+        Self::CborError {
+            error: format!("{}", e),
+        }
+    }
 }

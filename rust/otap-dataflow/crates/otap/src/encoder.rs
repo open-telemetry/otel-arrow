@@ -117,7 +117,7 @@ where
                                 body.as_array().expect("body to be array"),
                                 &mut serialized_value,
                             )?;
-                            logs.body.appned_slice(&serialized_value);
+                            logs.body.append_slice(&serialized_value);
                         }
 
                         ValueType::KeyValueList => {
