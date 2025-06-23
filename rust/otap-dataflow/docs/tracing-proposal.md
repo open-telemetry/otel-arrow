@@ -18,6 +18,10 @@ to enable robust debugging, troubleshooting, monitoring, and optimization of the
 entire dataflow engine, **without imposing excessive overhead or losing critical
 information through sampling.**
 
+Note: In its current state, this document does not describe the propagation of
+traces that could be initiated outside the dataflow engine. This topic will need
+to be studied further at a later time.
+
 ## System Overview
 
 The dataflow engine is structured as a DAG of the following node types:
@@ -38,12 +42,21 @@ Each node features:
 
 **PData messages** are batches containing a single signal type.
 
+> Note: Events are technically logs at the protocol level, distinguished by a
+> mandatory name. However, at a higher abstraction level (e.g. in semantic
+> conventions), they are treated as a separate signal type.
+
 ## Tracing Modes
 
 - **No Tracing**: No spans emitted.
 - **Tail Sampling**: Only selected traces (e.g. errors, random sample) are
   exported, but all nodes are instrumented.
 - **Full Tracing**: Every dataflow activity is traced.
+
+> Note: This list of tracing modes is not exhaustive. Other modes could be
+> defined later. Regarding the tail tracing mode, it is worth noting that, as
+> defined here, it is possible to envision an extremely efficient implementation
+> since we control all the dataflow nodes involved in an end-to-end trace.
 
 > **Metrics are derived from spans before sampling**, ensuring high-fidelity
 > monitoring regardless of trace sampling.
@@ -61,11 +74,11 @@ Each node features:
 - Attributes:
     - node.id, node.type, signal.type
     - pdata.batch.size, out.port
-    - stateful, latency.ms, error
+    - stateful, error
 - Purpose: Provides detailed, per-node insight into processing time, routing,
   state, and errors.
 
-**Span Events**
+**Events**
 
 - Definition: Record significant in-node occurrences.
 - Examples:
@@ -86,7 +99,8 @@ Each node features:
 
 **Channel Utilization Tracking**
 
-- Utilization Metrics (derived from span events/attributes or direct metrics):
+- Utilization Metrics (either maintained as direct metrics or derived from span,
+  events/attributes):
     - Queue depth at receive/send
     - Time spent in input/output channels
     - Rate of message arrival/departure per channel
@@ -96,7 +110,8 @@ Each node features:
 
 ## Metrics Extraction
 
-Metrics are derived from traces (pre-sampling) and may include:
+Metrics are either maintained individually or derived from traces (pre-sampling)
+and may include:
 
 - Node and path-level latency, throughput, error rates
 - Batch size distributions
