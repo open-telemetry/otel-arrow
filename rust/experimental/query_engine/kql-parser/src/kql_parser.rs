@@ -552,11 +552,11 @@ pub(crate) fn parse_conditional_expression(
         Rule::scalar_expression => {
             let scalar_expression = parse_scalar_expression(condition, state)?;
             if !scalar_expression.is_bool_compatible() {
-                return Err(ParserError::QueryLanguageDiagnostic(
-                    scalar_expression.get_query_location().clone(),
-                    "KS107",
-                    "A value of type bool expected".into(),
-                ));
+                return Err(ParserError::QueryLanguageDiagnostic {
+                    location: scalar_expression.get_query_location().clone(),
+                    diagnostic_id: "KS107",
+                    message: "A value of type bool expected".into(),
+                });
             }
             scalar_expression
         }
@@ -2362,7 +2362,12 @@ mod parse_tests {
 
             let error = parse_conditional_expression(result.next().unwrap(), &state).unwrap_err();
 
-            if let ParserError::QueryLanguageDiagnostic(_, id, msg) = error {
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
                 assert_eq!(expected_id, id);
                 assert_eq!(expected_msg, msg);
             } else {
