@@ -1178,7 +1178,7 @@ pub fn parse_with_options(
 
         return Err(ParserError::SyntaxNotSupported(
             QueryLocation::new(start, end, line, column),
-            pest_error.to_string(),
+            pest_error.variant.message().into(),
         ));
     }
 
