@@ -46,6 +46,10 @@ harness = false
 name = "exporter"
 harness = false
 
+[[bench]]
+name = "otlp"
+harness = false
+
 [profile.bench]
 opt-level = 3
 debug = false
