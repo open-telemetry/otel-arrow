@@ -14,6 +14,6 @@ pest_derive = "2.8"
 regex = "1.11.1"
 
 data_engine_expressions = { path = "../expressions" }
+data_engine_parser_abstractions = { path = "../parser-abstractions" }
 
 chrono = { workspace = true }
-thiserror = { workspace = true }

@@ -1,0 +1,14 @@
+// OTTL Grammar is heavily influenced by the following source:
+// https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md
+
+// These two special rules, when defined, are implicitly allowed at:
+// - at every sequence (split by ~)
+// - between every repetition (+ or *)
+// Atomics (marked with @) are excluded
+// See https://pest.rs/book/grammars/syntax.html#implicit-whitespace
+WHITESPACE = _{ " " | NEWLINE }
+COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
+
+// Literals
+true_literal = @{ "true" }
+false_literal = @{ "false" }
