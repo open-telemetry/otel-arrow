@@ -2454,11 +2454,7 @@ mod parse_tests {
             )),
         );
 
-        run_test_failure(
-            "iff('a', 0, 1)",
-            "KS107",
-            "A value of type bool expected"
-        );
+        run_test_failure("iff('a', 0, 1)", "KS107", "A value of type bool expected");
     }
 
     #[test]
