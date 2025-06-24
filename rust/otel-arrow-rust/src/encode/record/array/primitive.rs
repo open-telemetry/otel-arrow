@@ -10,7 +10,7 @@ use arrow::error::ArrowError;
 use std::sync::Arc;
 
 use crate::encode::record::array::dictionary::{DictionaryBuilder, UpdateDictionaryIndexInto};
-use crate::encode::record::array::{ArrayAppendNulls, NoArgs};
+use crate::encode::record::array::{ArrayAppendNulls, DefaultValueProvider, NoArgs};
 
 use super::dictionary::{self, ConvertToNativeHelper, DictionaryArrayAppend};
 use super::{ArrayAppend, ArrayBuilder, ArrayBuilderConstructor, ArrayRef};
@@ -39,6 +39,15 @@ where
 
     fn append_nulls(&mut self, n: usize) {
         self.append_nulls(n);
+    }
+}
+
+impl<T> DefaultValueProvider<T::Native, NoArgs> for PrimitiveBuilder<T>
+where
+    T: ArrowPrimitiveType,
+{
+    fn default_value(_args: NoArgs) -> T::Native {
+        T::Native::default()
     }
 }
 
