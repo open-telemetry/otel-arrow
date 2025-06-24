@@ -18,13 +18,13 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 from opentelemetry.trace import Span, Status, StatusCode
 
 from ..telemetry.telemetry_runtime import TelemetryRuntime
-from ..telemetry.test_event import TestEvent
+from ..telemetry.framework_event import FrameworkEvent
 from ..telemetry.telemetry_client import TelemetryClient
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.metrics import Meter
     from opentelemetry.sdk.trace import Tracer
-    from ..test_framework.test_suite import TestSuite
+    from ..framework.suite import Suite
     from ..component.component import Component
 
 
@@ -55,8 +55,10 @@ class BaseContext:
     end_time: Optional[datetime.datetime] = None
     metadata: dict = field(default_factory=dict)
 
-    start_event_type: TestEvent = field(init=False, default=TestEvent.SUITE_START)
-    end_event_type: TestEvent = field(init=False, default=TestEvent.SUITE_END)
+    start_event_type: FrameworkEvent = field(
+        init=False, default=FrameworkEvent.SUITE_START
+    )
+    end_event_type: FrameworkEvent = field(init=False, default=FrameworkEvent.SUITE_END)
 
     span: Optional[Span] = field(default=None, init=False)
     span_cm: Optional[AbstractContextManager] = field(default=None, init=False)
@@ -122,12 +124,18 @@ class BaseContext:
         self.status = ExecutionStatus.RUNNING
         self.start_time = datetime.datetime.now(tz=datetime.timezone.utc)
 
-        tracer = self.get_tracer("test-framework")
+        tracer = None
+        try:
+            tracer = self.get_tracer("test-framework")
+        except RuntimeError as e:
+            self.get_logger(__name__).warning(
+                "Failed to get tracer from context: %s", e
+            )
+
         if tracer:
-            span_name = getattr(
-                self,
-                "span_name",
-                f"{self.__class__.__name__} - {getattr(self, 'name', 'unnamed')}",
+            span_name = (
+                self.span_name
+                or f"{self.__class__.__name__} - {getattr(self, 'name', 'unnamed')}"
             )
             self.span_cm = tracer.start_as_current_span(span_name)
             self.span = self.span_cm.__enter__()
@@ -187,7 +195,7 @@ class BaseContext:
 
         Returns: The dict of components, indexed by component name.
         """
-        if hasattr(self, "parent_ctx"):
+        if self.parent_ctx:
             return self.parent_ctx.get_components()
         raise NotImplementedError("This context does not support get_components")
 
@@ -199,15 +207,15 @@ class BaseContext:
 
         Returns: The named component or none if not found.
         """
-        if hasattr(self, "parent_ctx"):
+        if self.parent_ctx:
             return self.parent_ctx.get_component_by_name(name)
         raise NotImplementedError("This context does not support get_component_by_name")
 
-    def get_test_suite(self) -> Optional["TestSuite"]:
+    def get_suite(self) -> Optional["Suite"]:
         """Get the root test suite object from a given context."""
-        if hasattr(self, "parent_ctx"):
-            return self.parent_ctx.get_test_suite()
-        raise NotImplementedError("This context does not support get_test_suite")
+        if self.parent_ctx:
+            return self.parent_ctx.get_suite()
+        raise NotImplementedError("This context does not support get_suite")
 
     def record_event(
         self, event_name: str, timestamp_unix_nanos: Optional[int] = None, **kwargs
@@ -275,7 +283,7 @@ class BaseContext:
         Returns:
             Optional[Tracer]: A tracer instance for telemetry, or None if unavailable.
         """
-        ts = self.get_test_suite()
+        ts = self.get_suite()
         telemetry_runtime: TelemetryRuntime = ts.get_runtime(runtime_name)
         if not telemetry_runtime:
             return
@@ -298,7 +306,7 @@ class BaseContext:
         Returns:
             Optional[Meter]: A meter instance for recording metrics, or None if unavailable.
         """
-        ts = self.get_test_suite()
+        ts = self.get_suite()
         telemetry_runtime: TelemetryRuntime = ts.get_runtime(runtime_name)
         if not telemetry_runtime:
             return
@@ -321,7 +329,7 @@ class BaseContext:
         Returns:
             Optional[TelemetryClient]: The telemetry client instance, or None if unavailable.
         """
-        ts = self.get_test_suite()
+        ts = self.get_suite()
         telemetry_runtime: TelemetryRuntime = ts.get_runtime(runtime_name)
         if not telemetry_runtime:
             return
