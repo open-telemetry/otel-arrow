@@ -63,57 +63,57 @@ Each node features:
 > defined here, it is possible to envision an extremely efficient implementation
 > since we control all the dataflow nodes involved in an end-to-end trace.
 
-> **Metrics are derived from spans before sampling**, ensuring high-fidelity
-> monitoring regardless of trace sampling.
+**Metrics are derived from spans before sampling**, ensuring high-fidelity
+monitoring regardless of trace sampling.
 
 ## Mapping OTEL Tracing Primitives to the DAG
 
-**Trace**
+### Trace
 
 - Definition: Represents a single PData flow journey through the DAG.
 - Purpose: Enables full end-to-end flow and performance visibility.
 
-**Span**
+### Span
 
-- Definition: Captures a node’s processing of a PData flow.
+- Definition: Captures a node's processing of a PData flow.
 - Attributes:
-    - otelcol.component.id: the node id.
-    - otelcol.component.kind: receiver, processor, or exporter.
-    - otelcol.signal: logs, metrics, events, or traces.
-    - otelcol.signal.output: logs, metrics, events, or traces.
-    - otelcol.pipeline.id: the pipeline id.
-    - pdata.batch.size, out.port
-    - stateful, error
+  - otelcol.component.id: the node id.
+  - otelcol.component.kind: receiver, processor, or exporter.
+  - otelcol.signal: logs, metrics, events, or traces.
+  - otelcol.signal.output: logs, metrics, events, or traces.
+  - otelcol.pipeline.id: the pipeline id.
+  - pdata.batch.size, out.port
+  - stateful, error
 - Purpose: Provides detailed, per-node insight into processing time, routing,
   state, and errors.
 
-**Events**
+### Events
 
 - Definition: Record significant in-node occurrences.
 - Examples:
-    - Control message handling (ack, time_tick, shutdown)
-    - State transitions (batch full/flush/drop)
-    - Output port selection, backpressure, errors
+  - Control message handling (ack, time_tick, shutdown)
+  - State transitions (batch full/flush/drop)
+  - Output port selection, backpressure, errors
 
-**Span Links**
+### Span Links
 
 - Definition: Capture relationships between spans when batches are split (
   fan-out) or merged (fan-in) across nodes.
 - Purpose: Enables lineage and parallel flow reconstruction.
 
-**Control Plane Integration**
+### Control Plane Integration
 
 - Control actions generate events or standalone spans, linked to affected
   data spans as needed, providing operational audit trails.
 
-**Channel Utilization Tracking**
+### Channel Utilization Tracking
 
 - Utilization Metrics (either maintained as direct metrics or derived from span,
   events/attributes):
-    - Queue depth at receive/send
-    - Time spent in input/output channels
-    - Rate of message arrival/departure per channel
-    - Backpressure events (as span events/attributes)
+  - Queue depth at receive/send
+  - Time spent in input/output channels
+  - Rate of message arrival/departure per channel
+  - Backpressure events (as span events/attributes)
 - Purpose: Highlights overloaded or underutilized channels, informs
   concurrency and buffer size tuning.
 
@@ -147,13 +147,13 @@ The following attribute conventions are proposed for metrics:
 
 ```
 Trace: batch-1234
-  └─ [Span] receiver/otlp/rcv-1
+  +- [Span] receiver/otlp/rcv-1
      Events: control/ack, out_port=main, channel_queue_depth=2
      |
-     └─ [Span] processor/batch/proc-2
+     +- [Span] processor/batch/proc-2
         Events: batch_flush, backpressure, control/timer_tick
         |
-        └─ [Span] exporter/http/exp-1
+        +- [Span] exporter/http/exp-1
            Events: export_success, control/shutdown
 ```
 
