@@ -35,6 +35,37 @@ pub enum ScalarExpression {
 
     /// Boolean value returned by the inner logical expression.
     Logical(Box<LogicalExpression>),
+
+    /// Returns one of two inner scalar expressions based on a logical condition.
+    Conditional(ConditionalScalarExpression),
+}
+
+impl ScalarExpression {
+    pub fn is_bool_compatible(&self) -> bool {
+        match self {
+            ScalarExpression::Source(_) => true,
+            ScalarExpression::Attached(_) => true,
+            ScalarExpression::Variable(_) => true,
+            ScalarExpression::Static(s) => matches!(s, StaticScalarExpression::Boolean(_)),
+            ScalarExpression::Negate(_) => false,
+            ScalarExpression::Logical(_) => true,
+            ScalarExpression::Conditional(_) => true,
+        }
+    }
+}
+
+impl Expression for ScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            ScalarExpression::Source(s) => s.get_query_location(),
+            ScalarExpression::Attached(a) => a.get_query_location(),
+            ScalarExpression::Variable(v) => v.get_query_location(),
+            ScalarExpression::Static(s) => s.get_query_location(),
+            ScalarExpression::Negate(n) => n.get_query_location(),
+            ScalarExpression::Logical(l) => l.get_query_location(),
+            ScalarExpression::Conditional(c) => c.get_query_location(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +186,48 @@ impl NegateScalarExpression {
 }
 
 impl Expression for NegateScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConditionalScalarExpression {
+    query_location: QueryLocation,
+    condition: Box<LogicalExpression>,
+    true_expression: Box<ScalarExpression>,
+    false_expression: Box<ScalarExpression>,
+}
+
+impl ConditionalScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        condition: LogicalExpression,
+        true_expression: ScalarExpression,
+        false_expression: ScalarExpression,
+    ) -> ConditionalScalarExpression {
+        Self {
+            query_location,
+            condition: condition.into(),
+            true_expression: true_expression.into(),
+            false_expression: false_expression.into(),
+        }
+    }
+
+    pub fn get_condition(&self) -> &LogicalExpression {
+        &self.condition
+    }
+
+    pub fn get_true_expression(&self) -> &ScalarExpression {
+        &self.true_expression
+    }
+
+    pub fn get_false_expression(&self) -> &ScalarExpression {
+        &self.false_expression
+    }
+}
+
+impl Expression for ConditionalScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
