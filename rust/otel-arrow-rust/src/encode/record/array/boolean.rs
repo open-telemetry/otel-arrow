@@ -11,7 +11,6 @@ use arrow::array::{ArrayRef, BooleanBuilder};
 /// This is implemented a bit differently than for other types because `Boolean` is the one datatype
 /// where it would never really make sense to have it in a dictionary.
 pub struct AdaptiveBooleanArrayBuilder {
-    pub nullable: bool,
     inner: Option<BooleanBuilder>,
 
     // the number of nulls that have been appended to the builder before the first value. This is
@@ -21,12 +20,14 @@ pub struct AdaptiveBooleanArrayBuilder {
 }
 
 pub struct BooleanBuilderOptions {
-    pub nullable: bool,
+    // Whether the array that's being constructed is "optional". If optional = false, we'll produce
+    // the boolean array regardless of whether all the values are null.
+    pub optional: bool,
 }
 
 impl AdaptiveBooleanArrayBuilder {
     pub fn new(options: BooleanBuilderOptions) -> Self {
-        let inner = if options.nullable {
+        let inner = if options.optional {
             None
         } else {
             Some(BooleanBuilder::new())
@@ -34,7 +35,6 @@ impl AdaptiveBooleanArrayBuilder {
 
         Self {
             inner,
-            nullable: options.nullable,
             nulls_prefix: 0,
         }
     }
@@ -60,7 +60,7 @@ impl AdaptiveBooleanArrayBuilder {
     }
 
     /// Append a null value to the builder
-    fn append_null(&mut self) {
+    pub fn append_null(&mut self) {
         match self.inner.as_mut() {
             Some(builder) => builder.append_null(),
             None => self.nulls_prefix += 1,
@@ -92,7 +92,7 @@ mod test {
     #[test]
     fn test_adaptive_boolean_builder() {
         let mut builder =
-            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { nullable: true });
+            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { optional: true });
         builder.append_value(true);
         builder.append_value(false);
         builder.append_null();
@@ -119,7 +119,7 @@ mod test {
     #[test]
     fn test_adaptive_boolean_builder_all_null() {
         let mut builder =
-            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { nullable: true });
+            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { optional: true });
         builder.append_null();
         builder.append_nulls(2);
         // expect we've returned None because there are no values
@@ -129,7 +129,7 @@ mod test {
     #[test]
     fn test_adaptive_boolean_builder_null_prefix() {
         let mut builder =
-            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { nullable: true });
+            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { optional: true });
         builder.append_null();
         builder.append_nulls(2);
         builder.append_value(true);
@@ -147,7 +147,7 @@ mod test {
     #[test]
     fn test_adaptive_boolean_builder_empty() {
         let mut builder =
-            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { nullable: true });
+            AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { optional: true });
         // expect we've returned None because there are no values
         assert!(builder.finish().is_none());
 

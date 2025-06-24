@@ -56,6 +56,36 @@ pub trait CheckedDictionaryArrayAppend: ArrayAppendNulls {
     fn append_value(&mut self, value: &Self::Native) -> checked::Result<usize>;
 }
 
+/// this trait can be implemented by types that can receive a value to append as a type of str.
+///
+/// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
+/// Native type of String, if the caller already has a str.
+pub trait DictionaryArrayAppendStr {
+    /// Append a value of type str to the builder
+    fn append_str(&mut self, value: &str) -> Result<usize>;
+}
+
+/// this trait can be implemented by types that can receive a value to append as a type of &[T].
+///
+/// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
+/// Native type of Vec<u8>, if the caller already has a byte slice of &[u8]
+pub trait DictionaryArrayAppendSlice {
+    type Native;
+
+    /// append a slice of T to the builder. Note that this does not append an individual
+    /// element for each value in the slice, it appends the slice as a single row
+    fn append_slice(&mut self, val: &[Self::Native]) -> Result<usize>;
+}
+
+/// checked variant of DictionaryArrayAppendSlice for values that can return an error
+pub trait CheckedDictionaryAppendSlice {
+    type Native;
+
+    /// append a slice of T to the builder. Note that this does not append an individual
+    /// element for each value in the slice, it appends the slice as a single row
+    fn append_slice(&mut self, val: &[Self::Native]) -> checked::Result<usize>;
+}
+
 // This is the error type for the result that is returned by CheckedDictionaryArrayAppend trait.
 // It is the same as the error type for the regular `DictionaryArrayAppend` but with an extra
 // variant containing the underlying arrow error. We need a separate module for this due to how
@@ -107,6 +137,25 @@ pub struct DictionaryOptions {
     pub min_cardinality: u16,
     // TODO there's something called reset_threshold in the golang code
     // that maybe we need to add here?
+}
+
+impl DictionaryOptions {
+    /// Create a options that configure the dictionary to start off using u8 keys, but allow
+    /// upgrade to u16 keys if the dictionary overflows
+    pub fn dict8() -> Self {
+        Self {
+            max_cardinality: u16::MAX,
+            min_cardinality: 0,
+        }
+    }
+
+    /// Create options that configure the dictionary to start off using u16 keys
+    pub fn dict16() -> Self {
+        Self {
+            max_cardinality: u16::MAX,
+            min_cardinality: u16::MAX,
+        }
+    }
 }
 
 enum DictIndexVariant<T8, T16> {
@@ -218,11 +267,11 @@ where
 /// Simple adapter for treating an array builder that implements `ArrayAppend` as an implementer
 /// of `CheckedArrayAppend`. This is helpful so we don't need separate implementations of methods
 /// in this crate that might need to call append (like `populate_native_builder`).
-struct UncheckedArrayBuilderAdapter<'a, T>
+pub(crate) struct UncheckedArrayBuilderAdapter<'a, T>
 where
     T: ArrayAppend,
 {
-    inner: &'a mut T,
+    pub(crate) inner: &'a mut T,
 }
 
 impl<T> CheckedArrayAppend for UncheckedArrayBuilderAdapter<'_, T>
@@ -325,6 +374,66 @@ where
     }
 }
 
+impl<T8, TD16> AdaptiveDictionaryBuilder<T8, TD16>
+where
+    T8: DictionaryArrayAppendStr + UpdateDictionaryIndexInto<TD16>,
+    TD16: DictionaryArrayAppendStr + ArrayBuilderConstructor,
+{
+    pub fn append_str(&mut self, value: &str) -> Result<usize> {
+        let append_result = match &mut self.variant {
+            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_str(value),
+            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_str(value),
+        };
+
+        match append_result {
+            Ok(index) => {
+                if index + 1 > self.max_cardinality as usize {
+                    // if we're here, it means we did append successfully to the underlying builder
+                    // but we shouldn't have, because have overflowed the configured max cardinality
+                    self.overflow_index = Some(index);
+                    Err(DictionaryBuilderError::DictOverflow {})
+                } else {
+                    Ok(index)
+                }
+            }
+            Err(DictionaryBuilderError::DictOverflow {}) => {
+                self.upgrade_key()?;
+                self.append_str(value)
+            }
+        }
+    }
+}
+
+impl<T, T8, TD16> AdaptiveDictionaryBuilder<T8, TD16>
+where
+    T8: DictionaryArrayAppendSlice<Native = T> + UpdateDictionaryIndexInto<TD16>,
+    TD16: DictionaryArrayAppendSlice<Native = T> + ArrayBuilderConstructor,
+{
+    pub fn append_slice(&mut self, value: &[T]) -> Result<usize> {
+        let append_result = match &mut self.variant {
+            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
+            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
+        };
+
+        match append_result {
+            Ok(index) => {
+                if index + 1 > self.max_cardinality as usize {
+                    // if we're here, it means we did append successfully to the underlying builder
+                    // but we shouldn't have, because have overflowed the configured max cardinality
+                    self.overflow_index = Some(index);
+                    Err(DictionaryBuilderError::DictOverflow {})
+                } else {
+                    Ok(index)
+                }
+            }
+            Err(DictionaryBuilderError::DictOverflow {}) => {
+                self.upgrade_key()?;
+                self.append_slice(value)
+            }
+        }
+    }
+}
+
 impl<T, T8, T16> AdaptiveDictionaryBuilder<T8, T16>
 where
     T8: CheckedDictionaryArrayAppend<Native = T> + UpdateDictionaryIndexInto<T16>,
@@ -354,6 +463,43 @@ where
                     }
                 })?;
                 self.append_value_checked(value)
+            }
+
+            // return other types of errors to caller
+            e => e,
+        }
+    }
+}
+
+impl<T, T8, TD16> AdaptiveDictionaryBuilder<T8, TD16>
+where
+    T8: CheckedDictionaryAppendSlice<Native = T> + UpdateDictionaryIndexInto<TD16>,
+    TD16: CheckedDictionaryAppendSlice<Native = T> + ArrayBuilderConstructor,
+{
+    pub fn append_slice_checked(&mut self, value: &[T]) -> checked::Result<usize> {
+        let append_result = match &mut self.variant {
+            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
+            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
+        };
+
+        match append_result {
+            Ok(index) => {
+                if index + 1 > self.max_cardinality as usize {
+                    // if we're here, it means we did append successfully to the underlying builder
+                    // but we shouldn't have, because have overflowed the configured max cardinality
+                    self.overflow_index = Some(index);
+                    Err(checked::DictionaryBuilderError::DictOverflow {})
+                } else {
+                    Ok(index)
+                }
+            }
+            Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                self.upgrade_key().map_err(|err| match err {
+                    DictionaryBuilderError::DictOverflow {} => {
+                        checked::DictionaryBuilderError::DictOverflow {}
+                    }
+                })?;
+                self.append_slice_checked(value)
             }
 
             // return other types of errors to caller
