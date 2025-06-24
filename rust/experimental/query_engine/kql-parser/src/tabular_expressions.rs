@@ -1350,4 +1350,102 @@ mod tests {
             ),
         );
     }
+
+    #[test]
+    fn test_parse_tabular_expression() {
+        let run_test = |input: &str, expected: Vec<DataExpression>| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlParser::parse(Rule::tabular_expression, input).unwrap();
+
+            let expression = parse_tabular_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test(
+            "source | where true | extend a = 1 | project-keep a",
+            vec![
+                DataExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::Not(NotLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::Scalar(ScalarExpression::Static(
+                                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    true,
+                                )),
+                            )),
+                        )),
+                    ),
+                ),
+                DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                        )]),
+                    )),
+                ))),
+                DataExpression::Transform(TransformExpression::RemoveMapKeys(
+                    RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        HashSet::from([MapKey::Value(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        ))]),
+                    )),
+                )),
+            ],
+        );
+
+        run_test(
+            "things | project-away a",
+            vec![DataExpression::Transform(
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Remove(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        HashSet::from([MapKey::Value(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        ))]),
+                    ),
+                )),
+            )],
+        );
+
+        run_test(
+            "source | project a",
+            vec![DataExpression::Transform(
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        HashSet::from([MapKey::Value(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        ))]),
+                    ),
+                )),
+            )],
+        );
+    }
 }
