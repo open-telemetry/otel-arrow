@@ -3,8 +3,8 @@ use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
 use crate::{
-    Rule, logical_expressions::parse_logical_expression, scalar_conditional_function_expressions::*,
-    scalar_primitive_expressions::*,
+    Rule, logical_expressions::parse_logical_expression,
+    scalar_conditional_function_expressions::*, scalar_primitive_expressions::*,
 };
 
 pub(crate) fn parse_scalar_expression(
