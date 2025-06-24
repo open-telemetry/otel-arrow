@@ -23,6 +23,7 @@ less_than_token = @{ "<" ~ !"=" }
 less_than_or_equal_to_token = @{ "<=" }
 and_token = @{ "and" }
 or_token = @{ "or" }
+statement_end_token = { &";" }
 
 // Literals
 true_literal = @{ "true" | "True" | "TRUE" }
@@ -90,7 +91,7 @@ project_away_expression = { "project-away" ~ (identifier_or_pattern_literal|acce
 where_expression = { "where" ~ logical_expression }
 
 tabular_expressions = _{
-	extend_expression
+    extend_expression
     | project_expression
     | project_keep_expression
     | project_away_expression
@@ -98,5 +99,15 @@ tabular_expressions = _{
 }
 
 tabular_expression = {
-	identifier_literal ~ ("|" ~ tabular_expressions)*
+    identifier_literal ~ ("|" ~ tabular_expressions)*
+}
+
+let_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
+
+query_expressions = _{
+    let_expression|tabular_expression
+}
+
+query = {
+    SOI ~ (query_expressions ~ (";" ~ query_expressions)* ~ ";"?)? ~ EOI
 }
