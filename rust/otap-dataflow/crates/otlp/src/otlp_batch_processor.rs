@@ -29,7 +29,6 @@ pub trait HierarchicalBatchSplit: Sized {
     ///
     /// A `Result` containing a vector of batches, or an error if the batch size is zero.
     fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
-
 }
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
