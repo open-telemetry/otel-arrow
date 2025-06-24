@@ -355,7 +355,10 @@ mod tests {
     use chrono::{DateTime, Datelike, Utc};
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::{
+        KqlParser,
+        date_utils::{create_fixed, create_utc},
+    };
 
     use super::*;
 
@@ -554,40 +557,6 @@ mod tests {
                 StaticScalarExpression::DateTime(v) => assert_eq!(expected, v.get_value()),
                 _ => panic!("Unexpected type retured from parse_datetime_expression"),
             }
-        };
-
-        let create_utc = |year: i32,
-                          month: u32,
-                          day: u32,
-                          hour: u32,
-                          min: u32,
-                          sec: u32,
-                          micro: u32|
-         -> DateTime<FixedOffset> {
-            NaiveDate::from_ymd_opt(year, month, day)
-                .unwrap()
-                .and_hms_micro_opt(hour, min, sec, micro)
-                .unwrap()
-                .and_local_timezone(Utc)
-                .unwrap()
-                .into()
-        };
-
-        let create_fixed = |year: i32,
-                            month: u32,
-                            day: u32,
-                            hour: u32,
-                            min: u32,
-                            sec: u32,
-                            micro: u32,
-                            offset: i32|
-         -> DateTime<FixedOffset> {
-            NaiveDate::from_ymd_opt(year, month, day)
-                .unwrap()
-                .and_hms_micro_opt(hour, min, sec, micro)
-                .unwrap()
-                .and_local_timezone(FixedOffset::east_opt(offset).unwrap())
-                .unwrap()
         };
 
         let now = Utc::now();

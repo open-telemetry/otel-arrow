@@ -40,7 +40,9 @@ pub(crate) fn parse_scalar_expression(
 
 #[cfg(test)]
 mod tests {
-    use crate::KqlParser;
+    use pest::Parser;
+
+    use crate::{KqlParser, date_utils::create_utc};
 
     use super::*;
 
@@ -60,9 +62,118 @@ mod tests {
                 "variable",
                 "(1)",
                 "iff(true, 0, 1)",
-                "iif(true, 0, 1)",
             ],
             &["!"],
+        );
+    }
+
+    #[test]
+    fn test_parse_scalar_expression() {
+        let run_test = |input: &str, expected: ScalarExpression| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test(
+            "1",
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+            )),
+        );
+        run_test(
+            "(1)",
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+            )),
+        );
+        run_test(
+            "1e1",
+            ScalarExpression::Static(StaticScalarExpression::Double(DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1e1,
+            ))),
+        );
+        run_test(
+            "real(1)",
+            ScalarExpression::Static(StaticScalarExpression::Double(DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.0,
+            ))),
+        );
+        run_test(
+            "datetime(6/9/2025)",
+            ScalarExpression::Static(StaticScalarExpression::DateTime(
+                DateTimeScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    create_utc(2025, 6, 9, 0, 0, 0, 0),
+                ),
+            )),
+        );
+        run_test(
+            "true",
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+        );
+        run_test(
+            "false",
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+            )),
+        );
+        run_test(
+            "(true == true)",
+            ScalarExpression::Logical(
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ))
+                .into(),
+            ),
+        );
+        run_test(
+            "\"hello world\"",
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
+        );
+        run_test(
+            "identifier",
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "identifier"),
+                )]),
+            )),
+        );
+        run_test(
+            "iff(true, 0, 1)",
+            ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            )),
         );
     }
 }
