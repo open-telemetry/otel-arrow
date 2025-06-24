@@ -18,16 +18,16 @@ use std::time::{Duration, Instant};
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
-/// Splits a batch into a vector of smaller batches, each with at most `max_batch_size` leaf items,
-/// preserving all resource/scope/leaf (span/metric/logrecord) structure.
-///
-/// # Arguments
-///
-/// * `max_batch_size` - The maximum number of leaf items (spans, metrics, or log records) per batch.
-///
-/// # Returns
-///
-/// A `Result` containing a vector of batches, or an error if the batch size is zero.
+    /// Splits a batch into a vector of smaller batches, each with at most `max_batch_size` leaf items,
+    /// preserving all resource/scope/leaf (span/metric/logrecord) structure.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_batch_size` - The maximum number of leaf items (spans, metrics, or log records) per batch.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of batches, or an error if the batch size is zero.
     fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
 
 }
