@@ -68,7 +68,7 @@ impl ScopeGroup for ScopeSpans {
     }
     fn take_scope_fields(&mut self) -> Self {
         ScopeSpans {
-            scope: self.scope.clone(),
+            scope: self.scope.take(),
             spans: Vec::new(),
             schema_url: self.schema_url.clone(),
         }
@@ -176,7 +176,7 @@ impl ScopeGroup for ScopeMetrics {
     }
     fn take_scope_fields(&mut self) -> Self {
         ScopeMetrics {
-            scope: self.scope.clone(),
+            scope: self.scope.take(),
             metrics: Vec::new(),
             schema_url: self.schema_url.clone(),
         }
