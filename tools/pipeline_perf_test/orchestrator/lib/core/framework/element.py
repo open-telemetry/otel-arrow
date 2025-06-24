@@ -1,7 +1,7 @@
 """
-Module: test_element
+Module: element
 
-This module defines the `TestFrameworkElement` abstract base class and supporting
+This module defines the `FrameworkElement` abstract base class and supporting
 constructs that represent units of test execution within a test orchestration system.
 
 The test framework element is the foundational abstraction for anything that can be
@@ -17,14 +17,14 @@ Key Concepts:
     - Hook Integration: Hooks conforming to `HookStrategy` can be attached and run dynamically.
 
 Typical usage:
-    - Subclass `TestFrameworkElement` and implement the `run` method.
+    - Subclass `FrameworkElement` and implement the `run` method.
     - Attach hooks using `add_hook` to customize behavior for different lifecycle phases.
 
 Enums:
     TestLifecyclePhase: Represents core phases in a test element's execution.
 
 Classes:
-    TestFrameworkElement (ABC): Base class for all testable elements in the framework,
+    FrameworkElement (ABC): Base class for all testable elements in the framework,
                                 with support for lifecycle hook execution.
 """
 
@@ -37,21 +37,21 @@ from typing import Optional, List, Dict, Callable, Any
 from pydantic import BaseModel, Field
 from opentelemetry.trace import Status, StatusCode
 
-from ..context.test_element_hook_context import (
+from ..context.framework_element_hook_context import (
     HookableTestPhase,
-    TestElementHookContext,
+    FrameworkElementHookContext,
 )
 from ..strategies.hook_strategy import HookStrategy
 from ..context.base import BaseContext
-from ..context.test_contexts import TestFrameworkElementContext
+from ..context.framework_element_contexts import FrameworkElementContext
 from ..context.base import ExecutionStatus
 from ..errors.error_handler import OnErrorConfig, handle_with_policy
 from ..runtime import Runtime
 
 
-class TestLifecyclePhase(Enum):
+class FrameworkLifecyclePhase(Enum):
     """
-    Enum representing the various primary phases in the lifecycle of a TestFrameworkElement.
+    Enum representing the various primary phases in the lifecycle of a FrameworkElement.
 
     These phases help manage the orchestration of components during test execution.
 
@@ -62,16 +62,16 @@ class TestLifecyclePhase(Enum):
     RUN = "run"
 
 
-class TestElementConfig(BaseModel):
+class FrameworkElementConfig(BaseModel):
     """
-    Base configuration model for TestElements.
+    Base configuration model for FrameworkElements.
     """
 
     name: str
     on_error: Optional[OnErrorConfig] = Field(default_factory=OnErrorConfig)
 
 
-class TestFrameworkElement(ABC):
+class FrameworkElement(ABC):
     """
     Abstract base class for test elements within the orchestrator.
     """
@@ -90,7 +90,7 @@ class TestFrameworkElement(ABC):
         self._hooks[phase].append(hook)
 
     def _maybe_trace(
-        self, ctx: TestFrameworkElementContext, name: str, phase: HookableTestPhase
+        self, ctx: FrameworkElementContext, name: str, phase: HookableTestPhase
     ):
         tracer = ctx.get_tracer("test-framework")
         if tracer and ctx.span:
@@ -98,7 +98,7 @@ class TestFrameworkElement(ABC):
         return nullcontext()
 
     def _run_hooks(
-        self, phase: HookableTestPhase, ctx: "TestFrameworkElementContext"
+        self, phase: HookableTestPhase, ctx: "FrameworkElementContext"
     ) -> None:
         """Run hooks for the specified phase with provided context.
 
@@ -113,7 +113,7 @@ class TestFrameworkElement(ABC):
             ctx, f"Run Framework Hooks: ({phase.value})", phase
         ) as span:
             for hook in hooks:
-                hook_context = TestElementHookContext(
+                hook_context = FrameworkElementHookContext(
                     phase=phase,
                     name=f"{hook.__class__.__name__} ({phase.value})",
                     parent_ctx=ctx,
@@ -134,11 +134,13 @@ class TestFrameworkElement(ABC):
                         hook_context.status = ExecutionStatus.ERROR
                         hook_context.error = e
                         hook_logger.error(f"Hook failed: {e}")
-                        span.set_status(
-                            Status(StatusCode.ERROR, "Fatal Child Hook Failure")
-                        )
+                        if span:
+                            span.set_status(
+                                Status(StatusCode.ERROR, "Fatal Child Hook Failure")
+                            )
                         raise
-            span.set_status(StatusCode.OK)
+            if span:
+                span.set_status(StatusCode.OK)
 
     def get_or_create_runtime(self, namespace: str, factory: Callable[[], Any]) -> Any:
         """Get an existing runtime data structure or initialize a new one.

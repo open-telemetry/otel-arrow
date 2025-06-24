@@ -22,7 +22,7 @@ Classes:
 
 from abc import abstractmethod
 from typing import TYPE_CHECKING
-from ..context.test_contexts import TestStepContext
+from ..context.framework_element_contexts import StepContext
 from .base import BaseStrategyConfig, BaseStrategy
 
 
@@ -50,7 +50,7 @@ class ConfigurationStrategy(BaseStrategy):
         """All configuration strategies must be initialized with a config object."""
 
     @abstractmethod
-    def start(self, component: "Component", ctx: TestStepContext):
+    def start(self, component: "Component", ctx: StepContext):
         """
         Start configuration for the given component.
 

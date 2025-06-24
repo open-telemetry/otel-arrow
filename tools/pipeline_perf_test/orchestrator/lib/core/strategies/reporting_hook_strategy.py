@@ -21,7 +21,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..context.base import BaseContext
-from ..test_framework.test_report import TestReport
+from ..framework.report import Report
 from .hook_strategy import HookStrategyConfig, HookStrategy
 
 
@@ -65,7 +65,7 @@ class ReportFormatter:
             config (ReportFormatterConfig): A configuration object used to customize the formatter's behavior.
         """
 
-    def format(self, report: TestReport, ctx: BaseContext) -> Any:
+    def format(self, report: Report, ctx: BaseContext) -> Any:
         """
         Format a test report using the provided context.
 
@@ -143,7 +143,7 @@ class ReportOutputPipeline:
         self.formatter = formatter
         self.writer = writer
 
-    def execute(self, report: TestReport, ctx: BaseContext):
+    def execute(self, report: Report, ctx: BaseContext):
         """
         Execute the report output pipeline.
 

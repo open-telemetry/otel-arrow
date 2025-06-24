@@ -16,7 +16,7 @@ Classes:
 from abc import abstractmethod
 from typing import TYPE_CHECKING
 
-from ..context.test_contexts import TestStepContext, TestExecutionContext
+from ..context.framework_element_contexts import StepContext, ScenarioContext
 from .base import BaseStrategyConfig, BaseStrategy
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ class MonitoringStrategy(BaseStrategy):
         """All monitoring strategies must be initialized with a config object."""
 
     @abstractmethod
-    def start(self, component: "Component", ctx: TestStepContext):
+    def start(self, component: "Component", ctx: StepContext):
         """
         Start the monitoring process.
 
@@ -57,7 +57,7 @@ class MonitoringStrategy(BaseStrategy):
         """
 
     @abstractmethod
-    def stop(self, component: "Component", ctx: TestStepContext):
+    def stop(self, component: "Component", ctx: StepContext):
         """
         Stop the monitoring process.
 
@@ -68,7 +68,7 @@ class MonitoringStrategy(BaseStrategy):
         """
 
     @abstractmethod
-    def collect(self, component: "Component", ctx: TestExecutionContext) -> dict:
+    def collect(self, component: "Component", ctx: ScenarioContext) -> dict:
         """
         Collect and return monitoring data.
 

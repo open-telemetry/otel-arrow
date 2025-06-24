@@ -1,7 +1,7 @@
 """
-Module: test_report
+Module: report
 
-This module defines the `TestReport` class, which represents structured test or data quality reports,
+This module defines the `Report` class, which represents structured test or data quality reports,
 including result data, metadata, and associated timestamps.
 
 It provides utilities for:
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ..strategies.reporting_hook_strategy import ReportingHookStrategyConfig
 
 
-class TestReportAggregation(Enum):
+class ReportAggregation(Enum):
     """
     Enumeration of supported test report aggregation strategies.
 
@@ -49,7 +49,7 @@ class TestReportAggregation(Enum):
 
 
 @dataclass
-class TestReport:
+class Report:
     """
     A structured representation of a test report, including results, metadata, and serialization utilities.
 
@@ -76,8 +76,8 @@ class TestReport:
     @classmethod
     def aggregate(
         cls,
-        reports: List["TestReport"],
-        mode: TestReportAggregation = TestReportAggregation.COMPARISON,
+        reports: List["Report"],
+        mode: ReportAggregation = ReportAggregation.COMPARISON,
         *,
         label_key: str = "name",
     ) -> Dict[str, pd.DataFrame]:
@@ -100,7 +100,7 @@ class TestReport:
         cls,
         results: Dict[str, pd.DataFrame],
         config: "ReportingHookStrategyConfig",
-        mode: TestReportAggregation = TestReportAggregation.COMPARISON,
+        mode: ReportAggregation = ReportAggregation.COMPARISON,
     ):
         """Abstract method for preparing a dict to pass to an output template.
 
@@ -115,7 +115,7 @@ class TestReport:
         """
 
     @classmethod
-    def get_template(self, mode: TestReportAggregation) -> str:
+    def get_template(self, mode: ReportAggregation) -> str:
         """
         Override this method in subclasses to customize default data output template.
 
@@ -123,9 +123,9 @@ class TestReport:
             mode: The report aggregation mode to fetch the template for.
         """
         templates = {
-            TestReportAggregation.NONE: "{{results}}",
-            TestReportAggregation.COMPARISON: "{{results}}",
-            TestReportAggregation.TIMESERIES: "{{results}}",
+            ReportAggregation.NONE: "{{results}}",
+            ReportAggregation.COMPARISON: "{{results}}",
+            ReportAggregation.TIMESERIES: "{{results}}",
         }
         tmpl = templates.get(mode)
         if not tmpl:
@@ -133,7 +133,7 @@ class TestReport:
         return tmpl
 
     @classmethod
-    def from_json(cls, json_str: str) -> "TestReport":
+    def from_json(cls, json_str: str) -> "Report":
         """
         Construct a TestReport from json data.
 
@@ -144,7 +144,7 @@ class TestReport:
         return cls.from_dict(data)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TestReport":
+    def from_dict(cls, data: Dict[str, Any]) -> "Report":
         """
         Construct a TestReport from a python dict.
 
@@ -164,7 +164,7 @@ class TestReport:
         )
 
     @classmethod
-    def from_context(cls, name: str, ctx: BaseContext) -> "TestReport":
+    def from_context(cls, name: str, ctx: BaseContext) -> "Report":
         """
         Create a TestReport from a test context object.
 
@@ -183,7 +183,7 @@ class TestReport:
 
         now = datetime.datetime.now(tz=datetime.timezone.utc)
         ctx_meta = ctx.get_metadata()
-        ts = ctx.get_test_suite()
+        ts = ctx.get_suite()
         test_meta = {
             "test.suite.start": to_iso(ts.context.start_time),
             "test.suite": ctx_meta.get("test.suite"),
@@ -268,7 +268,7 @@ class TestReport:
         """
         Fetch the display template for the the TestReport given the current aggregation.
         """
-        return self.get_template(mode=TestReportAggregation.NONE)
+        return self.get_template(mode=ReportAggregation.NONE)
 
     def set_results(self, results: Dict[str, pd.DataFrame]):
         """

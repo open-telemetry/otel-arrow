@@ -1,41 +1,41 @@
 """
-Module: test_suite
+Module: suite
 
-This module defines the `TestSuite` class, which is responsible for managing and running a series of tests
+This module defines the `Suite` class, which is responsible for managing and running a series of tests
 on a set of components. It allows the execution of multiple tests in a sequence, providing the necessary
 context and components to each test.
 
-The `TestSuite` class organizes tests and components, managing their execution in a structured manner.
+The `Suite` class organizes tests and components, managing their execution in a structured manner.
 Each test is provided with a context that includes all the components needed for the test to run.
 
 Classes:
-    TestSuite: A class that manages a collection of tests and components, runs the tests, and provides
+    Suite: A class that manages a collection of tests and components, runs the tests, and provides
     context to each test.
 """
 
 from typing import List, Dict, Optional, TYPE_CHECKING
 
-from ...core.context.base import ExecutionStatus, BaseContext
-from .test_definition import TestDefinition
-from ..context.test_contexts import TestSuiteContext, TestExecutionContext
-from .test_element import TestFrameworkElement
-from ..context.test_element_hook_context import HookableTestPhase
+from ..context.base import ExecutionStatus, BaseContext
+from .scenario import Scenario
+from ..context.framework_element_contexts import SuiteContext, ScenarioContext
+from .element import FrameworkElement
+from ..context.framework_element_hook_context import HookableTestPhase
 from ..telemetry.telemetry_runtime import TelemetryRuntime
 
 if TYPE_CHECKING:
     from ..component.component import Component
 
 
-class TestSuite(TestFrameworkElement):
+class Suite(FrameworkElement):
     """
     A test suite class for managing and executing a series of tests on a set of components.
 
-    The `TestSuite` class is designed to execute a list of tests on a set of components. Each test is provided
+    The `Suite` class is designed to execute a list of tests on a set of components. Each test is provided
     with a `TestExecutionContext` that contains all components, enabling the test to interact with and
     manipulate the components during execution.
 
     Attributes:
-        tests (List[TestDefinition]): A list of test definitions that define the tests to run.
+        tests (List[Scenario]): A list of test definitions that define the tests to run.
         components (Dict[str, Component]): A dictionary of components, indexed by their names.
         name str: The name for the test suite.
         telemetry_runtime Optional[TelemetryRuntime]: A runtime object that holds Opentelemetry trace/meter providers.
@@ -46,9 +46,9 @@ class TestSuite(TestFrameworkElement):
 
     def __init__(
         self,
-        tests: List[TestDefinition],
+        tests: List[Scenario],
         components: Dict[str, "Component"],
-        name: Optional[str] = "TestSuite",
+        name: Optional[str] = "Suite",
         telemetry_runtime: Optional[TelemetryRuntime] = None,
     ):
         """
@@ -58,14 +58,14 @@ class TestSuite(TestFrameworkElement):
         a `Context` to manage the components during test execution.
 
         Args:
-            tests (List[TestDefinition]): The list of test definitions to be executed in the test suite.
+            tests (List[Scenario]): The list of test definitions to be executed in the test suite.
             components (Dict[str, Component]): A dictionary of components to be used in the tests.
         """
         super().__init__()
         self.name = name
         self.tests = tests
         self.components = components
-        self.context = TestSuiteContext(name=self.name)
+        self.context = SuiteContext(name=self.name)
         self.set_runtime_data(TelemetryRuntime.type, telemetry_runtime)
         for k, v in components.items():
             self.context.add_component(k, v)
@@ -81,14 +81,14 @@ class TestSuite(TestFrameworkElement):
         Args:
             _ctx: unused context object, defaults to None.
         """
-        self.context.test_suite = self
+        self.context.suite = self
         logger = self.context.get_logger(__name__)
         with self.context:
             self._run_hooks(HookableTestPhase.PRE_RUN, self.context)
             for test_definition in self.tests:
-                test_execution_context = TestExecutionContext(
+                test_execution_context = ScenarioContext(
                     name=test_definition.name,
-                    test_definition=test_definition,
+                    scenario_definition=test_definition,
                     parent_ctx=self.context,
                 )
                 self.context.add_child_ctx(test_execution_context)

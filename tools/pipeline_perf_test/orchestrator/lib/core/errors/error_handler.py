@@ -15,7 +15,7 @@ Functions:
 """
 
 import time
-from typing import Optional
+from typing import Optional, Callable, Any
 from pydantic import BaseModel, Field
 from opentelemetry.trace import StatusCode, Status
 from ..context.base import BaseContext, ExecutionStatus
@@ -29,7 +29,9 @@ class OnErrorConfig(BaseModel):
     continue_: Optional[bool] = Field(default=False, alias="continue")
 
 
-def handle_with_policy(ctx: BaseContext, func, on_error: OnErrorConfig):
+def handle_with_policy(
+    ctx: BaseContext, func: Callable[[], Any], on_error: OnErrorConfig
+) -> Any:
     """
     Executes a function with retry and error-handling policy defined by `on_error`.
 
@@ -66,12 +68,15 @@ def handle_with_policy(ctx: BaseContext, func, on_error: OnErrorConfig):
             if should_continue:
                 logger.warning(f"Continuing after failure: {e}")
                 ctx.status = ExecutionStatus.ERROR
-                ctx.span.set_status(
-                    Status(
-                        StatusCode.ERROR,
-                        f"Failed after {retries+1} attempts, continuing per config.",
+                ctx.error = e
+                if ctx.span:
+                    ctx.span.set_status(
+                        Status(
+                            StatusCode.ERROR,
+                            f"Failed after {retries+1} attempts, continuing per config.",
+                        )
                     )
-                )
                 return
             logger.error(f"Fatal error after {retries+1} attempts: {e}")
             raise
+    return None
