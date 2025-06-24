@@ -13,10 +13,10 @@ use arrow::{
 };
 
 use crate::encode::record::array::{
-    ArrayAppendNulls,
+    ArrayAppendNulls, CheckedArrayAppendSlice, DefaultValueProvider,
     dictionary::{
-        CheckedDictionaryArrayAppend, ConvertToNativeHelper, DictionaryBuilder,
-        UpdateDictionaryIndexInto,
+        CheckedDictionaryAppendSlice, CheckedDictionaryArrayAppend, ConvertToNativeHelper,
+        DictionaryBuilder, UpdateDictionaryIndexInto,
     },
 };
 
@@ -35,6 +35,20 @@ impl CheckedArrayAppend for FixedSizeBinaryBuilder {
 
     fn append_value(&mut self, value: &Self::Native) -> Result<(), ArrowError> {
         self.append_value(value)
+    }
+}
+
+impl DefaultValueProvider<Vec<u8>, i32> for FixedSizeBinaryBuilder {
+    fn default_value(byte_width: i32) -> Vec<u8> {
+        vec![0; byte_width as usize]
+    }
+}
+
+impl CheckedArrayAppendSlice for FixedSizeBinaryBuilder {
+    type Native = u8;
+
+    fn append_slice(&mut self, val: &[Self::Native]) -> Result<(), ArrowError> {
+        self.append_value(val)
     }
 }
 
@@ -78,6 +92,21 @@ where
     type Native = Vec<u8>;
 
     fn append_value(&mut self, value: &Self::Native) -> super::dictionary::checked::Result<usize> {
+        self.append_slice(value)
+    }
+}
+
+impl<K> CheckedDictionaryAppendSlice for FixedSizeBinaryDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+    <K as ArrowPrimitiveType>::Native: Into<usize>,
+{
+    type Native = u8;
+
+    fn append_slice(
+        &mut self,
+        value: &[Self::Native],
+    ) -> super::dictionary::checked::Result<usize> {
         match self.append(value) {
             Ok(index) => Ok(index.into()),
             Err(ArrowError::DictionaryKeyOverflowError) => {

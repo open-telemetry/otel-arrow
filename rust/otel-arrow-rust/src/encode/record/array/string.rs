@@ -12,8 +12,10 @@ use arrow::array::{
 use arrow::datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type};
 use arrow::error::ArrowError;
 
-use crate::encode::record::array::dictionary::DictionaryBuilder;
-use crate::encode::record::array::{ArrayAppend, ArrayAppendNulls, NoArgs};
+use crate::encode::record::array::dictionary::{DictionaryArrayAppendStr, DictionaryBuilder};
+use crate::encode::record::array::{
+    ArrayAppend, ArrayAppendNulls, ArrayAppendStr, DefaultValueProvider, NoArgs,
+};
 
 use super::dictionary::{DictionaryArrayAppend, DictionaryBuilderError as Error, Result};
 use super::{ArrayBuilder, ArrayBuilderConstructor, dictionary::UpdateDictionaryIndexInto};
@@ -34,6 +36,12 @@ impl ArrayAppend for StringBuilder {
     }
 }
 
+impl ArrayAppendStr for StringBuilder {
+    fn append_str(&mut self, value: &str) {
+        self.append_value(value);
+    }
+}
+
 impl ArrayAppendNulls for StringBuilder {
     fn append_null(&mut self) {
         self.append_null();
@@ -46,6 +54,12 @@ impl ArrayAppendNulls for StringBuilder {
         for _ in 0..n {
             self.append_null();
         }
+    }
+}
+
+impl DefaultValueProvider<String, NoArgs> for StringBuilder {
+    fn default_value(_args: NoArgs) -> String {
+        String::new()
     }
 }
 
@@ -74,14 +88,7 @@ where
     type Native = String;
 
     fn append_value(&mut self, value: &Self::Native) -> Result<usize> {
-        match self.append(value) {
-            Ok(index) => Ok(index.into()),
-            Err(ArrowError::DictionaryKeyOverflowError) => Err(Error::DictOverflow {}),
-
-            // safety: shouldn't happen. The only error type append should
-            // return should be for dictionary overflows
-            Err(e) => panic!("unexpected error type appending to dictionary {}", e),
-        }
+        self.append_str(value.as_str())
     }
 }
 
@@ -95,6 +102,23 @@ where
 
     fn append_nulls(&mut self, n: usize) {
         self.append_nulls(n);
+    }
+}
+
+impl<T> DictionaryArrayAppendStr for StringDictionaryBuilder<T>
+where
+    T: ArrowDictionaryKeyType + ArrowPrimitiveType,
+    <T as ArrowPrimitiveType>::Native: Into<usize>,
+{
+    fn append_str(&mut self, value: &str) -> Result<usize> {
+        match self.append(value) {
+            Ok(index) => Ok(index.into()),
+            Err(ArrowError::DictionaryKeyOverflowError) => Err(Error::DictOverflow {}),
+
+            // safety: shouldn't happen. The only error type append should
+            // return should be for dictionary overflows
+            Err(e) => panic!("unexpected error type appending to dictionary {}", e),
+        }
     }
 }
 
