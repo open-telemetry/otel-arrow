@@ -22,6 +22,9 @@ Note: In its current state, this document does not describe the propagation of
 traces that could be initiated outside the dataflow engine. This topic will need
 to be studied further at a later time.
 
+> Note: An RFC on the same topic was issued for the Go Collector. This document
+> is a refinement of that [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+
 ## System Overview
 
 The dataflow engine is structured as a DAG of the following node types:
@@ -72,7 +75,11 @@ Each node features:
 
 - Definition: Captures a node’s processing of a PData flow.
 - Attributes:
-    - node.id, node.type, signal.type
+    - otelcol.component.id: the node id.
+    - otelcol.component.kind: receiver, processor, or exporter.
+    - otelcol.signal: logs, metrics, events, or traces.
+    - otelcol.signal.output: logs, metrics, events, or traces.
+    - otelcol.pipeline.id: the pipeline id.
     - pdata.batch.size, out.port
     - stateful, error
 - Purpose: Provides detailed, per-node insight into processing time, routing,
@@ -108,7 +115,7 @@ Each node features:
 - Purpose: Highlights overloaded or underutilized channels, informs
   concurrency and buffer size tuning.
 
-## Metrics Extraction
+## Metrics
 
 Metrics are either maintained individually or derived from traces (pre-sampling)
 and may include:
@@ -118,6 +125,11 @@ and may include:
 - Channel utilization
 - Frequency and success of control actions
 - Dropped or delayed batches
+
+The following attribute conventions are proposed for metrics:
+
+- otelcol.component.outcome: success, failure, refused
+- more to come...
 
 ## Possible Visualization & Analysis
 
