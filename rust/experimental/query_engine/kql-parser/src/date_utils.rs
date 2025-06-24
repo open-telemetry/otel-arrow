@@ -1,5 +1,7 @@
 use std::{ops::Range, str::FromStr, sync::LazyLock};
 
+#[cfg(test)]
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use chrono::{Datelike, Month, Utc};
 use regex::Regex;
 
@@ -23,6 +25,45 @@ fn expand_year(mut year: u32) -> u32 {
         year += 1900;
     }
     year
+}
+
+#[cfg(test)]
+pub(crate) fn create_utc(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    min: u32,
+    sec: u32,
+    micro: u32,
+) -> DateTime<FixedOffset> {
+    NaiveDate::from_ymd_opt(year, month, day)
+        .unwrap()
+        .and_hms_micro_opt(hour, min, sec, micro)
+        .unwrap()
+        .and_local_timezone(Utc)
+        .unwrap()
+        .into()
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_fixed(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    min: u32,
+    sec: u32,
+    micro: u32,
+    offset: i32,
+) -> DateTime<FixedOffset> {
+    NaiveDate::from_ymd_opt(year, month, day)
+        .unwrap()
+        .and_hms_micro_opt(hour, min, sec, micro)
+        .unwrap()
+        .and_local_timezone(FixedOffset::east_opt(offset).unwrap())
+        .unwrap()
 }
 
 pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
@@ -163,3 +204,6 @@ pub(crate) fn parse_offset(input: &str) -> i32 {
 
     offset
 }
+
+#[cfg(test)]
+mod tests {}
