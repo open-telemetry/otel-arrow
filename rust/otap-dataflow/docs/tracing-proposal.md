@@ -145,7 +145,7 @@ The following attribute conventions are proposed for metrics:
 
 ## Example Trace Structure
 
-```
+```text
 Trace: batch-1234
   +- [Span] receiver/otlp/rcv-1
      Events: control/ack, out_port=main, channel_queue_depth=2
@@ -171,4 +171,4 @@ Fan-out/fan-in cases are modeled with span links.
 
 ## Implementation Details
 
-**Not yet defined**
+Not yet defined
