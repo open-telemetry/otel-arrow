@@ -23,7 +23,9 @@ traces that could be initiated outside the dataflow engine. This topic will need
 to be studied further at a later time.
 
 > Note: An RFC on the same topic was issued for the Go Collector. This document
-> is a refinement of that [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+> is a refinement of
+>
+that [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
 ## System Overview
 
