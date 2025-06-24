@@ -60,7 +60,7 @@ mod tests {
                 "variable",
                 "(1)",
                 "iff(true, 0, 1)",
-                "iif(true, 0, 1)"
+                "iif(true, 0, 1)",
             ],
             &["!"],
         );
