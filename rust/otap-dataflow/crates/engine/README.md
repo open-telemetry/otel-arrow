@@ -25,7 +25,7 @@ Collector.
 ## Architecture
 
 A list of the design principles followed by this project can be found
-[here](../../docs/design-principles.md). More specifically, the pipeline engine
+[in /docs](../../docs/design-principles.md). More specifically, the pipeline engine
 implemented in this crate follows a share-nothing, thread-per-core approach. In
 particular, one instance of the pipeline engine is created per core. This
 engine:
