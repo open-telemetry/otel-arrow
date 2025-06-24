@@ -374,12 +374,12 @@ pub(crate) fn parse_logical_expression(
 
         let chain_rule = rule.unwrap();
         match chain_rule.as_rule() {
-            Rule::and_token => chain_rules.push(ChainedLogicalExpression::And(
-                parse_logical_expression(logical_rules.next().unwrap(), state)?,
-            )),
-            Rule::or_token => chain_rules.push(ChainedLogicalExpression::Or(
-                parse_logical_expression(logical_rules.next().unwrap(), state)?,
-            )),
+            Rule::and_token => chain_rules.push(ChainedLogicalExpression::And(parse_rule(
+                logical_rules.next().unwrap(),
+            )?)),
+            Rule::or_token => chain_rules.push(ChainedLogicalExpression::Or(parse_rule(
+                logical_rules.next().unwrap(),
+            )?)),
             _ => panic!("Unexpected rule in chain_rule: {}", chain_rule),
         }
     }
@@ -3377,7 +3377,7 @@ mod parse_tests {
                 assert_eq!(expected_id, id);
                 assert_eq!(expected_msg, msg);
             } else {
-                panic!("Expected SyntaxError");
+                panic!("Expected QueryLanguageDiagnostic");
             }
         };
 
@@ -3444,7 +3444,7 @@ mod parse_tests {
                 assert_eq!(expected_id, id);
                 assert_eq!(expected_msg, msg);
             } else {
-                panic!("Expected SyntaxError");
+                panic!("Expected QueryLanguageDiagnostic");
             }
         };
 
