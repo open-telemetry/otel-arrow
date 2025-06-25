@@ -87,7 +87,8 @@ pub(crate) fn parse_logical_expression(
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        if !scalar.is_bool_compatible() {
+                        let value = scalar.to_value();
+                        if value.is_some() && !matches!(value, Some(Value::Boolean(_))) {
                             return Err(ParserError::QueryLanguageDiagnostic {
                                 location: scalar.get_query_location().clone(),
                                 diagnostic_id: "KS141",

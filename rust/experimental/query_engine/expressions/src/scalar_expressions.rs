@@ -1,5 +1,5 @@
 use crate::{
-    Expression, LogicalExpression, QueryLocation, StaticScalarExpression, ValueAccessor,
+    Expression, LogicalExpression, QueryLocation, StaticScalarExpression, Value, ValueAccessor,
     ValueSelector,
 };
 
@@ -41,16 +41,11 @@ pub enum ScalarExpression {
 }
 
 impl ScalarExpression {
-    pub fn is_bool_compatible(&self) -> bool {
-        match self {
-            ScalarExpression::Source(_) => true,
-            ScalarExpression::Attached(_) => true,
-            ScalarExpression::Variable(_) => true,
-            ScalarExpression::Static(s) => matches!(s, StaticScalarExpression::Boolean(_)),
-            ScalarExpression::Negate(_) => false,
-            ScalarExpression::Logical(_) => true,
-            ScalarExpression::Conditional(_) => true,
+    pub fn to_value(&self) -> Option<Value> {
+        if let ScalarExpression::Static(s) = self {
+            return Some(s.to_value());
         }
+        None
     }
 }
 
