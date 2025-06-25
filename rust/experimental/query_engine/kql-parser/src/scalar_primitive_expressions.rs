@@ -1019,7 +1019,7 @@ mod tests {
                     "~at'tr~"
                 ))]
                 .to_vec(),
-                a.get_selectors()
+                a.get_value_accessor().get_selectors()
             );
         } else {
             panic!("Expected AttachedScalarExpression");
@@ -1044,7 +1044,7 @@ mod tests {
                     -1
                 ))]
                 .to_vec(),
-                v.get_selectors()
+                v.get_value_accessor().get_selectors()
             );
         } else {
             panic!("Expected VariableScalarExpression");
