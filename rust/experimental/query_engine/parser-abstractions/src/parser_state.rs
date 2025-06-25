@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use data_engine_expressions::QueryLocation;
+use data_engine_expressions::{QueryLocation, StaticScalarExpression};
 
 pub struct ParserOptions {
     default_source_map_key: Option<Box<str>>,
@@ -43,6 +43,7 @@ pub struct ParserState<'a> {
     default_source_map_key: Option<Box<str>>,
     attached_data_names: HashSet<Box<str>>,
     variable_names: HashSet<Box<str>>,
+    constants: HashMap<Box<str>, StaticScalarExpression>,
 }
 
 impl<'a> ParserState<'a> {
@@ -56,6 +57,7 @@ impl<'a> ParserState<'a> {
             default_source_map_key: options.default_source_map_key,
             attached_data_names: options.attached_data_names,
             variable_names: HashSet::new(),
+            constants: HashMap::new(),
         }
     }
 
@@ -74,7 +76,10 @@ impl<'a> ParserState<'a> {
     }
 
     pub fn is_well_defined_identifier(&self, name: &str) -> bool {
-        name == "source" || self.is_attached_data_defined(name) || self.is_variable_defined(name)
+        name == "source"
+            || self.is_attached_data_defined(name)
+            || self.is_variable_defined(name)
+            || self.try_get_constant(name).is_some()
     }
 
     pub fn is_attached_data_defined(&self, name: &str) -> bool {
@@ -85,7 +90,15 @@ impl<'a> ParserState<'a> {
         self.variable_names.contains(name)
     }
 
+    pub fn try_get_constant(&self, name: &str) -> Option<&StaticScalarExpression> {
+        self.constants.get(name)
+    }
+
     pub fn push_variable_name(&mut self, name: &str) {
         self.variable_names.insert(name.into());
+    }
+
+    pub fn push_constant(&mut self, name: &str, value: StaticScalarExpression) {
+        self.constants.insert(name.into(), value);
     }
 }
