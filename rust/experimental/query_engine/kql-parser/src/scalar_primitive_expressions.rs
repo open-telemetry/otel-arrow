@@ -3,7 +3,7 @@ use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
-use crate::{Rule, date_utils};
+use crate::{Rule, date_utils, scalar_expression::parse_scalar_expression};
 
 /// The goal of this code is to unescape string literal values as they come in
 /// when parsed from pest:
@@ -295,19 +295,40 @@ pub(crate) fn parse_accessor_expression(
                     pair.as_str(),
                 )));
             }
-            Rule::accessor_expression => {
-                let expression = parse_accessor_expression(pair, state)?;
+            Rule::scalar_expression => {
+                let scalar = parse_scalar_expression(pair, state)?;
+                let value = scalar.to_value();
 
                 if negate_location.is_some() {
+                    if value.is_some() && !matches!(value, Some(Value::Integer(_))) {
+                        return Err(ParserError::QueryLanguageDiagnostic {
+                            location: scalar.get_query_location().clone(),
+                            diagnostic_id: "KS141",
+                            message: "The expression must have the type int".into(),
+                        });
+                    }
+
                     value_accessor.push_selector(ValueSelector::ScalarExpression(
                         ScalarExpression::Negate(NegateScalarExpression::new(
                             negate_location.unwrap(),
-                            expression,
+                            scalar,
                         )),
                     ));
                     negate_location = None;
                 } else {
-                    value_accessor.push_selector(ValueSelector::ScalarExpression(expression));
+                    if value.is_some()
+                        && !matches!(value, Some(Value::Integer(_)))
+                        && !matches!(value, Some(Value::String(_)))
+                    {
+                        return Err(ParserError::QueryLanguageDiagnostic {
+                            location: scalar.get_query_location().clone(),
+                            diagnostic_id: "KS141",
+                            message: "The expression must have one of the types: int or string"
+                                .into(),
+                        });
+                    }
+
+                    value_accessor.push_selector(ValueSelector::ScalarExpression(scalar));
                 }
             }
             Rule::minus_token => {
@@ -832,6 +853,7 @@ mod tests {
                 (Rule::identifier_literal, "name1"),
                 (Rule::integer_literal, "0"),
                 (Rule::minus_token, "-"),
+                (Rule::scalar_expression, "sub"),
                 (Rule::accessor_expression, "sub"),
                 (Rule::identifier_literal, "sub"),
                 (Rule::identifier_literal, "name2"),
@@ -1007,5 +1029,74 @@ mod tests {
         } else {
             panic!("Expected VariableScalarExpression");
         }
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_with_scalars() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let mut result = KqlParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new(input);
+
+            let expression = parse_accessor_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+            let mut result = KqlParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new(input);
+
+            let error = parse_accessor_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
+                assert_eq!(expected_id, id);
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected QueryLanguageDiagnostic");
+            }
+        };
+
+        run_test_success(
+            "source[iif(true, 1, 0)]",
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ValueSelector::ScalarExpression(
+                    ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                true,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                        )),
+                    )),
+                )]),
+            )),
+        );
+
+        run_test_failure(
+            "source.sub[real(1)]",
+            "KS141",
+            "The expression must have one of the types: int or string",
+        );
+
+        run_test_failure(
+            "sub[-('attr')]",
+            "KS141",
+            "The expression must have the type int",
+        );
     }
 }
