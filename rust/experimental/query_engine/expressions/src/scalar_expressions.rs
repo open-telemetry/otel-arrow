@@ -196,10 +196,7 @@ impl NegateScalarExpression {
             match s {
                 StaticScalarExpression::Integer(i) => {
                     return Ok(Some(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(
-                            self.query_location.clone(),
-                            -i.get_value(),
-                        ),
+                        IntegerScalarExpression::new(self.query_location.clone(), -i.get_value()),
                     )));
                 }
                 StaticScalarExpression::Double(i) => {
@@ -310,59 +307,106 @@ mod tests {
 
     #[test]
     pub fn test_try_resolve_static() {
-        let run_test_success = |expression: ScalarExpression, expected: Option<StaticScalarExpression>| {
-            let actual = expression.try_resolve_static().unwrap();
+        let run_test_success =
+            |expression: ScalarExpression, expected: Option<StaticScalarExpression>| {
+                let actual = expression.try_resolve_static().unwrap();
 
-            assert_eq!(expected, actual)
-        };
+                assert_eq!(expected, actual)
+            };
 
         run_test_success(
-            ScalarExpression::Attached(AttachedScalarExpression::new(QueryLocation::new_fake(), "resource", ValueAccessor::new())),
-            None
+            ScalarExpression::Attached(AttachedScalarExpression::new(
+                QueryLocation::new_fake(),
+                "resource",
+                ValueAccessor::new(),
+            )),
+            None,
         );
 
         run_test_success(
-            ScalarExpression::Source(SourceScalarExpression::new(QueryLocation::new_fake(), ValueAccessor::new())),
-            None
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new(),
+            )),
+            None,
         );
 
         run_test_success(
-            ScalarExpression::Variable(VariableScalarExpression::new(QueryLocation::new_fake(), "var", ValueAccessor::new())),
-            None
+            ScalarExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new_fake(),
+                "var",
+                ValueAccessor::new(),
+            )),
+            None,
         );
 
         run_test_success(
-            ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true))),
-            Some(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true)))
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+            Some(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
         );
 
         run_test_success(
-            ScalarExpression::Negate(NegateScalarExpression::new(QueryLocation::new_fake(), ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1))))),
-            Some(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), -1)))
+            ScalarExpression::Negate(NegateScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            )),
+            Some(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+            )),
         );
 
         run_test_success(
-            ScalarExpression::Logical(LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true)))).into()),
-            Some(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true)))
+            ScalarExpression::Logical(
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                ))
+                .into(),
+            ),
+            Some(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
         );
 
         run_test_success(
             ScalarExpression::Conditional(ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true)))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1))),
-                ScalarExpression::Source(SourceScalarExpression::new(QueryLocation::new_fake(), ValueAccessor::new())))),
-            Some(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1)))
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+            )),
+            Some(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+            )),
         );
     }
 
     #[test]
     pub fn test_negate_try_resolve_static() {
-        let run_test_success = |expression: NegateScalarExpression, expected: Option<StaticScalarExpression>| {
-            let actual = expression.try_resolve_static().unwrap();
+        let run_test_success =
+            |expression: NegateScalarExpression, expected: Option<StaticScalarExpression>| {
+                let actual = expression.try_resolve_static().unwrap();
 
-            assert_eq!(expected, actual)
-        };
+                assert_eq!(expected, actual)
+            };
 
         let run_test_failure = |expression: NegateScalarExpression| {
             let actual = expression.try_resolve_static().unwrap_err();
@@ -371,76 +415,155 @@ mod tests {
         };
 
         run_test_success(
-            NegateScalarExpression::new(QueryLocation::new_fake(), ScalarExpression::Source(SourceScalarExpression::new(QueryLocation::new_fake(), ValueAccessor::new()))),
-            None
+            NegateScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+            ),
+            None,
         );
 
         run_test_success(
-            NegateScalarExpression::new(QueryLocation::new_fake(), ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1)))),
-            Some(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), -1)))
+            NegateScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+            Some(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+            )),
         );
 
         run_test_success(
-            NegateScalarExpression::new(QueryLocation::new_fake(), ScalarExpression::Static(StaticScalarExpression::Double(DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)))),
-            Some(StaticScalarExpression::Double(DoubleScalarExpression::new(QueryLocation::new_fake(), -1.0)))
+            NegateScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Double(
+                    DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0),
+                )),
+            ),
+            Some(StaticScalarExpression::Double(DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                -1.0,
+            ))),
         );
 
-        run_test_failure(
-            NegateScalarExpression::new(QueryLocation::new_fake(), ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true)))),
-        );
+        run_test_failure(NegateScalarExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+        ));
     }
 
     #[test]
     pub fn test_conditional_try_resolve_static() {
-        let run_test_success = |expression: ConditionalScalarExpression, expected: Option<StaticScalarExpression>| {
-            let actual = expression.try_resolve_static().unwrap();
+        let run_test_success =
+            |expression: ConditionalScalarExpression, expected: Option<StaticScalarExpression>| {
+                let actual = expression.try_resolve_static().unwrap();
 
-            assert_eq!(expected, actual)
-        };
+                assert_eq!(expected, actual)
+            };
 
         run_test_success(
             ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(QueryLocation::new_fake(), ValueAccessor::new()))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 0)))),
-            None
+                LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                ))),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            None,
         );
 
         run_test_success(
             ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true)))),
-                ScalarExpression::Source(SourceScalarExpression::new(QueryLocation::new_fake(), ValueAccessor::new())),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 0)))),
-            None
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            None,
         );
 
         run_test_success(
             ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), false)))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1))),
-                ScalarExpression::Source(SourceScalarExpression::new(QueryLocation::new_fake(), ValueAccessor::new()))),
-            None
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+            ),
+            None,
         );
 
         run_test_success(
             ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), true)))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 0)))),
-            Some(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1)))
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            Some(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+            )),
         );
 
         run_test_success(
             ConditionalScalarExpression::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(BooleanScalarExpression::new(QueryLocation::new_fake(), false)))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 1))),
-                ScalarExpression::Static(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 0)))),
-            Some(StaticScalarExpression::Integer(IntegerScalarExpression::new(QueryLocation::new_fake(), 0)))
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            Some(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+            )),
         );
     }
 }
