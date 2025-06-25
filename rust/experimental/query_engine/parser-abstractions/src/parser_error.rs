@@ -1,4 +1,4 @@
-use data_engine_expressions::QueryLocation;
+use data_engine_expressions::{ExpressionError, QueryLocation};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,4 +15,7 @@ pub enum ParserError {
         diagnostic_id: &'static str,
         message: String,
     },
+
+    #[error("{0}")]
+    ExpressionError(ExpressionError),
 }

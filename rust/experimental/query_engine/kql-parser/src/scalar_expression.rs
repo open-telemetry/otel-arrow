@@ -13,28 +13,43 @@ pub(crate) fn parse_scalar_expression(
 ) -> Result<ScalarExpression, ParserError> {
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 
-    match scalar_rule.as_rule() {
-        Rule::real_expression => Ok(ScalarExpression::Static(parse_real_expression(
-            scalar_rule,
-        )?)),
-        Rule::datetime_expression => Ok(ScalarExpression::Static(parse_datetime_expression(
-            scalar_rule,
-        )?)),
-        Rule::logical_expression => Ok(ScalarExpression::Logical(
-            parse_logical_expression(scalar_rule, state)?.into(),
-        )),
-        Rule::true_literal | Rule::false_literal => Ok(ScalarExpression::Static(
-            parse_standard_bool_literal(scalar_rule),
-        )),
-        Rule::double_literal => Ok(ScalarExpression::Static(parse_double_literal(scalar_rule)?)),
-        Rule::integer_literal => Ok(ScalarExpression::Static(parse_integer_literal(
-            scalar_rule,
-        )?)),
-        Rule::string_literal => Ok(ScalarExpression::Static(parse_string_literal(scalar_rule))),
-        Rule::accessor_expression => parse_accessor_expression(scalar_rule, state),
-        Rule::conditional_expression => parse_conditional_expression(scalar_rule, state),
-        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state),
+    let scalar = match scalar_rule.as_rule() {
+        Rule::real_expression => ScalarExpression::Static(parse_real_expression(scalar_rule)?),
+        Rule::datetime_expression => {
+            ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
+        }
+        Rule::true_literal | Rule::false_literal => {
+            ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
+        }
+        Rule::double_literal => ScalarExpression::Static(parse_double_literal(scalar_rule)?),
+        Rule::integer_literal => ScalarExpression::Static(parse_integer_literal(scalar_rule)?),
+        Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
+        Rule::accessor_expression => parse_accessor_expression(scalar_rule, state)?,
+        Rule::logical_expression => {
+            let l = parse_logical_expression(scalar_rule, state)?;
+
+            if let LogicalExpression::Scalar(s) = l {
+                s
+            } else {
+                ScalarExpression::Logical(l.into())
+            }
+        }
+        Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
+        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
         _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
+    };
+
+    if matches!(&scalar, ScalarExpression::Static(_)) {
+        return Ok(scalar);
+    }
+
+    let static_result = scalar.try_resolve_static();
+    if let Err(e) = static_result {
+        Err(ParserError::ExpressionError(e))
+    } else if let Some(s) = static_result.unwrap() {
+        Ok(ScalarExpression::Static(s))
+    } else {
+        Ok(scalar)
     }
 }
 
@@ -159,20 +174,8 @@ mod tests {
         );
         run_test(
             "iff(true, 0, 1)",
-            ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
-                    )),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                )),
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
             )),
         );
     }

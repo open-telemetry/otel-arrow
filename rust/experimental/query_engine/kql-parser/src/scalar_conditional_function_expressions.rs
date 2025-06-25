@@ -104,35 +104,11 @@ mod tests {
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                     )),
                 )),
-                ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    LogicalExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            true,
-                        )),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "b"),
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                 )),
-                ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    LogicalExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            false,
-                        )),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "c"),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "d"),
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "d"),
                 )),
             )),
         );
