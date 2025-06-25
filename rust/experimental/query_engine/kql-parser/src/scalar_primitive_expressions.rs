@@ -828,6 +828,26 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
+            KqlParser::parse(Rule::accessor_expression, "abc['name']").unwrap(),
+            &[
+                (Rule::accessor_expression, "abc['name']"),
+                (Rule::identifier_literal, "abc"),
+                (Rule::string_literal, "'name'"),
+            ],
+        );
+
+        pest_test_helpers::test_compound_pest_rule(
+            KqlParser::parse(Rule::accessor_expression, "abc[-'name']").unwrap(),
+            &[
+                (Rule::accessor_expression, "abc[-'name']"),
+                (Rule::identifier_literal, "abc"),
+                (Rule::minus_token, "-"),
+                (Rule::scalar_expression, "'name'"),
+                (Rule::string_literal, "'name'"),
+            ],
+        );
+
+        pest_test_helpers::test_compound_pest_rule(
             KqlParser::parse(Rule::accessor_expression, "abc.name1.name2").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name1.name2"),
