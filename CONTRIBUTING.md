@@ -181,34 +181,6 @@ to upgrade this repository is:
 3. Regenerate `otelarrowcol` via `make genotelarrowcol`
 4. Run `go work sync` to update the other modules with fresh dependencies.
 
-## OpenTelemetry-Arrow Team
-
-It takes a team to keep a repository like this functioning.  We use
-the OpenTelemetry the [Maintainer][MAINTAINERROLE] and
-[Approver][APPROVERROLE] roles to organize our work.
-
-The current [OpenTelemetry-Arrow maintainers
-(@open-telemetry/arrow-maintainers)][MAINTAINERS] are:
-
-- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
-- [Joshua MacDonald](https://github.com/jmacd), Microsoft
-- [Drew Relmas](https://github.com/drewrelmas), Microsoft
-
-The current [OpenTelemetry-Arrow approvers
-(@open-telemetry/arrow-approvers)][APPROVERS] are:
-
-- [Lei Huang](https://github.com/v0y4g3r), Greptime
-- [Albert Lockett](https://github.com/albertlockett), F5
-
-The people who filled these roles in the past:
-
-- [Moh Osman](https://github.com/moh-osman3)
-- [Alex Boten](https://github.com/codeboten)
-
-Thanks to all the contributors!
-
-[![OpenTelemetry-Arrow contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
-
 [RELEASING.md]: ./RELEASING.md
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
 [OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
