@@ -33,13 +33,13 @@ import time
 
 from ...core.context import StepContext
 from ...core.framework.step import StepActionConfig, StepAction
-from ...runner.registry import test_step_action_registry, PluginMeta
+from ...runner.registry import step_action_registry, PluginMeta
 
 
 ACTION_NAME = "wait"
 
 
-@test_step_action_registry.register_config(ACTION_NAME)
+@step_action_registry.register_config(ACTION_NAME)
 class WaitActionConfig(StepActionConfig):
     """
     Configuration for the WaitAction.
@@ -51,7 +51,7 @@ class WaitActionConfig(StepActionConfig):
     delay_seconds: float
 
 
-@test_step_action_registry.register_class(ACTION_NAME)
+@step_action_registry.register_class(ACTION_NAME)
 class WaitAction(StepAction):
     """
     Step action that introduces a delay during test execution.

@@ -41,7 +41,7 @@ from .registry import (
     configuration_registry,
     execution_registry,
     hook_registry,
-    test_step_action_registry,
+    step_action_registry,
 )
 
 ConfigType = TypeVar("ConfigType", bound=BaseModel)  # pylint: disable=invalid-name
@@ -238,4 +238,4 @@ class TestStepActionWrapper(ConfigurableWrapper[StepActionConfig, StepAction]):
             `execution_registry.strategy`.
     """
 
-    _registry = test_step_action_registry.element
+    _registry = step_action_registry.element

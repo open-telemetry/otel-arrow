@@ -6,7 +6,7 @@ from .registry import (
     configuration_registry,
     execution_registry,
     hook_registry,
-    test_step_action_registry,
+    step_action_registry,
     report_writer_registry,
     report_formatter_registry,
 )
@@ -18,7 +18,7 @@ __all__ = [
     "configuration_registry",
     "execution_registry",
     "hook_registry",
-    "test_step_action_registry",
+    "step_action_registry",
     "report_writer_registry",
     "report_formatter_registry",
     "load_config_from_file",

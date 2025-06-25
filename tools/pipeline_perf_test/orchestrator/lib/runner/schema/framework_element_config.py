@@ -30,7 +30,7 @@ from pydantic import model_validator, Field
 from ...impl.component.managed_component import (
     ManagedComponentConfiguration,
 )
-from ..registry import test_step_action_registry
+from ..registry import step_action_registry
 from ..wrappers import TestStepActionWrapper
 from ...core.framework.element import FrameworkElementConfig, FrameworkLifecyclePhase
 from .hook_config import HooksConfig
@@ -85,7 +85,7 @@ class StepConfig(FrameworkElementConfig):
         if action and isinstance(action, dict):
             for action_type, config_data in action.items():
                 # Look up the corresponding configuration class for the action type.
-                config_cls = test_step_action_registry.config.get(action_type)
+                config_cls = step_action_registry.config.get(action_type)
 
                 # If no configuration class is registered, raise an error.
                 if not config_cls:

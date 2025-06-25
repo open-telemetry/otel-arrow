@@ -42,13 +42,13 @@ from typing import Optional
 from ...core.component import ComponentPhase, Component
 from ...core.context import StepContext
 from ...core.framework.step import StepActionConfig, StepAction
-from ...runner.registry import test_step_action_registry, PluginMeta
+from ...runner.registry import step_action_registry, PluginMeta
 
 
 ACTION_NAME = "multi_component_action"
 
 
-@test_step_action_registry.register_config(ACTION_NAME)
+@step_action_registry.register_config(ACTION_NAME)
 class MultiComponentActionConfig(StepActionConfig):
     """
     Configuration class for the MultiComponentAction.
@@ -63,7 +63,7 @@ class MultiComponentActionConfig(StepActionConfig):
     targets: Optional[list[str]] = []
 
 
-@test_step_action_registry.register_class(ACTION_NAME)
+@step_action_registry.register_class(ACTION_NAME)
 class MultiComponentAction(StepAction):
     """
     Step action that executes a specified lifecycle phase on one or more components.

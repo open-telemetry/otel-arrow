@@ -46,14 +46,14 @@ from ...impl.component.managed_component import (
 from ...impl.strategies.monitoring.composite_monitoring_strategy import (
     CompositeMonitoringStrategy,
 )
-from ...runner.registry import test_step_action_registry, PluginMeta
+from ...runner.registry import step_action_registry, PluginMeta
 from ...runner.wrappers import ConfigurableWrapper
 
 
 ACTION_NAME = "update_component_strategy"
 
 
-@test_step_action_registry.register_config(ACTION_NAME)
+@step_action_registry.register_config(ACTION_NAME)
 class UpdateComponentStrategyConfig(StepActionConfig):
     """
     Configuration schema for the UpdateComponentStrategyAction.
@@ -73,7 +73,7 @@ class UpdateComponentStrategyConfig(StepActionConfig):
     monitoring: Optional[dict] = None
 
 
-@test_step_action_registry.register_class(ACTION_NAME)
+@step_action_registry.register_class(ACTION_NAME)
 class UpdateComponentStrategyAction(StepAction):
     """
     Step action that applies updates to a strategy configuration of a managed component.

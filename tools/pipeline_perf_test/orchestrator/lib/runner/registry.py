@@ -147,7 +147,7 @@ class StrategyRegistry(ElementRegistry):
     """
 
 
-class TestStepActionRegistry(ElementRegistry):
+class StepActionRegistry(ElementRegistry):
     """
     Registry for mapping strategy and configuration type names to their classes.
     """
@@ -159,6 +159,6 @@ monitoring_registry = StrategyRegistry()
 configuration_registry = StrategyRegistry()
 execution_registry = StrategyRegistry()
 hook_registry = StrategyRegistry()
-test_step_action_registry = TestStepActionRegistry()
+step_action_registry = StepActionRegistry()
 report_writer_registry = StrategyRegistry()
 report_formatter_registry = StrategyRegistry()

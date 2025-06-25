@@ -33,13 +33,13 @@ the method corresponding to the given phase.
 from ...core.component import ComponentPhase, Component
 from ...core.context import StepContext
 from ...core.framework.step import StepActionConfig, StepAction
-from ...runner.registry import test_step_action_registry, PluginMeta
+from ...runner.registry import step_action_registry, PluginMeta
 
 
 ACTION_NAME = "component_action"
 
 
-@test_step_action_registry.register_config(ACTION_NAME)
+@step_action_registry.register_config(ACTION_NAME)
 class ComponentActionConfig(StepActionConfig):
     """
     Configuration schema for the 'component_action' test step action.
@@ -59,7 +59,7 @@ class ComponentActionConfig(StepActionConfig):
     phase: ComponentPhase
 
 
-@test_step_action_registry.register_class(ACTION_NAME)
+@step_action_registry.register_class(ACTION_NAME)
 class ComponentAction(StepAction):
     """
     Step action implementation for executing a lifecycle phase on a named component.
