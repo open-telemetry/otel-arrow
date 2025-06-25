@@ -195,7 +195,3 @@ to upgrade this repository is:
     https://github.com/open-telemetry/opentelemetry-collector/receiver/otlpreceiver
 [OTLPEXPORTER]:
     https://github.com/open-telemetry/opentelemetry-collector/exporter/otlpexporter
-[APPROVERS]: https://github.com/orgs/open-telemetry/teams/arrow-approvers
-[MAINTAINERS]: https://github.com/orgs/open-telemetry/teams/arrow-maintainers
-[MAINTAINERROLE]: https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer
-[APPROVERROLE]: https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver
