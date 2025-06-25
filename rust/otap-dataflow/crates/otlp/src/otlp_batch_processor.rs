@@ -780,7 +780,7 @@ mod tests {
                                 let _ =
                                     scope_ids.insert(sl.scope.as_ref().map(|_| "X").unwrap_or("Y"));
                             }
-                        }   
+                        }
                         assert!(
                             scope_ids.len() == 1,
                             "Batch contains log records from multiple scopes"
