@@ -25,10 +25,6 @@ from ..core.strategies.monitoring_strategy import (
     MonitoringStrategyConfig,
     MonitoringStrategy,
 )
-from ..core.strategies.reporting_strategy import (
-    ReportingStrategyConfig,
-    ReportingStrategy,
-)
 from ..core.strategies.hook_strategy import HookStrategyConfig, HookStrategy
 from ..core.strategies.execution_strategy import (
     ExecutionStrategy,
@@ -38,11 +34,10 @@ from ..core.strategies.configuration_strategy import (
     ConfigurationStrategy,
     ConfigurationStrategyConfig,
 )
-from ..core.test_framework.test_step import TestStepActionConfig, TestStepAction
+from ..core.framework.step import StepActionConfig, StepAction
 from .registry import (
     deployment_registry,
     monitoring_registry,
-    reporting_registry,
     configuration_registry,
     execution_registry,
     hook_registry,
@@ -188,19 +183,6 @@ class MonitoringWrapper(
     _registry = monitoring_registry.element
 
 
-class ReportingWrapper(ConfigurableWrapper[ReportingStrategyConfig, ReportingStrategy]):
-    """
-    Wrapper class for reporting strategies, specialized with reporting-specific config and strategy types.
-
-    Attributes:
-        _registry (Dict[str, Type[ReportingStrategy]]): Registry mapping reporting
-            strategy type strings to their corresponding classes, sourced from
-            `reporting_registry.strategy`.
-    """
-
-    _registry = reporting_registry.element
-
-
 class ConfigurationWrapper(
     ConfigurableWrapper[ConfigurationStrategyConfig, ConfigurationStrategy]
 ):
@@ -228,8 +210,25 @@ class ExecutionWrapper(ConfigurableWrapper[ExecutionStrategyConfig, ExecutionStr
 
     _registry = execution_registry.element
 
+    @model_validator(mode="before")
+    @classmethod
+    def parse_keyed_strategy(cls, data: Dict) -> Dict:
+        if isinstance(data, dict) and "strategy_type" in data and "config" in data:
+            return data
+        if not isinstance(data, dict) or len(data) != 1:
+            raise ValueError("Deployment must have exactly one strategy key")
+        element_type, config_data = next(iter(data.items()))
+        config_cls = execution_registry.config.get(element_type)
+        if not config_cls:
+            raise ValueError(f"Unknown execution strategy: '{element_type}'")
+        config = config_cls(**config_data)
+        return {
+            "element_type": element_type,
+            "config": config,
+        }
 
-class TestStepActionWrapper(ConfigurableWrapper[TestStepActionConfig, TestStepAction]):
+
+class TestStepActionWrapper(ConfigurableWrapper[StepActionConfig, StepAction]):
     """
     Wrapper class for test step actions, specialized with execution-specific config and types.
 

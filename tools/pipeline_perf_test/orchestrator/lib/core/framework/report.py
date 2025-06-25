@@ -183,8 +183,12 @@ class Report:
 
         now = datetime.datetime.now(tz=datetime.timezone.utc)
         ctx_meta = ctx.get_metadata()
+        for k, v in ctx_meta.items():
+            if isinstance(v, datetime.datetime):
+                ctx_meta[k] = to_iso(v)
         ts = ctx.get_suite()
         test_meta = {
+            **ctx_meta,
             "test.suite.start": to_iso(ts.context.start_time),
             "test.suite": ctx_meta.get("test.suite"),
             "report.type": cls.REPORT_TYPE,

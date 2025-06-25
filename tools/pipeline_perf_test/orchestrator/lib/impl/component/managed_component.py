@@ -6,72 +6,115 @@ application instance. The managed_component supports full lifecycle management (
 deploy, start, stop, destroy), implemented through strategy patterns.
 
 Classes:
+    ManagedComponentConfiguration: Base configuration model for the ManagedComponent class
     ManagedComponent: Represents a lifecycle-managed testbed component with pluggable
                deployment and monitoring strategies.
 """
 
-from pydantic import BaseModel, Field
-from typing import Any, Callable, List, Optional, Union, Literal
+from typing import Any, Optional, Dict
 
-from ..strategies.monitoring.composite_monitoring_strategy import (
-    CompositeMonitoringStrategy,
+from pydantic import BaseModel, Field, model_validator
+
+from ...core.component.component import (
+    Component,
+    HookableComponentPhase,
+    ComponentPhase,
 )
-from ...core.component.runtime import ComponentRuntime
-from ...core.component.lifecycle_component import (
-    LifecycleComponent,
-    HookableLifecyclePhase,
-    LifecyclePhase,
+from ...core.errors.error_handler import OnErrorConfig
+from ...core.context.framework_element_contexts import StepContext, ScenarioContext
+from ...core.strategies.base import BaseStrategy
+from ...core.strategies.execution_strategy import (
+    ExecutionStrategy,
+    ExecutionStrategyConfig,
 )
-from ..strategies.deployment.docker import DockerDeploymentConfig
-from ...core.context.test_contexts import TestStepContext, TestExecutionContext
-
-
-LifecycleHookStrategy = Literal["append", "replace"]
-
-
-class LifecycleHooks(BaseModel):
-    """Base configuration model that specifies a lifecycle hook to set on a component"""
-    pre: Optional[List[str]] = Field(
-        default_factory=list, description="Commands to run before start/stop"
-    )
-    pre_strategy: LifecycleHookStrategy = "append"
-    post: Optional[List[str]] = Field(
-        default_factory=list, description="Commands to run after start/stop"
-    )
-    post_strategy: LifecycleHookStrategy = "append"
-
-
-class ManagedComponentActionConfig(BaseModel):
-    """Base configuration model that specifies an action to invoke on a component"""
-    type: Literal["component_action"]
-    target: str
-    action: LifecyclePhase
+from ...core.strategies.configuration_strategy import (
+    ConfigurationStrategy,
+    ConfigurationStrategyConfig,
+)
+from ...core.strategies.deployment_strategy import (
+    DeploymentStrategy,
+    DeploymentStrategyConfig,
+)
+from ...runner.wrappers import (
+    DeploymentWrapper,
+    MonitoringWrapper,
+    ExecutionWrapper,
+    ConfigurationWrapper,
+)
+from ...core.telemetry.framework_event import FrameworkEvent
+from ...core.strategies.monitoring_strategy import MonitoringStrategy
+from ...runner.registry import monitoring_registry
+from ...runner.schema.hook_config import HooksConfig
 
 
 class ManagedComponentConfiguration(BaseModel):
-    """Base configuration model for the ManagedComponent class"""
+    """
+    Configuration model for a managed component, capturing lifecycle hooks,
+    deployment, monitoring, execution, and error handling strategies.
 
-    configure_hooks: Optional[LifecycleHooks] = Field(default_factory=LifecycleHooks)
-    deploy_hooks: Optional[LifecycleHooks] = Field(default_factory=LifecycleHooks)
-    start_hooks: Optional[LifecycleHooks] = Field(default_factory=LifecycleHooks)
-    stop_hooks: Optional[LifecycleHooks] = Field(default_factory=LifecycleHooks)
-    destroy_hooks: Optional[LifecycleHooks] = Field(default_factory=LifecycleHooks)
-    start_monitoring_hooks: Optional[LifecycleHooks] = Field(
-        default_factory=LifecycleHooks
-    )
-    stop_monitoring_hooks: Optional[LifecycleHooks] = Field(
-        default_factory=LifecycleHooks
-    )
+    Attributes:
+        hooks (Dict[ComponentPhase, HooksConfig]): A mapping of component lifecycle phases
+            (e.g., setup, teardown) to their associated hooks configuration.
+        deployment (Optional[DeploymentWrapper]): Optional deployment strategy wrapper
+            detailing how the component is deployed (e.g., Docker, Kubernetes).
+        monitoring (Optional[Dict[str, MonitoringWrapper]]): Optional dictionary mapping
+            monitoring strategy names to their configuration wrappers, supporting multiple
+            monitoring strategies per component.
+        configuration (Optional[ConfigurationWrapper]): Optional wrapper for general
+            component configuration parameters.
+        execution (Optional[ExecutionWrapper]): Optional wrapper for execution-related
+            strategy or resource management configurations.
+        on_error (Optional[OnErrorConfig]): Configuration defining error handling behavior,
+            with a default empty configuration if not provided.
 
-    deployment: Optional[Union[DockerDeploymentConfig]]
+    Validators:
+        parse_monitoring_section (classmethod): A Pydantic model validator (executed before
+            validation) that processes the 'monitoring' section from raw input data. It:
+              - Ensures monitoring strategies are recognized and valid.
+              - Instantiates corresponding MonitoringWrapper objects with the proper
+                strategy type and config.
+              - Raises a ValueError if an unknown monitoring strategy is encountered.
+    """
+    hooks: Dict[ComponentPhase, HooksConfig] = Field(default_factory=dict)
+    deployment: Optional[DeploymentWrapper] = None
+    monitoring: Optional[Dict[str, MonitoringWrapper]] = None
+    configuration: Optional[ConfigurationWrapper] = None
+    execution: Optional[ExecutionWrapper] = None
+    on_error: Optional[OnErrorConfig] = Field(default_factory=OnErrorConfig)
 
-    # placeholders
-    configuration: Optional[str] = None
-    execution: Optional[str] = None
-    monitoring: Optional[List[str]] = []
+    @model_validator(mode="before")
+    @classmethod
+    def parse_monitoring_section(cls, data: Any) -> Any:
+        """
+        Pre-validation hook that parses the raw 'monitoring' section from input data,
+        converting it into structured MonitoringWrapper instances.
+
+        Args:
+            data (Any): Raw input data dictionary for the model.
+
+        Returns:
+            Any: The updated data dictionary with the 'monitoring' key
+                converted to a dictionary of MonitoringWrapper instances.
+
+        Raises:
+            ValueError: If an unknown monitoring strategy key is encountered.
+        """
+        monitoring = data.get("monitoring")
+        if monitoring and isinstance(monitoring, dict):
+            parsed = {}
+            for strategy_type, config_data in monitoring.items():
+                config_cls = monitoring_registry.config.get(strategy_type)
+                if not config_cls:
+                    raise ValueError(f"Unknown monitoring strategy: '{strategy_type}'")
+                strategy_config = config_cls(**config_data)
+                parsed[strategy_type] = MonitoringWrapper(
+                    element_type=strategy_type, config=strategy_config
+                )
+            data["monitoring"] = parsed
+        return data
 
 
-class ManagedComponent(LifecycleComponent):
+class ManagedComponent(Component):
     """
     An orchestrated component that encapsulates deployment, configuration, and monitoring logic.
 
@@ -86,6 +129,10 @@ class ManagedComponent(LifecycleComponent):
         self,
         name: str,
         config: ManagedComponentConfiguration,
+        configuration_strategy: ConfigurationStrategy,
+        deployment_strategy: DeploymentStrategy,
+        monitoring_strategy: MonitoringStrategy,
+        execution_strategy: ExecutionStrategy,
     ):
         """
         Initialize the Component.
@@ -100,41 +147,36 @@ class ManagedComponent(LifecycleComponent):
         super().__init__()
         self.name: str = name
         self.component_config: ManagedComponentConfiguration = config
-        self.runtime: ComponentRuntime = ComponentRuntime()
 
-        deployment_strategy = config.deployment.create() if config.deployment else None
-        config_strategy = (
-            config.configuration.create() if config.configuration else None
-        )
-        execution_strategy = config.execution.create() if config.execution else None
-        monitoring_strategies = [m.create() for m in config.monitoring or []]
-        self.configuration = config_strategy
-        self.deployment = deployment_strategy
-        self.execution_strategy = execution_strategy
-        self.monitoring = CompositeMonitoringStrategy(monitoring_strategies)
+        self.configuration: ConfigurationStrategy = configuration_strategy
+        self.deployment: DeploymentStrategy = deployment_strategy
+        self.execution_strategy: ExecutionStrategy = execution_strategy
+        self.monitoring: MonitoringStrategy = monitoring_strategy
 
-        if self.deployment.default_hooks:
-            for hook_phase in self.deployment.default_hooks:
-                for hook in self.deployment.default_hooks[hook_phase]:
+        if self.deployment and self.deployment.default_component_hooks:
+            for hook_phase in self.deployment.default_component_hooks:
+                for hook in self.deployment.default_component_hooks[hook_phase]:
                     self.add_hook(hook_phase, hook)
 
-    def get_or_create_runtime(self, namespace: str, factory: Callable[[], Any]) -> Any:
-        """Get an existing runtime data structure or initialize a new one.
+    def replace_strategy(self, strategy: BaseStrategy) -> bool:
+        """Replace a strategy instance on the component.
 
         Args:
-            namespace: The namespace to get/create data for.
-            factory: The initialization method if no namespace data exists.
+            strategy: BaseStrategy to replace into the component.
+        Returns:
+            true if successful, else false
         """
-        return self.runtime.get_or_create(namespace, factory)
-
-    def set_runtime_data(self, namespace: str, data: Any):
-        """Set the data value on the component's runtime with the specified namespace.
-
-        Args:
-            namespace: The namespace to set the data value on.
-            data: The data to set.
-        """
-        self.runtime.set(namespace, data)
+        if isinstance(strategy, ConfigurationStrategy):
+            self.configuration = strategy
+        elif isinstance(strategy, DeploymentStrategy):
+            self.deployment = strategy
+        elif isinstance(strategy, ExecutionStrategy):
+            self.execution_strategy = strategy
+        elif isinstance(strategy, MonitoringStrategy):
+            self.monitoring = strategy
+        else:
+            return False
+        return True
 
     def get_component_config(self) -> BaseModel:
         """Get the component's configuration model.
@@ -143,79 +185,170 @@ class ManagedComponent(LifecycleComponent):
         """
         return self.component_config
 
-    def configure(self, ctx: TestStepContext):
+    def get_deployment_config(self) -> DeploymentStrategyConfig:
+        return self.component_config.deployment.config
+
+    def get_configuration_config(self) -> ConfigurationStrategyConfig:
+        return self.component_config.configuration.config
+
+    def get_execution_config(self) -> ExecutionStrategyConfig:
+        return self.component_config.execution.config
+
+    def _configure(self, ctx: StepContext):
         """
         Apply configuration to the component using the configured strategy, if present.
         Executes lifecycle hooks before and after the configuration.
         """
-        self._run_hooks(HookableLifecyclePhase.PRE_CONFIGURE, ctx)
+        self._run_hooks(HookableComponentPhase.PRE_CONFIGURE, ctx)
         if self.configuration:
-            self.configuration.start(self, ctx)
-        self._run_hooks(HookableLifecyclePhase.POST_CONFIGURE, ctx)
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_START.namespaced(),
+                **{"ctx.phase": "configuration", "ctx.component": self.name},
+            )
+            self._with_span(
+                ctx, "configuration.start", lambda: self.configuration.start(self, ctx)
+            )
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_END.namespaced(),
+                **{"ctx.phase": "configuration", "ctx.component": self.name},
+            )
+        self._run_hooks(HookableComponentPhase.POST_CONFIGURE, ctx)
 
-    def deploy(self, ctx: TestStepContext):
+    def _deploy(self, ctx: StepContext):
         """
         Deploy the component using the specified deployment strategy.
         Executes lifecycle hooks before and after deployment.
         """
-        self._run_hooks(HookableLifecyclePhase.PRE_DEPLOY, ctx)
+        self._run_hooks(HookableComponentPhase.PRE_DEPLOY, ctx)
         if self.deployment:
-            self.deployment.start(self, ctx)
-        self._run_hooks(HookableLifecyclePhase.POST_DEPLOY, ctx)
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_START.namespaced(),
+                **{"ctx.phase": "deploy", "ctx.component": self.name},
+            )
+            self._with_span(
+                ctx, "deployment.start", lambda: self.deployment.start(self, ctx)
+            )
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_END.namespaced(),
+                **{"ctx.phase": "deploy", "ctx.component": self.name},
+            )
+        self._run_hooks(HookableComponentPhase.POST_DEPLOY, ctx)
 
-    def start(self, ctx: TestStepContext):
+    def _start(self, ctx: StepContext):
         """
         Start the deployed component using the execution strategy.
         Executes lifecycle hooks before and after starting.
         """
-        self._run_hooks(HookableLifecyclePhase.PRE_START, ctx)
+        self._run_hooks(HookableComponentPhase.PRE_START, ctx)
         if self.execution_strategy:
-            self.execution_strategy.start(self, ctx)
-        self._run_hooks(HookableLifecyclePhase.POST_START, ctx)
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_START.namespaced(),
+                **{"ctx.phase": "start", "ctx.component": self.name},
+            )
+            self._with_span(
+                ctx,
+                "execution_strategy.start",
+                lambda: self.execution_strategy.start(self, ctx),
+            )
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_END.namespaced(),
+                **{"ctx.phase": "start", "ctx.component": self.name},
+            )
+        self._run_hooks(HookableComponentPhase.POST_START, ctx)
 
-    def stop(self, ctx: TestStepContext):
+    def _stop(self, ctx: StepContext):
         """
         Stop the running component using the execution strategy.
         Executes lifecycle hooks before and after stopping.
         """
-        self._run_hooks(HookableLifecyclePhase.PRE_STOP, ctx)
+        self._run_hooks(HookableComponentPhase.PRE_STOP, ctx)
         if self.execution_strategy:
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_START.namespaced(),
+                **{"ctx.phase": "stop", "ctx.component": self.name},
+            )
             self.execution_strategy.stop(self, ctx)
-        self._run_hooks(HookableLifecyclePhase.POST_STOP, ctx)
+            self._with_span(
+                ctx,
+                "execution_strategy.stop",
+                lambda: self.execution_strategy.stop(self, ctx),
+            )
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_END.namespaced(),
+                **{"ctx.phase": "stop", "ctx.component": self.name},
+            )
+        self._run_hooks(HookableComponentPhase.POST_STOP, ctx)
 
-    def destroy(self, ctx: TestStepContext):
+    def _destroy(self, ctx: StepContext):
         """
         Tear down and clean up the component using the deployment strategy.
         Executes lifecycle hooks before and after destruction.
         """
-        self._run_hooks(HookableLifecyclePhase.PRE_DESTROY, ctx)
+        self._run_hooks(HookableComponentPhase.PRE_DESTROY, ctx)
         if self.deployment:
-            self.deployment.stop(self, ctx)
-        self._run_hooks(HookableLifecyclePhase.POST_DESTROY, ctx)
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_START.namespaced(),
+                **{"ctx.phase": "destroy", "ctx.component": self.name},
+            )
+            self._with_span(
+                ctx, "deployment.stop", lambda: self.deployment.stop(self, ctx)
+            )
+            ctx.record_event(
+                FrameworkEvent.STRATEGY_END.namespaced(),
+                **{"ctx.phase": "destroy", "ctx.component": self.name},
+            )
+        self._run_hooks(HookableComponentPhase.POST_DESTROY, ctx)
 
-    def start_monitoring(self, ctx: TestStepContext):
+    def _start_monitoring(self, ctx: StepContext):
         """
         Start all monitoring strategies associated with the component.
         Executes lifecycle hooks before and after monitoring startup.
         """
-        self._run_hooks(HookableLifecyclePhase.PRE_START_MONITORING, ctx)
-        self.monitoring.start(self, ctx)
-        self._run_hooks(HookableLifecyclePhase.POST_START_MONITORING, ctx)
+        self._run_hooks(HookableComponentPhase.PRE_START_MONITORING, ctx)
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_START.namespaced(),
+            **{"ctx.phase": "start_monitoring", "ctx.component": self.name},
+        )
+        self._with_span(
+            ctx, "monitoring.start", lambda: self.monitoring.start(self, ctx)
+        )
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_END.namespaced(),
+            **{"ctx.phase": "start_monitoring", "ctx.component": self.name},
+        )
+        self._run_hooks(HookableComponentPhase.POST_START_MONITORING, ctx)
 
-    def stop_monitoring(self, ctx: TestStepContext):
+    def _stop_monitoring(self, ctx: StepContext):
         """
         Stop all monitoring strategies associated with the component.
         Executes lifecycle hooks before and after monitoring shutdown.
         """
-        self._run_hooks(HookableLifecyclePhase.PRE_STOP_MONITORING, ctx)
-        self.monitoring.stop(self, ctx)
-        self._run_hooks(HookableLifecyclePhase.POST_STOP_MONITORING, ctx)
+        self._run_hooks(HookableComponentPhase.PRE_STOP_MONITORING, ctx)
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_START.namespaced(),
+            **{"ctx.phase": "stop_monitoring", "ctx.component": self.name},
+        )
+        self._with_span(ctx, "monitoring.stop", lambda: self.monitoring.stop(self, ctx))
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_END.namespaced(),
+            **{"ctx.phase": "stop_monitoring", "ctx.component": self.name},
+        )
+        self._run_hooks(HookableComponentPhase.POST_STOP_MONITORING, ctx)
 
-    def collect_monitoring_data(self, ctx: TestExecutionContext) -> dict:
+    def _collect_monitoring_data(self, ctx: ScenarioContext) -> dict:
         """
         Collect and return monitoring data from all configured monitoring strategies.
 
         Returns:
             dict: Aggregated monitoring data.
         """
-        return self.monitoring.collect(self, ctx)
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_START.namespaced(),
+            **{"ctx.phase": "collect_monitoring_data", "ctx.component": self.name},
+        )
+        ret = self.monitoring.collect(self, ctx)
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_END.namespaced(),
+            **{"ctx.phase": "collect_monitoring_data", "ctx.component": self.name},
+        )
+        return ret
