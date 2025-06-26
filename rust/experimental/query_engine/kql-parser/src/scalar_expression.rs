@@ -49,7 +49,10 @@ pub(crate) fn parse_scalar_expression(
     // tree and makes it faster to execute.
     let static_result = scalar.try_resolve_static();
     if let Err(e) = static_result {
-        Err(ParserError::SyntaxError(e.get_query_location().clone(), e.to_string()))
+        Err(ParserError::SyntaxError(
+            e.get_query_location().clone(),
+            e.to_string(),
+        ))
     } else if let Some(s) = static_result.unwrap() {
         Ok(ScalarExpression::Static(s))
     } else {
