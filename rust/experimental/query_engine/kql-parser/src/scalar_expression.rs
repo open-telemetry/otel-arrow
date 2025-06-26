@@ -24,7 +24,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::double_literal => ScalarExpression::Static(parse_double_literal(scalar_rule)?),
         Rule::integer_literal => ScalarExpression::Static(parse_integer_literal(scalar_rule)?),
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
-        Rule::accessor_expression => parse_accessor_expression(scalar_rule, state)?,
+        Rule::accessor_expression => parse_accessor_expression(scalar_rule, state, true)?,
         Rule::logical_expression => {
             let l = parse_logical_expression(scalar_rule, state)?;
 

@@ -127,7 +127,7 @@ pub(crate) fn parse_project_expression(
                 }
             }
             Rule::accessor_expression => {
-                let accessor_expression = parse_accessor_expression(rule, state)?;
+                let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
                     if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)
@@ -237,7 +237,7 @@ pub(crate) fn parse_project_keep_expression(
                 }
             }
             Rule::accessor_expression => {
-                let accessor_expression = parse_accessor_expression(rule, state)?;
+                let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
                     if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)
@@ -345,7 +345,7 @@ pub(crate) fn parse_project_away_expression(
                 }
             }
             Rule::accessor_expression => {
-                let accessor_expression = parse_accessor_expression(rule, state)?;
+                let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
                     if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)
@@ -533,6 +533,13 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_constant(
+                "const_str",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello world",
+                )),
+            );
 
             let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
 
@@ -574,6 +581,29 @@ mod tests {
                     QueryLocation::new_fake(),
                     ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
                         StringScalarExpression::new(QueryLocation::new_fake(), "new_attribute1"),
+                    )]),
+                )),
+            ))],
+        );
+
+        // Note: In an extend operation "const_str" as the destination is not
+        // resolved to its value. It is treated literally as the identifier to
+        // set on the source. The source "const_str" does get evaluated to
+        // "hello world".
+        run_test_success(
+            "extend const_str = const_str",
+            vec![TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "const_str"),
                     )]),
                 )),
             ))],
@@ -668,6 +698,13 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_constant(
+                "const_str",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello world",
+                )),
+            );
 
             let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
 
@@ -685,6 +722,13 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_constant(
+                "const_str",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello world",
+                )),
+            );
 
             let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
 
@@ -766,6 +810,44 @@ mod tests {
                         HashSet::from([MapKey::Value(StringScalarExpression::new(
                             QueryLocation::new_fake(),
                             "key1",
+                        ))]),
+                    ),
+                )),
+            ],
+        );
+
+        // Note: In an project operation "const_str" as the destination is not
+        // resolved to its value. It is treated literally as the identifier to
+        // set on the source. The source "const_str" does get evaluated to
+        // "hello world".
+        run_test_success(
+            "project const_str = const_str",
+            vec![
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hello world",
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "const_str"),
+                        )]),
+                    )),
+                )),
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        HashSet::from([MapKey::Value(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "const_str",
                         ))]),
                     ),
                 )),
@@ -968,6 +1050,15 @@ mod tests {
             "project source",
             "The 'source' accessor expression should refer to a map key on the source when used in a project expression",
         );
+
+        // Note: This is technically supported in KQL. What will happen in KQL
+        // is a name is automatically generated. So this runs the same as
+        // project const_str = const_str. We don't currently support generating
+        // names though so this is an error. But with an easy workaround.
+        run_test_failure(
+            "project const_str",
+            "To be valid in a project expression 'const_str' should be an assignment expression or an accessor expression which refers to the source",
+        );
     }
 
     #[test]
@@ -981,6 +1072,13 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_constant(
+                "const_str",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello world",
+                )),
+            );
 
             let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
 
@@ -998,6 +1096,13 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_constant(
+                "const_str",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello world",
+                )),
+            );
 
             let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
 
@@ -1119,11 +1224,6 @@ mod tests {
         );
 
         run_test_failure(
-            "project-keep source",
-            "To be valid in a project-keep expression 'source' should be an accessor expression which refers to data on the source",
-        );
-
-        run_test_failure(
             "project-keep source[0]",
             "The 'source[0]' accessor expression should refer to a map key on the source when used in a project-keep expression",
         );
@@ -1132,6 +1232,33 @@ mod tests {
             "project-keep resource.attributes['key']",
             "To be valid in a project-keep expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
         );
+
+        /* ************** */
+        // Note: The following four tests are technically all valid in KQL. What
+        // will happen is "source", "resource", "variable", and "const_str" will
+        // just be treated as column names. In query engine however we support a
+        // much richer set of access operations using accessor expressions. This
+        // is currently treated as an error to prevent mistakes.
+        run_test_failure(
+            "project-keep source",
+            "To be valid in a project-keep expression 'source' should be an accessor expression which refers to data on the source",
+        );
+
+        run_test_failure(
+            "project-keep resource",
+            "To be valid in a project-keep expression 'resource' should be an accessor expression which refers to data on the source",
+        );
+
+        run_test_failure(
+            "project-keep variable",
+            "To be valid in a project-keep expression 'variable' should be an accessor expression which refers to data on the source",
+        );
+
+        run_test_failure(
+            "project-keep const_str",
+            "To be valid in a project-keep expression 'const_str' should be an accessor expression which refers to data on the source",
+        );
+        /* ************** */
     }
 
     #[test]
@@ -1145,6 +1272,13 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_constant(
+                "const_str",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello world",
+                )),
+            );
 
             let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
 
@@ -1162,6 +1296,13 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_constant(
+                "const_str",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello world",
+                )),
+            );
 
             let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
 
@@ -1283,11 +1424,6 @@ mod tests {
         );
 
         run_test_failure(
-            "project-away source",
-            "To be valid in a project-away expression 'source' should be an accessor expression which refers to data on the source",
-        );
-
-        run_test_failure(
             "project-away source[0]",
             "The 'source[0]' accessor expression should refer to a map key on the source when used in a project-away expression",
         );
@@ -1296,6 +1432,33 @@ mod tests {
             "project-away resource.attributes['key']",
             "To be valid in a project-away expression 'resource.attributes['key']' should be an accessor expression which refers to the source",
         );
+
+        /* ************** */
+        // Note: The following four tests are technically all valid in KQL. What
+        // will happen is "source", "resource", "variable", and "const_str" will
+        // just be treated as column names. In query engine however we support a
+        // much richer set of access operations using accessor expressions. This
+        // is currently treated as an error to prevent mistakes.
+        run_test_failure(
+            "project-away source",
+            "To be valid in a project-away expression 'source' should be an accessor expression which refers to data on the source",
+        );
+
+        run_test_failure(
+            "project-away resource",
+            "To be valid in a project-away expression 'resource' should be an accessor expression which refers to data on the source",
+        );
+
+        run_test_failure(
+            "project-away variable",
+            "To be valid in a project-away expression 'variable' should be an accessor expression which refers to data on the source",
+        );
+
+        run_test_failure(
+            "project-away const_str",
+            "To be valid in a project-away expression 'const_str' should be an accessor expression which refers to data on the source",
+        );
+        /* ************** */
     }
 
     #[test]
