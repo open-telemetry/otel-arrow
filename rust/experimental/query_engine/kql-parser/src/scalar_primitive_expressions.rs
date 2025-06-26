@@ -1088,20 +1088,8 @@ mod tests {
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![ValueSelector::ScalarExpression(
-                    ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        LogicalExpression::Scalar(ScalarExpression::Static(
-                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                true,
-                            )),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                        )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                 )]),
             )),
