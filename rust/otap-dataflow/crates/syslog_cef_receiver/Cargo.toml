@@ -1,5 +1,5 @@
 [package]
-name = "syslog-cef"
+name = "otap-df-syslog-cef"
 description = "Syslog CEF receiver node"
 version.workspace = true
 authors.workspace = true
