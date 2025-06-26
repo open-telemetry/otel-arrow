@@ -91,6 +91,7 @@ mod tests {
             )),
         );
 
+        // Note: The inner statements get folded into constants.
         run_test_success(
             "iif(1 > 0, iif(true, 'a', 'b'), iff(false, 'c', 'd'))",
             ScalarExpression::Conditional(ConditionalScalarExpression::new(

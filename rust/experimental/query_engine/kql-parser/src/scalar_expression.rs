@@ -172,6 +172,8 @@ mod tests {
                 )]),
             )),
         );
+
+        // Note: This whole statement gets folded into a constant.
         run_test(
             "iff(true, 0, 1)",
             ScalarExpression::Static(StaticScalarExpression::Integer(
