@@ -210,9 +210,7 @@ mod test {
                     OtapBatch::Metrics(from_record_messages(record_messages)),
                 )),
                 payload_type => {
-                    panic!(
-                        "unexpected payload type in TestPDataInput.try_into: {payload_type:?}"
-                    )
+                    panic!("unexpected payload type in TestPDataInput.try_into: {payload_type:?}")
                 }
             }
         }
@@ -250,9 +248,7 @@ mod test {
             .unwrap_or_else(|_| panic!("expect to have found table for {payload_type:?}"))
             .next()
             .unwrap_or_else(|| {
-                panic!(
-                    "expect at least one parquet file file for type {payload_type:?}"
-                )
+                panic!("expect at least one parquet file file for type {payload_type:?}")
             })
             .unwrap()
             .path();
