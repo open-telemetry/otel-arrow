@@ -27,7 +27,10 @@ impl SyslogCefReceiver {
     #[must_use]
     #[allow(dead_code)]
     fn new(listening_addr: SocketAddr) -> Self {
-        SyslogCefReceiver { listening_addr, protocol: Protocol::UDP }
+        SyslogCefReceiver {
+            listening_addr,
+            protocol: Protocol::UDP,
+        }
     }
 
     /// Creates a new SyslogCefReceiver from a configuration object
@@ -67,7 +70,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                     _ = tokio::task::spawn_local(async move {
                                         let mut reader = BufReader::new(socket);
                                         let mut line = String::new();
-                                        
+
                                         loop {
                                             line.clear();
 
@@ -80,7 +83,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                                     break;
                                                 },
                                                 Ok(_) => {
-                                                    
+
                                                     let is_complete_line = line.ends_with('\n');
                                                     if !is_complete_line {
                                                         // ToDo: Handle incomplete lines
@@ -123,7 +126,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                         }
                     }
                 }
-            },
+            }
             Protocol::UDP => {
                 let socket = effect_handler.udp_socket(self.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
@@ -193,13 +196,15 @@ mod tests {
                 let test_message = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|3|src=10.0.0.1 dst=10.0.0.2";
 
                 // Send the test message to the receiver
-                let _bytes_sent = socket.send_to(test_message, listening_addr)
+                let _bytes_sent = socket
+                    .send_to(test_message, listening_addr)
                     .await
                     .expect("Failed to send UDP message");
 
                 // Send another test message
                 let test_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message";
-                let _bytes_sent2 = socket.send_to(test_message2, listening_addr)
+                let _bytes_sent2 = socket
+                    .send_to(test_message2, listening_addr)
                     .await
                     .expect("Failed to send second UDP message");
 
@@ -230,15 +235,20 @@ mod tests {
                 let test_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message\n";
 
                 // Send test messages
-                stream.write_all(test_message1)
+                stream
+                    .write_all(test_message1)
                     .await
                     .expect("Failed to write first message");
                 stream.flush().await.expect("Failed to flush first message");
 
-                stream.write_all(test_message2)
+                stream
+                    .write_all(test_message2)
                     .await
                     .expect("Failed to write second message");
-                stream.flush().await.expect("Failed to flush second message");
+                stream
+                    .flush()
+                    .await
+                    .expect("Failed to flush second message");
 
                 // Wait a bit for messages to be processed
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -270,16 +280,21 @@ mod tests {
                 let test_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|incomplete message|5|msg=no newline";
 
                 // Send complete message with newline
-                stream.write_all(test_message1)
+                stream
+                    .write_all(test_message1)
                     .await
                     .expect("Failed to write first message");
                 stream.flush().await.expect("Failed to flush first message");
 
                 // Send incomplete message without newline
-                stream.write_all(test_message2)
+                stream
+                    .write_all(test_message2)
                     .await
                     .expect("Failed to write second message");
-                stream.flush().await.expect("Failed to flush second message");
+                stream
+                    .flush()
+                    .await
+                    .expect("Failed to flush second message");
 
                 // Wait a bit for messages to be processed
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -313,7 +328,11 @@ mod tests {
 
                 // Verify the content of the first message
                 let expected_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|3|src=10.0.0.1 dst=10.0.0.2";
-                assert_eq!(message1_received, expected_message1.to_vec(), "First message content mismatch");
+                assert_eq!(
+                    message1_received,
+                    expected_message1.to_vec(),
+                    "First message content mismatch"
+                );
 
                 // Read the second message
                 let message2_received = timeout(Duration::from_secs(3), ctx.recv())
@@ -323,7 +342,11 @@ mod tests {
 
                 // Verify the content of the second message
                 let expected_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message";
-                assert_eq!(message2_received, expected_message2.to_vec(), "Second message content mismatch");
+                assert_eq!(
+                    message2_received,
+                    expected_message2.to_vec(),
+                    "Second message content mismatch"
+                );
             })
         }
     }
@@ -341,7 +364,11 @@ mod tests {
 
                 // Verify the content of the first message
                 let expected_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|3|src=10.0.0.1 dst=10.0.0.2\n";
-                assert_eq!(message1_received, expected_message1.to_vec(), "First message content mismatch");
+                assert_eq!(
+                    message1_received,
+                    expected_message1.to_vec(),
+                    "First message content mismatch"
+                );
 
                 // Read the second message
                 let message2_received = timeout(Duration::from_secs(3), ctx.recv())
@@ -351,7 +378,11 @@ mod tests {
 
                 // Verify the content of the second message
                 let expected_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message\n";
-                assert_eq!(message2_received, expected_message2.to_vec(), "Second message content mismatch");
+                assert_eq!(
+                    message2_received,
+                    expected_message2.to_vec(),
+                    "Second message content mismatch"
+                );
             })
         }
     }
@@ -369,7 +400,11 @@ mod tests {
 
                 // Verify the content of the first message
                 let expected_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 - CEF:0|Security|threatmanager|1.0|100|complete message|3|src=10.0.0.1\n";
-                assert_eq!(message1_received, expected_message1.to_vec(), "First message content mismatch");
+                assert_eq!(
+                    message1_received,
+                    expected_message1.to_vec(),
+                    "First message content mismatch"
+                );
 
                 // Read the second message (incomplete, should be sent on EOF)
                 let message2_received = timeout(Duration::from_secs(3), ctx.recv())
@@ -379,7 +414,11 @@ mod tests {
 
                 // Verify the content of the second message (no newline)
                 let expected_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|incomplete message|5|msg=no newline";
-                assert_eq!(message2_received, expected_message2.to_vec(), "Second message content mismatch");
+                assert_eq!(
+                    message2_received,
+                    expected_message2.to_vec(),
+                    "Second message content mismatch"
+                );
             })
         }
     }
@@ -394,8 +433,8 @@ mod tests {
 
         // create our UDP receiver
         let receiver = ReceiverWrapper::local(
-            SyslogCefReceiver::new(listening_addr), 
-            test_runtime.config()
+            SyslogCefReceiver::new(listening_addr),
+            test_runtime.config(),
         );
 
         // run the test
@@ -416,7 +455,7 @@ mod tests {
         // create our TCP receiver - we need to modify the receiver to support TCP
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::TCP;
-        
+
         let receiver_wrapper = ReceiverWrapper::local(receiver, test_runtime.config());
 
         // run the test
@@ -437,7 +476,7 @@ mod tests {
         // create our TCP receiver
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::TCP;
-        
+
         let receiver_wrapper = ReceiverWrapper::local(receiver, test_runtime.config());
 
         // run the test
