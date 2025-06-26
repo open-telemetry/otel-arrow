@@ -1,4 +1,4 @@
-use crate::{Expression, QueryLocation, ScalarExpression};
+use crate::{Expression, ExpressionError, QueryLocation, ScalarExpression, StaticScalarExpression};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalExpression {
@@ -6,7 +6,7 @@ pub enum LogicalExpression {
     /// scalar expression.
     ///
     /// Note: To be valid the inner expression should be a
-    /// [`ScalarExpression::Boolean`] value or a resolved
+    /// [`StaticScalarExpression::Boolean`] value or a resolved
     /// ([`ScalarExpression::Attached`], [`ScalarExpression::Source`], or
     /// [`ScalarExpression::Variable`]) value which is a boolean.
     Scalar(ScalarExpression),
@@ -28,6 +28,20 @@ pub enum LogicalExpression {
     /// Returns the result of a sequence of logical expressions chained using
     /// logical `AND(&&)` and/or `OR(||)` operations.
     Chain(ChainLogicalExpression),
+}
+
+impl LogicalExpression {
+    pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
+        match self {
+            LogicalExpression::Scalar(s) => s.try_resolve_static(),
+            // todo: Implement static resolution of logicals:
+            LogicalExpression::EqualTo(_) => Ok(None),
+            LogicalExpression::GreaterThan(_) => Ok(None),
+            LogicalExpression::GreaterThanOrEqualTo(_) => Ok(None),
+            LogicalExpression::Not(_) => Ok(None),
+            LogicalExpression::Chain(_) => Ok(None),
+        }
+    }
 }
 
 impl Expression for LogicalExpression {

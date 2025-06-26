@@ -1,7 +1,17 @@
+"""
+framework_events.py
+
+FrameworkEvents are named events that correspond with framework lifecycle actions.
+
+These events are emitted automatically as part of the framework context management.
+They may be consumed by reporting strategies (e.g. to identify interesting intervals
+for observing metrics), or used for general debugging as part of distributed trace
+spans.
+"""
 from enum import Enum
 
 
-class TestEvent(Enum):
+class FrameworkEvent(Enum):
     """Enum of Test Framework lifecycle events."""
 
     # === Suite-level Events ===
@@ -29,10 +39,6 @@ class TestEvent(Enum):
     # === Strategy Invocation ===
     STRATEGY_START = "strategy_start"
     STRATEGY_END = "strategy_end"
-
-    # === Reporting ===
-    REPORTING_START = "reporting_start"
-    REPORTING_END = "reporting_end"
 
     def namespaced(self, namespace="test_framework"):
         """Return a string representation of the enum, prefixed with namespace"""
