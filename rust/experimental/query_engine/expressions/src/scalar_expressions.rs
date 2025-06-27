@@ -278,7 +278,7 @@ impl ConditionalScalarExpression {
         }
 
         let true_e = self.true_expression.try_resolve_static()?;
-        let false_e = self.true_expression.try_resolve_static()?;
+        let false_e = self.false_expression.try_resolve_static()?;
 
         if true_e.is_some() && false_e.is_some() {
             let true_type = true_e.unwrap().get_value_type();
@@ -335,6 +335,196 @@ mod tests {
     use crate::BooleanScalarExpression;
 
     use super::*;
+
+    #[test]
+    pub fn try_resolve_value_type() {
+        let run_test_success = |expression: ScalarExpression, expected: Option<ValueType>| {
+            let actual = expression.try_resolve_value_type().unwrap();
+
+            assert_eq!(expected, actual)
+        };
+
+        run_test_success(
+            ScalarExpression::Attached(AttachedScalarExpression::new(
+                QueryLocation::new_fake(),
+                "resource",
+                ValueAccessor::new(),
+            )),
+            None,
+        );
+
+        run_test_success(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new(),
+            )),
+            None,
+        );
+
+        run_test_success(
+            ScalarExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new_fake(),
+                "var",
+                ValueAccessor::new(),
+            )),
+            None,
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+            Some(ValueType::Boolean),
+        );
+
+        run_test_success(
+            ScalarExpression::Negate(NegateScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            )),
+            Some(ValueType::Integer),
+        );
+
+        run_test_success(
+            ScalarExpression::Logical(
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                ))
+                .into(),
+            ),
+            Some(ValueType::Boolean),
+        );
+
+        run_test_success(
+            ScalarExpression::Conditional(ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+            )),
+            Some(ValueType::Integer),
+        );
+    }
+
+    #[test]
+    pub fn test_conditional_try_resolve_value_type() {
+        let run_test_success = |expression: ConditionalScalarExpression,
+                                expected: Option<ValueType>| {
+            let actual = expression.try_resolve_value_type().unwrap();
+
+            assert_eq!(expected, actual)
+        };
+
+        run_test_success(
+            ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                ))),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            Some(ValueType::Integer),
+        );
+
+        run_test_success(
+            ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            None,
+        );
+
+        run_test_success(
+            ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+            ),
+            None,
+        );
+
+        run_test_success(
+            ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            Some(ValueType::Integer),
+        );
+
+        run_test_success(
+            ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            Some(ValueType::Integer),
+        );
+    }
 
     #[test]
     pub fn test_try_resolve_static() {
@@ -434,15 +624,30 @@ mod tests {
     pub fn test_negate_try_resolve_static() {
         let run_test_success =
             |expression: NegateScalarExpression, expected: Option<StaticScalarExpression>| {
-                let actual = expression.try_resolve_static().unwrap();
+                let actual_static = expression.try_resolve_static().unwrap();
 
-                assert_eq!(expected, actual)
+                assert_eq!(expected, actual_static);
+                if actual_static.is_none() {
+                    assert_eq!(None, expression.try_resolve_value_type().unwrap());
+                } else {
+                    assert_eq!(
+                        ScalarExpression::Static(actual_static.unwrap())
+                            .try_resolve_value_type()
+                            .unwrap(),
+                        expression.try_resolve_value_type().unwrap()
+                    );
+                }
             };
 
         let run_test_failure = |expression: NegateScalarExpression| {
-            let actual = expression.try_resolve_static().unwrap_err();
-
-            assert!(matches!(actual, ExpressionError::TypeMismatch(_, _)));
+            assert!(matches!(
+                expression.try_resolve_static().unwrap_err(),
+                ExpressionError::TypeMismatch(_, _)
+            ));
+            assert!(matches!(
+                expression.try_resolve_value_type().unwrap_err(),
+                ExpressionError::TypeMismatch(_, _)
+            ));
         };
 
         run_test_success(
