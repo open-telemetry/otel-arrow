@@ -24,6 +24,10 @@ impl PipelineExpression {
         }
     }
 
+    pub fn get_expressions(&self) -> &[DataExpression] {
+        &self.expressions
+    }
+
     pub fn push_expression(&mut self, expression: DataExpression) {
         self.expressions.push(expression);
     }
