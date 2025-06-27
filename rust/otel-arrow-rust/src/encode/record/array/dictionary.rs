@@ -671,7 +671,7 @@ mod test {
                     BinaryDictionaryBuilder<UInt16Type>,
                 >::new(opts, ())
             },
-            |i| format!("{:?}", i).encode_to_vec(),
+            |i| format!("{i:?}").encode_to_vec(),
             DataType::Binary,
         );
     }

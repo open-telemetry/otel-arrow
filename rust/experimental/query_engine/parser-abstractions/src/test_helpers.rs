@@ -16,15 +16,13 @@ pub mod pest_test_helpers {
         for input in ok_inputs {
             assert!(
                 P::parse(parser_rule, input).is_ok(),
-                "Expected Ok for input: {}",
-                input
+                "Expected Ok for input: {input}"
             );
         }
         for input in err_inputs {
             assert!(
                 P::parse(parser_rule, input).is_err(),
-                "Expected Err for input: {}",
-                input
+                "Expected Err for input: {input}"
             );
         }
     }

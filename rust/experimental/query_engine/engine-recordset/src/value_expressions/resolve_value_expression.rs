@@ -89,8 +89,7 @@ impl ValueExpressionInternal for ResolveValueExpression {
                         execution_context.add_message_for_expression(
                             self,
                             ExpressionMessage::info(format!(
-                                "ResolveValueExpression resolved: {:?}",
-                                any_value
+                                "ResolveValueExpression resolved: {any_value:?}"
                             )),
                         );
                     }
@@ -141,8 +140,7 @@ impl MutatableValueExpressionInternal for ResolveValueExpression {
                 execution_context.add_message_for_expression(
                     self,
                     ExpressionMessage::info(format!(
-                        "ResolveValueExpression replaced value: {:?}",
-                        old_value
+                        "ResolveValueExpression replaced value: {old_value:?}"
                     )),
                 );
                 result
@@ -183,8 +181,7 @@ impl MutatableValueExpressionInternal for ResolveValueExpression {
                 execution_context.add_message_for_expression(
                     self,
                     ExpressionMessage::info(format!(
-                        "ResolveValueExpression removed: {:?}",
-                        old_value
+                        "ResolveValueExpression removed: {old_value:?}"
                     )),
                 );
                 result

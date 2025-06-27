@@ -53,7 +53,7 @@ fn generate_otap_protos(out_dir: &Path, base: &str) {
         .compile_protos_with_config(
             prost_cfg(),
             &["experimental/arrow/v1/arrow_service.proto"],
-            &[format!("{}/../../proto/opentelemetry/proto/", base)],
+            &[format!("{base}/../../proto/opentelemetry/proto/")],
         )
         .expect("Failed to compile OTAP protos.");
 }
@@ -84,7 +84,7 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
                 "opentelemetry/proto/collector/trace/v1/trace_service.proto",
                 "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
             ],
-            &[format!("{}/../../proto/opentelemetry-proto", base)],
+            &[format!("{base}/../../proto/opentelemetry-proto")],
         )
         .expect("Failed to compile OTLP protos.");
 }
