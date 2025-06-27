@@ -118,10 +118,11 @@ fn bench_encode_logs(c: &mut Criterion) {
     input
         .encode(&mut input_bytes)
         .expect("can encode proto bytes");
+    {
     let mut group = c.benchmark_group("encode_otap_logs_using_views");
 
     let _ = group.bench_with_input(
-        BenchmarkId::new("proto_bytes", "default"),
+        BenchmarkId::new("proto_bytes->views->OTAP", "default"),
         &input_bytes,
         |b, input| {
             b.iter(|| {
@@ -132,8 +133,10 @@ fn bench_encode_logs(c: &mut Criterion) {
         },
     );
 
+
+
     let _ = group.bench_with_input(
-        BenchmarkId::new("proto_structs_decode", "default"),
+        BenchmarkId::new("proto_bytes->prost->views->OTAP", "default"),
         &input_bytes,
         |b, input| {
             b.iter(|| {
@@ -145,14 +148,34 @@ fn bench_encode_logs(c: &mut Criterion) {
     );
 
     let _ = group.bench_with_input(
-        BenchmarkId::new("proto_structs_no_decode", "default"),
+        BenchmarkId::new("prost->views->OTAP", "default"),
         &input,
         |b, input| {
             b.iter(|| encode_logs_otap_batch(input).expect("function no errors"));
         },
     );
 
+
     group.finish();
+    }
+
+    {
+    let mut decode_to_prost_group = c.benchmark_group("decode_proto_bytes");
+
+    let _ = decode_to_prost_group.bench_with_input(
+        BenchmarkId::new("proto_bytes->prost", "default"),
+        &input_bytes,
+        |b, input| {
+            b.iter(|| {
+                let result = LogsData::decode(input.as_ref()).expect("can decode proto bytes");
+                black_box(result)
+            })
+        },
+    );
+
+    decode_to_prost_group.finish();
+    }
+
 }
 
 #[allow(missing_docs)]
