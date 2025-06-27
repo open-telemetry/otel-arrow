@@ -32,7 +32,7 @@ pub(crate) fn parse_scalar_expression(
             // accessor(some_constant1), accessor(some_constant2)) can safely
             // fold to iff([logical], String("constant1"), String("constant2")).
             parse_accessor_expression(scalar_rule, state, true)?
-        },
+        }
         Rule::logical_expression => {
             let l = parse_logical_expression(scalar_rule, state)?;
 
