@@ -21,7 +21,11 @@ pub(crate) fn parse_assignment_expression(
 
     let accessor = match destination_rule.as_rule() {
         // Note: Root-level static accessors are not valid in an assignment
-        // expression so allow_root_scalar=false is passed here.
+        // expression so allow_root_scalar=false is passed here. Example:
+        // accessor(some_constant1) = [expression] cannot be folded as
+        // String("constant1") = [expression] we need to treat the accessor in
+        // this case as an assignment on the source
+        // Source(MapKey("some_constant1")) = [expression].
         Rule::accessor_expression => parse_accessor_expression(destination_rule, state, false)?,
         _ => panic!("Unexpected rule in assignment_expression: {destination_rule}"),
     };
