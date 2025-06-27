@@ -121,7 +121,7 @@ fn bench_encode_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_otap_logs_using_views");
 
     let _ = group.bench_with_input(
-        BenchmarkId::new("encode_otap_logs_from_proto_bytes_direct", "default"),
+        BenchmarkId::new("proto_bytes", "default"),
         &input_bytes,
         |b, input| {
             b.iter(|| {
@@ -133,10 +133,7 @@ fn bench_encode_logs(c: &mut Criterion) {
     );
 
     let _ = group.bench_with_input(
-        BenchmarkId::new(
-            "encode_otap_logs_from_proto_bytes_decoded_to_struct",
-            "default",
-        ),
+        BenchmarkId::new("proto_structs_decode", "default"),
         &input_bytes,
         |b, input| {
             b.iter(|| {
@@ -148,7 +145,7 @@ fn bench_encode_logs(c: &mut Criterion) {
     );
 
     let _ = group.bench_with_input(
-        BenchmarkId::new("encode_otap_logs_from_proto_struct", "default"),
+        BenchmarkId::new("proto_structs_no_decode", "default"),
         &input,
         |b, input| {
             b.iter(|| encode_logs_otap_batch(input).expect("function no errors"));
