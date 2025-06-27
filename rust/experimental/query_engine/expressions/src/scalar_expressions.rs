@@ -1,6 +1,6 @@
 use crate::{
     DoubleScalarExpression, Expression, ExpressionError, IntegerScalarExpression,
-    LogicalExpression, QueryLocation, StaticScalarExpression, Value, ValueAccessor,
+    LogicalExpression, QueryLocation, StaticScalarExpression, ValueAccessor, ValueType,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,11 +41,16 @@ pub enum ScalarExpression {
 }
 
 impl ScalarExpression {
-    pub fn to_value(&self) -> Option<Value> {
-        if let ScalarExpression::Static(s) = self {
-            return Some(s.to_value());
+    pub fn try_resolve_value_type(&self) -> Result<Option<ValueType>, ExpressionError> {
+        match self {
+            ScalarExpression::Source(_) => Ok(None),
+            ScalarExpression::Attached(_) => Ok(None),
+            ScalarExpression::Variable(_) => Ok(None),
+            ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
+            ScalarExpression::Negate(n) => n.try_resolve_value_type(),
+            ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
+            ScalarExpression::Conditional(c) => c.try_resolve_value_type(),
         }
-        None
     }
 
     pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
@@ -191,6 +196,15 @@ impl NegateScalarExpression {
         &self.inner_expression
     }
 
+    pub fn try_resolve_value_type(&self) -> Result<Option<ValueType>, ExpressionError> {
+        let s = self.try_resolve_static()?;
+        if let Some(s) = s {
+            Ok(Some(s.get_value_type()))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
         if let Some(s) = self.inner_expression.try_resolve_static()? {
             match s {
@@ -256,6 +270,26 @@ impl ConditionalScalarExpression {
 
     pub fn get_false_expression(&self) -> &ScalarExpression {
         &self.false_expression
+    }
+
+    pub fn try_resolve_value_type(&self) -> Result<Option<ValueType>, ExpressionError> {
+        if let Some(s) = self.try_resolve_static()? {
+            return Ok(Some(s.get_value_type()));
+        }
+
+        let true_e = self.true_expression.try_resolve_static()?;
+        let false_e = self.true_expression.try_resolve_static()?;
+
+        if true_e.is_some() && false_e.is_some() {
+            let true_type = true_e.unwrap().get_value_type();
+            let false_type = false_e.unwrap().get_value_type();
+
+            if true_type == false_type {
+                return Ok(Some(true_type));
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
