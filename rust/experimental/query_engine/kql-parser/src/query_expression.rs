@@ -27,16 +27,18 @@ pub(crate) fn parse_query(
                     if let MutableValueExpression::Variable(v) = s.get_destination() {
                         let name = v.get_name();
 
-                        state.push_variable_name(name);
-                        validated = true;
+                        if let ImmutableValueExpression::Scalar(ScalarExpression::Static(s)) =
+                            s.get_source()
+                        {
+                            state.push_constant(name, s.clone());
+                            validated = true;
+                        }
                     }
                 }
 
                 if !validated {
                     panic!("Unexpected let_expression encountered");
                 }
-
-                pipeline.push_expression(DataExpression::Transform(let_expression));
             }
             Rule::tabular_expression => {
                 let expressions = parse_tabular_expression(rule, state)?;
@@ -99,27 +101,11 @@ mod tests {
 
         run_test_success("", PipelineExpression::new(QueryLocation::new_fake()));
 
+        // Note: The let statement becomes an unreferenced constant so the whole
+        // expression essentially becomes a no-op.
         run_test_success(
             "let var1 = 1;",
-            PipelineExpression::new_with_expressions(
-                QueryLocation::new_fake(),
-                vec![DataExpression::Transform(TransformExpression::Set(
-                    SetTransformExpression::new(
-                        QueryLocation::new_fake(),
-                        ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                            StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                1,
-                            )),
-                        )),
-                        MutableValueExpression::Variable(VariableScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "var1",
-                            ValueAccessor::new(),
-                        )),
-                    ),
-                ))],
-            ),
+            PipelineExpression::new(QueryLocation::new_fake()),
         );
 
         run_test_success(
@@ -146,8 +132,10 @@ mod tests {
             ),
         );
 
+        // Note: This test folds the constants and ends up as if it was written:
+        // "source | extend a = 1, attributes['attr'] = 1".
         run_test_success(
-            "let var1 = 1; i | extend a = var1;",
+            "let var1 = 1; let var2 = 'attr'; source | extend a = var1, attributes[var2] = 1;",
             PipelineExpression::new_with_expressions(
                 QueryLocation::new_fake(),
                 vec![
@@ -160,28 +148,35 @@ mod tests {
                                     1,
                                 )),
                             )),
-                            MutableValueExpression::Variable(VariableScalarExpression::new(
+                            MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                "var1",
-                                ValueAccessor::new(),
+                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                )]),
                             )),
                         ),
                     )),
                     DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
                             QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                                VariableScalarExpression::new(
+                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    "var1",
-                                    ValueAccessor::new(),
-                                ),
+                                    1,
+                                )),
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                                )]),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ValueSelector::MapKey(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "attributes",
+                                    )),
+                                    ValueSelector::MapKey(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "attr",
+                                    )),
+                                ]),
                             )),
                         ),
                     )),
