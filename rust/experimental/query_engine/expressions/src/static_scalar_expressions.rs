@@ -172,7 +172,7 @@ impl Expression for StringScalarExpression {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum ValueType {
     Boolean,
     Integer,
