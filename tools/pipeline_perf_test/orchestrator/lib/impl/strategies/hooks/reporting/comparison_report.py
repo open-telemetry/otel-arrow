@@ -22,6 +22,7 @@ This module supports flexible report comparison scenarios by consolidating multi
 validating consistent report types, and generating side-by-side comparative outputs
 for improved visibility and analysis.
 """
+
 from typing import ClassVar, Optional, List, Dict, Any
 
 from pydantic import Field
@@ -29,7 +30,7 @@ from pydantic import Field
 from .....core.context.base import BaseContext
 from .....core.context import FrameworkElementHookContext
 from .....core.framework.report import Report, ReportAggregation
-from .....runner.registry import hook_registry, PluginMeta
+from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from .standard_reporting_strategy import StandardReportingStrategy, ReportRuntime
 
@@ -53,6 +54,7 @@ class ComparisonReportConfig(StandardReportingHookStrategyConfig):
     parameters needed for comparing multiple reports within a test or performance
     suite context.
     """
+
     reports: List[str]
     label_key: Optional[str] = "report.name"
     report_config: Optional[Dict[str, Any]] = Field(default_factory=dict)
@@ -79,6 +81,7 @@ class ComparisonReport(Report):
     This class acts as a wrapper around other report classes to combine their outputs
     into a comparative view, supporting flexible templating and configuration.
     """
+
     report_class: Optional[type[Report]] = None
     config: Optional[ComparisonReportConfig] = None
     REPORT_TYPE: ClassVar[str] = STRATEGY_NAME
@@ -130,6 +133,7 @@ class ComparisonReportHook(StandardReportingStrategy):
     - Attach as a post-processing hook to combine and compare metrics across multiple
     report executions, e.g., for comparing performance runs or test results.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[FrameworkElementHookContext.__name__],
         installs_hooks=[],
@@ -150,7 +154,39 @@ hooks:
                 template: {}
               destination:
                 console: {}
+""",
+        report_meta=ReportMeta(
+            supported_aggregations=[ReportAggregation.NONE.value],
+            sample_output={
+                "Example Aggregation": """
+# Process Comparison Report
+
+## Metadata:
+
+test.suite: Test OTLP Vs OTAP
+...
+
+## Process: otel-collector
+
+| metric_name                      | Process OTLP   | Process OTAP   |
+|:---------------------------------|:---------------|:---------------|
+| delta(container.network.rx)      | 434.61 MB      | 115.77 MB      |
+| delta(container.network.tx)      | 434.11 MB      | 473.57 MB      |
+| max(container.cpu.usage)         | 4.05 cores     | 3.43 cores     |
+| max(container.memory.usage)      | 128.87 MB      | 222.38 MB      |
+| max(rate(container.network.rx))  | 59.04 MB/s     | 14.77 MB/s     |
+| max(rate(container.network.tx))  | 58.78 MB/s     | 60.57 MB/s     |
+| mean(container.cpu.usage)        | 3.82 cores     | 3.35 cores     |
+| mean(container.memory.usage)     | 117.46 MB      | 213.00 MB      |
+| mean(rate(container.network.rx)) | 53.88 MB/s     | 14.54 MB/s     |
+| mean(rate(container.network.tx)) | 53.81 MB/s     | 59.47 MB/s     |
+| min(container.cpu.usage)         | 3.25 cores     | 3.29 cores     |
+| min(container.memory.usage)      | 111.25 MB      | 200.57 MB      |
+| min(rate(container.network.rx))  | 48.50 MB/s     | 14.08 MB/s     |
+| min(rate(container.network.tx))  | 48.25 MB/s     | 57.77 MB/s     |
 """
+            },
+        ),
     )
 
     def __init__(self, config: ComparisonReportConfig):

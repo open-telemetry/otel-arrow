@@ -75,6 +75,7 @@ class ManagedComponentConfiguration(BaseModel):
                 strategy type and config.
               - Raises a ValueError if an unknown monitoring strategy is encountered.
     """
+
     hooks: Dict[ComponentPhase, HooksConfig] = Field(default_factory=dict)
     deployment: Optional[DeploymentWrapper] = None
     monitoring: Optional[Dict[str, MonitoringWrapper]] = None

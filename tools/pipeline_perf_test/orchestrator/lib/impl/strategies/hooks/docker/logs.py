@@ -30,6 +30,7 @@ class GetDockerLogs(HookStrategy):
     Attributes:
         config (GetDockerLogsConfig): Configuration for the log retrieval behavior.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[ComponentHookContext.__name__],
         installs_hooks=[],
@@ -42,8 +43,9 @@ components:
         destroy:
             pre:
             - get_docker_logs: {}
-"""
+""",
     )
+
     def __init__(self, config: GetDockerLogsConfig):
         self.config = config
 

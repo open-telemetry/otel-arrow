@@ -13,11 +13,12 @@ Typical use case:
     This hook is useful for testing pipeline failure handling, error reporting,
     or simulating failure scenarios in test frameworks.
 """
+
 from typing import Optional
 
 from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
-from ....core.context import (ComponentHookContext, FrameworkElementHookContext)
+from ....core.context import ComponentHookContext, FrameworkElementHookContext
 from ....runner.registry import hook_registry, PluginMeta
 
 HOOK_NAME = "raise_exception"
@@ -42,8 +43,12 @@ class RaiseExceptionHook(HookStrategy):
 
     This class is responsible for raising an exception when fired. Primarily for testing.
     """
+
     PLUGIN_META = PluginMeta(
-        supported_contexts=[FrameworkElementHookContext.__name__, ComponentHookContext.__name__],
+        supported_contexts=[
+            FrameworkElementHookContext.__name__,
+            ComponentHookContext.__name__,
+        ],
         installs_hooks=[],
         yaml_example="""
 hooks:
@@ -51,7 +56,7 @@ hooks:
     pre:
       - raise_exception:
             message: This is a test exception.
-"""
+""",
     )
 
     def __init__(self, config: RaiseExceptionConfig):

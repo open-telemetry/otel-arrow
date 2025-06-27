@@ -13,13 +13,14 @@ Use case:
     Enables test authors or strategy developers to insert custom telemetry markers
     into a pipeline execution flow, which can later be analyzed or visualized.
 """
+
 from typing import Optional
 
 from pydantic import Field
 
 from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
-from ....core.context import (ComponentHookContext, FrameworkElementHookContext)
+from ....core.context import ComponentHookContext, FrameworkElementHookContext
 from ....runner.registry import hook_registry, PluginMeta
 
 HOOK_NAME = "record_event"
@@ -54,8 +55,12 @@ class RecordEventHook(HookStrategy):
         - Logging test lifecycle events in distributed tracing systems.
         - Recording custom milestones in execution telemetry.
     """
+
     PLUGIN_META = PluginMeta(
-        supported_contexts=[FrameworkElementHookContext.__name__, ComponentHookContext.__name__],
+        supported_contexts=[
+            FrameworkElementHookContext.__name__,
+            ComponentHookContext.__name__,
+        ],
         installs_hooks=[],
         yaml_example="""
 tests:
@@ -73,7 +78,7 @@ tests:
             post:
               - record_event:
                   name: observation_stop
-"""
+""",
     )
 
     def __init__(self, config: RecordEventConfig):

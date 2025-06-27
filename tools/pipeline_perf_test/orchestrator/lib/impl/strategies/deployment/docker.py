@@ -73,6 +73,7 @@ class DockerBuildConfig(BaseModel):
         args (Optional[Dict[str, str]]): Optional build arguments passed to the Docker build.
         target (Optional[str]): Optional build stage target name for multi-stage builds.
     """
+
     context: str
     dockerfile: Optional[str] = None
     args: Optional[Dict[str, str]] = None
@@ -89,6 +90,7 @@ class DockerPortMapping(BaseModel):
         protocol (Literal["tcp", "udp"]): Network protocol, defaults to 'tcp'.
         host_ip (Optional[str]): Host IP address to bind the port to, defaults to '0.0.0.0'.
     """
+
     published: Union[int, str]
     target: Union[int, str]
     protocol: Literal["tcp", "udp"] = "tcp"
@@ -104,6 +106,7 @@ class DockerVolumeMapping(BaseModel):
         target (str): Mount path inside the container.
         read_only (Optional[bool]): Whether the volume is mounted read-only, defaults to False.
     """
+
     source: str
     target: str
     read_only: Optional[bool] = False
@@ -129,6 +132,7 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
             either as strings or structured DockerVolumeMapping objects.
         network (Optional[str]): Docker network to connect the container to.
     """
+
     image: str
     build: Optional[DockerBuildConfig] = Field(
         None, description="Build configuration if building locally"
@@ -164,7 +168,12 @@ class DockerDeployment(DeploymentStrategy):
     type: ClassVar[Literal["docker"]] = "docker"
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
-        installs_hooks=[CreateDockerNetwork.__name__, TidyExistingContainer.__name__, WaitForDockerStatus.__name__, DeleteDockerNetwork.__name__],
+        installs_hooks=[
+            CreateDockerNetwork.__name__,
+            TidyExistingContainer.__name__,
+            WaitForDockerStatus.__name__,
+            DeleteDockerNetwork.__name__,
+        ],
         yaml_example="""
 components:
   otel-collector:
@@ -177,7 +186,7 @@ components:
         command: ["--config", "/etc/otel/collector-config.yaml"]
         ports:
           - "8888:8888"
-"""
+""",
     )
 
     def __init__(self, config: DockerDeploymentConfig):

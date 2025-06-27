@@ -3,6 +3,7 @@ Module: util.py
 
 Misc utility functions used by the test framework cli.
 """
+
 import subprocess
 
 

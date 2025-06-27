@@ -29,6 +29,7 @@ Usage:
 Example:
     delay_seconds: 2.5  # Waits for 2.5 seconds when the step is executed
 """
+
 import time
 
 from ...core.context import StepContext
@@ -48,6 +49,7 @@ class WaitActionConfig(StepActionConfig):
         delay_seconds (float): The number of seconds to pause during step execution.
             This should be a non-negative float representing the delay duration.
     """
+
     delay_seconds: float
 
 
@@ -62,6 +64,7 @@ class WaitAction(StepAction):
     Attributes:
         config (WaitActionConfig): Configuration containing the delay duration in seconds.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
         installs_hooks=[],
@@ -73,7 +76,7 @@ tests:
       action:
         wait:
           delay_seconds: 3
-"""
+""",
     )
 
     def __init__(self, config: WaitActionConfig):

@@ -15,6 +15,7 @@ Dependencies:
 - OpenTelemetry SDK and OTLP exporters.
 - Internal telemetry classes: TelemetryClient, Span/Metrics backends and exporters.
 """
+
 import argparse
 import logging
 
@@ -59,6 +60,7 @@ def setup_logging(args: argparse.Namespace):
     Args:
         args (argparse.Namespace): Parsed command-line arguments with possible `debug` flag.
     """
+
     class SafeContextFormatter(logging.Formatter):
         def format(self, record):
             record_dict = record.__dict__.copy()
@@ -101,7 +103,7 @@ def setup_logging(args: argparse.Namespace):
     lib_logger.addHandler(span_log_handler)
 
 
-def build_telemetry_runtime(args: argparse.Namespace)-> TelemetryRuntime:
+def build_telemetry_runtime(args: argparse.Namespace) -> TelemetryRuntime:
     """
     Constructs the framework telemetry runtime including tracing and metrics providers.
 
@@ -135,12 +137,13 @@ def build_telemetry_runtime(args: argparse.Namespace)-> TelemetryRuntime:
     trace_provider.add_span_processor(SimpleSpanProcessor(fw_spans))
     trace.set_tracer_provider(trace_provider)
 
-
     # Add Framework metrics infrastructure
     fw_metric_backend = FrameworkMetricBackend()
     fw_metric_client = FrameworkMetricsRetriever(backend=fw_metric_backend)
     fw_metrics = FrameworkMetricExporter(backend=fw_metric_backend)
-    fw_reader = PeriodicExportingMetricReader(exporter=fw_metrics, export_interval_millis=100)
+    fw_reader = PeriodicExportingMetricReader(
+        exporter=fw_metrics, export_interval_millis=100
+    )
     readers.append(fw_reader)
 
     meter_provider = MeterProvider(metric_readers=readers, resource=resource)
@@ -156,6 +159,7 @@ def build_telemetry_runtime(args: argparse.Namespace)-> TelemetryRuntime:
         meter_provider=meter_provider,
         telemetry_client=fw_telemetry_client,
     )
+
 
 def setup_telemetry(args: argparse.Namespace) -> TelemetryRuntime:
     """Setup logging, metrics, tracing instrumentation for the framework and suite.

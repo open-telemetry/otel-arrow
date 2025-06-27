@@ -1,7 +1,7 @@
 from typing import Optional
 from docker.errors import APIError
 from .....core.context.base import ExecutionStatus, BaseContext
-from .....core.context import (ComponentHookContext, FrameworkElementHookContext)
+from .....core.context import ComponentHookContext, FrameworkElementHookContext
 from .....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from .....runner.registry import hook_registry, PluginMeta
 from ...common.docker import get_or_create_docker_client, stop_and_remove_container
@@ -13,6 +13,7 @@ class TidyExistingContainerConfig(HookStrategyConfig):
     """
     Configuration for the 'tidy_existing_container' hook.
     """
+
     component: Optional[str] = None
 
 
@@ -41,8 +42,12 @@ class TidyExistingContainer(HookStrategy):
         - Pre-deployment cleanup to avoid naming conflicts.
         - Resetting environment between pipeline/test runs where container reuse is not desired.
     """
+
     PLUGIN_META = PluginMeta(
-        supported_contexts=[ComponentHookContext.__name__, FrameworkElementHookContext.__name__],
+        supported_contexts=[
+            ComponentHookContext.__name__,
+            FrameworkElementHookContext.__name__,
+        ],
         installs_hooks=[],
         notes="This hook is automatically installed by the docker deployment strategy and doesn't need to be added explicitly",
         yaml_example="""
@@ -54,7 +59,7 @@ components:
         deploy:
             pre:
             - tidy_existing_container: {}
-"""
+""",
     )
 
     def __init__(self, config: TidyExistingContainerConfig):

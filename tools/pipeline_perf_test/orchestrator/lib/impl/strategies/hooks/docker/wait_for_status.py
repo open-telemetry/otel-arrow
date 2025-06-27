@@ -24,6 +24,7 @@ class WaitForDockerStatusConfig(HookStrategyConfig):
             the target status. Defaults to 30 seconds.
         interval (float): Polling interval (in seconds) between status checks. Defaults to 1.0.
     """
+
     status: Union[str, DockerContainerStatus] = DockerContainerStatus.RUNNING
     timeout: float = 30
     interval: float = 1.0
@@ -59,6 +60,7 @@ class WaitForDockerStatus(HookStrategy):
         - As a post-deploy hook to block until the container is `running`.
         - To coordinate pipeline steps based on container readiness.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[ComponentHookContext.__name__],
         installs_hooks=[],
@@ -75,8 +77,9 @@ components:
                 status: running
                 timeout: 30
                 interval: 1
-"""
+""",
     )
+
     def __init__(self, config: WaitForDockerStatusConfig):
         self.config = config
 

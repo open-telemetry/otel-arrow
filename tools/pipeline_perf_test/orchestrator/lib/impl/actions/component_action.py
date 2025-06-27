@@ -30,6 +30,7 @@ target component name and the phase to invoke.
 ComponentAction: Retrieves the specified component from the step context and invokes
 the method corresponding to the given phase.
 """
+
 from ...core.component import ComponentPhase, Component
 from ...core.context import StepContext
 from ...core.framework.step import StepActionConfig, StepAction
@@ -55,6 +56,7 @@ class ComponentActionConfig(StepActionConfig):
         phase (ComponentPhase): The lifecycle phase or action to invoke.
                                 Must correspond to a valid method defined on
     """
+
     target: str
     phase: ComponentPhase
 
@@ -70,6 +72,7 @@ class ComponentAction(StepAction):
     - Verifies the component supports the requested lifecycle phase.
     - Executes the corresponding method on the component, passing in the current context.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
         installs_hooks=[],
@@ -82,7 +85,7 @@ tests:
         component_action:
           phase: start
           target: load-generator
-"""
+""",
     )
 
     def __init__(self, config: ComponentActionConfig):

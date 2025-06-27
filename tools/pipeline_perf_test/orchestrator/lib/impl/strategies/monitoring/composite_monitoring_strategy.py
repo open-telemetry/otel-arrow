@@ -12,6 +12,7 @@ Usage:
     - Instantiate with a list of concrete MonitoringStrategy implementations.
     - Call `start`, `stop`, and `collect` as you would with a single strategy.
 """
+
 from typing import List
 
 from ....core.component.component import Component

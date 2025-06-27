@@ -35,6 +35,7 @@ This module is intended to be extended by plugin authors and test engineers who 
 generate and persist structured data from test execution for analytics, traceability,
 and debugging.
 """
+
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, Dict
@@ -58,6 +59,7 @@ class ReportRuntime:
         reports (Dict[str, Report]): A dictionary mapping report names to Report objects.
             Initialized as an empty dictionary by default.
     """
+
     reports: Optional[Dict[str, Report]] = field(default_factory=dict)
 
 
@@ -91,6 +93,7 @@ class StandardReportingStrategy(ReportingHookStrategy):
     Raises:
         NotImplementedError: If `_execute` is not implemented in a subclass.
     """
+
     def __init__(self, config: StandardReportingHookStrategyConfig):
         self.config = config
         self.pipelines = get_report_pipelines(self.config)

@@ -1,4 +1,5 @@
 """Initialization for the hook strategies."""
+
 from .docker import *
 from .reporting import *
 from .raise_exception import RaiseExceptionConfig, RaiseExceptionHook

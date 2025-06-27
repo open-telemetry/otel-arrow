@@ -34,6 +34,7 @@ components:
 Raises:
     - Requests HTTPError if start or stop requests fail.
 """
+
 from typing import Optional, ClassVar, Literal
 from urllib.parse import urljoin
 
@@ -66,6 +67,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
         attribute_value_size (Optional[int]): Size of each attribute's value. Defaults to 15.
         batch_size (Optional[int]): Number of events sent in each batch. Defaults to 10000.
     """
+
     endpoint: Optional[str] = "http://localhost:5001/"
     threads: Optional[int] = 1
     body_size: Optional[int] = 25
@@ -93,6 +95,7 @@ class PipelinePerfLoadgenExecution(ExecutionStrategy):
         start(component, ctx): Sends a POST request to start load generation with configured parameters.
         stop(component, ctx): Sends a POST request to stop load generation.
     """
+
     type: ClassVar[Literal["pipeline_perf_loadgen"]] = "pipeline_perf_loadgen"
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
@@ -108,7 +111,7 @@ components:
         num_attributes: 2
         attribute_value_size: 15
         batch_size: 10000
-"""
+""",
     )
 
     def __init__(self, config: PipelinePerfLoadgenConfig):

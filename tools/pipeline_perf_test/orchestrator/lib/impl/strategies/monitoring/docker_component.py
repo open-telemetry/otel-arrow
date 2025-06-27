@@ -43,6 +43,7 @@ Note:
     Monitoring occurs in a separate thread and is daemonized, meaning it will not block
     shutdown. However, proper cleanup via the `stop()` method is expected to avoid leaks.
 """
+
 import threading
 import time
 from dataclasses import dataclass, field
@@ -87,6 +88,7 @@ class DockerComponentMonitoringRuntime:
         thread (Optional[threading.Thread]): The thread in which Docker stats monitoring runs.
         stop_event (threading.Event): An event used to signal the monitoring thread to stop.
     """
+
     type: ClassVar[Literal["docker_component_monitoring"]] = (
         "docker_component_monitoring"
     )
@@ -106,6 +108,7 @@ class DockerComponentMonitoringConfig(MonitoringStrategyConfig):
         interval (Optional[float]): Time in seconds between each polling interval
                                     for metrics collection. Defaults to 1.0 second.
     """
+
     interval: Optional[float] = 1.0
 
 
@@ -123,6 +126,7 @@ class DockerComponentMonitoringStrategy(MonitoringStrategy):
         stop(component, ctx): Stop the monitoring process.
         collect(component, ctx): Collect and return monitoring data as a dictionary.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
         installs_hooks=[],
@@ -134,8 +138,9 @@ components:
     monitoring:
       docker_component:
         interval: 1
-"""
+""",
     )
+
     def __init__(self, config: DockerComponentMonitoringConfig):
         super().__init__(STRATEGY_NAME)
         self.config = config

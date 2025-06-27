@@ -27,18 +27,18 @@ Typical usage involves attaching the hook to test elements to generate structure
 reports for CI pipelines, debugging, and analytics.
 
 """
+
 from typing import ClassVar
 
 import yaml
 import pandas as pd
 
 from .....core.context.base import BaseContext
-from .....core.context.framework_element_hook_context import FrameworkElementHookContext
 from .....core.context.framework_element_contexts import StepContext
-from .....core.framework.report import Report
+from .....core.context.framework_element_hook_context import FrameworkElementHookContext
+from .....core.framework.report import Report, ReportAggregation
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
-
-from .....runner.registry import hook_registry, PluginMeta
+from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 
 from .standard_reporting_strategy import StandardReportingStrategy
 
@@ -133,6 +133,7 @@ class TestSummaryReportHook(StandardReportingStrategy):
         - Producing post-run analytics or artifacts for CI pipelines.
         - Debugging and traceability in complex test environments.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[FrameworkElementHookContext.__name__],
         installs_hooks=[],
@@ -146,8 +147,38 @@ hooks:
             template: {}
           destination:
             console: {}
+""",
+        report_meta=ReportMeta(
+            supported_aggregations=[ReportAggregation.NONE.value],
+            sample_output={
+                "Without Aggregation": """
+# Pipeline Perf Report
+
+## Metadata:
+...
+
+Results for: Test OTLP - Max Logs / Sec
+
+        Name: Deploy All
+        Status: success
+        Duration: 0.749699s
+        --------------------------
+
+                Name: CreateDockerNetwork (pre_deploy)
+                Status: skipped
+                Duration: 0.00363s
+                --------------------------
+
+                Name: TidyExistingContainer (pre_deploy)
+                Status: skipped
+                Duration: 0.002689s
+                --------------------------
+                ...
 """
+            },
+        ),
     )
+
     def __init__(
         self,
         config: TestSummaryConfig,

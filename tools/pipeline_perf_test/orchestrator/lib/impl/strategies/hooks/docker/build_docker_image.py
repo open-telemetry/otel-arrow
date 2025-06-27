@@ -16,6 +16,7 @@ configurations, log build progress, and handle errors via the Docker SDK for Pyt
 Exceptions:
 - Raises docker.errors.BuildError and docker.errors.APIError on build failures.
 """
+
 import os
 from typing import Optional, List, TYPE_CHECKING
 
@@ -24,7 +25,7 @@ from pydantic import Field
 
 from docker.errors import BuildError, APIError
 from .....core.context.base import ExecutionStatus, BaseContext
-from .....core.context import (ComponentHookContext, FrameworkElementHookContext)
+from .....core.context import ComponentHookContext, FrameworkElementHookContext
 from .....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from .....impl.component.managed_component import (
     ManagedComponent,
@@ -47,6 +48,7 @@ class BuildDockerImagesConfig(HookStrategyConfig):
         components (Optional[List[str]]): List of component names to build Docker images for.
             If empty or not specified, all applicable components in the context will be considered.
     """
+
     log_build: Optional[bool] = False
     components: Optional[List[str]] = Field(default_factory=list)
 
@@ -63,8 +65,12 @@ class BuildDockerImages(HookStrategy):
     Attributes:
         config (BuildDockerImagesConfig): Configuration for this build strategy.
     """
+
     PLUGIN_META = PluginMeta(
-        supported_contexts=[ComponentHookContext.__name__, FrameworkElementHookContext.__name__],
+        supported_contexts=[
+            ComponentHookContext.__name__,
+            FrameworkElementHookContext.__name__,
+        ],
         installs_hooks=[],
         cli_flags=[
             CliFlag(
@@ -86,7 +92,7 @@ hooks:
             - load-generator
             - backend-service
           log_build: false
-"""
+""",
     )
 
     def __init__(self, config: BuildDockerImagesConfig):
@@ -107,6 +113,7 @@ hooks:
             docker.errors.APIError: If there is an error communicating with the docker server.
         """
         from ....strategies.deployment.docker import DockerDeploymentConfig
+
         logger = ctx.get_logger(__name__)
         client = get_or_create_docker_client(ctx)
         args = ctx.get_suite().get_runtime("args")
@@ -141,6 +148,7 @@ class BuildDockerImageConfig(HookStrategyConfig):
         component (Optional[str]): The name of the component whose Docker image should be built.
             If not provided, the component may be inferred from context (e.g., in a step or hook).
     """
+
     log_build: Optional[bool] = False
     component: Optional[str] = None
 
@@ -163,8 +171,12 @@ class BuildDockerImage(HookStrategy):
     Args:
         config (BuildDockerImageConfig): The configuration object containing build options.
     """
+
     PLUGIN_META = PluginMeta(
-        supported_contexts=[ComponentHookContext.__name__, FrameworkElementHookContext.__name__],
+        supported_contexts=[
+            ComponentHookContext.__name__,
+            FrameworkElementHookContext.__name__,
+        ],
         installs_hooks=[],
         yaml_example="""
 hooks:
@@ -174,8 +186,9 @@ hooks:
           # Omit components to build any docker component with a build section.
           component: load-generator
           log_build: false
-"""
+""",
     )
+
     def __init__(self, config: BuildDockerImageConfig):
         self.config = config
 

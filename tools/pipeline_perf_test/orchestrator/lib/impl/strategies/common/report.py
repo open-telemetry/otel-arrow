@@ -16,7 +16,11 @@ from ....core.strategies.reporting_hook_strategy import (
 
 from ....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 
-from ....runner.registry import report_writer_registry, report_formatter_registry, PluginMeta
+from ....runner.registry import (
+    report_writer_registry,
+    report_formatter_registry,
+    PluginMeta,
+)
 
 
 @report_formatter_registry.register_config("noop")
@@ -35,6 +39,7 @@ class NoopFormatter(ReportFormatter):
 
     Useful as a placeholder or default when no output formatting is desired.
     """
+
     PLUGIN_META = PluginMeta(
         installs_hooks=[],
         supported_contexts=[],
@@ -49,8 +54,9 @@ hooks:
                 noop: {}
               destination:
                 console: {}
-"""
+""",
     )
+
     def __init__(self, config: NoopFormatterConfig):
         self.config = config
 
@@ -66,6 +72,7 @@ class JsonFormatterConfig(ReportFormatterConfig):
     Attributes:
         indent (Optional[int]): Number of spaces for JSON indentation. Defaults to 2.
     """
+
     indent: Optional[int] = 2
 
 
@@ -81,6 +88,7 @@ class JsonFormatter(ReportFormatter):
         format(report, _ctx) -> str:
             Converts the given report into a JSON-formatted string with the configured indentation.
     """
+
     PLUGIN_META = PluginMeta(
         installs_hooks=[],
         supported_contexts=[],
@@ -95,8 +103,9 @@ hooks:
                 json: {}
               destination:
                 console: {}
-"""
+""",
     )
+
     def __init__(self, config: JsonFormatterConfig):
         self.config = config
 
@@ -115,6 +124,7 @@ class TemplateFormatterConfig(ReportFormatterConfig):
             the template will be loaded from this file.
         string (Optional[str]): Optional inline template string. Used if `path` is not provided.
     """
+
     path: Optional[str] = None
     string: Optional[str] = None
 
@@ -134,6 +144,7 @@ class TemplateFormatter(ReportFormatter):
     Raises:
         FileNotFoundError: If a template file path is provided but the file does not exist.
     """
+
     PLUGIN_META = PluginMeta(
         installs_hooks=[],
         supported_contexts=[],
@@ -148,8 +159,9 @@ hooks:
                 template: {}
               destination:
                 console: {}
-"""
+""",
     )
+
     def __init__(self, config: TemplateFormatterConfig):
         self.config = config
 
@@ -218,6 +230,7 @@ class NoopDestination(DestinationWriter):
         write(formatted_data, ctx):
             Intentionally does nothing with the provided data.
     """
+
     PLUGIN_META = PluginMeta(
         installs_hooks=[],
         supported_contexts=[],
@@ -232,8 +245,9 @@ hooks:
                 template: {}
               destination:
                 noop: {}
-"""
+""",
     )
+
     def __init__(self, config: NoopDestinationConfig):
         self.config = config
 
@@ -254,6 +268,7 @@ class ConsoleDestinationConfig(DestinationWriterConfig):
         logger_name (Optional[str]): The name of the logger to use when use_logger is True.
             Defaults to "report".
     """
+
     use_logger: Optional[bool] = False
     log_level: Optional[LogLevel] = "warning"
     logger_name: Optional[str] = "report"
@@ -275,6 +290,7 @@ class ConsoleDestination(DestinationWriter):
         write(formatted_data, ctx):
             Outputs the formatted data to the console or logger.
     """
+
     PLUGIN_META = PluginMeta(
         installs_hooks=[],
         supported_contexts=[],
@@ -289,7 +305,9 @@ hooks:
                 template: {}
               destination:
                 console: {}
-""")
+""",
+    )
+
     def __init__(self, config: ConsoleDestinationConfig):
         self.config = config
 

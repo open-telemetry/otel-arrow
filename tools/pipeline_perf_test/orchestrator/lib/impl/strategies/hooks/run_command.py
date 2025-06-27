@@ -17,9 +17,10 @@ Warnings:
     This hook executes commands using `shell=True`, which can be a security risk if
     input is not properly sanitized. Use caution when including user-supplied strings.
 """
+
 from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
-from ....core.context import (ComponentHookContext, FrameworkElementHookContext)
+from ....core.context import ComponentHookContext, FrameworkElementHookContext
 from ....runner.registry import hook_registry, PluginMeta
 
 
@@ -43,8 +44,12 @@ class RunCommandHook(HookStrategy):
     This class is responsible for executing a shell command defined in its configuration
     when the hook is triggered.
     """
+
     PLUGIN_META = PluginMeta(
-        supported_contexts=[FrameworkElementHookContext.__name__, ComponentHookContext.__name__],
+        supported_contexts=[
+            FrameworkElementHookContext.__name__,
+            ComponentHookContext.__name__,
+        ],
         installs_hooks=[],
         yaml_example="""
 tests:
@@ -59,7 +64,7 @@ tests:
             pre:
               - run_command:
                   command: python somefile.py
-"""
+""",
     )
 
     def __init__(self, config: RunCommandConfig):

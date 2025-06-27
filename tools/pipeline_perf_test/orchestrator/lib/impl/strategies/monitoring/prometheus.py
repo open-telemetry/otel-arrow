@@ -34,6 +34,7 @@ class PrometheusMonitoringRuntime:
         thread (Optional[threading.Thread]): The thread instance executing the monitoring loop.
         stop_event (Optional[threading.Event]): Event used to signal the monitoring thread to stop.
     """
+
     type: ClassVar[Literal["prometheus_monitoring"]] = "prometheus_monitoring"
     thread: Optional[threading.Thread] = None
     stop_event: Optional[threading.Event] = None
@@ -51,6 +52,7 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
         include (Optional[List[str]]): List of metric names to explicitly include. If empty, all metrics are included by default.
         exclude (Optional[List[str]]): List of metric names to exclude from scraping.
     """
+
     endpoint: str
     interval: Optional[float] = 1.0
     count: Optional[int] = 0
@@ -72,6 +74,7 @@ class PrometheusMonitoringStrategy(MonitoringStrategy):
         stop(component, ctx): Stop the monitoring process.
         collect(component, ctx): Collect and return monitoring data as a dictionary.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
         installs_hooks=[],
@@ -85,7 +88,7 @@ components:
           - otelcol_exporter_send_failed_log_records_total
           - otelcol_exporter_sent_log_records_total
           - otelcol_process_cpu_seconds_total
-"""
+""",
     )
 
     def __init__(self, config: PrometheusMonitoringConfig):

@@ -30,6 +30,7 @@ during testing or production monitoring.
 Dependencies include pandas for data manipulation, pydantic for configuration
 modeling, and integration with telemetry clients and metric querying utilities.
 """
+
 from typing import ClassVar, Optional, List, Dict, Any
 
 import yaml
@@ -51,7 +52,7 @@ from .....core.helpers.metrics import (
 )
 from .....core.framework.report import Report, ReportAggregation
 from .....core.telemetry.telemetry_client import TelemetryClient
-from .....runner.registry import hook_registry, PluginMeta
+from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from ...common.events import get_start_end_event
 from .standard_reporting_strategy import StandardReportingStrategy
@@ -72,6 +73,7 @@ class PipelinePerfReportIncludesConfig(BaseModel):
         component_detail (Optional[bool]): Whether to include detailed information for each component.
             Defaults to False.
     """
+
     summary: Optional[bool] = True
     component_summary: Optional[bool] = True
     component_detail: Optional[bool] = False
@@ -93,6 +95,7 @@ class PipelinePerfReportConfig(StandardReportingHookStrategyConfig):
         include_sections (Optional[PipelinePerfReportIncludesConfig]): Sectional inclusion configuration
             for the report output. Defaults to including summary and component summary, excluding detail.
     """
+
     load_generator: str = "load-generator"
     system_under_test: str = "otel-collector"
     backend: str = "backend-service"
@@ -132,6 +135,7 @@ class PipelinePerfReport(Report):
             Returns a Jinja2 template string for rendering reports in the
             specified aggregation mode.
     """
+
     config: Optional[PipelinePerfReportConfig] = None
     REPORT_TYPE: ClassVar[str] = STRATEGY_NAME
 
@@ -163,6 +167,7 @@ class PipelinePerfReport(Report):
                 'summary', 'component_summary', and 'component_detail' for COMPARISON mode,
                 or by metric name for TIMESERIES mode.
         """
+
         def get_perf_test_component(
             component_name: str, config: PipelinePerfReportConfig
         ) -> str:
@@ -467,6 +472,7 @@ class PipelinePerfReportHook(StandardReportingStrategy):
         report_end (Optional[pd.Timestamp]): Timestamp marking the end of the report period.
         duration (Optional[float]): Duration of the report period in seconds.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[FrameworkElementHookContext.__name__],
         installs_hooks=[],
@@ -489,8 +495,57 @@ hooks:
               name: test_framework.test_end
               attributes:
                 test.name: Test OTLP - Max Logs / Sec
-"""
+""",
+        report_meta=ReportMeta(
+            supported_aggregations=[
+                ReportAggregation.COMPARISON.value,
+                ReportAggregation.NONE.value,
+            ],
+            sample_output={
+                "Without Aggregation": """
+# Pipeline Perf Report
+
+## Metadata:
+...
+
+## Summary:
+
+| metric_name                       |           value |
+|:----------------------------------|----------------:|
+| Total logs attempted              |      2.2475e+07 |
+| Logs successfully sent by loadgen |      2.2475e+07 |
+| Logs failed at loadgen            |      0          |
+| Logs received by backend          |      2.2475e+07 |
+| Logs lost in transit              |      0          |
+| Duration                          |     45.8919     |
+| Logs attempt rate (avg)           | 855638          |
+| Total logs lost                   |      0          |
+| Percentage of logs lost           |      0          |
+""",
+                "Comparison Aggregation": """
+# Pipeline Perf Comparison Report
+
+## Metadata:
+...
+
+## Summary:
+
+| metric_name                       |   PerfReprort - OTLP |   PerfReprort - OTAP |
+|:----------------------------------|---------------------:|---------------------:|
+| Duration                          |          45.8919     |          55.851      |
+| Logs attempt rate (avg)           |      855638          |      943012          |
+| Logs failed at loadgen            |           0          |           0          |
+| Logs lost in transit              |           0          |           0          |
+| Logs received by backend          |           2.2475e+07 |           2.5535e+07 |
+| Logs successfully sent by loadgen |           2.2475e+07 |           2.5535e+07 |
+| Percentage of logs lost           |           0          |           0          |
+| Total logs attempted              |           2.2475e+07 |           2.5535e+07 |
+| Total logs lost                   |           0          |           0          |
+""",
+            },
+        ),
     )
+
     def __init__(self, config: PipelinePerfReportConfig):
         super().__init__(config)
         self.config = config

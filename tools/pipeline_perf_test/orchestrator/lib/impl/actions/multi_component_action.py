@@ -59,6 +59,7 @@ class MultiComponentActionConfig(StepActionConfig):
         targets (Optional[list[str]]): A list of component names to which the action should apply.
             If empty or not provided, the action will apply to all components in the context.
     """
+
     phase: ComponentPhase
     targets: Optional[list[str]] = []
 
@@ -74,6 +75,7 @@ class MultiComponentAction(StepAction):
     Attributes:
         config (MultiComponentActionConfig): Configuration object specifying the phase and targets.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
         installs_hooks=[],
@@ -89,7 +91,7 @@ tests:
               - load-generator
               - otel-collector
               - backend-service
-"""
+""",
     )
 
     def __init__(self, config: MultiComponentActionConfig):

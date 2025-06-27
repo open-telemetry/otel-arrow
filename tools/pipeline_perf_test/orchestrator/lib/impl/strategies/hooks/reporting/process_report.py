@@ -9,7 +9,7 @@ from .....core.context import FrameworkElementHookContext
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from .....core.framework.report import Report, ReportAggregation
 from ...common.events import get_start_end_event
-from .....runner.registry import hook_registry, PluginMeta
+from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....core.telemetry.telemetry_client import TelemetryClient
 from .....core.helpers.report import group_by_populated_columns
 from .....core.helpers.metrics import (
@@ -42,6 +42,7 @@ class ProcessReportIncludesConfig(BaseModel):
     This model is typically nested under a parent reporting config to allow fine-grained
     control over the structure of a process-level report.
     """
+
     component_summary: Optional[bool] = True
     component_detail: Optional[bool] = False
 
@@ -138,6 +139,7 @@ class ProcessReport(Report):
         KeyError: if expected metric results are missing in the report results.
         ValueError: if unsupported aggregation mode is specified.
     """
+
     config: Optional[ProcessReportHookConfig] = None
     REPORT_TYPE: ClassVar[str] = STRATEGY_NAME
 
@@ -296,6 +298,7 @@ class ProcessReportHook(StandardReportingStrategy):
         RuntimeError: If `ctx` does not conform to expected context structure or
             if telemetry data cannot be resolved as expected.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[FrameworkElementHookContext.__name__],
         installs_hooks=[],
@@ -309,8 +312,63 @@ hooks:
         include_sections:
           component_summary: true
           component_detail: false
-"""
+""",
+        report_meta=ReportMeta(
+            supported_aggregations=[
+                ReportAggregation.COMPARISON.value,
+                ReportAggregation.NONE.value,
+            ],
+            sample_output={
+                "Without Aggregation": """
+# Process Report
+
+## Metadata:
+
+test.suite: Test OTLP Vs OTAP
+...
+
+## Process: otel-collector
+
+| metric_name                | delta     | max        | mean       | min        |
+|:---------------------------|:----------|:-----------|:-----------|:-----------|
+| container.network.rx       | 115.77 MB |            |            |            |
+| container.network.tx       | 473.57 MB |            |            |            |
+| container.cpu.usage        |           | 3.43 cores | 3.35 cores | 3.29 cores |
+| container.memory.usage     |           | 222.38 MB  | 213.00 MB  | 200.57 MB  |
+| rate(container.network.rx) |           | 14.77 MB/s | 14.54 MB/s | 14.08 MB/s |
+| rate(container.network.tx) |           | 60.57 MB/s | 59.47 MB/s | 57.77 MB/s |
+""",
+                "Comparison Aggregation": """
+# Process Comparison Report
+
+## Metadata:
+
+test.suite: Test OTLP Vs OTAP
+...
+
+## Process: otel-collector
+
+| metric_name                      | Process OTLP   | Process OTAP   |
+|:---------------------------------|:---------------|:---------------|
+| delta(container.network.rx)      | 434.61 MB      | 115.77 MB      |
+| delta(container.network.tx)      | 434.11 MB      | 473.57 MB      |
+| max(container.cpu.usage)         | 4.05 cores     | 3.43 cores     |
+| max(container.memory.usage)      | 128.87 MB      | 222.38 MB      |
+| max(rate(container.network.rx))  | 59.04 MB/s     | 14.77 MB/s     |
+| max(rate(container.network.tx))  | 58.78 MB/s     | 60.57 MB/s     |
+| mean(container.cpu.usage)        | 3.82 cores     | 3.35 cores     |
+| mean(container.memory.usage)     | 117.46 MB      | 213.00 MB      |
+| mean(rate(container.network.rx)) | 53.88 MB/s     | 14.54 MB/s     |
+| mean(rate(container.network.tx)) | 53.81 MB/s     | 59.47 MB/s     |
+| min(container.cpu.usage)         | 3.25 cores     | 3.29 cores     |
+| min(container.memory.usage)      | 111.25 MB      | 200.57 MB      |
+| min(rate(container.network.rx))  | 48.50 MB/s     | 14.08 MB/s     |
+| min(rate(container.network.tx))  | 48.25 MB/s     | 57.77 MB/s     |
+""",
+            },
+        ),
     )
+
     def __init__(self, config: ProcessReportHookConfig):
         super().__init__(config)
         self.config = config

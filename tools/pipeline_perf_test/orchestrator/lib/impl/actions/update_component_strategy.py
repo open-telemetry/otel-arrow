@@ -34,6 +34,7 @@ Raises:
     - AssertionError: If the target component is missing or not a ManagedComponent.
     - RuntimeError: If no applicable strategy was updated.
 """
+
 from pydantic import BaseModel
 from typing import Mapping, Optional
 
@@ -66,6 +67,7 @@ class UpdateComponentStrategyConfig(StepActionConfig):
         execution (Optional[dict]): Partial update for the component's execution strategy.
         monitoring (Optional[dict]): Partial update for the component's monitoring strategy.
     """
+
     target: str
     configuration: Optional[dict] = None
     deployment: Optional[dict] = None
@@ -85,6 +87,7 @@ class UpdateComponentStrategyAction(StepAction):
         config (UpdateComponentStrategyConfig): The configuration specifying the target
             component and the partial updates to apply.
     """
+
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
         installs_hooks=[],
@@ -100,7 +103,7 @@ tests:
               docker:
                 volumes:
                   - ./configs/test_batch_sizes/component_configs/collector-config-batch-10k.yaml:/etc/otel/collector-config.yaml:ro
-"""
+""",
     )
 
     def __init__(self, config: UpdateComponentStrategyConfig):
