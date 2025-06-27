@@ -82,7 +82,7 @@ between_events: ["observation_start", "observation_stop"]
 
 The hook strategy will retrieve the timestamps for these events and slice
 telemetry data accordingly. This enables highly focused analysis, such as
-“CPU usage during steady state” or “error rate during ramp-up.”
+"CPU usage during steady state" or "error rate during ramp-up."
 
 ### Output and Aggregation
 
@@ -152,7 +152,7 @@ class MyReportHook(StandardReportingStrategy): ...
 ### Best Practices
 
 - Use event-based time slicing to isolate key test phases.
-- Leverage telemetry and context objects — don't reinvent the wheel.
+- Leverage telemetry and context objects - don't reinvent the wheel.
 - Name your reports clearly for traceability and reproducibility.
 - Include metadata such as component versions, timestamps, and configuration.
 - Format outputs using consistent unit conversions and naming (bytes, cores, etc.).
