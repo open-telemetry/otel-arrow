@@ -332,7 +332,7 @@ impl Expression for ConditionalScalarExpression {
 
 #[cfg(test)]
 mod tests {
-    use crate::BooleanScalarExpression;
+    use crate::{BooleanScalarExpression, StringScalarExpression};
 
     use super::*;
 
@@ -445,6 +445,25 @@ mod tests {
                 )),
             ),
             Some(ValueType::Integer),
+        );
+
+        // Note: Type is not resolved here because true & false branches return
+        // different types.
+        run_test_success(
+            ConditionalScalarExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                ))),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+            ),
+            None,
         );
 
         run_test_success(
