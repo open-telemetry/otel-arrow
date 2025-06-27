@@ -144,8 +144,7 @@ pub fn traces_from(traces_otap_batch: OtapBatch) -> Result<ExportTraceServiceReq
                 trace_id_bytes.len() == 16,
                 error::InvalidTraceIdSnafu {
                     message: format!(
-                        "span_id = {}, index = {}, trace_id = {:?}",
-                        span_id, idx, trace_id_bytes
+                        "span_id = {span_id}, index = {idx}, trace_id = {trace_id_bytes:?}"
                     ),
                 }
             );
@@ -157,8 +156,7 @@ pub fn traces_from(traces_otap_batch: OtapBatch) -> Result<ExportTraceServiceReq
                 span_id_bytes.len() == 8,
                 error::InvalidSpanIdSnafu {
                     message: format!(
-                        "span_id = {}, index = {}, span_id = {:?}",
-                        span_id, idx, span_id_bytes
+                        "span_id = {span_id}, index = {idx}, span_id = {span_id_bytes:?}"
                     ),
                 }
             );
@@ -170,8 +168,7 @@ pub fn traces_from(traces_otap_batch: OtapBatch) -> Result<ExportTraceServiceReq
                 parent_span_id_bytes.len() == 8,
                 error::InvalidSpanIdSnafu {
                     message: format!(
-                        "span_id = {}, index = {}, parent_span_id = {:?}",
-                        span_id, idx, parent_span_id_bytes
+                        "span_id = {span_id}, index = {idx}, parent_span_id = {parent_span_id_bytes:?}"
                     ),
                 }
             );

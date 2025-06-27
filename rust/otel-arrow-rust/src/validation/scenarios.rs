@@ -32,7 +32,7 @@ pub async fn run_single_round_trip_test<I, O, F>(
     match run_single_round_trip::<I, O, F>(create_request, expected_error).await {
         Ok(_) => {}
         Err(err) => {
-            panic!("Test failed: {:?}", err);
+            panic!("Test failed: {err:?}");
         }
     }
 }
