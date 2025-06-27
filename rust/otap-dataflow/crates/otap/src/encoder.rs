@@ -57,7 +57,7 @@ where
 
             let (scope_name, scope_version, scope_dropped_attributes_count) =
                 if let Some(scope) = scope.as_ref() {
-                    // since there is an instrumentations cope present, append the the attributes
+                    // since there is an instrumentations scope present, append the attributes
                     for kv in scope.attributes() {
                         scope_attrs.append_parent_id(&curr_scope_id);
                         append_attribute_value(&mut scope_attrs, &kv)?;
