@@ -41,12 +41,11 @@ pub(crate) fn parse_extend_expression(
                     set_expressions.push(assignment_expression);
                 } else {
                     panic!(
-                        "Unexpected transformation in extend_expression: {:?}",
-                        assignment_expression
+                        "Unexpected transformation in extend_expression: {assignment_expression:?}"
                     )
                 }
             }
-            _ => panic!("Unexpected rule in extend_expression: {}", rule),
+            _ => panic!("Unexpected rule in extend_expression: {rule}"),
         }
     }
 
@@ -121,8 +120,7 @@ pub(crate) fn parse_project_expression(
                     expressions.push(assignment_expression);
                 } else {
                     panic!(
-                        "Unexpected transformation in project_expression: {:?}",
-                        assignment_expression
+                        "Unexpected transformation in project_expression: {assignment_expression:?}"
                     )
                 }
             }
@@ -161,7 +159,7 @@ pub(crate) fn parse_project_expression(
                     ));
                 }
             }
-            _ => panic!("Unexpected rule in project_expression: {}", rule),
+            _ => panic!("Unexpected rule in project_expression: {rule}"),
         }
     }
 
@@ -271,7 +269,7 @@ pub(crate) fn parse_project_keep_expression(
                     ));
                 }
             }
-            _ => panic!("Unexpected rule in project_keep_expression: {}", rule),
+            _ => panic!("Unexpected rule in project_keep_expression: {rule}"),
         }
     }
 
@@ -379,7 +377,7 @@ pub(crate) fn parse_project_away_expression(
                     ));
                 }
             }
-            _ => panic!("Unexpected rule in project_away_expression: {}", rule),
+            _ => panic!("Unexpected rule in project_away_expression: {rule}"),
         }
     }
 
@@ -411,7 +409,7 @@ pub(crate) fn parse_where_expression(
 
     let predicate = match where_rule.as_rule() {
         Rule::logical_expression => parse_logical_expression(where_rule, state)?,
-        _ => panic!("Unexpected rule in where_expression: {}", where_rule),
+        _ => panic!("Unexpected rule in where_expression: {where_rule}"),
     };
 
     // Note: KQL "where" describes data to retain. Query engine "discard"
@@ -459,7 +457,7 @@ pub(crate) fn parse_tabular_expression(
                 parse_project_away_expression(rule, state)?,
             )),
             Rule::where_expression => expressions.push(parse_where_expression(rule, state)?),
-            _ => panic!("Unexpected rule in tabular_expression: {}", rule),
+            _ => panic!("Unexpected rule in tabular_expression: {rule}"),
         }
     }
 

@@ -23,10 +23,7 @@ pub(crate) fn parse_assignment_expression(
         // Note: Root-level static accessors are not valid in an assignment
         // expression so allow_root_scalar=false is passed here.
         Rule::accessor_expression => parse_accessor_expression(destination_rule, state, false)?,
-        _ => panic!(
-            "Unexpected rule in assignment_expression: {}",
-            destination_rule
-        ),
+        _ => panic!("Unexpected rule in assignment_expression: {destination_rule}"),
     };
 
     let destination = match accessor {
@@ -59,7 +56,7 @@ pub(crate) fn parse_assignment_expression(
 
     let scalar = match source_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(source_rule, state)?,
-        _ => panic!("Unexpected rule in assignment_expression: {}", source_rule),
+        _ => panic!("Unexpected rule in assignment_expression: {source_rule}"),
     };
 
     Ok(TransformExpression::Set(SetTransformExpression::new(

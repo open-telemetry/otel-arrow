@@ -46,7 +46,7 @@ pub(crate) fn parse_query(
                 }
             }
             Rule::EOI => {}
-            _ => panic!("Unexpected rule in query: {}", rule),
+            _ => panic!("Unexpected rule in query: {rule}"),
         }
     }
 
