@@ -108,8 +108,7 @@ impl ValueExpressionInternal for ResolveFromAttachedValueExpression {
                         execution_context.add_message_for_expression(
                             self,
                             ExpressionMessage::info(format!(
-                                "ResolveFromAttachedValueExpression resolved: {:?}",
-                                any_value
+                                "ResolveFromAttachedValueExpression resolved: {any_value:?}"
                             )),
                         );
                     }

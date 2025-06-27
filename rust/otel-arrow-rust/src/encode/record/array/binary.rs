@@ -108,7 +108,7 @@ where
             }
             // safety: shouldn't happen. The only error type append should
             // return should be for dictionary overflows
-            Err(e) => panic!("unexpected error type appending to dictionary {}", e),
+            Err(e) => panic!("unexpected error type appending to dictionary {e}"),
         }
     }
 }
@@ -234,7 +234,7 @@ mod test {
         for i in 0..255 {
             let _ = DictionaryArrayAppend::append_value(
                 &mut dict_builder,
-                &format!("{}", i).encode_to_vec(),
+                &format!("{i}").encode_to_vec(),
             )
             .unwrap();
         }

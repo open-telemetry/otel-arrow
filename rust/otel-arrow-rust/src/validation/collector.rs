@@ -34,7 +34,7 @@ pub static COLLECTOR_PATH: LazyLock<String> = LazyLock::new(|| {
     let path = env::var("OTEL_COLLECTOR_PATH").unwrap_or(default_path.to_string());
 
     if !Path::new(&path).exists() {
-        eprintln!("Warning: OpenTelemetry Collector not found at '{}'.", path);
+        eprintln!("Warning: OpenTelemetry Collector not found at '{path}'.");
         eprintln!("Set OTEL_COLLECTOR_PATH environment variable to the correct path.");
     }
 
@@ -55,7 +55,7 @@ where
         let mut lines = BufReader::new(reader).lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!("[{}] {}", prefix, line);
+            eprintln!("[{prefix}] {line}");
 
             // We use Option::take() pattern here to avoid moving out
             // of a shared reference.  The oneshot::Sender::send()
@@ -90,7 +90,7 @@ impl CollectorProcess {
             use nix::sys::signal::{Signal, kill};
             use nix::unistd::Pid;
             let pid = self.process.id().unwrap();
-            eprintln!("Sending SIGTERM to collector process {}", pid);
+            eprintln!("Sending SIGTERM to collector process {pid}");
 
             kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
                 .context(error::SignalNotDeliveredSnafu)?;
@@ -123,7 +123,7 @@ impl CollectorProcess {
         // Create a unique temporary config file for the collector
         // with a random identifier to prevent collision.
         let random_id = format!("{:016x}", rand::random::<u64>());
-        let config_path = env::temp_dir().join(format!("otel_collector_config_{}.yaml", random_id));
+        let config_path = env::temp_dir().join(format!("otel_collector_config_{random_id}.yaml"));
 
         // Write the config to the file
         let mut file =
@@ -295,7 +295,7 @@ where
     let collector = CollectorProcess::start(COLLECTOR_PATH.clone(), &collector_config).await?;
 
     // Create client to send test data
-    let client_endpoint = format!("http://127.0.0.1:{}", receiver_port);
+    let client_endpoint = format!("http://127.0.0.1:{receiver_port}");
     let client = I::connect_client(client_endpoint).await?;
 
     // Create the test context

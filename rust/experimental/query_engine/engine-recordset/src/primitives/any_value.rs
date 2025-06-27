@@ -176,7 +176,7 @@ impl AnyValue {
 
         output.push_str(&padding);
         output.push_str(heading);
-        output.push_str(format!("{:?}", value).as_str());
+        output.push_str(format!("{value:?}").as_str());
         output.push('\n');
     }
 

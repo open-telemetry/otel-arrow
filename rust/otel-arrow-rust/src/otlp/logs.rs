@@ -274,8 +274,7 @@ pub fn logs_from(logs_otap_batch: OtapBatch) -> Result<ExportLogsServiceRequest>
                 trace_id_bytes.len() == 16,
                 error::InvalidTraceIdSnafu {
                     message: format!(
-                        "log_id = {}, index = {}, trace_id = {:?}",
-                        log_id, idx, trace_id_bytes
+                        "log_id = {log_id}, index = {idx}, trace_id = {trace_id_bytes:?}"
                     ),
                 }
             );
@@ -287,8 +286,7 @@ pub fn logs_from(logs_otap_batch: OtapBatch) -> Result<ExportLogsServiceRequest>
                 span_id_bytes.len() == 8,
                 error::InvalidSpanIdSnafu {
                     message: format!(
-                        "log_id = {}, index = {}, span_id = {:?}",
-                        log_id, idx, span_id_bytes
+                        "log_id = {log_id}, index = {idx}, span_id = {span_id_bytes:?}"
                     ),
                 }
             );

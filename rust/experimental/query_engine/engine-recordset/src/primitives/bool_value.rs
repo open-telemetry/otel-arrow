@@ -45,7 +45,7 @@ impl BoolValueData {
         execution_context.add_message_for_expression_id(
             expression_id,
             ExpressionMessage::warn(
-                format!("AnyValue '{:?}' provided as right side of bool equality comparison could not be convered into a bool", other)));
+                format!("AnyValue '{other:?}' provided as right side of bool equality comparison could not be convered into a bool")));
 
         false
     }

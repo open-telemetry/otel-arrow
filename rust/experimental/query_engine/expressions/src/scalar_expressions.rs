@@ -201,10 +201,7 @@ impl NegateScalarExpression {
                 }
                 StaticScalarExpression::Double(i) => {
                     return Ok(Some(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(
-                            self.query_location.clone(),
-                            i.get_value() * -1.0,
-                        ),
+                        DoubleScalarExpression::new(self.query_location.clone(), -i.get_value()),
                     )));
                 }
                 _ => {

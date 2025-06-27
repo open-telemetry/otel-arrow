@@ -103,8 +103,7 @@ impl ValueExpressionInternal for VariableValueExpression {
                 execution_context.add_message_for_expression(
                     self,
                     ExpressionMessage::info(format!(
-                        "VariableValueExpression resolved: {:?}",
-                        any_value
+                        "VariableValueExpression resolved: {any_value:?}"
                     )),
                 );
 
@@ -154,8 +153,7 @@ impl MutatableValueExpressionInternal for VariableValueExpression {
                 execution_context.add_message_for_expression(
                     self,
                     ExpressionMessage::info(format!(
-                        "VariableValueExpression replaced value: {:?}",
-                        old_value
+                        "VariableValueExpression replaced value: {old_value:?}"
                     )),
                 );
 
@@ -210,8 +208,7 @@ impl MutatableValueExpressionInternal for VariableValueExpression {
                 execution_context.add_message_for_expression(
                     self,
                     ExpressionMessage::info(format!(
-                        "VariableValueExpression removed value: {:?}",
-                        any_value
+                        "VariableValueExpression removed value: {any_value:?}"
                     )),
                 );
 

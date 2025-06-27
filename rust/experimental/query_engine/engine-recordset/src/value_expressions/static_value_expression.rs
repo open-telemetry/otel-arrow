@@ -72,7 +72,7 @@ impl ValueExpressionInternal for StaticValueExpression {
 
         execution_context.add_message_for_expression(
             self,
-            ExpressionMessage::info(format!("StaticValueExpression resolved: {:?}", value)),
+            ExpressionMessage::info(format!("StaticValueExpression resolved: {value:?}")),
         );
 
         action.invoke_once(DataRecordReadAnyValueResult::Found(value));

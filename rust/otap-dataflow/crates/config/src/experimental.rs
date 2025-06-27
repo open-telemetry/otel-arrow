@@ -314,7 +314,7 @@ impl PipelineDag {
         let chain_output = last_node.output_type;
 
         let chain_id = format!("chain({})", chain.join("+"));
-        let chain_config = Value::String(format!("Merged chain: {:?}", chain));
+        let chain_config = Value::String(format!("Merged chain: {chain:?}"));
 
         let chain_node = Node {
             id: chain_id.clone(),

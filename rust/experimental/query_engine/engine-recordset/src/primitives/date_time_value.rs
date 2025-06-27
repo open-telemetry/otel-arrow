@@ -69,7 +69,7 @@ impl DateTimeValueData {
         execution_context.add_message_for_expression_id(
             expression_id,
             ExpressionMessage::warn(
-                format!("AnyValue '{:?}' provided as right side of date time compare expression could not be convered into a date time", other)));
+                format!("AnyValue '{other:?}' provided as right side of date time compare expression could not be convered into a date time")));
 
         return Err(Error::new_expression_not_supported(
             expression_id,
@@ -112,7 +112,7 @@ impl DateTimeValueData {
         execution_context.add_message_for_expression_id(
             expression_id,
             ExpressionMessage::warn(
-                format!("AnyValue '{:?}' provided as right side of date time equality expression could not be convered into a date time", other)));
+                format!("AnyValue '{other:?}' provided as right side of date time equality expression could not be convered into a date time")));
 
         false
     }

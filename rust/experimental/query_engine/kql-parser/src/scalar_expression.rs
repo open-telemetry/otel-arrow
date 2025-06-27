@@ -36,7 +36,7 @@ pub(crate) fn parse_scalar_expression(
         }
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
-        _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
+        _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 
     if matches!(&scalar, ScalarExpression::Static(_)) {

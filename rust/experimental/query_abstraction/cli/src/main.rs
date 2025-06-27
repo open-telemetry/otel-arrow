@@ -19,10 +19,10 @@ fn main() {
             let result = KqlPlugin::process_query(input);
             match result {
                 Ok(query) => {
-                    println!("Parsed KQL query:\n{:?}", query);
+                    println!("Parsed KQL query:\n{query:?}");
                 }
                 Err(e) => {
-                    eprintln!("Error parsing KQL query:\n{}", e);
+                    eprintln!("Error parsing KQL query:\n{e}");
                     std::process::exit(1);
                 }
             }
@@ -31,10 +31,10 @@ fn main() {
             let result = OttlPlugin::process_query(input);
             match result {
                 Ok(query) => {
-                    println!("Parsed OTTL query: {:?}", query);
+                    println!("Parsed OTTL query: {query:?}");
                 }
                 Err(e) => {
-                    eprintln!("Error parsing OTTL query: {}", e);
+                    eprintln!("Error parsing OTTL query: {e}");
                     std::process::exit(1);
                 }
             }

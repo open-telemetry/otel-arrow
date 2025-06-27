@@ -19,7 +19,7 @@ pub struct PartitionAttribute {
 impl std::fmt::Display for PartitionAttributeValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PartitionAttributeValue::String(value) => write!(f, "{}", value),
+            PartitionAttributeValue::String(value) => write!(f, "{value}"),
         }
     }
 }
@@ -137,6 +137,6 @@ pub mod test {
     #[test]
     fn test_partition_display_trait() {
         let attr_val = PartitionAttributeValue::String("hello".to_string());
-        assert_eq!(format!("{}", attr_val), "hello");
+        assert_eq!(format!("{attr_val}"), "hello");
     }
 }

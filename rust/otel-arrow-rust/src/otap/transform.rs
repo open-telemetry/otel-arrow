@@ -402,7 +402,7 @@ fn replace_materialized_parent_id_column(
 
     RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| {
         error::UnexpectedRecordBatchStateSnafu {
-            reason: format!("could not replace parent id {}", e),
+            reason: format!("could not replace parent id {e}"),
         }
         .build()
     })

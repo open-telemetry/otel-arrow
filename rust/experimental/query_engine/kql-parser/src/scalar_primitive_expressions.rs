@@ -195,7 +195,7 @@ pub(crate) fn parse_datetime_expression(
                 )),
             }
         }
-        _ => panic!("Unexpected rule in datetime_expression: {}", datetime_rule),
+        _ => panic!("Unexpected rule in datetime_expression: {datetime_rule}"),
     }
 }
 
@@ -220,7 +220,7 @@ pub(crate) fn parse_real_expression(
             )),
             _ => panic!("Unexpected type returned from parse_integer_literal"),
         },
-        _ => panic!("Unexpected rule in real_expression: {}", real_rule),
+        _ => panic!("Unexpected rule in real_expression: {real_rule}"),
     }
 }
 
@@ -273,8 +273,7 @@ pub(crate) fn parse_accessor_expression(
                         return Err(ParserError::SyntaxError(
                             v.get_query_location().clone(),
                             format!(
-                                "'{}' value for array index is too large to fit into a 32bit value",
-                                i
+                                "'{i}' value for array index is too large to fit into a 32bit value"
                             ),
                         ));
                     }
@@ -334,7 +333,7 @@ pub(crate) fn parse_accessor_expression(
             Rule::minus_token => {
                 negate_location = Some(to_query_location(&pair));
             }
-            _ => panic!("Unexpected rule in accessor_expression: {}", pair),
+            _ => panic!("Unexpected rule in accessor_expression: {pair}"),
         }
     }
 

@@ -57,7 +57,7 @@ impl LongValueData {
         execution_context.add_message_for_expression_id(
             expression_id,
             ExpressionMessage::warn(
-                format!("AnyValue '{:?}' provided as right side of double compare expression could not be convered into a double", other)));
+                format!("AnyValue '{other:?}' provided as right side of double compare expression could not be convered into a double")));
 
         return Err(Error::new_expression_not_supported(
             expression_id,
@@ -100,7 +100,7 @@ impl LongValueData {
         execution_context.add_message_for_expression_id(
             expression_id,
             ExpressionMessage::warn(
-                format!("AnyValue '{:?}' provided as right side of long equality expression could not be convered into a long", other)));
+                format!("AnyValue '{other:?}' provided as right side of long equality expression could not be convered into a long")));
 
         false
     }

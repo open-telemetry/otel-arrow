@@ -43,7 +43,7 @@ impl StringValueData {
                 execution_context.add_message_for_expression_id(
                     expression_id,
                     ExpressionMessage::warn(
-                        format!("AnyValue '{:?}' provided as right side of string equality expression could not be convered into a string", other)));
+                        format!("AnyValue '{other:?}' provided as right side of string equality expression could not be convered into a string")));
             }
             else {
                 let self_value: &str = &self.value;

@@ -21,10 +21,7 @@ pub(crate) fn parse_assignment_expression(
 
     let accessor = match destination_rule.as_rule() {
         Rule::accessor_expression => parse_accessor_expression(destination_rule, state)?,
-        _ => panic!(
-            "Unexpected rule in assignment_expression: {}",
-            destination_rule
-        ),
+        _ => panic!("Unexpected rule in assignment_expression: {destination_rule}"),
     };
 
     let destination = match accessor {
@@ -57,7 +54,7 @@ pub(crate) fn parse_assignment_expression(
 
     let scalar = match source_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(source_rule, state)?,
-        _ => panic!("Unexpected rule in assignment_expression: {}", source_rule),
+        _ => panic!("Unexpected rule in assignment_expression: {source_rule}"),
     };
 
     Ok(TransformExpression::Set(SetTransformExpression::new(

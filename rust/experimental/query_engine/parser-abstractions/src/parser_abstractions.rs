@@ -22,10 +22,9 @@ pub fn parse_standard_bool_literal<R: RuleType>(
     let value = match rule_name.as_str() {
         "true_literal" => true,
         "false_literal" => false,
-        _ => panic!(
-            "Unexpected rule in bool_literal_rule: {} (rule: {})",
-            bool_literal_rule, rule_name
-        ),
+        _ => {
+            panic!("Unexpected rule in bool_literal_rule: {bool_literal_rule} (rule: {rule_name})")
+        }
     };
 
     StaticScalarExpression::Boolean(BooleanScalarExpression::new(query_location, value))
