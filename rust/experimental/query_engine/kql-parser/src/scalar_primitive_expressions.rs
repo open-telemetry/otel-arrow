@@ -334,10 +334,20 @@ pub(crate) fn parse_accessor_expression(
                         });
                     }
                 } else {
-                    let value = scalar.to_value();
+                    let value_type_result = scalar.try_resolve_value_type();
+                    if let Err(e) = value_type_result {
+                        return Err(ParserError::SyntaxError(
+                            e.get_query_location().clone(),
+                            e.to_string(),
+                        ));
+                    }
+
+                    let value_type = value_type_result.unwrap();
 
                     if negate_location.is_some() {
-                        if value.is_some() && !matches!(value, Some(Value::Integer(_))) {
+                        if let Some(t) = value_type
+                            && t != ValueType::Integer
+                        {
                             return Err(ParserError::QueryLanguageDiagnostic {
                                 location: scalar.get_query_location().clone(),
                                 diagnostic_id: "KS141",
@@ -353,9 +363,9 @@ pub(crate) fn parse_accessor_expression(
                         ));
                         negate_location = None;
                     } else {
-                        if value.is_some()
-                            && !matches!(value, Some(Value::Integer(_)))
-                            && !matches!(value, Some(Value::String(_)))
+                        if let Some(t) = value_type
+                            && t != ValueType::Integer
+                            && t != ValueType::String
                         {
                             return Err(ParserError::QueryLanguageDiagnostic {
                                 location: scalar.get_query_location().clone(),
