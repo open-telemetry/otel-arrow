@@ -30,7 +30,32 @@ This module centralizes and standardizes how extensible elements are registered 
 resolved dynamically by type name throughout the framework.
 """
 
-from typing import Dict, Type, Callable, TypeVar
+from dataclasses import dataclass
+from typing import Dict, Type, Callable, TypeVar, Optional, Any
+
+from ..cli.plugin_api import register_argument_hook, get_or_create_arg_group
+
+
+@dataclass
+class CliFlag:
+    flag: str  # e.g. "--docker.build-containers"
+    dest: str # e.g. docker_build_containers
+    help: str
+    group: str # e.g. "Docker Options"
+    action: Optional[str] = None  # e.g. "store_true"
+    default: Optional[Any] = None
+    required: bool = False
+    metavar: Optional[str] = None
+
+
+@dataclass
+class PluginMeta:
+    """Structured metadata for registered plugins."""
+    supported_contexts: Optional[list[str]]
+    yaml_example: Optional[str]
+    installs_hooks: list[str]
+    notes: Optional[str] = None
+    cli_flags: Optional[list[CliFlag]] = None
 
 
 T = TypeVar("T")
@@ -66,6 +91,32 @@ class ElementRegistry:
 
         def decorator(cls: Type[T]) -> Type[T]:
             self.element[type_name] = cls
+
+            plugin_meta = getattr(cls, "PLUGIN_META", None)
+            if plugin_meta and getattr(plugin_meta, "cli_flags", None):
+
+                def add_args(parser):
+                    for flag in plugin_meta.cli_flags:
+                        group = get_or_create_arg_group(
+                            parser,
+                            group_name=flag.group
+                        )
+
+                        kwargs = {
+                            "dest": flag.dest,
+                            "help": flag.help,
+                            "default": flag.default,
+                            "required": flag.required,
+                        }
+                        if flag.action:
+                            kwargs["action"] = flag.action
+                        if flag.metavar:
+                            kwargs["metavar"] = flag.metavar
+
+                        group.add_argument(flag.flag, **kwargs)
+
+                register_argument_hook(add_args)
+
             return cls
 
         return decorator
@@ -96,7 +147,7 @@ class StrategyRegistry(ElementRegistry):
     """
 
 
-class TestStepActionRegistry(ElementRegistry):
+class StepActionRegistry(ElementRegistry):
     """
     Registry for mapping strategy and configuration type names to their classes.
     """
@@ -105,8 +156,9 @@ class TestStepActionRegistry(ElementRegistry):
 # Domain-specific registries for different strategy categories
 deployment_registry = StrategyRegistry()
 monitoring_registry = StrategyRegistry()
-reporting_registry = StrategyRegistry()
 configuration_registry = StrategyRegistry()
 execution_registry = StrategyRegistry()
 hook_registry = StrategyRegistry()
-test_step_action_registry = TestStepActionRegistry()
+step_action_registry = StepActionRegistry()
+report_writer_registry = StrategyRegistry()
+report_formatter_registry = StrategyRegistry()
