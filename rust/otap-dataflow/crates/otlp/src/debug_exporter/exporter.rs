@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the OTAP exporter node
+//! Implementation of the OTLP Debug exporter node
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::LOCAL_EXPORTERS;
-use crate::debug_exporter::marshaler::{NormalOTLPMarshaler, PDataMarshaler};
-use crate::debug_exporter::verbosity::Verbosity;
+use crate::debug_exporter::config::{Config, Verbosity};
+use crate::debug_exporter::marshaler::{
+    DetailedOTLPMarshaler, NormalOTLPMarshaler, PDataMarshaler,
+};
 use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::{
     collector::{
@@ -24,10 +26,12 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::{LocalExporterFactory, exporter as local};
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use serde_json::Value;
-
+use std::fs::OpenOptions;
+use std::io::Write;
 /// Exporter that outputs all data received to stdout
 struct DebugExporter {
-    verbosity: Verbosity, // writer: Box<dyn std::io::Write + Sync>,
+    config: Config,
+    output: Option<String>,
 }
 
 /// Declares the Debug exporter as a local exporter factory
@@ -45,16 +49,17 @@ impl DebugExporter {
     /// Creates a new Debug exporter
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(verbosity: Verbosity) -> Self {
-        DebugExporter { verbosity }
+    pub fn new(config: Config, output: Option<String>) -> Self {
+        DebugExporter { config, output }
     }
 
-    /// Creates a new DebugExporter from a configuration object
+    // Creates a new DebugExporter from a configuration object
     #[must_use]
     pub fn from_config(_config: &Value) -> Self {
         // ToDo: implement config parsing
         DebugExporter {
-            verbosity: Verbosity::Detailed,
+            config: Config::default(),
+            output: None,
         }
     }
 }
@@ -71,24 +76,28 @@ impl local::Exporter<OTLPData> for DebugExporter {
         let mut profile_count: u64 = 0;
         let mut span_count: u64 = 0;
         let mut log_count: u64 = 0;
-        let mut marshaler = NormalOTLPMarshaler::default();
-        // if verbosity == Verbosity::Normal {
-        //     marshaler = NormalOTLPMarshaler;
-        // } else if verbosity == Verbosity::Detailed {
-        //     marshaler = DetailedOTLPMarshaler;
-        // }
-
+        let marshaler: Box<dyn PDataMarshaler> = if self.config.verbosity() == Verbosity::Normal {
+            Box::new(NormalOTLPMarshaler)
+        } else {
+            Box::new(DetailedOTLPMarshaler)
+        };
+        let mut writer = get_writer(self.output);
         // Loop until a Shutdown event is received.
         loop {
             match msg_chan.recv().await? {
                 // handle control messages
                 Message::Control(ControlMsg::TimerTick { .. }) => {
-                    println!("Timer tick received");
-                    // print count of messages received
-                    println!("Count of metrics received {}", metric_count);
-                    println!("Count of spans received {}", span_count);
-                    println!("Count of profiles received {}", profile_count);
-                    println!("Count of logs received {}", log_count);
+                    _ = writeln!(writer, "Timer tick received");
+
+                    // output count of messages received
+                    _ = writeln!(writer, "Count of metrics objects received {}", metric_count);
+                    _ = writeln!(writer, "Count of spans objects received {}", span_count);
+                    _ = writeln!(
+                        writer,
+                        "Count of profiles objects received {}",
+                        profile_count
+                    );
+                    _ = writeln!(writer, "Count of logs objects received {}", log_count);
 
                     metric_count = 0;
                     span_count = 0;
@@ -96,12 +105,12 @@ impl local::Exporter<OTLPData> for DebugExporter {
                     profile_count = 0;
                 }
                 Message::Control(ControlMsg::Config { .. }) => {
-                    println!("Config message received");
+                    _ = writeln!(writer, "Config message received");
                 }
                 // shutdown the exporter
                 Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
-                    println!("Shutdown message received");
+                    _ = writeln!(writer, "Shutdown message received");
                     break;
                 }
                 //send data
@@ -111,20 +120,20 @@ impl local::Exporter<OTLPData> for DebugExporter {
                         // ToDo: Add Ack/Nack handling, send a signal that data has been exported
                         // check what message
                         OTLPData::Metrics(req) => {
-                            push_metric(&self.verbosity, req, &marshaler);
+                            push_metric(&self.config.verbosity(), req, &marshaler, &mut writer);
                             metric_count += 1;
                         }
                         OTLPData::Logs(req) => {
-                            push_log(&self.verbosity, req, &marshaler);
+                            push_log(&self.config.verbosity(), req, &marshaler, &mut writer);
                             log_count += 1;
                         }
                         OTLPData::Traces(req) => {
-                            push_trace(&self.verbosity, req, &marshaler);
+                            push_trace(&self.config.verbosity(), req, &marshaler, &mut writer);
                             span_count += 1;
                         }
                         OTLPData::Profiles(req) => {
-                            push_profile(&self.verbosity, req, &marshaler);
-                            profile_count += 1;
+                            //   push_profile(&self.verbosity, req, &marshaler, &writer);
+                            //   profile_count += 1;
                         }
                     }
                 }
@@ -140,10 +149,26 @@ impl local::Exporter<OTLPData> for DebugExporter {
     }
 }
 
+/// determine if output goes to console or to a file
+fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
+    match output_file {
+        Some(file_name) => Box::new(
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(file_name)
+                .expect("could not open output file"),
+        ),
+        None => Box::new(std::io::stdout()),
+    }
+}
+
 fn push_metric(
     verbosity: &Verbosity,
     metric_request: ExportMetricsServiceRequest,
-    marshaler: &dyn PDataMarshaler,
+    marshaler: &Box<dyn PDataMarshaler>,
+    writer: &mut impl Write,
 ) {
     // collect number of resource metrics
     // collect number of metrics
@@ -178,41 +203,52 @@ fn push_metric(
         }
     }
 
-    println!("Received {} resource metrics", resouce_metrics);
-    println!("Received {} metrics", metrics);
-    println!("Received {} data points", data_points);
+    _ = writeln!(writer, "Received {} resource metrics", resouce_metrics);
+    _ = writeln!(writer, "Received {} metrics", metrics);
+    _ = writeln!(writer, "Received {} data points", data_points);
 
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_metrics(metric_request);
-    println!("{}", report);
+    _ = writeln!(writer, "{}", report);
     return;
 }
 
 fn push_trace(
     verbosity: &Verbosity,
     trace_request: ExportTraceServiceRequest,
-    marshaler: &dyn PDataMarshaler,
+    marshaler: &Box<dyn PDataMarshaler>,
+    writer: &mut impl Write,
 ) {
     // collect number of resource spans
     // collect number of spans
     let resource_spans = trace_request.resource_spans.len();
     let mut spans = 0;
+    let mut events = 0;
+    let mut links = 0;
     for resource_span in &trace_request.resource_spans {
         for scope_span in &resource_span.scope_spans {
             spans += scope_span.spans.len();
+            for span in &scope_span.spans {
+                events += span.events.len();
+                links += span.links.len();
+            }
         }
     }
-    println!("Received {} resource spans", resource_spans);
-    println!("Received {} spans", spans);
+
+    _ = writeln!(writer, "Received {} resource spans", resource_spans);
+    _ = writeln!(writer, "Received {} spans", spans);
+    _ = writeln!(writer, "Received {} events", events);
+    _ = writeln!(writer, "Received {} links", links);
+
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_traces(trace_request);
-    println!("{}", report);
+    _ = writeln!(writer, "{}", report);
 
     return;
 }
@@ -220,24 +256,32 @@ fn push_trace(
 fn push_log(
     verbosity: &Verbosity,
     log_request: ExportLogsServiceRequest,
-    marshaler: &dyn PDataMarshaler,
+    marshaler: &Box<dyn PDataMarshaler>,
+    writer: &mut impl Write,
 ) {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
+    let mut events = 0;
     for resource_log in &log_request.resource_logs {
         for scope_log in &resource_log.scope_logs {
             log_records += scope_log.log_records.len();
+            for log_record in &scope_log.log_records {
+                if !log_record.event_name.is_empty() {
+                    events += 1;
+                }
+            }
         }
     }
-    println!("Received {} resource logs", resource_logs);
-    println!("Received {} log records", log_records);
+    _ = writeln!(writer, "Received {} resource logs", resource_logs);
+    _ = writeln!(writer, "Received {} log records", log_records);
+    _ = writeln!(writer, "Received {} events", events);
 
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_logs(log_request);
-    println!("{}", report);
+    _ = writeln!(writer, "{}", report);
 
     return;
 }
@@ -246,6 +290,7 @@ fn push_profile(
     verbosity: &Verbosity,
     profile_request: ExportProfilesServiceRequest,
     marshaler: &dyn PDataMarshaler,
+    writer: &mut impl Write,
 ) {
     // collect number of resource profiles
     // collect number of sample records
@@ -259,169 +304,751 @@ fn push_profile(
         }
     }
 
-    println!("Received {} resource profiles", resource_profiles);
-    println!("Received {} samples", samples);
+    _ = writeln!(writer, "Received {} resource profiles, ", resource_profiles);
+    _ = writeln!(writer, "Received {} samples", samples);
 
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_profiles(profile_request);
-    println!("{}", report);
+    _ = writeln!(writer, "{}", report);
 
     return;
 }
 
-// #[cfg(test)]
-// mod tests {
+#[cfg(test)]
+mod tests {
 
-//     use crate::grpc::OTLPData;
-//     use crate::mock::{
-//         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
-//         create_batch_arrow_record,
-//     };
-//     use crate::otap_exporter::OTAPExporter;
-//     use crate::proto::opentelemetry::experimental::arrow::v1::{
-//         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
-//         arrow_metrics_service_server::ArrowMetricsServiceServer,
-//         arrow_traces_service_server::ArrowTracesServiceServer,
-//     };
-//     use otap_df_engine::exporter::ExporterWrapper;
-//     use otap_df_engine::testing::exporter::TestContext;
-//     use otap_df_engine::testing::exporter::TestRuntime;
-//     use std::net::SocketAddr;
-//     use tokio::net::TcpListener;
-//     use tokio::runtime::Runtime;
-//     use tokio::time::{Duration, timeout};
-//     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
-//     use tonic::transport::Server;
+    use crate::debug_exporter::config::{Config, Verbosity};
+    use crate::debug_exporter::exporter::DebugExporter;
+    use crate::grpc::OTLPData;
+    use crate::proto::opentelemetry::{
+        collector::{
+            logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+            profiles::v1development::ExportProfilesServiceRequest,
+            trace::v1::ExportTraceServiceRequest,
+        },
+        common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value},
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+        metrics::v1::{
+            Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+            HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+            Summary, SummaryDataPoint, exemplar::Value as ExemplarValue,
+            exponential_histogram_data_point::Buckets, metric::Data,
+            number_data_point::Value as NumberValue, summary_data_point::ValueAtQuantile,
+        },
+        profiles::v1development::{Profile, ResourceProfiles, ScopeProfiles},
+        resource::v1::Resource,
+        trace::v1::{
+            ResourceSpans, ScopeSpans, Span, Status,
+            span::{Event, Link},
+        },
+    };
 
-//     const METRIC_BATCH_ID: i64 = 0;
-//     const LOG_BATCH_ID: i64 = 1;
-//     const TRACE_BATCH_ID: i64 = 2;
+    use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::testing::exporter::TestContext;
+    use otap_df_engine::testing::exporter::TestRuntime;
+    use tokio::time::{Duration, sleep};
 
-//     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
-//     /// data message, and shutdown control messages.
-//     fn scenario()
-//     -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-//         |ctx| {
-//             Box::pin(async move {
-//                 // Send a data message
-//                 let metric_message = OTLPData::ArrowMetrics(create_batch_arrow_record(
-//                     METRIC_BATCH_ID,
-//                     ArrowPayloadType::MultivariateMetrics,
-//                 ));
-//                 ctx.send_pdata(metric_message)
-//                     .await
-//                     .expect("Failed to send metric message");
+    use std::fs::{File, remove_file};
+    use std::io::{BufReader, prelude::*};
 
-//                 let log_message = OTLPData::ArrowLogs(create_batch_arrow_record(
-//                     LOG_BATCH_ID,
-//                     ArrowPayloadType::Logs,
-//                 ));
-//                 ctx.send_pdata(log_message)
-//                     .await
-//                     .expect("Failed to send log message");
+    fn create_otlp_metric(
+        resource_metrics_count: usize,
+        scope_metrics_count: usize,
+        metric_count: usize,
+        datapoint_count: usize,
+    ) -> ExportMetricsServiceRequest {
+        let mut resource_metrics: Vec<ResourceMetrics> = vec![];
 
-//                 let trace_message = OTLPData::ArrowTraces(create_batch_arrow_record(
-//                     TRACE_BATCH_ID,
-//                     ArrowPayloadType::Spans,
-//                 ));
-//                 ctx.send_pdata(trace_message)
-//                     .await
-//                     .expect("Failed to send trace message");
+        for _ in 0..resource_metrics_count {
+            let mut scope_metrics: Vec<ScopeMetrics> = vec![];
+            for _ in 0..scope_metrics_count {
+                let mut metrics: Vec<Metric> = vec![];
+                for metric_index in 0..metric_count {
+                    let metric_data = if metric_index % 2 == 0 {
+                        // summary datapoint
+                        let mut datapoints = vec![];
+                        for datapoint in 0..datapoint_count {
+                            datapoints.push(SummaryDataPoint {
+                                start_time_unix_nano: 0,
+                                time_unix_nano: 1_000_000_000,
+                                attributes: vec![KeyValue {
+                                    key: "datapoint_k1".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(Value::StringValue("k1 value".to_string())),
+                                    }),
+                                }],
+                                sum: 56.0,
+                                count: 0,
+                                flags: 0,
+                                quantile_values: vec![ValueAtQuantile {
+                                    quantile: 0.0,
+                                    value: 0.0,
+                                }],
+                            });
+                        }
+                        Data::Summary(Summary {
+                            data_points: datapoints.clone(),
+                        })
+                    } else if metric_index % 3 == 0 {
+                        // sum datapoint
+                        let mut datapoints = vec![];
+                        for datapoint in 0..datapoint_count {
+                            datapoints.push(NumberDataPoint {
+                                start_time_unix_nano: 0,
+                                time_unix_nano: 1_000_000_000,
+                                attributes: vec![KeyValue {
+                                    key: "datapoint_k1".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(Value::StringValue("k1 value".to_string())),
+                                    }),
+                                }],
+                                value: Some(NumberValue::AsInt(datapoint as i64)),
+                                flags: 0,
+                                exemplars: vec![Exemplar {
+                                    time_unix_nano: 1_000_000_000,
+                                    span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                                    trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                                    value: Some(ExemplarValue::AsDouble(22.2)),
+                                    filtered_attributes: vec![KeyValue {
+                                        key: "************".to_string(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::BoolValue(true)),
+                                        }),
+                                    }],
+                                }],
+                            });
+                        }
 
-//                 // Send shutdown
-//                 ctx.send_shutdown(Duration::from_millis(200), "test complete")
-//                     .await
-//                     .expect("Failed to send Shutdown");
-//             })
-//         }
-//     }
+                        Data::Sum(Sum {
+                            data_points: datapoints.clone(),
+                            aggregation_temporality: 4, // AGGREGATION_TEMPORALITY_DELTA
+                            is_monotonic: true,
+                        })
+                    } else if metric_index % 5 == 0 {
+                        // histogram datapoint
+                        let mut datapoints = vec![];
+                        for _ in 0..datapoint_count {
+                            datapoints.push(HistogramDataPoint {
+                                attributes: vec![KeyValue {
+                                    key: "datapoint_k1".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(Value::StringValue("k1 value".to_string())),
+                                    }),
+                                }],
+                                start_time_unix_nano: 0,
+                                time_unix_nano: 1_000_000_000,
+                                explicit_bounds: vec![],
+                                bucket_counts: vec![1, 2],
+                                sum: Some(56.0),
+                                count: 0,
+                                flags: 0,
+                                min: Some(12.0),
+                                max: Some(100.1),
+                                exemplars: vec![Exemplar {
+                                    time_unix_nano: 1_000_000_000,
+                                    span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                                    trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                                    value: Some(ExemplarValue::AsDouble(22.2)),
+                                    filtered_attributes: vec![KeyValue {
+                                        key: "************".to_string(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::BoolValue(true)),
+                                        }),
+                                    }],
+                                }],
+                            });
+                        }
 
-//     /// Validation closure that checks the expected counter values
-//     fn validation_procedure(
-//         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
-//     ) -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-//         |_| {
-//             Box::pin(async move {
-//                 // check that the message was properly sent from the exporter
-//                 let metrics_received = timeout(Duration::from_secs(3), receiver.recv())
-//                     .await
-//                     .expect("Timed out waiting for message")
-//                     .expect("No message received");
+                        Data::Histogram(Histogram {
+                            data_points: datapoints.clone(),
+                            aggregation_temporality: 4, // AGGREGATION_TEMPORALITY_DELTA
+                        })
+                    } else if metric_index % 7 == 0 {
+                        // exponential histogram datapoint
+                        let mut datapoints = vec![];
+                        for _ in 0..datapoint_count {
+                            datapoints.push(ExponentialHistogramDataPoint {
+                                attributes: vec![KeyValue {
+                                    key: "datapoint_k1".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(Value::StringValue("k1 value".to_string())),
+                                    }),
+                                }],
+                                start_time_unix_nano: 0,
+                                time_unix_nano: 1_000_000_000,
+                                sum: Some(56.0),
+                                count: 0,
+                                flags: 0,
+                                min: Some(12.0),
+                                max: Some(100.1),
+                                exemplars: vec![Exemplar {
+                                    time_unix_nano: 1_000_000_000,
+                                    span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                                    trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                                    value: Some(ExemplarValue::AsDouble(22.2)),
+                                    filtered_attributes: vec![KeyValue {
+                                        key: "************".to_string(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::BoolValue(true)),
+                                        }),
+                                    }],
+                                }],
+                                scale: 1,
+                                positive: Some(Buckets {
+                                    offset: 0,
+                                    bucket_counts: vec![0, 0, 0],
+                                }),
+                                negative: Some(Buckets {
+                                    offset: 0,
+                                    bucket_counts: vec![0, 0, 0],
+                                }),
+                                zero_threshold: 0.0,
+                                zero_count: 0,
+                            });
+                        }
 
-//                 // Assert that the message received is what the exporter sent
-//                 let _expected_metrics_message = create_batch_arrow_record(
-//                     METRIC_BATCH_ID,
-//                     ArrowPayloadType::MultivariateMetrics,
-//                 );
-//                 assert!(matches!(metrics_received, _expected_metrics_message));
+                        Data::ExponentialHistogram(ExponentialHistogram {
+                            data_points: datapoints.clone(),
+                            aggregation_temporality: 4, // AGGREGATION_TEMPORALITY_DELTA
+                        })
+                    } else {
+                        // gauge datapoint
+                        let mut datapoints = vec![];
+                        for datapoint in 0..datapoint_count {
+                            datapoints.push(NumberDataPoint {
+                                start_time_unix_nano: 0,
+                                time_unix_nano: 1_000_000_000,
+                                attributes: vec![],
+                                value: Some(NumberValue::AsInt(datapoint as i64)),
+                                flags: 0,
+                                exemplars: vec![],
+                            });
+                        }
+                        Data::Gauge(Gauge {
+                            data_points: datapoints.clone(),
+                        })
+                    };
 
-//                 let logs_received = timeout(Duration::from_secs(3), receiver.recv())
-//                     .await
-//                     .expect("Timed out waiting for message")
-//                     .expect("No message received");
-//                 let _expected_logs_message =
-//                     create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
-//                 assert!(matches!(logs_received, _expected_logs_message));
+                    metrics.push(Metric {
+                        name: "metric name".to_string(),
+                        description: "metric description".to_string(),
+                        unit: "metric unit".to_string(),
+                        metadata: vec![],
+                        data: Some(metric_data),
+                    });
+                }
+                let mut instrumentation_scope_attributes = vec![
+                    KeyValue {
+                        key: "instrumentation_scope_k1".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k1 value".to_string())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "instrumentation_scope_k2".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k2 value".to_string())),
+                        }),
+                    },
+                ];
+                scope_metrics.push(ScopeMetrics {
+                    schema_url: "http://schema.opentelemetry.io".to_string(),
+                    scope: Some(InstrumentationScope {
+                        name: "library".to_string(),
+                        version: "v1".to_string(),
+                        attributes: instrumentation_scope_attributes.clone(),
+                        dropped_attributes_count: 5,
+                    }),
+                    metrics: metrics.clone(),
+                });
+            }
 
-//                 let traces_received = timeout(Duration::from_secs(3), receiver.recv())
-//                     .await
-//                     .expect("Timed out waiting for message")
-//                     .expect("No message received");
+            let mut resource_metrics_attributes = vec![
+                KeyValue {
+                    key: "k1".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k1 value".to_string())),
+                    }),
+                },
+                KeyValue {
+                    key: "k2".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k2 value".to_string())),
+                    }),
+                },
+            ];
 
-//                 let _expected_trace_message =
-//                     create_batch_arrow_record(TRACE_BATCH_ID, ArrowPayloadType::Spans);
-//                 assert!(matches!(traces_received, _expected_trace_message));
-//             })
-//         }
-//     }
+            resource_metrics.push(ResourceMetrics {
+                schema_url: "http://schema.opentelemetry.io".to_string(),
+                resource: Some(Resource {
+                    attributes: resource_metrics_attributes.clone(),
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_metrics: scope_metrics.clone(),
+            });
+        }
 
-//     #[test]
-//     fn test_otap_exporter() {
-//         let test_runtime = TestRuntime::new();
-//         let (sender, receiver) = tokio::sync::mpsc::channel(32);
-//         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
-//         let grpc_addr = "127.0.0.1";
-//         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
-//         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-//         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-//         // tokio runtime to run grpc server in the background
-//         let tokio_rt = Runtime::new().unwrap();
+        ExportMetricsServiceRequest {
+            resource_metrics: resource_metrics.clone(),
+        }
+    }
 
-//         // run a gRPC concurrently to receive data from the exporter
-//         _ = tokio_rt.spawn(async move {
-//             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
-//             let tcp_stream = TcpListenerStream::new(tcp_listener);
-//             let mock_logs_service =
-//                 ArrowLogsServiceServer::new(ArrowLogsServiceMock::new(sender.clone()));
-//             let mock_metrics_service =
-//                 ArrowMetricsServiceServer::new(ArrowMetricsServiceMock::new(sender.clone()));
-//             let mock_trace_service =
-//                 ArrowTracesServiceServer::new(ArrowTracesServiceMock::new(sender.clone()));
-//             Server::builder()
-//                 .add_service(mock_logs_service)
-//                 .add_service(mock_metrics_service)
-//                 .add_service(mock_trace_service)
-//                 .serve_with_incoming_shutdown(tcp_stream, async {
-//                     // Wait for the shutdown signal
-//                     let _ = shutdown_signal.await;
-//                 })
-//                 .await
-//                 .expect("Test gRPC server has failed");
-//         });
+    fn create_otlp_trace(
+        resource_spans_count: usize,
+        scope_spans_count: usize,
+        span_count: usize,
+        event_count: usize,
+        link_count: usize,
+    ) -> ExportTraceServiceRequest {
+        let mut resource_spans: Vec<ResourceSpans> = vec![];
 
-//         let exporter = ExporterWrapper::local(
-//             OTAPExporter::new(grpc_endpoint, None),
-//             test_runtime.config(),
-//         );
+        for _ in 0..resource_spans_count {
+            let mut scope_spans: Vec<ScopeSpans> = vec![];
+            for _ in 0..scope_spans_count {
+                let mut spans: Vec<Span> = vec![];
+                for _ in 0..span_count {
+                    let mut span_attributes = vec![
+                        KeyValue {
+                            key: "span_attribute_key1".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("k1 value".to_string())),
+                            }),
+                        },
+                        KeyValue {
+                            key: "span_attribute_key2".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("k2 value".to_string())),
+                            }),
+                        },
+                    ];
+                    let mut links: Vec<Link> = vec![];
+                    for _ in 0..link_count {
+                        links.push(Link {
+                            trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                            span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                            attributes: vec![KeyValue {
+                                key: "link_attribute_key1".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::StringValue("k1 value".to_string())),
+                                }),
+                            }],
+                            trace_state: "trace states".to_string(),
+                            dropped_attributes_count: 0,
+                            flags: 4,
+                        });
+                    }
+                    let mut events: Vec<Event> = vec![];
+                    for _ in 0..event_count {
+                        events.push(Event {
+                            time_unix_nano: 2_000_000_000,
+                            name: "event name".to_string(),
+                            attributes: vec![KeyValue {
+                                key: "event_attribute_key1".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::StringValue("k1 value".to_string())),
+                                }),
+                            }],
+                            dropped_attributes_count: 0,
+                        });
+                    }
+                    spans.push(Span {
+                        end_time_unix_nano: 2_000_000_000,
+                        start_time_unix_nano: 1_000_000,
+                        name: "trace name".to_string(),
+                        kind: 4,
+                        trace_state: "trace states".to_string(),
+                        status: Some(Status {
+                            code: 3,
+                            message: "status_message".to_string(),
+                        }),
+                        links: links.clone(),
+                        events: events.clone(),
+                        attributes: span_attributes.clone(),
+                        trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                        span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                        parent_span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                        dropped_attributes_count: 0,
+                        flags: 4,
+                        dropped_events_count: 0,
+                        dropped_links_count: 0,
+                    });
+                }
+                let mut instrumentation_scope_attributes = vec![
+                    KeyValue {
+                        key: "instrumentation_scope_k1".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k1 value".to_string())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "instrumentation_scope_k2".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k2 value".to_string())),
+                        }),
+                    },
+                ];
+                scope_spans.push(ScopeSpans {
+                    schema_url: "http://schema.opentelemetry.io".to_string(),
+                    scope: Some(InstrumentationScope {
+                        name: "library".to_string(),
+                        version: "v1".to_string(),
+                        attributes: instrumentation_scope_attributes.clone(),
+                        dropped_attributes_count: 5,
+                    }),
+                    spans: spans.clone(),
+                });
+            }
 
-//         test_runtime
-//             .set_exporter(exporter)
-//             .run_test(scenario())
-//             .run_validation(validation_procedure(receiver));
+            let mut resource_spans_attributes = vec![
+                KeyValue {
+                    key: "k1".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k1 value".to_string())),
+                    }),
+                },
+                KeyValue {
+                    key: "k2".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k2 value".to_string())),
+                    }),
+                },
+            ];
 
-//         _ = shutdown_sender.send("Shutdown");
-//     }
-// }
+            resource_spans.push(ResourceSpans {
+                schema_url: "http://schema.opentelemetry.io".to_string(),
+                resource: Some(Resource {
+                    attributes: resource_spans_attributes.clone(),
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_spans: scope_spans.clone(),
+            });
+        }
+
+        ExportTraceServiceRequest {
+            resource_spans: resource_spans.clone(),
+        }
+    }
+
+    fn create_otlp_log(
+        resource_logs_count: usize,
+        scope_logs_count: usize,
+        log_records_count: usize,
+    ) -> ExportLogsServiceRequest {
+        let mut resource_logs: Vec<ResourceLogs> = vec![];
+
+        for _ in 0..resource_logs_count {
+            let mut scope_logs: Vec<ScopeLogs> = vec![];
+            for _ in 0..scope_logs_count {
+                let mut log_records: Vec<LogRecord> = vec![];
+                for _ in 0..log_records_count {
+                    let mut log_records_attributes = vec![
+                        KeyValue {
+                            key: "log_attribute_key1".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("k1 value".to_string())),
+                            }),
+                        },
+                        KeyValue {
+                            key: "log_attribute_key2".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("k2 value".to_string())),
+                            }),
+                        },
+                    ];
+
+                    log_records.push(LogRecord {
+                        time_unix_nano: 2_000_000_000,
+                        observed_time_unix_nano: 1_000_000,
+                        severity_text: "Severity info".to_string(),
+                        severity_number: 2,
+                        event_name: "event1".to_string(),
+                        attributes: log_records_attributes.clone(),
+                        trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                        span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("log_body".to_string())),
+                        }),
+                        flags: 8,
+                        dropped_attributes_count: 0,
+                    });
+                }
+                let mut instrumentation_scope_attributes = vec![
+                    KeyValue {
+                        key: "instrumentation_scope_k1".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k1 value".to_string())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "instrumentation_scope_k2".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k2 value".to_string())),
+                        }),
+                    },
+                ];
+                scope_logs.push(ScopeLogs {
+                    schema_url: "http://schema.opentelemetry.io".to_string(),
+                    scope: Some(InstrumentationScope {
+                        name: "library".to_string(),
+                        version: "v1".to_string(),
+                        attributes: instrumentation_scope_attributes.clone(),
+                        dropped_attributes_count: 5,
+                    }),
+                    log_records: log_records.clone(),
+                });
+            }
+
+            let mut resource_logs_attributes = vec![
+                KeyValue {
+                    key: "k1".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k1 value".to_string())),
+                    }),
+                },
+                KeyValue {
+                    key: "k2".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k2 value".to_string())),
+                    }),
+                },
+            ];
+
+            resource_logs.push(ResourceLogs {
+                schema_url: "http://schema.opentelemetry.io".to_string(),
+                resource: Some(Resource {
+                    attributes: resource_logs_attributes.clone(),
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: scope_logs.clone(),
+            });
+        }
+
+        ExportLogsServiceRequest {
+            resource_logs: resource_logs.clone(),
+        }
+    }
+
+    fn create_otlp_profile(
+        resource_profiles_count: usize,
+        scope_profiles_count: usize,
+        profile_count: usize,
+    ) -> ExportProfilesServiceRequest {
+        let mut resource_profiles: Vec<ResourceProfiles> = vec![];
+
+        for _ in 0..resource_profiles_count {
+            let mut scope_profiles: Vec<ScopeProfiles> = vec![];
+            for _ in 0..scope_profiles_count {
+                let mut profiles: Vec<Profile> = vec![];
+                for _ in 0..profile_count {
+                    let mut profile_attributes = vec![
+                        KeyValue {
+                            key: "profile_attribute_key1".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("k1 value".to_string())),
+                            }),
+                        },
+                        KeyValue {
+                            key: "profile_attribute_key2".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("k2 value".to_string())),
+                            }),
+                        },
+                    ];
+
+                    profiles.push(Profile {
+                        sample_type: vec![],
+                        sample: vec![],
+                        location_indices: vec![],
+                        time_nanos: 0,
+                        duration_nanos: 0,
+                        period_type: None,
+                        period: 0,
+                        comment_strindices: vec![],
+                        default_sample_type_index: 0,
+                        profile_id: vec![],
+                        dropped_attributes_count: 0,
+                        original_payload: vec![],
+                        original_payload_format: "".to_string(),
+                        attribute_indices: vec![],
+                    });
+                }
+                let mut instrumentation_scope_attributes = vec![
+                    KeyValue {
+                        key: "instrumentation_scope_k1".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k1 value".to_string())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "instrumentation_scope_k2".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("k2 value".to_string())),
+                        }),
+                    },
+                ];
+                scope_profiles.push(ScopeProfiles {
+                    schema_url: "http://schema.opentelemetry.io".to_string(),
+                    scope: Some(InstrumentationScope {
+                        name: "library".to_string(),
+                        version: "v1".to_string(),
+                        attributes: instrumentation_scope_attributes.clone(),
+                        dropped_attributes_count: 5,
+                    }),
+                    profiles: profiles.clone(),
+                });
+            }
+
+            let mut resource_profiles_attributes = vec![
+                KeyValue {
+                    key: "k1".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k1 value".to_string())),
+                    }),
+                },
+                KeyValue {
+                    key: "k2".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("k2 value".to_string())),
+                    }),
+                },
+            ];
+
+            resource_profiles.push(ResourceProfiles {
+                schema_url: "http://schema.opentelemetry.io".to_string(),
+                resource: Some(Resource {
+                    attributes: resource_profiles_attributes.clone(),
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_profiles: scope_profiles.clone(),
+            });
+        }
+
+        ExportProfilesServiceRequest {
+            resource_profiles: resource_profiles.clone(),
+        }
+    }
+
+    /// Test closure that simulates a typical test scenario by sending timer ticks, config,
+    /// data message, and shutdown control messages.
+    ///
+    fn scenario()
+    -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |ctx| {
+            Box::pin(async move {
+                // send some messages to the exporter to calculate pipeline statistics
+                for _ in 0..3 {
+                    // // Send a data message
+                    ctx.send_pdata(OTLPData::Metrics(create_otlp_metric(1, 1, 7, 1)))
+                        .await
+                        .expect("Failed to send data message");
+                    ctx.send_pdata(OTLPData::Traces(create_otlp_trace(1, 1, 7, 1, 1)))
+                        .await
+                        .expect("Failed to send data message");
+                    ctx.send_pdata(OTLPData::Logs(create_otlp_log(1, 1, 7)))
+                        .await
+                        .expect("Failed to send data message");
+                    ctx.send_pdata(OTLPData::Profiles(create_otlp_profile(1, 1, 1)))
+                        .await
+                        .expect("Failed to send data message");
+                }
+
+                // TODO ADD DELAY BETWEEN HERE
+                _ = sleep(Duration::from_millis(5000));
+
+                // send timertick to generate the report
+                ctx.send_timer_tick()
+                    .await
+                    .expect("Failed to send TimerTick");
+
+                // Send shutdown
+                ctx.send_shutdown(Duration::from_millis(200), "test complete")
+                    .await
+                    .expect("Failed to send Shutdown");
+            })
+        }
+    }
+
+    /// Validation closure that checks the expected counter values
+    fn validation_procedure(
+        output_file: String,
+    ) -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_| {
+            Box::pin(async move {
+                // get a file to read and validate the output
+                // open file
+                // read the output file
+                // assert each line accordingly
+                let file = File::open(output_file).expect("failed to open file");
+                let reader = BufReader::new(file);
+                let mut lines = Vec::new();
+                for line in reader.lines() {
+                    lines.push(line.unwrap());
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn test_debug_exporter_basic_verbosity() {
+        let test_runtime = TestRuntime::new();
+        let output_file = "debug_output_basic.txt".to_string();
+        let config = Config::new(Verbosity::Basic);
+        let exporter = ExporterWrapper::local(
+            DebugExporter::new(config, Some(output_file.clone())),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(validation_procedure(output_file.clone()));
+
+        // remove the created file, prevent accidental check in of report
+        // remove_file(output_file).expect("Failed to remove file");
+    }
+
+    #[test]
+    fn test_debug_exporter_normal_verbosity() {
+        let test_runtime = TestRuntime::new();
+        let output_file = "debug_output_normal.txt".to_string();
+        let config = Config::new(Verbosity::Normal);
+        let exporter = ExporterWrapper::local(
+            DebugExporter::new(config, Some(output_file.clone())),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(validation_procedure(output_file.clone()));
+
+        // remove the created file, prevent accidental check in of report
+        // remove_file(output_file).expect("Failed to remove file");
+    }
+
+    #[test]
+    fn test_debug_exporter_detailed_verbosity() {
+        let test_runtime = TestRuntime::new();
+        let output_file = "debug_output_detailed.txt".to_string();
+        let config = Config::new(Verbosity::Detailed);
+        let exporter = ExporterWrapper::local(
+            DebugExporter::new(config, Some(output_file.clone())),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(validation_procedure(output_file.clone()));
+
+        // remove the created file, prevent accidental check in of report
+        // remove_file(output_file).expect("Failed to remove file");
+    }
+}
