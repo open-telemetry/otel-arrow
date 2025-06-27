@@ -91,6 +91,7 @@ mod tests {
             )),
         );
 
+        // Note: The inner statements get folded into constants.
         run_test_success(
             "iif(1 > 0, iif(true, 'a', 'b'), iff(false, 'c', 'd'))",
             ScalarExpression::Conditional(ConditionalScalarExpression::new(
@@ -104,35 +105,11 @@ mod tests {
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                     )),
                 )),
-                ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    LogicalExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            true,
-                        )),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "b"),
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                 )),
-                ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    LogicalExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            false,
-                        )),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "c"),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "d"),
-                    )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "d"),
                 )),
             )),
         );
