@@ -1,0 +1,17 @@
+# Plugin Documentation
+
+This directory contains auto-generated documentation for all plugin registries.
+
+## Per-Registry Doc Files
+{% for name in registry_names %}
+- [{{ name }}](./{{ name }}.md)
+{%- endfor %}
+{% for registry, entries in registry_groups.items() %}
+## Plugin Summary: `{{ registry }}`
+
+| Type | Plugin Name | Module | Class | Config Class | Description |
+|------|-------------|--------|-------|--------------|-------------|
+{%- for entry in entries %}
+| `{{ entry.type_name }}` | `{{ entry.type_name }}` | `{{ entry.module }}` | `{{ entry.class_name }}` | `{{ entry.config_name }}` | {{ entry.summary }} |
+{%- endfor %}
+{% endfor %}
