@@ -117,8 +117,8 @@ where
                     let (slice, _) = match expected_wire_type {
                         wire_types::VARINT => read_variant_bytes(self.buf, offset)?,
                         wire_types::FIXED64 => read_fixed64(self.buf, offset)?,
-                        wire_types::LEN_DELIMITED => read_len_delim(self.buf, offset)?,
-                        wire_types::FIXED_32 => read_fixed32(self.buf, offset)?,
+                        wire_types::LEN => read_len_delim(self.buf, offset)?,
+                        wire_types::FIXED32 => read_fixed32(self.buf, offset)?,
                         _ => {
                             // invalid wire type
                             return None;
@@ -142,7 +142,7 @@ where
                     // save the offset of the field we've encountered
                     {
                         let mut field_offsets = self.field_offsets.borrow_mut();
-                        field_offsets.set_field_offset(field, next_pos);
+                        field_offsets.set_field_offset(field, wire_type, next_pos);
                     }
 
                     // advance parsing to the start of the next field by skipping over the value
@@ -165,11 +165,11 @@ where
                 p
             }
             wire_types::FIXED64 => pos + 8,
-            wire_types::LEN_DELIMITED => {
+            wire_types::LEN => {
                 let (_, p) = read_len_delim(self.buf, pos)?;
                 p
             }
-            wire_types::FIXED_32 => pos + 4,
+            wire_types::FIXED32 => pos + 4,
             _ => return None,
         };
         self.pos.set(next_pos);
@@ -207,9 +207,11 @@ pub trait FieldOffsets {
 
     /// Records the offset of a field in the buffer.
     ///
+    /// The implementation should also ignore if an offset is passed for an invalid wire type
+    ///
     /// For repeated fields, this may be called multiple times, in the order that field
     /// instances are encountered during parsing.
-    fn set_field_offset(&mut self, field_num: u64, offset: usize);
+    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize);
 }
 
 /// Decode variant at position in buffer

@@ -59,10 +59,18 @@ impl FieldOffsets for ResourceFieldOffsets {
         }
     }
 
-    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
+    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
         match field_num {
-            RESOURCE_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count = Some(offset),
-            RESOURCE_ATTRIBUTES => self.attributes.push(offset),
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT => {
+                if wire_type == wire_types::VARINT {
+                    self.dropped_attributes_count = Some(offset)
+                }
+            }
+            RESOURCE_ATTRIBUTES => {
+                if wire_type == wire_types::LEN {
+                    self.attributes.push(offset)
+                }
+            }
             _ => {
                 // ignore unknown fields
             }

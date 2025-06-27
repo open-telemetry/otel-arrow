@@ -11,9 +11,9 @@ pub mod wire_types {
     /// 64-bit (fixed64, sfixed64, double)
     pub const FIXED64: u64 = 1;
     /// Length-delimited (string, bytes, embedded messages)
-    pub const LEN_DELIMITED: u64 = 2;
+    pub const LEN: u64 = 2;
     /// 32-bit (fixed32, sfixed32, float)
-    pub const FIXED_32: u64 = 5;
+    pub const FIXED32: u64 = 5;
 }
 
 /// field number for OTLP protobuf messages

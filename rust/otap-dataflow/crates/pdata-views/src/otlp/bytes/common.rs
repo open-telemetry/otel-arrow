@@ -148,15 +148,27 @@ impl FieldOffsets for InstrumentationScopeFieldOffsets {
         }
     }
 
-    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
+    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
         match field_num {
-            INSTRUMENTATION_SCOPE_NAME => self.name = Some(offset),
-            INSTRUMENTATION_SCOPE_VERSION => self.version = Some(offset),
+            INSTRUMENTATION_SCOPE_NAME => {
+                if wire_type == wire_types::LEN {
+                    self.name = Some(offset)
+                }
+            }
+            INSTRUMENTATION_SCOPE_VERSION => {
+                if wire_type == wire_types::LEN {
+                    self.version = Some(offset)
+                }
+            }
             INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT => {
-                self.dropped_attributes_count = Some(offset)
+                if wire_type == wire_types::VARINT {
+                    self.dropped_attributes_count = Some(offset)
+                }
             }
             INSTRUMENTATION_SCOPE_ATTRIBUTES => {
-                self.attributes.push(offset);
+                if wire_type == wire_types::LEN {
+                    self.attributes.push(offset);
+                }
             }
             _ => {
                 // ignore unknown field_num
@@ -204,7 +216,7 @@ where
         let slice = self.bytes_parser.advance_to_find_next_repeated(
             self.target_field_number,
             self.field_index,
-            wire_types::LEN_DELIMITED,
+            wire_types::LEN,
         )?;
         self.field_index += 1;
         Some(RawKeyValue::new(slice))
@@ -228,7 +240,7 @@ impl<'a> Iterator for AnyValueIter<'a> {
             let field = tag >> 3;
             let wire_type = tag & 7;
 
-            if field == ARRAY_VALUE_VALUES && wire_type == wire_types::LEN_DELIMITED {
+            if field == ARRAY_VALUE_VALUES && wire_type == wire_types::LEN {
                 let (slice, next_pos) = read_len_delim(self.buf, self.pos)?;
                 self.pos = next_pos;
                 return Some(RawAnyValue::new(slice));
@@ -473,8 +485,8 @@ impl FieldOffsets for KeyValuesListFieldOffsets {
         None
     }
 
-    fn set_field_offset(&mut self, field_tag: u64, offset: usize) {
-        if field_tag == KEY_VALUE_LIST_VALUES {
+    fn set_field_offset(&mut self, field_tag: u64, wire_type: u64, offset: usize) {
+        if field_tag == KEY_VALUE_LIST_VALUES && wire_type == wire_types::LEN {
             self.offsets.push(offset);
         }
     }
@@ -494,14 +506,14 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
     fn name(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN_DELIMITED)?;
+            .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
     fn version(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN_DELIMITED)?;
+            .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 

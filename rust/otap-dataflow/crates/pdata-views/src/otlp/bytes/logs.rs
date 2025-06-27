@@ -70,15 +70,18 @@ impl FieldOffsets for ResourceLogsFieldOffsets {
         }
     }
 
-    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
-        match field_num {
-            RESOURCE_LOGS_RESOURCE => self.resource = Some(offset),
-            RESOURCE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
-            RESOURCE_LOGS_SCOPE_LOGS => {
-                self.scope_logs.push(offset);
-            }
-            _ => {
-                // ignore invalid field_num
+    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
+        // all fields on ResourceLogs happen to have wire type of LEN
+        if wire_type == wire_types::LEN {
+            match field_num {
+                RESOURCE_LOGS_RESOURCE => self.resource = Some(offset),
+                RESOURCE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
+                RESOURCE_LOGS_SCOPE_LOGS => {
+                    self.scope_logs.push(offset);
+                }
+                _ => {
+                    // ignore invalid field_num
+                }
             }
         }
     }
@@ -121,13 +124,16 @@ impl FieldOffsets for ScopeLogsFieldOffsets {
         }
     }
 
-    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
-        match field_num {
-            SCOPE_LOG_SCOPE => self.scope = Some(offset),
-            SCOPE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
-            SCOPE_LOGS_LOG_RECORDS => self.log_records.push(offset),
-            _ => {
-                // ignore invalid field_num
+    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
+        // all fields on scope log happen to have wire type LEN
+        if wire_type == wire_types::LEN {
+            match field_num {
+                SCOPE_LOG_SCOPE => self.scope = Some(offset),
+                SCOPE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
+                SCOPE_LOGS_LOG_RECORDS => self.log_records.push(offset),
+                _ => {
+                    // ignore invalid field_num
+                }
             }
         }
     }
@@ -152,11 +158,29 @@ impl FieldOffsets for LogFieldOffsets {
         }
     }
 
-    fn set_field_offset(&mut self, field_num: u64, offset: usize) {
+    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
+        const WIRE_TYPES: [u64; 13] = [
+            0,                   // unused
+            wire_types::FIXED64, // fixed64 time_unix_nano = 1
+            wire_types::VARINT,  // SeverityNumber severity_number = 2
+            wire_types::LEN,     // string severity_text = 3
+            0,                   // unused
+            wire_types::LEN,     // body = 5
+            wire_types::LEN,     // attributes = 6
+            wire_types::VARINT,  // uint32 dropped_attributes_count = 7
+            wire_types::FIXED32, // fixed32 flags = 8
+            wire_types::LEN,     // bytes trace_id = 9
+            wire_types::LEN,     // bytes span_id = 10
+            wire_types::FIXED64, // fixed64 observed_time_unix_nano=11
+            wire_types::LEN,     // string event_name = 12
+        ];
         if field_num == LOG_RECORD_ATTRIBUTES {
             self.attributes.push(offset)
         } else if field_num < 13 {
-            self.scalar_fields[field_num as usize] = Some(offset);
+            let idx = field_num as usize;
+            if wire_type == WIRE_TYPES[idx] {
+                self.scalar_fields[idx] = Some(offset);
+            }
         }
     }
 
@@ -191,7 +215,7 @@ impl<'a> Iterator for ResourceLogsIter<'a> {
             self.pos = next_pos;
             let field = tag >> 3;
             let wire_type = tag & 7;
-            if field == LOGS_DATA_RESOURCE && wire_type == wire_types::LEN_DELIMITED {
+            if field == LOGS_DATA_RESOURCE && wire_type == wire_types::LEN {
                 let (slice, next_pos) = read_len_delim(self.buf, self.pos)?;
                 self.pos = next_pos;
                 return Some(RawResourceLogs {
@@ -218,7 +242,7 @@ impl<'a> Iterator for ScopeLogsIter<'a> {
         let slice = self.byte_parser.advance_to_find_next_repeated(
             RESOURCE_LOGS_SCOPE_LOGS,
             self.field_index,
-            wire_types::LEN_DELIMITED,
+            wire_types::LEN,
         )?;
         self.field_index += 1;
 
@@ -242,7 +266,7 @@ impl<'a> Iterator for LogRecordsIter<'a> {
         let slice = self.byte_parser.advance_to_find_next_repeated(
             SCOPE_LOGS_LOG_RECORDS,
             self.field_index,
-            wire_types::LEN_DELIMITED,
+            wire_types::LEN,
         )?;
         self.field_index += 1;
 
@@ -290,7 +314,7 @@ impl ResourceLogsView for RawResourceLogs<'_> {
     fn resource(&self) -> Option<Self::Resource<'_>> {
         let slice = self
             .byte_parser
-            .advance_to_find_field(RESOURCE_LOGS_RESOURCE, wire_types::LEN_DELIMITED)?;
+            .advance_to_find_field(RESOURCE_LOGS_RESOURCE, wire_types::LEN)?;
 
         Some(RawResource::new(ProtoBytesParser::new(slice)))
     }
@@ -298,7 +322,7 @@ impl ResourceLogsView for RawResourceLogs<'_> {
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .byte_parser
-            .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN_DELIMITED)?;
+            .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
@@ -334,14 +358,14 @@ impl ScopeLogsView for RawScopeLogs<'_> {
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .byte_parser
-            .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN_DELIMITED)?;
+            .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
     fn scope(&self) -> Option<Self::Scope<'_>> {
         let slice = self
             .byte_parser
-            .advance_to_find_field(SCOPE_LOG_SCOPE, wire_types::LEN_DELIMITED)?;
+            .advance_to_find_field(SCOPE_LOG_SCOPE, wire_types::LEN)?;
         Some(RawInstrumentationScope::new(ProtoBytesParser::new(slice)))
     }
 }
@@ -368,7 +392,7 @@ impl LogRecordView for RawLogRecord<'_> {
 
     fn body(&self) -> Option<Self::Body<'_>> {
         self.bytes_parser
-            .advance_to_find_field(LOG_RECORD_BODY, wire_types::LEN_DELIMITED)
+            .advance_to_find_field(LOG_RECORD_BODY, wire_types::LEN)
             .map(RawAnyValue::new)
     }
 
@@ -388,7 +412,7 @@ impl LogRecordView for RawLogRecord<'_> {
     fn flags(&self) -> Option<u32> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_FLAGS, wire_types::FIXED_32)?;
+            .advance_to_find_field(LOG_RECORD_FLAGS, wire_types::FIXED32)?;
         let byte_arr: [u8; 4] = slice.try_into().ok()?;
         Some(u32::from_le_bytes(byte_arr))
     }
@@ -412,13 +436,13 @@ impl LogRecordView for RawLogRecord<'_> {
     fn severity_text(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN_DELIMITED)?;
+            .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
     fn span_id(&self) -> Option<&[u8]> {
         self.bytes_parser
-            .advance_to_find_field(LOG_RECORD_SPAN_ID, wire_types::LEN_DELIMITED)
+            .advance_to_find_field(LOG_RECORD_SPAN_ID, wire_types::LEN)
     }
 
     fn time_unix_nano(&self) -> Option<u64> {
@@ -431,6 +455,6 @@ impl LogRecordView for RawLogRecord<'_> {
 
     fn trace_id(&self) -> Option<&[u8]> {
         self.bytes_parser
-            .advance_to_find_field(LOG_RECORD_TRACE_ID, wire_types::LEN_DELIMITED)
+            .advance_to_find_field(LOG_RECORD_TRACE_ID, wire_types::LEN)
     }
 }
