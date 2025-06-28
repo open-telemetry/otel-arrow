@@ -6,7 +6,9 @@ Count of logs objects received 0
 Received 1 resource metrics
 Received 7 metrics
 Received 7 data points
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library v1 http://schema.opentelemetry.io instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
 metric name  0
 metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
 metric name datapoint_k1=k1 value  0
@@ -18,15 +20,40 @@ Received 1 resource spans
 Received 7 spans
 Received 7 events
 Received 7 links
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library v1 http://schema.opentelemetry.io instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+
 Received 1 resource logs
 Received 7 log records
 Received 7 events
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library @v1 [http://schema.opentelemetry.io] instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+
+Received 1 resource profiles, 
+Received 0 samples
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+
 Received 1 resource metrics
 Received 7 metrics
 Received 7 data points
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library v1 http://schema.opentelemetry.io instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
 metric name  0
 metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
 metric name datapoint_k1=k1 value  0
@@ -38,15 +65,40 @@ Received 1 resource spans
 Received 7 spans
 Received 7 events
 Received 7 links
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library v1 http://schema.opentelemetry.io instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+
 Received 1 resource logs
 Received 7 log records
 Received 7 events
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library @v1 [http://schema.opentelemetry.io] instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+
+Received 1 resource profiles, 
+Received 0 samples
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+
 Received 1 resource metrics
 Received 7 metrics
 Received 7 data points
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library v1 http://schema.opentelemetry.io instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
 metric name  0
 metric name datapoint_k1=k1 value  count=0 sum=56 q0=0 
 metric name datapoint_k1=k1 value  0
@@ -58,9 +110,32 @@ Received 1 resource spans
 Received 7 spans
 Received 7 events
 Received 7 links
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library v1 http://schema.opentelemetry.io instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value trace name EEE19B7EC3C1B174 EEE19B7EC3C1B174 span_attribute_key1=k1 value span_attribute_key2=k2 value 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+Name: trace name, Trace ID: EEE19B7EC3C1B174, Span ID: EEE19B7EC3C1B174, Attributes: span_attribute_key1=k1 value span_attribute_key2=k2 value 
+
 Received 1 resource logs
 Received 7 log records
 Received 7 events
-ResourceLog #0 http://schema.opentelemetry.io k1=k1 value k2=k2 value ScopeLog #0 library @v1 [http://schema.opentelemetry.io] instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value  log_body log_attribute_key1=k1 value log_attribute_key2=k2 value 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+Body: log_body, Attributes log_attribute_key1=k1 value log_attribute_key2=k2 value 
+
+Received 1 resource profiles, 
+Received 0 samples
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: k1=k1 value k2=k2 value 
+ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes instrumentation_scope_k1=k1 value instrumentation_scope_k2=k2 value 
+
 Shutdown message received

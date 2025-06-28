@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Implementation of the configuration of the debug exporter
+//!
+
 use serde::Deserialize;
 
 /// Enum that allows the user to specify how much information they want displayeds
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub enum Verbosity {
     /// display the most detailed information available
     Detailed,
@@ -11,11 +16,10 @@ pub enum Verbosity {
     Basic,
 }
 
+/// Defines the settings of the debug exporter, controls the level of verbosity the exporter outputs
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Config {
-    // #[serde(default = "default_verbosity")]
-    //
-
-    //TODO implement deserailize for verbosity struct
+    #[serde(default = "default_verbosity")]
     verbosity: Verbosity,
 }
 

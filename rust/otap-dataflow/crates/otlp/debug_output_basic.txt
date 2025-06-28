@@ -13,6 +13,8 @@ Received 7 links
 Received 1 resource logs
 Received 7 log records
 Received 7 events
+Received 1 resource profiles, 
+Received 0 samples
 Received 1 resource metrics
 Received 7 metrics
 Received 7 data points
@@ -23,6 +25,8 @@ Received 7 links
 Received 1 resource logs
 Received 7 log records
 Received 7 events
+Received 1 resource profiles, 
+Received 0 samples
 Received 1 resource metrics
 Received 7 metrics
 Received 7 data points
@@ -33,4 +37,6 @@ Received 7 links
 Received 1 resource logs
 Received 7 log records
 Received 7 events
+Received 1 resource profiles, 
+Received 0 samples
 Shutdown message received

@@ -7,10 +7,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::LOCAL_EXPORTERS;
-use crate::debug_exporter::config::{Config, Verbosity};
-use crate::debug_exporter::marshaler::{
-    DetailedOTLPMarshaler, NormalOTLPMarshaler, PDataMarshaler,
-};
+use crate::debug_exporter::{config::{Config, Verbosity}, marshaler::OTLPMarshaler, detailed_otlp_marshaler::DetailedOTLPMarshaler, normal_otlp_marshaler::NormalOTLPMarshaler};
 use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::{
     collector::{
@@ -76,7 +73,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
         let mut profile_count: u64 = 0;
         let mut span_count: u64 = 0;
         let mut log_count: u64 = 0;
-        let marshaler: Box<dyn PDataMarshaler> = if self.config.verbosity() == Verbosity::Normal {
+        let marshaler: Box<dyn OTLPMarshaler> = if self.config.verbosity() == Verbosity::Normal {
             Box::new(NormalOTLPMarshaler)
         } else {
             Box::new(DetailedOTLPMarshaler)
@@ -132,8 +129,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                             span_count += 1;
                         }
                         OTLPData::Profiles(req) => {
-                            //   push_profile(&self.verbosity, req, &marshaler, &writer);
-                            //   profile_count += 1;
+                            push_profile(&self.config.verbosity(), req, &marshaler, &mut writer);
+                            profile_count += 1;
                         }
                     }
                 }
@@ -167,7 +164,7 @@ fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
 fn push_metric(
     verbosity: &Verbosity,
     metric_request: ExportMetricsServiceRequest,
-    marshaler: &Box<dyn PDataMarshaler>,
+    marshaler: &Box<dyn OTLPMarshaler>,
     writer: &mut impl Write,
 ) {
     // collect number of resource metrics
@@ -213,13 +210,12 @@ fn push_metric(
 
     let report = marshaler.marshal_metrics(metric_request);
     _ = writeln!(writer, "{}", report);
-    return;
 }
 
 fn push_trace(
     verbosity: &Verbosity,
     trace_request: ExportTraceServiceRequest,
-    marshaler: &Box<dyn PDataMarshaler>,
+    marshaler: &Box<dyn OTLPMarshaler>,
     writer: &mut impl Write,
 ) {
     // collect number of resource spans
@@ -250,13 +246,12 @@ fn push_trace(
     let report = marshaler.marshal_traces(trace_request);
     _ = writeln!(writer, "{}", report);
 
-    return;
 }
 
 fn push_log(
     verbosity: &Verbosity,
     log_request: ExportLogsServiceRequest,
-    marshaler: &Box<dyn PDataMarshaler>,
+    marshaler: &Box<dyn OTLPMarshaler>,
     writer: &mut impl Write,
 ) {
     let resource_logs = log_request.resource_logs.len();
@@ -283,13 +278,12 @@ fn push_log(
     let report = marshaler.marshal_logs(log_request);
     _ = writeln!(writer, "{}", report);
 
-    return;
 }
 
 fn push_profile(
     verbosity: &Verbosity,
     profile_request: ExportProfilesServiceRequest,
-    marshaler: &dyn PDataMarshaler,
+    marshaler: &Box<dyn OTLPMarshaler>,
     writer: &mut impl Write,
 ) {
     // collect number of resource profiles
@@ -314,7 +308,6 @@ fn push_profile(
     let report = marshaler.marshal_profiles(profile_request);
     _ = writeln!(writer, "{}", report);
 
-    return;
 }
 
 #[cfg(test)]

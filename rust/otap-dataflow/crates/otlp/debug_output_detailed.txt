@@ -8,18 +8,30 @@ Received 7 metrics
 Received 7 data points
 ResourceMetric #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes: k1: k1 value k2: k2 value 
+Resource attributes: 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeMetrics #0
 ScopeMetrics SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value Metric #0
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Metric #0
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #1
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #1
 Descriptor:
      -> Name: metric name
      -> Description: metric description
@@ -36,7 +48,15 @@ Descriptor:
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #3
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #3
 Descriptor:
      -> Name: metric name
      -> Description: metric description
@@ -45,7 +65,8 @@ Descriptor:
      -> IsMonotonic: true
      -> AggregationTemporality: 4
 NumberDataPoints #0
-Attributes: datapoint_k1: k1 value 
+Attributes: 
+     -> datapoint_k1: k1 value
 StartTimestamp: 0
 Timestamp: 1000000000
 Value: 0
@@ -56,47 +77,83 @@ Exemplar #0
      -> Timestamp: 1000000000
      -> Value: 22.2
      -> FilteredAttributes:
-************: true Metric #4
+
+     -> ************: true
+Metric #4
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #5
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #5
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Histogram
-     -> AggregationTemporality: 4HistogramDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56Min: 12Max: 100.1Buckets 0, Count: 1Buckets 1, Count: 2Exemplars: 
+     -> AggregationTemporality: 4
+HistogramDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+Min: 12
+Max: 100.1
+Buckets 0, Count: 1
+Buckets 1, Count: 2
+Exemplars: 
 Exemplar #0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> Timestamp: 1000000000
      -> Value: 22.2
      -> FilteredAttributes:
-************: true Metric #6
+
+     -> ************: true
+Metric #6
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+
 Received 1 resource spans
 Received 7 spans
 Received 7 events
 Received 7 links
 ResourceSpan #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes k1: k1 value k2: k2 value 
+Resource attributes 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeSpans #0
 ScopeSpans SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value Span 0
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Span 0
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -104,24 +161,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 1
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -129,24 +190,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 2
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -154,24 +219,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 3
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -179,24 +248,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 4
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -204,24 +277,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 5
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -229,24 +306,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 6
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -254,39 +335,49 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 
 Received 1 resource logs
 Received 7 log records
 Received 7 events
 ResourceLog #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes: k1: k1 value k2: k2 value 
+Resource attributes: 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeLogs #0
 ScopeLogs SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value LogRecord #0
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+LogRecord #0
 ObservedTimestamp: 1000000
 Timestamp: 2000000000
 SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -297,7 +388,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -308,7 +401,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -319,7 +414,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -330,7 +427,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -341,7 +440,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -352,28 +453,61 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
 
+Received 1 resource profiles, 
+Received 0 samples
+ResourceProfile #0
+Resource SchemaURL: http://schema.opentelemetry.io
+Resource attributes 
+     -> k1: k1 value
+     -> k2: k2 value
+ScopeProfiles #0
+ScopeProfiles SchemaURL: http://schema.opentelemetry.io
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Profile 0
+Profile ID: 
+Start time: 0
+Duration: 0
+Dropped attributes count: 0
+Location indices: []
 Received 1 resource metrics
 Received 7 metrics
 Received 7 data points
 ResourceMetric #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes: k1: k1 value k2: k2 value 
+Resource attributes: 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeMetrics #0
 ScopeMetrics SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value Metric #0
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Metric #0
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #1
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #1
 Descriptor:
      -> Name: metric name
      -> Description: metric description
@@ -390,7 +524,15 @@ Descriptor:
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #3
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #3
 Descriptor:
      -> Name: metric name
      -> Description: metric description
@@ -399,7 +541,8 @@ Descriptor:
      -> IsMonotonic: true
      -> AggregationTemporality: 4
 NumberDataPoints #0
-Attributes: datapoint_k1: k1 value 
+Attributes: 
+     -> datapoint_k1: k1 value
 StartTimestamp: 0
 Timestamp: 1000000000
 Value: 0
@@ -410,47 +553,83 @@ Exemplar #0
      -> Timestamp: 1000000000
      -> Value: 22.2
      -> FilteredAttributes:
-************: true Metric #4
+
+     -> ************: true
+Metric #4
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #5
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #5
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Histogram
-     -> AggregationTemporality: 4HistogramDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56Min: 12Max: 100.1Buckets 0, Count: 1Buckets 1, Count: 2Exemplars: 
+     -> AggregationTemporality: 4
+HistogramDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+Min: 12
+Max: 100.1
+Buckets 0, Count: 1
+Buckets 1, Count: 2
+Exemplars: 
 Exemplar #0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> Timestamp: 1000000000
      -> Value: 22.2
      -> FilteredAttributes:
-************: true Metric #6
+
+     -> ************: true
+Metric #6
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+
 Received 1 resource spans
 Received 7 spans
 Received 7 events
 Received 7 links
 ResourceSpan #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes k1: k1 value k2: k2 value 
+Resource attributes 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeSpans #0
 ScopeSpans SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value Span 0
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Span 0
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -458,24 +637,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 1
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -483,24 +666,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 2
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -508,24 +695,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 3
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -533,24 +724,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 4
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -558,24 +753,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 5
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -583,24 +782,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 6
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -608,39 +811,49 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 
 Received 1 resource logs
 Received 7 log records
 Received 7 events
 ResourceLog #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes: k1: k1 value k2: k2 value 
+Resource attributes: 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeLogs #0
 ScopeLogs SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value LogRecord #0
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+LogRecord #0
 ObservedTimestamp: 1000000
 Timestamp: 2000000000
 SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -651,7 +864,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -662,7 +877,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -673,7 +890,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -684,7 +903,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -695,7 +916,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -706,28 +929,61 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
 
+Received 1 resource profiles, 
+Received 0 samples
+ResourceProfile #0
+Resource SchemaURL: http://schema.opentelemetry.io
+Resource attributes 
+     -> k1: k1 value
+     -> k2: k2 value
+ScopeProfiles #0
+ScopeProfiles SchemaURL: http://schema.opentelemetry.io
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Profile 0
+Profile ID: 
+Start time: 0
+Duration: 0
+Dropped attributes count: 0
+Location indices: []
 Received 1 resource metrics
 Received 7 metrics
 Received 7 data points
 ResourceMetric #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes: k1: k1 value k2: k2 value 
+Resource attributes: 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeMetrics #0
 ScopeMetrics SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value Metric #0
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Metric #0
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #1
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #1
 Descriptor:
      -> Name: metric name
      -> Description: metric description
@@ -744,7 +1000,15 @@ Descriptor:
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #3
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #3
 Descriptor:
      -> Name: metric name
      -> Description: metric description
@@ -753,7 +1017,8 @@ Descriptor:
      -> IsMonotonic: true
      -> AggregationTemporality: 4
 NumberDataPoints #0
-Attributes: datapoint_k1: k1 value 
+Attributes: 
+     -> datapoint_k1: k1 value
 StartTimestamp: 0
 Timestamp: 1000000000
 Value: 0
@@ -764,47 +1029,83 @@ Exemplar #0
      -> Timestamp: 1000000000
      -> Value: 22.2
      -> FilteredAttributes:
-************: true Metric #4
+
+     -> ************: true
+Metric #4
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0Metric #5
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+Metric #5
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Histogram
-     -> AggregationTemporality: 4HistogramDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56Min: 12Max: 100.1Buckets 0, Count: 1Buckets 1, Count: 2Exemplars: 
+     -> AggregationTemporality: 4
+HistogramDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+Min: 12
+Max: 100.1
+Buckets 0, Count: 1
+Buckets 1, Count: 2
+Exemplars: 
 Exemplar #0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> Timestamp: 1000000000
      -> Value: 22.2
      -> FilteredAttributes:
-************: true Metric #6
+
+     -> ************: true
+Metric #6
 Descriptor:
      -> Name: metric name
      -> Description: metric description
      -> Unit: metric unit
      -> DataType: Summary
-SummaryDataPoints 0Attributes: datapoint_k1: k1 value StartTimestamp: 0Timestamp: 1000000000Count: 0Sum: 56QuantileValue 0: Quantile 0, Value 0
+SummaryDataPoints 0
+Attributes: 
+     -> datapoint_k1: k1 value
+StartTimestamp: 0
+Timestamp: 1000000000
+Count: 0
+Sum: 56
+QuantileValue 0: Quantile 0, Value 0
+
 Received 1 resource spans
 Received 7 spans
 Received 7 events
 Received 7 links
 ResourceSpan #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes k1: k1 value k2: k2 value 
+Resource attributes 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeSpans #0
 ScopeSpans SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value Span 0
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Span 0
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -812,24 +1113,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 1
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -837,24 +1142,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 2
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -862,24 +1171,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 3
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -887,24 +1200,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 4
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -912,24 +1229,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 5
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -937,24 +1258,28 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 Span 6
-     -> Trace ID: EEE19B7EC3C1B174
-     -> Parent ID: EEE19B7EC3C1B174
-     -> ID: EEE19B7EC3C1B174
+Trace ID: EEE19B7EC3C1B174
+Parent ID: EEE19B7EC3C1B174
+ID: EEE19B7EC3C1B174
 Name: trace name
 Kind: 4
 TraceState: trace states
@@ -962,39 +1287,49 @@ Start time: 1000000
 End time: 2000000000
 Status code: 3
 Status message: status_message
-Attributes: span_attribute_key1: k1 value span_attribute_key2: k2 value 
+Attributes: 
+     -> span_attribute_key1: k1 value
+     -> span_attribute_key2: k2 value
 Events: 
 SpanEvent 0
-Name: event name
-Timestamp: 2000000000
-DroppedAttributesCount: 0
-Attributes: event_attribute_key1: k1 value 
+     -> Name: event name
+     -> Timestamp: 2000000000
+     -> DroppedAttributesCount: 0
+     -> Attributes: 
+     -> event_attribute_key1: k1 value
 Links: 
 SpanLink: 0
      -> Trace ID: EEE19B7EC3C1B174
      -> Span ID: EEE19B7EC3C1B174
      -> TraceState: trace states
      -> DroppedAttributesCount: 0
-     -> Attributes: link_attribute_key1: k1 value 
+     -> Attributes: 
+     -> link_attribute_key1: k1 value
 
 Received 1 resource logs
 Received 7 log records
 Received 7 events
 ResourceLog #0
 Resource SchemaURL: http://schema.opentelemetry.io
-Resource attributes: k1: k1 value k2: k2 value 
+Resource attributes: 
+     -> k1: k1 value
+     -> k2: k2 value
 ScopeLogs #0
 ScopeLogs SchemaURL: http://schema.opentelemetry.io
-Instrumentation Scope library v1
-Instrumentation Scope Attributes:
- instrumentation_scope_k1: k1 value instrumentation_scope_k2: k2 value LogRecord #0
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+LogRecord #0
 ObservedTimestamp: 1000000
 Timestamp: 2000000000
 SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -1005,7 +1340,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -1016,7 +1353,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -1027,7 +1366,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -1038,7 +1379,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -1049,7 +1392,9 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
@@ -1060,9 +1405,30 @@ SeverityText: Severity info
 SeverityNumber: 2
 EventName: event1
 Body: log_body
-Attributes: log_attribute_key1: k1 value log_attribute_key2: k2 value 
+Attributes: 
+     -> log_attribute_key1: k1 value
+     -> log_attribute_key2: k2 value
 Trace ID: EEE19B7EC3C1B174
 Span ID: EEE19B7EC3C1B174
 Flags: 8
 
+Received 1 resource profiles, 
+Received 0 samples
+ResourceProfile #0
+Resource SchemaURL: http://schema.opentelemetry.io
+Resource attributes 
+     -> k1: k1 value
+     -> k2: k2 value
+ScopeProfiles #0
+ScopeProfiles SchemaURL: http://schema.opentelemetry.io
+Instrumentation Scope library @v1
+Instrumentation Scope Attributes: 
+     -> instrumentation_scope_k1: k1 value
+     -> instrumentation_scope_k2: k2 value
+Profile 0
+Profile ID: 
+Start time: 0
+Duration: 0
+Dropped attributes count: 0
+Location indices: []
 Shutdown message received
