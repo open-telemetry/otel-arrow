@@ -5,8 +5,10 @@
 //! bytes for messages defined in logs.proto
 
 use std::borrow::Cow;
+use std::cell::Cell;
+use std::num::NonZeroUsize;
 
-use crate::otlp::bytes::common::{KeyValueIterV2, RawAnyValue, RawInstrumentationScope, RawKeyValue};
+use crate::otlp::bytes::common::{KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue};
 use crate::otlp::bytes::consts::field_num::logs::{
     LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS,
     LOG_RECORD_OBSERVED_TIME_UNIX_NANO, LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT,
@@ -40,56 +42,41 @@ pub struct RawResourceLogs<'a> {
 
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct ResourceLogsFieldOffsets {
-    resource: Option<usize>,
-    schema_url: Option<usize>,
-    first_scope_logs: Option<usize>
-    // scope_logs: Vec<usize>,
+    resource: Cell<Option<NonZeroUsize>>,
+    schema_url: Cell<Option<NonZeroUsize>>,
+    first_scope_logs: Cell<Option<NonZeroUsize>>,
 }
 
 impl FieldOffsets for ResourceLogsFieldOffsets {
     fn new() -> Self {
         Self {
-            resource: None,
-            schema_url: None,
-            first_scope_logs: None,
-            // scope_logs: Vec::new(),
+            resource: Cell::new(None),
+            schema_url: Cell::new(None),
+            first_scope_logs: Cell::new(None),
         }
     }
 
     fn get_field_offset(&self, field_num: u64) -> Option<usize> {
         match field_num {
-            RESOURCE_LOGS_RESOURCE => self.resource,
-            RESOURCE_LOGS_SCHEMA_URL => self.schema_url,
-            RESOURCE_LOGS_SCOPE_LOGS => self.first_scope_logs,
+            RESOURCE_LOGS_RESOURCE => self.resource.get().map(NonZeroUsize::get),
+            RESOURCE_LOGS_SCHEMA_URL => self.schema_url.get().map(NonZeroUsize::get),
+            RESOURCE_LOGS_SCOPE_LOGS => self.first_scope_logs.get().map(NonZeroUsize::get),
             _ => None,
         }
     }
 
-    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
-        // TODO
-        panic!("shouldn't be here")
-        // if field_num == RESOURCE_LOGS_SCOPE_LOGS {
-        //     self.scope_logs.get(index).copied()
-        // } else {
-        //     None
-        // }
-    }
-
-    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
-        // all fields on ResourceLogs happen to have wire type of LEN
+    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
         if wire_type == wire_types::LEN {
+            let nz = NonZeroUsize::new(offset);
             match field_num {
-                RESOURCE_LOGS_RESOURCE => self.resource = Some(offset),
-                RESOURCE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
+                RESOURCE_LOGS_RESOURCE => self.resource.set(nz),
+                RESOURCE_LOGS_SCHEMA_URL => self.schema_url.set(nz),
                 RESOURCE_LOGS_SCOPE_LOGS => {
-                    if self.first_scope_logs.is_none() {
-                        self.first_scope_logs = Some(offset)
+                    if self.first_scope_logs.get().is_none() {
+                        self.first_scope_logs.set(nz);
                     }
-                    // self.scope_logs.push(offset);
                 }
-                _ => {
-                    // ignore invalid field_num
-                }
+                _ => { /* ignore */ }
             }
         }
     }
@@ -102,57 +89,41 @@ pub struct RawScopeLogs<'a> {
 
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct ScopeLogsFieldOffsets {
-    scope: Option<usize>,
-    schema_url: Option<usize>,
-    first_log_record: Option<usize>,
-    // log_records: Vec<usize>,
+    scope: Cell<Option<NonZeroUsize>>,
+    schema_url: Cell<Option<NonZeroUsize>>,
+    first_log_record: Cell<Option<NonZeroUsize>>,
 }
 
 impl FieldOffsets for ScopeLogsFieldOffsets {
     fn new() -> Self {
         Self {
-            scope: None,
-            schema_url: None,
-            first_log_record: None,
-            // log_records: Vec::new(),
+            scope: Cell::new(None),
+            schema_url: Cell::new(None),
+            first_log_record: Cell::new(None),
         }
     }
 
     fn get_field_offset(&self, field_num: u64) -> Option<usize> {
         match field_num {
-            SCOPE_LOG_SCOPE => self.scope,
-            SCOPE_LOGS_SCHEMA_URL => self.schema_url,
-            SCOPE_LOGS_LOG_RECORDS => self.first_log_record,
+            SCOPE_LOG_SCOPE => self.scope.get().map(NonZeroUsize::get),
+            SCOPE_LOGS_SCHEMA_URL => self.schema_url.get().map(NonZeroUsize::get),
+            SCOPE_LOGS_LOG_RECORDS => self.first_log_record.get().map(NonZeroUsize::get),
             _ => None,
         }
     }
 
-    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
-        // TODO
-        panic!("shouldn't be here")
-        // if field_num == SCOPE_LOGS_LOG_RECORDS {
-        //     self.log_records.get(index).copied()
-        // } else {
-        //     None
-        // }
-    }
-
-    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
-        // all fields on scope log happen to have wire type LEN
+    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
         if wire_type == wire_types::LEN {
+            let nz = NonZeroUsize::new(offset);
             match field_num {
-                SCOPE_LOG_SCOPE => self.scope = Some(offset),
-                SCOPE_LOGS_SCHEMA_URL => self.schema_url = Some(offset),
+                SCOPE_LOG_SCOPE => self.scope.set(nz),
+                SCOPE_LOGS_SCHEMA_URL => self.schema_url.set(nz),
                 SCOPE_LOGS_LOG_RECORDS => {
-                    // TODO fix formatting 
-                    if self.first_log_record.is_none() {
-                        self.first_log_record = Some(offset)
+                    if self.first_log_record.get().is_none() {
+                        self.first_log_record.set(nz)
                     }
-                    // self.log_records.push(offset)
-                },
-                _ => {
-                    // ignore invalid field_num
                 }
+                _ => { /* ignore unknown field */ }
             }
         }
     }
@@ -165,64 +136,60 @@ pub struct RawLogRecord<'a> {
 
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct LogFieldOffsets {
-    scalar_fields: [Option<usize>; 13],
-    first_attribute: Option<usize>
-    // attributes: Vec<usize>,
+    scalar_fields: [Cell<Option<NonZeroUsize>>; 13],
+    first_attribute: Cell<Option<NonZeroUsize>>,
 }
 
 impl FieldOffsets for LogFieldOffsets {
     fn new() -> Self {
         Self {
-            scalar_fields: [None; 13],
-            first_attribute: None,
-            // attributes: Vec::new(),
+            scalar_fields: std::array::from_fn(|_| Cell::new(None)),
+            first_attribute: Cell::new(None),
         }
     }
 
-    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
+    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
         const WIRE_TYPES: [u64; 13] = [
             0,                   // unused
-            wire_types::FIXED64, // fixed64 time_unix_nano = 1
-            wire_types::VARINT,  // SeverityNumber severity_number = 2
-            wire_types::LEN,     // string severity_text = 3
+            wire_types::FIXED64, // time_unix_nano = 1
+            wire_types::VARINT,  // severity_number = 2
+            wire_types::LEN,     // severity_text = 3
             0,                   // unused
             wire_types::LEN,     // body = 5
             wire_types::LEN,     // attributes = 6
-            wire_types::VARINT,  // uint32 dropped_attributes_count = 7
-            wire_types::FIXED32, // fixed32 flags = 8
-            wire_types::LEN,     // bytes trace_id = 9
-            wire_types::LEN,     // bytes span_id = 10
-            wire_types::FIXED64, // fixed64 observed_time_unix_nano=11
-            wire_types::LEN,     // string event_name = 12
+            wire_types::VARINT,  // dropped_attributes_count = 7
+            wire_types::FIXED32, // flags = 8
+            wire_types::LEN,     // trace_id = 9
+            wire_types::LEN,     // span_id = 10
+            wire_types::FIXED64, // observed_time_unix_nano = 11
+            wire_types::LEN,     // event_name = 12
         ];
+
+        let nz = match NonZeroUsize::new(offset) {
+            Some(nz) => nz,
+            None => return,
+        };
+
         if field_num == LOG_RECORD_ATTRIBUTES {
-            // self.attributes.push(offset)
-            if self.first_attribute.is_none()  && wire_type == wire_types::LEN{
-                self.first_attribute = Some(offset)
+            if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
+                self.first_attribute.set(Some(nz));
             }
         } else if field_num < 13 {
             let idx = field_num as usize;
             if wire_type == WIRE_TYPES[idx] {
-                self.scalar_fields[idx] = Some(offset);
+                self.scalar_fields[idx].set(Some(nz));
             }
         }
     }
 
     fn get_field_offset(&self, field_num: u64) -> Option<usize> {
         if field_num == LOG_RECORD_ATTRIBUTES {
-            self.first_attribute
+            self.first_attribute.get().map(NonZeroUsize::get)
         } else {
-            *self.scalar_fields.get(field_num as usize).unwrap_or(&None)
+            self.scalar_fields
+                .get(field_num as usize)
+                .and_then(|c| c.get().map(NonZeroUsize::get))
         }
-    }
-
-    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
-        panic!("shouldn't be here")
-        // if field_num == LOG_RECORD_ATTRIBUTES {
-        //     self.attributes.get(index).copied()
-        // } else {
-        //     None
-        // }
     }
 }
 
@@ -413,7 +380,7 @@ impl LogRecordView for RawLogRecord<'_> {
         Self: 'att;
 
     type AttributeIter<'att>
-        = KeyValueIterV2<'att, LogFieldOffsets>
+        = KeyValueIter<'att, LogFieldOffsets>
     where
         Self: 'att;
 
@@ -423,7 +390,7 @@ impl LogRecordView for RawLogRecord<'_> {
         Self: 'bod;
 
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        KeyValueIterV2::new(
+        KeyValueIter::new(
             RepeatedFieldProtoBytesParser::from_byte_parser(
                 &self.bytes_parser, 
                 LOG_RECORD_ATTRIBUTES,

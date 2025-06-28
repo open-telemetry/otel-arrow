@@ -6,6 +6,7 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::num::NonZeroUsize;
 
 use crate::otlp::bytes::consts::field_num::common::{
     ANY_VALUE_ARRAY_VALUE, ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYES_VALUE, ANY_VALUE_DOUBLE_VALUE,
@@ -115,64 +116,57 @@ impl<'a> RawInstrumentationScope<'a> {
 
 /// known field offsets for buffer containing InstrumentationScope message
 pub struct InstrumentationScopeFieldOffsets {
-    name: Option<usize>,
-    version: Option<usize>,
-    dropped_attributes_count: Option<usize>,
-    // attributes: Vec<usize>,
-    first_attribute: Option<usize>
+    name: Cell<Option<NonZeroUsize>>,
+    version: Cell<Option<NonZeroUsize>>,
+    dropped_attributes_count: Cell<Option<NonZeroUsize>>,
+    first_attribute: Cell<Option<NonZeroUsize>>,
 }
 
 impl FieldOffsets for InstrumentationScopeFieldOffsets {
     fn new() -> Self {
         Self {
-            name: None,
-            version: None,
-            dropped_attributes_count: None,
-            first_attribute: None,
-            // attributes: Vec::new(),
+            name: Cell::new(None),
+            version: Cell::new(None),
+            dropped_attributes_count: Cell::new(None),
+            first_attribute: Cell::new(None),
         }
     }
 
     fn get_field_offset(&self, field_num: u64) -> Option<usize> {
         match field_num {
-            INSTRUMENTATION_SCOPE_NAME => self.name,
-            INSTRUMENTATION_SCOPE_VERSION => self.version,
-            INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count,
-            INSTRUMENTATION_SCOPE_ATTRIBUTES => self.first_attribute,
+            INSTRUMENTATION_SCOPE_NAME => self.name.get().map(NonZeroUsize::get),
+            INSTRUMENTATION_SCOPE_VERSION => self.version.get().map(NonZeroUsize::get),
+            INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count.get().map(NonZeroUsize::get),
+            INSTRUMENTATION_SCOPE_ATTRIBUTES => self.first_attribute.get().map(NonZeroUsize::get),
             _ => None,
         }
     }
 
-    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
-        panic!("shouldn't be here")
-        // if field_num == INSTRUMENTATION_SCOPE_ATTRIBUTES {
-        //     self.attributes.get(index).copied()
-        // } else {
-        //     None
-        // }
-    }
+    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
+        let nz = match NonZeroUsize::new(offset) {
+            Some(nz) => nz,
+            None => return,
+        };
 
-    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
         match field_num {
             INSTRUMENTATION_SCOPE_NAME => {
                 if wire_type == wire_types::LEN {
-                    self.name = Some(offset)
+                    self.name.set(Some(nz));
                 }
             }
             INSTRUMENTATION_SCOPE_VERSION => {
                 if wire_type == wire_types::LEN {
-                    self.version = Some(offset)
+                    self.version.set(Some(nz));
                 }
             }
             INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT => {
                 if wire_type == wire_types::VARINT {
-                    self.dropped_attributes_count = Some(offset)
+                    self.dropped_attributes_count.set(Some(nz));
                 }
             }
             INSTRUMENTATION_SCOPE_ATTRIBUTES => {
-                if self.first_attribute.is_none() && wire_type == wire_types::LEN {
-                    self.first_attribute = Some(offset)
-                    // self.attributes.push(offset);
+                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
+                    self.first_attribute.set(Some(nz));
                 }
             }
             _ => {
@@ -186,55 +180,12 @@ impl FieldOffsets for InstrumentationScopeFieldOffsets {
 
 /// Iterator of KeyValues - produces implementation of KeyValueView from the byte array which
 /// contains a protobuf serialized repeated KeyValues
-// pub struct KeyValueIter<'a, T: FieldOffsets> {
-//     /// field number in the message that contains the KeyValue field
-//     target_field_number: u64,
-
-//     /// index of the next repeated value to get from the serialized message
-//     field_index: usize,
-
-//     bytes_parser: ProtoBytesParser<'a, T>,
-// }
-
-// impl<'a, T> KeyValueIter<'a, T>
-// where
-//     T: FieldOffsets,
-// {
-//     /// Create a new instance of `KeyValueIter`
-//     #[must_use]
-//     pub fn new(bytes_parser: ProtoBytesParser<'a, T>, target_field_number: u64) -> Self {
-//         Self {
-//             target_field_number,
-//             field_index: 0,
-//             bytes_parser,
-//         }
-//     }
-// }
-
-// impl<'a, T> Iterator for KeyValueIter<'a, T>
-// where
-//     T: FieldOffsets,
-// {
-//     type Item = RawKeyValue<'a>;
-
-//     fn next(&mut self) -> Option<Self::Item> {
-//         let slice = self.bytes_parser.advance_to_find_next_repeated(
-//             self.target_field_number,
-//             self.field_index,
-//             wire_types::LEN,
-//         )?;
-//         self.field_index += 1;
-//         Some(RawKeyValue::new(slice))
-//     }
-// }
-
-/// TODO
-pub struct KeyValueIterV2<'a, T: FieldOffsets> {
+pub struct KeyValueIter<'a, T: FieldOffsets> {
     bytes_parser: RepeatedFieldProtoBytesParser<'a, T>
 }
 
-impl<'a, T> KeyValueIterV2<'a, T> where T: FieldOffsets {
-    /// TODO
+impl<'a, T> KeyValueIter<'a, T> where T: FieldOffsets {
+    /// Create a new instance of `KeyValueIter` 
     pub fn new(bytes_parser: RepeatedFieldProtoBytesParser<'a, T>) -> Self {
         Self {
             bytes_parser
@@ -242,7 +193,7 @@ impl<'a, T> KeyValueIterV2<'a, T> where T: FieldOffsets {
     }
 }
 
-impl<'a, T> Iterator for KeyValueIterV2<'a, T> where T: FieldOffsets {
+impl<'a, T> Iterator for KeyValueIter<'a, T> where T: FieldOffsets {
     type Item = RawKeyValue<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -342,7 +293,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
     type KeyValue = RawKeyValue<'a>;
 
     type KeyValueIter<'kv>
-        = KeyValueIterV2<'a, KeyValuesListFieldOffsets>
+        = KeyValueIter<'a, KeyValuesListFieldOffsets>
     where
         Self: 'kv;
 
@@ -486,7 +437,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
             // })
             // TODO dumb variable name
             let tmp = ProtoBytesParser::new(slice);
-            Some(KeyValueIterV2::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            Some(KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
                 &tmp, KEY_VALUE_LIST_VALUES, wire_types::LEN
             )))
         } else {
@@ -495,43 +446,33 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
     }
 }
 
-#[allow(missing_docs)]
+/// known offset of KeyValuesList
 pub struct KeyValuesListFieldOffsets {
-    first_offset: Option<usize>
-    // offsets: Vec<usize>,
+    first_offset: Cell<Option<NonZeroUsize>>,
 }
 
 impl FieldOffsets for KeyValuesListFieldOffsets {
     fn new() -> Self {
         Self {
-            first_offset: None
-            // offsets: Vec::new(),
+            first_offset: Cell::new(None),
         }
     }
 
-    fn get_repeated_field_offset(&self, field_tag: u64, index: usize) -> Option<usize> {
-        panic!("shouldn't be here")
-        // if field_tag == KEY_VALUE_LIST_VALUES {
-        //     // self.offsets.get(index).copied()
-        //     self.first_offset
-        // } else {
-        //     None
-        // }
-    }
 
     fn get_field_offset(&self, _field_tag: u64) -> Option<usize> {
-        // KeyValuesList has no non-repeating fields
-        // None
-        self.first_offset
+        self.first_offset.get().map(NonZeroUsize::get)
     }
 
-    fn set_field_offset(&mut self, field_tag: u64, wire_type: u64, offset: usize) {
-        if field_tag == KEY_VALUE_LIST_VALUES && wire_type == wire_types::LEN && self.first_offset.is_none() {
-            self.first_offset = Some(offset)
+    fn set_field_offset(&self, field_tag: u64, wire_type: u64, offset: usize) {
+        if field_tag == KEY_VALUE_LIST_VALUES && wire_type == wire_types::LEN {
+            if self.first_offset.get().is_none() {
+                if let Some(nz) = NonZeroUsize::new(offset) {
+                    self.first_offset.set(Some(nz));
+                }
+            }
         }
     }
 }
-
 impl InstrumentationScopeView for RawInstrumentationScope<'_> {
     type Attribute<'att>
         = RawKeyValue<'att>
@@ -539,7 +480,7 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
         Self: 'att;
 
     type AttributeIter<'att>
-        = KeyValueIterV2<'att, InstrumentationScopeFieldOffsets>
+        = KeyValueIter<'att, InstrumentationScopeFieldOffsets>
     where
         Self: 'att;
 
@@ -577,7 +518,7 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
         //     field_index: 0,
         //     bytes_parser: self.bytes_parser.clone(),
         // }
-        KeyValueIterV2::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
             &self.bytes_parser, INSTRUMENTATION_SCOPE_ATTRIBUTES, wire_types::LEN))
     }
 }

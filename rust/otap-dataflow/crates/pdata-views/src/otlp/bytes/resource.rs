@@ -5,9 +5,11 @@
 //! bytes for messages defined in resources.proto
 
 
+use std::{cell::Cell, num::NonZeroUsize};
+
 use crate::{
     otlp::bytes::{
-        common::{KeyValueIterV2, RawKeyValue},
+        common::{KeyValueIter, RawKeyValue},
         consts::{
             field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
             wire_types,
@@ -32,53 +34,41 @@ impl<'a> RawResource<'a> {
 
 /// known field offsets for fields in buffer containing Resource message
 pub struct ResourceFieldOffsets {
-    dropped_attributes_count: Option<usize>,
-    first_attribute: Option<usize>
-    // attributes: Vec<usize>,
+    dropped_attributes_count: Cell<Option<NonZeroUsize>>,
+    first_attribute: Cell<Option<NonZeroUsize>>,
 }
 
 impl FieldOffsets for ResourceFieldOffsets {
     fn new() -> Self {
         Self {
-            dropped_attributes_count: None,
-            first_attribute: None,
-            // attributes: Vec::new(),
+            dropped_attributes_count: Cell::new(None),
+            first_attribute: Cell::new(None),
         }
     }
 
     fn get_field_offset(&self, field_num: u64) -> Option<usize> {
         match field_num {
-            RESOURCE_ATTRIBUTES => self.first_attribute,
-            RESOURCE_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count,
-            _ => None
+            RESOURCE_ATTRIBUTES => self.first_attribute.get().map(NonZeroUsize::get),
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count.get().map(NonZeroUsize::get),
+            _ => None,
         }
-        // if field_num == RESOURCE_DROPPED_ATTRIBUTES_COUNT {
-        //     self.dropped_attributes_count
-        // } else if field_num ==  {
-        //     None
-        // }
     }
 
-    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
-        panic!("shouldn't be here")
-        // if field_num == RESOURCE_ATTRIBUTES {
-        //     self.attributes.get(index).copied()
-        // } else {
-        //     None
-        // }
-    }
+    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
+        let nz = match NonZeroUsize::new(offset) {
+            Some(nz) => nz,
+            None => return,
+        };
 
-    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
         match field_num {
             RESOURCE_DROPPED_ATTRIBUTES_COUNT => {
                 if wire_type == wire_types::VARINT {
-                    self.dropped_attributes_count = Some(offset)
+                    self.dropped_attributes_count.set(Some(nz));
                 }
             }
             RESOURCE_ATTRIBUTES => {
-                if self.first_attribute.is_none() &&  wire_type == wire_types::LEN {
-                    self.first_attribute = Some(offset)
-                    // self.attributes.push(offset)
+                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
+                    self.first_attribute.set(Some(nz));
                 }
             }
             _ => {
@@ -94,12 +84,12 @@ impl ResourceView for RawResource<'_> {
     where
         Self: 'att;
     type AttributesIter<'att>
-        = KeyValueIterV2<'att, ResourceFieldOffsets>
+        = KeyValueIter<'att, ResourceFieldOffsets>
     where
         Self: 'att;
 
     fn attributes(&self) -> Self::AttributesIter<'_> {
-        KeyValueIterV2::new(
+        KeyValueIter::new(
             RepeatedFieldProtoBytesParser::from_byte_parser(&self.bytes_parser,
                 RESOURCE_ATTRIBUTES,
                 wire_types::LEN

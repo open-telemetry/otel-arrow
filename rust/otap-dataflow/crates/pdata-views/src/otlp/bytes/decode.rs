@@ -33,16 +33,14 @@ pub trait FieldOffsets {
     /// Returns the offset of the given scalar field number, if known.
     fn get_field_offset(&self, field_num: u64) -> Option<usize>;
 
-    /// Returns the offset of a specific index within a repeated field, if known.
-    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize>;
-
     /// Records the offset of a field in the buffer.
     ///
     /// The implementation should also ignore if an offset is passed for an invalid wire type
     ///
     /// For repeated fields, this may be called multiple times, in the order that field
     /// instances are encountered during parsing.
-    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize);
+    // TODO add comments about the interior mutability here
+    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize);
 }
 
 /// `ProtoBytesParser` is a generic struct that encapsulates the logic for iterating through
@@ -77,12 +75,7 @@ pub struct ProtoBytesParser<'a, T: FieldOffsets> {
     pos: Rc<Cell<usize>>,
 
     /// offsets within the buffer of fields that have been encountered as the buffer is parsed
-    field_offsets: Rc<RefCell<T>>,
-}
-
-enum FieldIdentifier {
-    Scalar(u64),
-    Repeated(u64, usize),
+    field_offsets: Rc<T>,
 }
 
 impl<'a, T> ProtoBytesParser<'a, T>
@@ -95,7 +88,7 @@ where
         Self {
             buf,
             pos: Rc::new(Cell::new(0)),
-            field_offsets: Rc::new(RefCell::new(T::new())),
+            field_offsets: Rc::new(T::new()),
         }
     }
 
@@ -108,45 +101,11 @@ where
         field_num: u64,
         expected_wire_type: u64,
     ) -> Option<&'a [u8]> {
-        self.advance_to_find_field_internal(FieldIdentifier::Scalar(field_num), expected_wire_type)
-    }
-
-    /// Advances the parser to the specified instance of a repeated field (by index) and returns
-    /// its value as a byte slice, if found. Parsing continues from the current position.
-    #[inline]
-    #[must_use]
-    pub fn advance_to_find_next_repeated(
-        &self,
-        field_num: u64,
-        field_index: usize,
-        expected_wire_type: u64,
-    ) -> Option<&'a [u8]> {
-        self.advance_to_find_field_internal(
-            FieldIdentifier::Repeated(field_num, field_index),
-            expected_wire_type,
-        )
-    }
-
-    fn advance_to_find_field_internal(
-        &self,
-        field: FieldIdentifier,
-        expected_wire_type: u64,
-    ) -> Option<&'a [u8]> {
         // this loop advances parsing by one field each iteration until either the field is found
         // or the end of the buffer is reached.
         loop {
             // try to get the field offset if it is known
-            let field_offset = {
-                let field_offsets = self.field_offsets.borrow();
-                match &field {
-                    FieldIdentifier::Scalar(field_num) => {
-                        field_offsets.get_field_offset(*field_num)
-                    }
-                    FieldIdentifier::Repeated(field_num, field_index) => {
-                        field_offsets.get_repeated_field_offset(*field_num, *field_index)
-                    }
-                }
-            };
+            let field_offset = self.field_offsets.get_field_offset(field_num);
 
             match field_offset {
                 Some(offset) => {
@@ -177,10 +136,7 @@ where
                     let wire_type = tag & 7;
 
                     // save the offset of the field we've encountered
-                    {
-                        let mut field_offsets = self.field_offsets.borrow_mut();
-                        field_offsets.set_field_offset(field, wire_type, next_pos);
-                    }
+                    self.field_offsets.set_field_offset(field, wire_type, next_pos);
 
                     // advance parsing to the start of the next field by skipping over the value
                     self.advance_past_value(wire_type, next_pos)?;
@@ -220,7 +176,7 @@ pub struct RepeatedFieldProtoBytesParser<'a, T: FieldOffsets> {
     // might make the code cleaner
     buf: &'a [u8],
     pos: Rc<Cell<usize>>,
-    field_offsets: Rc<RefCell<T>>,
+    field_offsets: Rc<T>,
 
     field_num: u64,
     expected_wire_type: u64,
@@ -253,10 +209,8 @@ impl<'a, T> Iterator for RepeatedFieldProtoBytesParser<'a, T> where T: FieldOffs
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.iter_pos.is_none() {
-            let field_offset = { 
-                let field_offsets = self.field_offsets.borrow();
-                field_offsets.get_field_offset(self.field_num)
-            };
+            // try to get the field offset if it is known
+            let field_offset = self.field_offsets.get_field_offset(self.field_num);
 
             match field_offset {
                 Some(offset) => {
@@ -273,11 +227,9 @@ impl<'a, T> Iterator for RepeatedFieldProtoBytesParser<'a, T> where T: FieldOffs
                     let (tag, next_pos) = read_varint(self.buf, pos)?;
                     let field = tag >> 3;
                     let wire_type = tag & 7;
-
-                    {
-                        let mut field_offsets = self.field_offsets.borrow_mut();
-                        field_offsets.set_field_offset(field, wire_type, next_pos);
-                    }
+                    
+                    // save the offset of the field we've encountered
+                    self.field_offsets.set_field_offset(field, wire_type, next_pos);
 
                     // advance past next field
                     let next_pos = match wire_type {
@@ -332,10 +284,8 @@ impl<'a, T> Iterator for RepeatedFieldProtoBytesParser<'a, T> where T: FieldOffs
             }
 
 
-            {
-                let mut field_offsets = self.field_offsets.borrow_mut();
-                field_offsets.set_field_offset(field, wire_type, next_pos);
-            }
+            // save the offset of the field we've encountered
+            self.field_offsets.set_field_offset(field, wire_type, next_pos);
 
             // advance past next field
             next_pos = match wire_type {
