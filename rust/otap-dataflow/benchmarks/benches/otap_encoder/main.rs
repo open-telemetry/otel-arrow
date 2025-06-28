@@ -8,7 +8,7 @@
 
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 
 use otap_df_otap::encoder::encode_logs_otap_batch;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
@@ -123,58 +123,78 @@ fn bench_encode_logs(c: &mut Criterion) {
     input
         .encode(&mut input_bytes)
         .expect("can encode proto bytes");
-    
+
     let mut group = c.benchmark_group("encode_otap_logs_using_views");
 
+    // 1. proto_bytes->views->OTAP
     let _ = group.bench_with_input(
         BenchmarkId::new("proto_bytes->views->OTAP", "default"),
         &input_bytes,
         |b, input| {
-            b.iter(|| {
-                let logs_data = RawLogsData::new(input.as_ref());
-                let result = encode_logs_otap_batch(&logs_data).expect("function no errors");
-                black_box(result)
-            })
+            b.iter_batched(
+                || RawLogsData::new(input.as_ref()),      // setup: create view wrapper
+                |logs_data| {
+                    let result = encode_logs_otap_batch(&logs_data).expect("no error");
+                    black_box(result)
+                },
+                BatchSize::SmallInput,
+            )
         },
     );
 
+    // 2. proto_bytes->prost->views->OTAP
     let _ = group.bench_with_input(
         BenchmarkId::new("proto_bytes->prost->views->OTAP", "default"),
         &input_bytes,
         |b, input| {
-            b.iter(|| {
-                let logs_data = LogsData::decode(input.as_ref()).expect("can decode proto bytes");
-                let result = encode_logs_otap_batch(&logs_data).expect("function no errors");
-                black_box(result)
-            })
+            b.iter_batched(
+                || input,
+                |input| {
+                    let logs_data = LogsData::decode(input.as_ref()).expect("can decode proto bytes");
+                    let result = encode_logs_otap_batch(&logs_data).expect("no error");
+                    black_box(result)
+                },
+                BatchSize::SmallInput,
+            )
         },
     );
 
+    // 3. prost->views->OTAP
     let _ = group.bench_with_input(
         BenchmarkId::new("prost->views->OTAP", "default"),
         &input,
         |b, input| {
-            b.iter(|| encode_logs_otap_batch(input).expect("function no errors"));
+            b.iter_batched(
+                || input,                     // setup: clone input (cheap clone or ref)
+                |logs_data| {
+                    encode_logs_otap_batch(logs_data).expect("no error")
+                },
+                BatchSize::SmallInput,
+            )
         },
     );
 
-
     group.finish();
-    
-    
+
+    // Separate decode benchmark group
     let mut decode_to_prost_group = c.benchmark_group("decode_proto_bytes");
+
     let _ = decode_to_prost_group.bench_with_input(
         BenchmarkId::new("proto_bytes->prost", "default"),
         &input_bytes,
         |b, input| {
-            b.iter(|| {
-                let result = LogsData::decode(input.as_ref()).expect("can decode proto bytes");
-                black_box(result)
-            })
+            b.iter_batched(
+                || input.as_ref(),
+                |bytes| {
+                    let result = LogsData::decode(bytes).expect("can decode proto bytes");
+                    black_box(result)
+                },
+                BatchSize::SmallInput,
+            )
         },
     );
-    decode_to_prost_group.finish();
 
+    decode_to_prost_group.finish();
 }
 
 #[allow(missing_docs)]
