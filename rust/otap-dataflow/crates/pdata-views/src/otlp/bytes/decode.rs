@@ -282,13 +282,13 @@ impl<'a, T> Iterator for RepeatedFieldProtoBytesParser<'a, T> where T: FieldOffs
                     // advance past next field
                     let next_pos = match wire_type {
                         wire_types::VARINT => {
-                            let (_, p) = read_varint(self.buf, pos)?;
+                            let (_, p) = read_varint(self.buf, next_pos)?;
                             p
                         },
-                        wire_types::FIXED32 => pos + 4,
-                        wire_types::FIXED64 => pos + 8,
+                        wire_types::FIXED32 => next_pos + 4,
+                        wire_types::FIXED64 => next_pos + 8,
                         wire_types::LEN => {
-                            let (_, p) = read_len_delim(self.buf, pos)?;
+                            let (_, p) = read_len_delim(self.buf, next_pos)?;
                             p
                         },
                         _ => {

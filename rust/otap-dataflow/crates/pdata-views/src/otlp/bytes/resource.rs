@@ -4,14 +4,15 @@
 //! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
 //! bytes for messages defined in resources.proto
 
+
 use crate::{
     otlp::bytes::{
-        common::{KeyValueIter, RawKeyValue},
+        common::{KeyValueIterV2, RawKeyValue},
         consts::{
             field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
             wire_types,
         },
-        decode::{FieldOffsets, ProtoBytesParser, read_varint},
+        decode::{read_varint, FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser},
     },
     views::resource::ResourceView,
 };
@@ -32,31 +33,39 @@ impl<'a> RawResource<'a> {
 /// known field offsets for fields in buffer containing Resource message
 pub struct ResourceFieldOffsets {
     dropped_attributes_count: Option<usize>,
-    attributes: Vec<usize>,
+    first_attribute: Option<usize>
+    // attributes: Vec<usize>,
 }
 
 impl FieldOffsets for ResourceFieldOffsets {
     fn new() -> Self {
         Self {
             dropped_attributes_count: None,
-            attributes: Vec::new(),
+            first_attribute: None,
+            // attributes: Vec::new(),
         }
     }
 
     fn get_field_offset(&self, field_num: u64) -> Option<usize> {
-        if field_num == RESOURCE_DROPPED_ATTRIBUTES_COUNT {
-            self.dropped_attributes_count
-        } else {
-            None
+        match field_num {
+            RESOURCE_ATTRIBUTES => self.first_attribute,
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count,
+            _ => None
         }
+        // if field_num == RESOURCE_DROPPED_ATTRIBUTES_COUNT {
+        //     self.dropped_attributes_count
+        // } else if field_num ==  {
+        //     None
+        // }
     }
 
     fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize> {
-        if field_num == RESOURCE_ATTRIBUTES {
-            self.attributes.get(index).copied()
-        } else {
-            None
-        }
+        panic!("shouldn't be here")
+        // if field_num == RESOURCE_ATTRIBUTES {
+        //     self.attributes.get(index).copied()
+        // } else {
+        //     None
+        // }
     }
 
     fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize) {
@@ -67,8 +76,9 @@ impl FieldOffsets for ResourceFieldOffsets {
                 }
             }
             RESOURCE_ATTRIBUTES => {
-                if wire_type == wire_types::LEN {
-                    self.attributes.push(offset)
+                if self.first_attribute.is_none() &&  wire_type == wire_types::LEN {
+                    self.first_attribute = Some(offset)
+                    // self.attributes.push(offset)
                 }
             }
             _ => {
@@ -84,12 +94,18 @@ impl ResourceView for RawResource<'_> {
     where
         Self: 'att;
     type AttributesIter<'att>
-        = KeyValueIter<'att, ResourceFieldOffsets>
+        = KeyValueIterV2<'att, ResourceFieldOffsets>
     where
         Self: 'att;
 
     fn attributes(&self) -> Self::AttributesIter<'_> {
-        KeyValueIter::new(self.bytes_parser.clone(), RESOURCE_ATTRIBUTES)
+        KeyValueIterV2::new(
+            RepeatedFieldProtoBytesParser::from_byte_parser(&self.bytes_parser,
+                RESOURCE_ATTRIBUTES,
+                wire_types::LEN
+            )
+        )
+            // self.bytes_parser.clone(), RESOURCE_ATTRIBUTES)
     }
 
     fn dropped_attributes_count(&self) -> u32 {

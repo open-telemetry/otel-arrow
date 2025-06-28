@@ -360,6 +360,12 @@ mod test {
         let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
         arrow::util::pretty::print_batches(&[log_attrs.clone()]).unwrap();
 
+        let resource_attrs = otap_batch.get(ArrowPayloadType::ResourceAttrs).unwrap();
+        arrow::util::pretty::print_batches(&[resource_attrs.clone()]).unwrap();
+
+        let scope_attrs = otap_batch.get(ArrowPayloadType::ScopeAttrs).unwrap();
+        arrow::util::pretty::print_batches(&[scope_attrs.clone()]).unwrap();
+
         // check that the logs record batch is what we expect
         let expected_log_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![

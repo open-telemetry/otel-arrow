@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use crate::otlp::bytes::common::{KeyValueIter, KeyValueIterV2, RawAnyValue, RawInstrumentationScope, RawKeyValue};
+use crate::otlp::bytes::common::{KeyValueIterV2, RawAnyValue, RawInstrumentationScope, RawKeyValue};
 use crate::otlp::bytes::consts::field_num::logs::{
     LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, LOG_RECORD_FLAGS,
     LOG_RECORD_OBSERVED_TIME_UNIX_NANO, LOG_RECORD_SEVERITY_NUMBER, LOG_RECORD_SEVERITY_TEXT,
