@@ -36,6 +36,10 @@ tokio-stream = "0.1.17"
 workspace = true
 
 [[bench]]
+name = "otlp"
+harness = false
+
+[[bench]]
 name = "config"
 harness = false
 
