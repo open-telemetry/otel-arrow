@@ -71,7 +71,7 @@ pub trait AnyValueView<'val> {
 }
 
 /// Enum representing the type of some AnyValue
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ValueType {
     /// the value is Empty/Null
     Empty,
@@ -109,7 +109,7 @@ pub trait AttributeView {
     fn key(&self) -> Str<'_>;
 
     /// access the value of the attribute. This will return `None` if the value is "empty"
-    fn value(&self) -> Option<&Self::Val<'_>>;
+    fn value(&self) -> Option<Self::Val<'_>>;
 }
 
 /// View for the instrumentation scope
