@@ -19,6 +19,11 @@ use otel_arrow_rust::proto::opentelemetry::logs::v1::{
 use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
 use prost::Message;
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 fn create_logs_data() -> LogsData {
     let attr_values = vec![
         AnyValue::new_string("terry"),
@@ -118,7 +123,7 @@ fn bench_encode_logs(c: &mut Criterion) {
     input
         .encode(&mut input_bytes)
         .expect("can encode proto bytes");
-    {
+    
     let mut group = c.benchmark_group("encode_otap_logs_using_views");
 
     let _ = group.bench_with_input(
@@ -132,8 +137,6 @@ fn bench_encode_logs(c: &mut Criterion) {
             })
         },
     );
-
-
 
     let _ = group.bench_with_input(
         BenchmarkId::new("proto_bytes->prost->views->OTAP", "default"),
@@ -157,11 +160,9 @@ fn bench_encode_logs(c: &mut Criterion) {
 
 
     group.finish();
-    }
-
-    {
+    
+    
     let mut decode_to_prost_group = c.benchmark_group("decode_proto_bytes");
-
     let _ = decode_to_prost_group.bench_with_input(
         BenchmarkId::new("proto_bytes->prost", "default"),
         &input_bytes,
@@ -172,9 +173,7 @@ fn bench_encode_logs(c: &mut Criterion) {
             })
         },
     );
-
     decode_to_prost_group.finish();
-    }
 
 }
 

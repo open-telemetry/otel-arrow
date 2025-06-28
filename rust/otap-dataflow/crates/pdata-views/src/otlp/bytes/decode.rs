@@ -6,7 +6,44 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::otlp::bytes::consts::wire_types;
+use crate::otlp::bytes::consts::{field_num, wire_types};
+
+/// Clones the parser, sharing the underlying buffer and interior-mutability state.
+/// The cloned instance will share offsets and position with the original.
+impl<T: FieldOffsets> Clone for ProtoBytesParser<'_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            buf: self.buf,
+            pos: self.pos.clone(),
+            field_offsets: self.field_offsets.clone(),
+        }
+    }
+}
+
+/// The `FieldOffsets` trait defines an interface for tracking the positions (offsets)
+/// of fields within a serialized protobuf buffer.
+///
+/// Implementations act as lightweight offset repositories, optimized for fast access
+/// during parsing. For best performance, avoid unnecessary heap allocations — prefer
+/// fixed-size or stack-based storage where possible.
+pub trait FieldOffsets {
+    /// Creates a new, empty instance of this `FieldOffsets` implementation.
+    fn new() -> Self;
+
+    /// Returns the offset of the given scalar field number, if known.
+    fn get_field_offset(&self, field_num: u64) -> Option<usize>;
+
+    /// Returns the offset of a specific index within a repeated field, if known.
+    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize>;
+
+    /// Records the offset of a field in the buffer.
+    ///
+    /// The implementation should also ignore if an offset is passed for an invalid wire type
+    ///
+    /// For repeated fields, this may be called multiple times, in the order that field
+    /// instances are encountered during parsing.
+    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize);
+}
 
 /// `ProtoBytesParser` is a generic struct that encapsulates the logic for iterating through
 /// a buffer containing a serialized protobuf message, identifying the offsets of its fields.
@@ -177,42 +214,154 @@ where
     }
 }
 
-/// Clones the parser, sharing the underlying buffer and interior-mutability state.
-/// The cloned instance will share offsets and position with the original.
-impl<T: FieldOffsets> Clone for ProtoBytesParser<'_, T> {
-    fn clone(&self) -> Self {
+/// TODO comments
+pub struct RepeatedFieldProtoBytesParser<'a, T: FieldOffsets> {
+    // TODO this could contain the PRotoByteParser and just call into it's methods
+    // might make the code cleaner
+    buf: &'a [u8],
+    pos: Rc<Cell<usize>>,
+    field_offsets: Rc<RefCell<T>>,
+
+    field_num: u64,
+    expected_wire_type: u64,
+    iter_pos: Option<usize>,
+
+    // TODO there's an optimization to be made in this thing where we can bomb out early
+    // if we keep track of the last index of the list so we don't always iterate right
+    // to the end of the buffer
+}
+
+impl<'a, T> RepeatedFieldProtoBytesParser<'a, T> where T: FieldOffsets {
+    /// Create a new instance of `RepeatedFieldProtoBytesParser` with the same buffer and parser
+    /// state as the passed `ProtoByteParser` that will implement iterator for the given field
+    pub fn from_byte_parser(other: &ProtoBytesParser<'a, T>, field_num: u64, expected_wire_type: u64) -> Self {
         Self {
-            buf: self.buf,
-            pos: self.pos.clone(),
-            field_offsets: self.field_offsets.clone(),
+            buf: other.buf,
+            pos: other.pos.clone(),
+            field_offsets: other.field_offsets.clone(),
+
+            field_num,
+            expected_wire_type,
+            iter_pos: None
         }
     }
 }
 
-/// The `FieldOffsets` trait defines an interface for tracking the positions (offsets)
-/// of fields within a serialized protobuf buffer.
-///
-/// Implementations act as lightweight offset repositories, optimized for fast access
-/// during parsing. For best performance, avoid unnecessary heap allocations — prefer
-/// fixed-size or stack-based storage where possible.
-pub trait FieldOffsets {
-    /// Creates a new, empty instance of this `FieldOffsets` implementation.
-    fn new() -> Self;
 
-    /// Returns the offset of the given scalar field number, if known.
-    fn get_field_offset(&self, field_num: u64) -> Option<usize>;
+impl<'a, T> Iterator for RepeatedFieldProtoBytesParser<'a, T> where T: FieldOffsets {
+    type Item = &'a [u8];
 
-    /// Returns the offset of a specific index within a repeated field, if known.
-    fn get_repeated_field_offset(&self, field_num: u64, index: usize) -> Option<usize>;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.iter_pos.is_none() {
+            let field_offset = { 
+                let field_offsets = self.field_offsets.borrow();
+                field_offsets.get_field_offset(self.field_num)
+            };
 
-    /// Records the offset of a field in the buffer.
-    ///
-    /// The implementation should also ignore if an offset is passed for an invalid wire type
-    ///
-    /// For repeated fields, this may be called multiple times, in the order that field
-    /// instances are encountered during parsing.
-    fn set_field_offset(&mut self, field_num: u64, wire_type: u64, offset: usize);
+            match field_offset {
+                Some(offset) => {
+                    self.iter_pos = Some(offset)
+                },
+                None => {
+                    // advance 
+                    let pos = self.pos.get();
+                    if pos >= self.buf.len() {
+                        // // end of buffer, field not found
+                        return None
+                    }
+
+                    let (tag, next_pos) = read_varint(self.buf, pos)?;
+                    let field = tag >> 3;
+                    let wire_type = tag & 7;
+
+                    {
+                        let mut field_offsets = self.field_offsets.borrow_mut();
+                        field_offsets.set_field_offset(field, wire_type, next_pos);
+                    }
+
+                    // advance past next field
+                    let next_pos = match wire_type {
+                        wire_types::VARINT => {
+                            let (_, p) = read_varint(self.buf, pos)?;
+                            p
+                        },
+                        wire_types::FIXED32 => pos + 4,
+                        wire_types::FIXED64 => pos + 8,
+                        wire_types::LEN => {
+                            let (_, p) = read_len_delim(self.buf, pos)?;
+                            p
+                        },
+                        _ => {
+                            // invalid wire type
+                            return None
+                        }
+                    };
+                    self.pos.set(next_pos)
+                }
+            }
+        }
+
+        let offset = self.iter_pos.expect("iter position should be initialized");
+        if offset >= self.buf.len() {
+            return None
+        }
+
+        let (slice, mut next_pos) = match self.expected_wire_type {
+            wire_types::VARINT => read_variant_bytes(self.buf, offset)?,
+            wire_types::FIXED64 => read_fixed64(self.buf, offset)?,
+            wire_types::LEN => read_len_delim(self.buf, offset)?,
+            wire_types::FIXED32 => read_fixed32(self.buf, offset)?,
+            _ => {
+                // invalid wire type
+                return None;
+            }
+        };
+
+        // keep advancing until next_pos points really at the end of the buffer
+        loop {
+            if next_pos >= self.buf.len() {
+                break
+            }
+            let (tag, next_pos2) = read_varint(self.buf, next_pos)?;
+            next_pos = next_pos2;
+            let field = tag >> 3;
+            let wire_type = tag & 7;
+
+            if field == self.field_num && wire_type == self.expected_wire_type {
+                break
+            }
+
+
+            {
+                let mut field_offsets = self.field_offsets.borrow_mut();
+                field_offsets.set_field_offset(field, wire_type, next_pos);
+            }
+
+            // advance past next field
+            next_pos = match wire_type {
+                wire_types::VARINT => {
+                    let (_, p) = read_varint(self.buf, next_pos)?;
+                    p
+                },
+                wire_types::FIXED32 => next_pos + 4,
+                wire_types::FIXED64 => next_pos + 8,
+                wire_types::LEN => {
+                    let (_, p) = read_len_delim(self.buf, next_pos)?;
+                    p
+                },
+                _ => {
+                    // invalid wire type
+                    return None
+                }
+            }
+        }
+
+        self.iter_pos = Some(next_pos);
+
+        return Some(slice);
+    }
 }
+
 
 /// Decode variant at position in buffer
 #[inline]

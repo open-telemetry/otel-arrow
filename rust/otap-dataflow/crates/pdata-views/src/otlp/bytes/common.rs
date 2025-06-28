@@ -16,7 +16,7 @@ use crate::otlp::bytes::consts::field_num::common::{
 };
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
-    FieldOffsets, ProtoBytesParser, read_fixed64, read_len_delim, read_varint,
+    read_fixed64, read_len_delim, read_varint, FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser
 };
 use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
 
@@ -222,6 +222,31 @@ where
         Some(RawKeyValue::new(slice))
     }
 }
+
+/// TODO
+pub struct KeyValueIterV2<'a, T: FieldOffsets> {
+    bytes_parser: RepeatedFieldProtoBytesParser<'a, T>
+}
+
+impl<'a, T> KeyValueIterV2<'a, T> where T: FieldOffsets {
+    /// TODO
+    pub fn new(bytes_parser: RepeatedFieldProtoBytesParser<'a, T>) -> Self {
+        Self {
+            bytes_parser
+        }
+    }
+}
+
+impl<'a, T> Iterator for KeyValueIterV2<'a, T> where T: FieldOffsets {
+    type Item = RawKeyValue<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slice = self.bytes_parser.next()?;
+        Some(RawKeyValue::new(slice))
+    }
+}
+
+
 
 /// Iterator of AnyValues - produces implementation of AnyValueView from the byte array which
 /// contains a protobuf serialized repeated AnyValues
