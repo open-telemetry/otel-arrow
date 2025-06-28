@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::SHARED_RECEIVERS;
+use crate::OTAP_RECEIVER_FACTORIES;
 use crate::grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
 };
@@ -19,9 +19,12 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_engine::ReceiverFactory;
+use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
+use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -40,10 +43,12 @@ pub struct OTAPReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(SHARED_RECEIVERS)]
-pub static OTAP_EXPORTER: SharedReceiverFactory<OTAPData> = SharedReceiverFactory {
+#[distributed_slice(OTAP_RECEIVER_FACTORIES)]
+pub static OTAP_RECEIVER: ReceiverFactory<OTAPData> = ReceiverFactory {
     name: "urn:otel:otap:receiver",
-    create: |config: &Value| Box::new(OTAPReceiver::from_config(config)),
+    create: |config: &Value, receiver_config: &ReceiverConfig| {
+        ReceiverWrapper::shared(OTAPReceiver::from_config(config), receiver_config)
+    },
 };
 
 impl OTAPReceiver {

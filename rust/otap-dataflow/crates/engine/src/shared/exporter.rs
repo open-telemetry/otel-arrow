@@ -31,9 +31,10 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::{ControlMsg, Message};
+use crate::message::Message;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;

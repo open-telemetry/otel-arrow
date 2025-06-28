@@ -17,22 +17,21 @@
 //! - support for acknowledgements and nack messages
 //! - handle periodically flushing batches after some time threshold
 //! - dynamic configuration updates
-//!
-//! See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
+//!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use std::io::ErrorKind;
-
-use async_trait::async_trait;
-use futures::{FutureExt, pin_mut};
-use futures_timer::Delay;
-use otap_df_engine::error::Error;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
-use otel_arrow_rust::otap::OtapBatch;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
 use self::writer::WriteBatch;
+use async_trait::async_trait;
+use futures::{FutureExt, pin_mut};
+use futures_timer::Delay;
+use otap_df_engine::control::ControlMsg;
+use otap_df_engine::error::Error;
+use otap_df_engine::local::exporter::{EffectHandler, Exporter};
+use otap_df_engine::message::{Message, MessageChannel};
+use otel_arrow_rust::otap::OtapBatch;
 
 mod config;
 mod idgen;

@@ -7,9 +7,10 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
+use crate::control::ControlMsg;
 use crate::error::Error;
 use crate::local::processor as local;
-use crate::message::{ControlMsg, Message, Receiver, Sender};
+use crate::message::{Message, Receiver, Sender};
 use crate::shared::processor as shared;
 use otap_df_channel::mpsc;
 
@@ -62,11 +63,11 @@ impl<PData> ProcessorWrapper<PData> {
             processor: Box::new(processor),
             effect_handler: local::EffectHandler::new(
                 config.name.clone(),
-                Sender::Local(pdata_sender),
+                Sender::LocalMpsc(pdata_sender),
             ),
-            control_sender: Sender::Local(control_sender),
-            control_receiver: Receiver::Local(control_receiver),
-            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
+            control_sender: Sender::LocalMpsc(control_sender),
+            control_receiver: Receiver::LocalMpsc(control_receiver),
+            pdata_receiver: Some(Receiver::LocalMpsc(pdata_receiver)),
         }
     }
 
@@ -112,7 +113,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver.take().expect("pdata_receiver is None")
             }
             ProcessorWrapper::Shared { pdata_receiver, .. } => {
-                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::SharedMpsc(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }
@@ -120,8 +121,8 @@ impl<PData> ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use crate::control::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::local::processor as local;
-    use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
     use crate::processor::{Error, ProcessorWrapper};
     use crate::shared::processor as shared;
