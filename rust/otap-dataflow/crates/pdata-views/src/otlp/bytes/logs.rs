@@ -322,7 +322,7 @@ impl ResourceLogsView for RawResourceLogs<'_> {
     fn resource(&self) -> Option<Self::Resource<'_>> {
         let slice = self
             .byte_parser
-            .advance_to_find_field(RESOURCE_LOGS_RESOURCE, wire_types::LEN)?;
+            .advance_to_find_field(RESOURCE_LOGS_RESOURCE)?;
 
         Some(RawResource::new(ProtoBytesParser::new(slice)))
     }
@@ -330,7 +330,7 @@ impl ResourceLogsView for RawResourceLogs<'_> {
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .byte_parser
-            .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL, wire_types::LEN)?;
+            .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
@@ -376,14 +376,12 @@ impl ScopeLogsView for RawScopeLogs<'_> {
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .byte_parser
-            .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL, wire_types::LEN)?;
+            .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
     fn scope(&self) -> Option<Self::Scope<'_>> {
-        let slice = self
-            .byte_parser
-            .advance_to_find_field(SCOPE_LOG_SCOPE, wire_types::LEN)?;
+        let slice = self.byte_parser.advance_to_find_field(SCOPE_LOG_SCOPE)?;
         Some(RawInstrumentationScope::new(ProtoBytesParser::new(slice)))
     }
 }
@@ -416,14 +414,14 @@ impl LogRecordView for RawLogRecord<'_> {
 
     fn body(&self) -> Option<Self::Body<'_>> {
         self.bytes_parser
-            .advance_to_find_field(LOG_RECORD_BODY, wire_types::LEN)
+            .advance_to_find_field(LOG_RECORD_BODY)
             .map(RawAnyValue::new)
     }
 
     fn dropped_attributes_count(&self) -> u32 {
         match self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)
+            .advance_to_find_field(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT)
         {
             Some(slice) => match read_varint(slice, 0) {
                 Some((val, _)) => val as u32,
@@ -434,9 +432,7 @@ impl LogRecordView for RawLogRecord<'_> {
     }
 
     fn flags(&self) -> Option<u32> {
-        let slice = self
-            .bytes_parser
-            .advance_to_find_field(LOG_RECORD_FLAGS, wire_types::FIXED32)?;
+        let slice = self.bytes_parser.advance_to_find_field(LOG_RECORD_FLAGS)?;
         let byte_arr: [u8; 4] = slice.try_into().ok()?;
         Some(u32::from_le_bytes(byte_arr))
     }
@@ -444,7 +440,7 @@ impl LogRecordView for RawLogRecord<'_> {
     fn observed_time_unix_nano(&self) -> Option<u64> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            .advance_to_find_field(LOG_RECORD_OBSERVED_TIME_UNIX_NANO)?;
         let byte_arr: [u8; 8] = slice.try_into().ok()?;
         Some(u64::from_le_bytes(byte_arr))
     }
@@ -452,7 +448,7 @@ impl LogRecordView for RawLogRecord<'_> {
     fn severity_number(&self) -> Option<i32> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT)?;
+            .advance_to_find_field(LOG_RECORD_SEVERITY_NUMBER)?;
         let (val, _) = read_varint(slice, 0)?;
         Some(val as i32)
     }
@@ -460,25 +456,23 @@ impl LogRecordView for RawLogRecord<'_> {
     fn severity_text(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT, wire_types::LEN)?;
+            .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
     fn span_id(&self) -> Option<&[u8]> {
-        self.bytes_parser
-            .advance_to_find_field(LOG_RECORD_SPAN_ID, wire_types::LEN)
+        self.bytes_parser.advance_to_find_field(LOG_RECORD_SPAN_ID)
     }
 
     fn time_unix_nano(&self) -> Option<u64> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            .advance_to_find_field(LOG_RECORD_TIME_UNIX_NANO)?;
         let byte_arr: [u8; 8] = slice.try_into().ok()?;
         Some(u64::from_le_bytes(byte_arr))
     }
 
     fn trace_id(&self) -> Option<&[u8]> {
-        self.bytes_parser
-            .advance_to_find_field(LOG_RECORD_TRACE_ID, wire_types::LEN)
+        self.bytes_parser.advance_to_find_field(LOG_RECORD_TRACE_ID)
     }
 }

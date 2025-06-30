@@ -146,17 +146,10 @@ impl FieldOffsets for InstrumentationScopeFieldOffsets {
     }
 
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
-        let startnz = match NonZeroUsize::new(start) {
-            Some(nz) => nz,
+        let range = match Self::to_nonzero_range(start, end) {
+            Some(range) => Some(range),
             None => return,
         };
-
-        let endnz = match NonZeroUsize::new(end) {
-            Some(nz) => nz,
-            None => return,
-        };
-
-        let range = Some((startnz, endnz));
 
         match field_num {
             INSTRUMENTATION_SCOPE_NAME => {
@@ -506,21 +499,21 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
     fn name(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME, wire_types::LEN)?;
+            .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
     fn version(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION, wire_types::LEN)?;
+            .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION)?;
         std::str::from_utf8(slice).ok().map(Cow::Borrowed)
     }
 
     fn dropped_attributes_count(&self) -> u32 {
         if let Some(slice) = self
             .bytes_parser
-            .advance_to_find_field(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)
+            .advance_to_find_field(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT)
         {
             if let Some((val, _)) = read_varint(slice, 0) {
                 return val as u32;
@@ -532,11 +525,6 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
     }
 
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        // KeyValueIter {
-        //     target_field_number: INSTRUMENTATION_SCOPE_ATTRIBUTES,
-        //     field_index: 0,
-        //     bytes_parser: self.bytes_parser.clone(),
-        // }
         KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
             &self.bytes_parser,
             INSTRUMENTATION_SCOPE_ATTRIBUTES,

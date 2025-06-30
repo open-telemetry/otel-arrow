@@ -101,7 +101,7 @@ impl ResourceView for RawResource<'_> {
     fn dropped_attributes_count(&self) -> u32 {
         if let Some(slice) = self
             .bytes_parser
-            .advance_to_find_field(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)
+            .advance_to_find_field(RESOURCE_DROPPED_ATTRIBUTES_COUNT)
         {
             if let Some((val, _)) = read_varint(slice, 0) {
                 return val as u32;

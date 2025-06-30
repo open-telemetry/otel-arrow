@@ -114,11 +114,7 @@ where
     /// if found. Parsing proceeds from the current position in the buffer.
     #[inline]
     #[must_use]
-    pub fn advance_to_find_field(
-        &self,
-        field_num: u64,
-        expected_wire_type: u64,
-    ) -> Option<&'a [u8]> {
+    pub fn advance_to_find_field(&self, field_num: u64) -> Option<&'a [u8]> {
         // this loop advances parsing by one field each iteration until either the field is found
         // or the end of the buffer is reached.
         loop {
@@ -127,17 +123,6 @@ where
 
             match range {
                 Some((start, end)) => {
-                    // field offset is known, so return the slice of the buffer containing the value:
-                    // let (slice, _) = match expected_wire_type {
-                    //     wire_types::VARINT => read_variant_bytes(self.buf, range)?,
-                    //     wire_types::FIXED64 => read_fixed64(self.buf, range)?,
-                    //     wire_types::LEN => read_len_delim(self.buf, range)?,
-                    //     wire_types::FIXED32 => read_fixed32(self.buf, range)?,
-                    //     _ => {
-                    //         // invalid wire type
-                    //         return None;
-                    //     }
-                    // };
                     let slice = &self.buf[start..end];
                     return Some(slice);
                 }
@@ -166,36 +151,6 @@ where
 
         None
     }
-
-    // TODO this comment is not up to data!!
-    // advance the position pointer to the position after the with the given wire type at the
-    // given position. Returns None for unknown wire_types or if the next position cannot be
-    // found (e.g. if the buffer ends before can successfully read a full varint).
-    // #[inline]
-    // fn field_value_range(&self, wire_type: u64, pos: usize) -> Option<(usize, usize)> {
-    //     let range = match wire_type {
-    //         wire_types::VARINT => {
-    //             // /// TODO this could maybe be read_variant bytes for faster perf
-    //             let (_, p) = read_varint(self.buf, pos)?;
-    //             (pos, p)
-    //             // p
-    //         }
-
-    //         wire_types::LEN => {
-    //             let (len, p) = read_varint(self.buf, pos)?;
-    //             let end = p.checked_add(len as usize)?;
-    //             (p, end)
-    //             // let (_, p) = read_len_delim(self.buf, pos)?;
-    //             // p
-    //         }
-    //         wire_types::FIXED64 => (pos, pos + 8),
-    //         wire_types::FIXED32 => (pos, pos + 4),
-    //         _ => return None,
-    //     };
-    //     // self.pos.set(next_pos);
-
-    //     Some(range)
-    // }
 }
 
 // TODO comments
@@ -206,21 +161,17 @@ fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Option<(usize, u
             // /// TODO this could maybe be read_variant bytes for faster perf
             let (_, p) = read_varint(buf, pos)?;
             (pos, p)
-            // p
         }
 
         wire_types::LEN => {
             let (len, p) = read_varint(buf, pos)?;
             let end = p.checked_add(len as usize)?;
             (p, end)
-            // let (_, p) = read_len_delim(self.buf, pos)?;
-            // p
         }
         wire_types::FIXED64 => (pos, pos + 8),
         wire_types::FIXED32 => (pos, pos + 4),
         _ => return None,
     };
-    // self.pos.set(next_pos);
 
     Some(range)
 }
@@ -281,7 +232,7 @@ where
                     // advance
                     let pos = self.pos.get();
                     if pos >= self.buf.len() {
-                        // // end of buffer, field not found
+                        // end of buffer, field not found
                         return None;
                     }
 
@@ -295,26 +246,8 @@ where
                     self.field_offsets
                         .set_field_range(field, wire_type, start, end);
 
-                    // // advance past next field
-                    // let next_pos = match wire_type {
-                    //     wire_types::VARINT => {
-                    //         let (_, p) = read_varint(self.buf, next_pos)?;
-                    //         p
-                    //     },
-                    //     wire_types::FIXED32 => next_pos + 4,
-                    //     wire_types::FIXED64 => next_pos + 8,
-                    //     wire_types::LEN => {
-                    //         let (_, p) = read_len_delim(self.buf, next_pos)?;
-                    //         p
-                    //     },
-                    //     _ => {
-                    //         // invalid wire type
-                    //         return None
-                    //     }
-                    // };
-
                     // TODO, could we avoid setting and getting cell in the loop here for better perf?
-                    self.pos.set(next_pos)
+                    self.pos.set(end)
                 }
             }
         }
@@ -326,17 +259,6 @@ where
             return None;
         }
         let slice = &self.buf[range.0..range.1];
-
-        // let (slice, mut next_pos) = match self.expected_wire_type {
-        //     wire_types::VARINT => read_variant_bytes(self.buf, range)?,
-        //     wire_types::FIXED64 => read_fixed64(self.buf, range)?,
-        //     wire_types::LEN => read_len_delim(self.buf, range)?,
-        //     wire_types::FIXED32 => read_fixed32(self.buf, range)?,
-        //     _ => {
-        //         // invalid wire type
-        //         return None;
-        //     }
-        // };
 
         // keep advancing until next_pos points really at the end of the buffer
         loop {
@@ -351,44 +273,21 @@ where
                 range.0 = self.buf.len();
                 break;
             };
-            // let (tag, next_pos) = match read_varint(self.buf, range.1) {
-            //     Some((tag, next_pos)) => (tag, next_pos),
-            //     None => break
-            // };
             let field = tag >> 3;
             let wire_type = tag & 7;
 
             range = field_value_range(self.buf, wire_type, next_pos)?;
 
             if field == self.field_num && wire_type == self.expected_wire_type {
-                // self.curr_range = Some((start, end));
                 break;
             }
 
             // save the offset of the field we've encountered
             self.field_offsets
                 .set_field_range(field, wire_type, range.0, range.1);
-
-            // advance past next field
-            // next_pos = match wire_type {
-            //     wire_types::VARINT => {
-            //         let (_, p) = read_varint(self.buf, next_pos)?;
-            //         p
-            //     },
-            //     wire_types::FIXED32 => next_pos + 4,
-            //     wire_types::FIXED64 => next_pos + 8,
-            //     wire_types::LEN => {
-            //         let (_, p) = read_len_delim(self.buf, next_pos)?;
-            //         p
-            //     },
-            //     _ => {
-            //         // invalid wire type
-            //         return None
-            //     }
-            // }
         }
 
-        // TODO update  POS
+        self.pos.set(range.1);
         self.curr_range = Some(range);
 
         return Some(slice);
