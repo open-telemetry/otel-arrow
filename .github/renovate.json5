@@ -52,7 +52,7 @@
       // need to run genotelarrowcol again manually
       // to properly update collector/cmd/otelarrowcol
       // grouping them together reduces pain of this manual work
-      "groupName": "golang module dependencies",
+      "groupName": "golang module dependencies (manual action needed)",
       "matchFileNames": ["go.mod"],
       "schedule": [
         "before 8am on Monday"
