@@ -694,7 +694,7 @@ mod tests {
         create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
     };
 
-        #[test]
+    #[test]
     fn test_marshal_traces() {
         let trace = create_otlp_trace(1, 1, 1, 1, 1);
         let marshaler = DetailedOTLPMarshaler::default();
@@ -705,16 +705,25 @@ mod tests {
         }
 
         assert_eq!(output_lines[0], "ResourceSpan #0");
-        assert_eq!(output_lines[1], "Resource SchemaURL: http://schema.opentelemetry.io");
+        assert_eq!(
+            output_lines[1],
+            "Resource SchemaURL: http://schema.opentelemetry.io"
+        );
         assert_eq!(output_lines[2], "Resource attributes ");
         assert_eq!(output_lines[3], "     -> ip: 192.168.0.1");
         assert_eq!(output_lines[4], "ScopeSpans #0");
-        assert_eq!(output_lines[5], "ScopeSpans SchemaURL: http://schema.opentelemetry.io");
+        assert_eq!(
+            output_lines[5],
+            "ScopeSpans SchemaURL: http://schema.opentelemetry.io"
+        );
         assert_eq!(output_lines[6], "Instrumentation Scope library @v1");
         assert_eq!(output_lines[7], "Instrumentation Scope Attributes: ");
         assert_eq!(output_lines[8], "     -> hostname: host5.retailer.com");
         assert_eq!(output_lines[9], "Span 0");
-        assert_eq!(output_lines[10], "Trace ID: 4327e52011a22f9662eac217d77d1ec0");
+        assert_eq!(
+            output_lines[10],
+            "Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
         assert_eq!(output_lines[11], "Parent ID: 7271ee06d7e5925f");
         assert_eq!(output_lines[12], "ID: 7271ee06d7e5925f");
         assert_eq!(output_lines[13], "Name: user-account");
@@ -735,13 +744,15 @@ mod tests {
         assert_eq!(output_lines[28], "     -> hostname: host5.retailer.com");
         assert_eq!(output_lines[29], "Links: ");
         assert_eq!(output_lines[30], "SpanLink: 0");
-        assert_eq!(output_lines[31], "     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0");
+        assert_eq!(
+            output_lines[31],
+            "     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
         assert_eq!(output_lines[32], "     -> Span ID: 7271ee06d7e5925f");
         assert_eq!(output_lines[33], "     -> TraceState: ended");
         assert_eq!(output_lines[34], "     -> DroppedAttributesCount: 0");
         assert_eq!(output_lines[35], "     -> Attributes: ");
         assert_eq!(output_lines[36], "     -> hostname: host2.org");
-
     }
     #[test]
     fn test_marshal_metrics() {

@@ -127,19 +127,19 @@ impl local::Exporter<OTLPData> for DebugExporter {
                         // match on OTLPData type and use the respective method to collect data about the received object
                         // increment the counters for each respective OTLP Datatype
                         OTLPData::Metrics(req) => {
-                            push_metric(&self.config.verbosity(), req, &marshaler, &mut writer);
+                            push_metric(&self.config.verbosity(), req, &*marshaler, &mut writer);
                             metric_count += 1;
                         }
                         OTLPData::Logs(req) => {
-                            push_log(&self.config.verbosity(), req, &marshaler, &mut writer);
+                            push_log(&self.config.verbosity(), req, &*marshaler, &mut writer);
                             log_count += 1;
                         }
                         OTLPData::Traces(req) => {
-                            push_trace(&self.config.verbosity(), req, &marshaler, &mut writer);
+                            push_trace(&self.config.verbosity(), req, &*marshaler, &mut writer);
                             span_count += 1;
                         }
                         OTLPData::Profiles(req) => {
-                            push_profile(&self.config.verbosity(), req, &marshaler, &mut writer);
+                            push_profile(&self.config.verbosity(), req, &*marshaler, &mut writer);
                             profile_count += 1;
                         }
                     }
@@ -175,7 +175,7 @@ fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
 fn push_metric(
     verbosity: &Verbosity,
     metric_request: ExportMetricsServiceRequest,
-    marshaler: &Box<dyn OTLPMarshaler>,
+    marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
 ) {
     // collect number of resource metrics
@@ -227,7 +227,7 @@ fn push_metric(
 fn push_trace(
     verbosity: &Verbosity,
     trace_request: ExportTraceServiceRequest,
-    marshaler: &Box<dyn OTLPMarshaler>,
+    marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
 ) {
     // collect number of resource spans
@@ -263,7 +263,7 @@ fn push_trace(
 fn push_log(
     verbosity: &Verbosity,
     log_request: ExportLogsServiceRequest,
-    marshaler: &Box<dyn OTLPMarshaler>,
+    marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
 ) {
     let resource_logs = log_request.resource_logs.len();
@@ -294,7 +294,7 @@ fn push_log(
 fn push_profile(
     verbosity: &Verbosity,
     profile_request: ExportProfilesServiceRequest,
-    marshaler: &Box<dyn OTLPMarshaler>,
+    marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
 ) {
     // collect number of resource profiles
