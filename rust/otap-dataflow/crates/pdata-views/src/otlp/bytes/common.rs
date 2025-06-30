@@ -49,6 +49,7 @@ impl<'a> RawKeyValue<'a> {
     }
 
     /// advance the buffer by one field, and set the offset for the field if found
+    #[inline]
     fn advance(&self) {
         let pos = self.pos.get();
         if pos >= self.buf.len() {
