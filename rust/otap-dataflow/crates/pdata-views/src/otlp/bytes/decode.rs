@@ -114,7 +114,10 @@ where
     /// if found. Parsing proceeds from the current position in the buffer.
     #[inline]
     #[must_use]
-    pub fn advance_to_find_field(&self, field_num: u64) -> Option<&'a [u8]> {
+    pub fn advance_to_find_field(
+        &self,
+        field_num: u64,
+    ) -> Option<&'a [u8]> {
         // this loop advances parsing by one field each iteration until either the field is found
         // or the end of the buffer is reached.
         loop {
@@ -151,6 +154,7 @@ where
 
         None
     }
+
 }
 
 // TODO comments
@@ -285,6 +289,7 @@ where
             // save the offset of the field we've encountered
             self.field_offsets
                 .set_field_range(field, wire_type, range.0, range.1);
+
         }
 
         self.pos.set(range.1);
@@ -299,37 +304,19 @@ where
 #[must_use]
 pub fn read_varint(buf: &[u8], mut pos: usize) -> Option<(u64, usize)> {
     let mut out = 0u64;
-    let mut shift = 0;
-    while pos < buf.len() {
-        let b = buf[pos];
+    let mut shift = 0u32;
+
+    while pos < buf.len() && shift < 64 {
+        let byte = buf[pos];
         pos += 1;
-        out |= ((b & 0x7F) as u64) << shift;
-        if b & 0x80 == 0 {
+
+        out |= ((byte & 0x7F) as u64) << shift;
+
+        if byte < 0x80 {
             return Some((out, pos));
         }
-        shift += 7;
-        if shift >= 64 {
-            return None;
-        }
-    }
-    None
-}
 
-/// return the byte slice containing a variant
-#[inline]
-#[must_use]
-pub fn read_varint_bytes(buf: &[u8], mut pos: usize) -> Option<(&[u8], usize)> {
-    let start = pos;
-    let mut shift = 0;
-    while pos < buf.len() {
-        if buf[pos] & 0x80 == 0 {
-            return Some((&buf[start..pos + 1], pos));
-        }
-        pos += 1;
         shift += 7;
-        if shift >= 64 {
-            return None;
-        }
     }
 
     None

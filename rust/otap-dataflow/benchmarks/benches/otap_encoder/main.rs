@@ -125,6 +125,7 @@ fn bench_encode_logs(c: &mut Criterion) {
         .expect("can encode proto bytes");
 
     let mut group = c.benchmark_group("encode_otap_logs_using_views");
+    let _ = group.sample_size(1000);
 
     // 1. proto_bytes->views->OTAP
     let _ = group.bench_with_input(
@@ -177,6 +178,7 @@ fn bench_encode_logs(c: &mut Criterion) {
 
     // Separate decode benchmark group
     let mut decode_to_prost_group = c.benchmark_group("decode_proto_bytes");
+    let _ = decode_to_prost_group.sample_size(1000);
 
     let _ = decode_to_prost_group.bench_with_input(
         BenchmarkId::new("proto_bytes->prost", "default"),
