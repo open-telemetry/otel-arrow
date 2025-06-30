@@ -135,7 +135,7 @@ fn bench_encode_logs(c: &mut Criterion) {
         &input_bytes,
         |b, input| {
             b.iter_batched(
-                || RawLogsData::new(input.as_ref()), 
+                || RawLogsData::new(input.as_ref()),
                 |logs_data| {
                     let result = encode_logs_otap_batch(&logs_data).expect("no error");
                     black_box(result)
@@ -169,7 +169,7 @@ fn bench_encode_logs(c: &mut Criterion) {
         &input,
         |b, input| {
             b.iter_batched(
-                || input, 
+                || input,
                 |logs_data| encode_logs_otap_batch(logs_data).expect("no error"),
                 BatchSize::SmallInput,
             )
@@ -198,7 +198,6 @@ fn bench_encode_logs(c: &mut Criterion) {
     );
 
     decode_to_prost_group.finish();
-
 
     let mut traverse_view_group = c.benchmark_group("traverse_views");
     let _ = traverse_view_group.sample_size(1000);

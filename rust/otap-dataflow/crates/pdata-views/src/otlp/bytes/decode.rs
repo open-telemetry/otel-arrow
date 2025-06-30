@@ -204,6 +204,8 @@ pub struct RepeatedFieldProtoBytesParser<'a, T: FieldRanges> {
     /// pointer to the next range (containing the serialized message) that the iterator will yield
     /// when `next` invoked
     next_range: Option<(usize, usize)>,
+
+    values_exhausted: bool,
 }
 
 impl<'a, T> RepeatedFieldProtoBytesParser<'a, T>
@@ -225,6 +227,7 @@ where
             field_num,
             expected_wire_type,
             next_range: None,
+            values_exhausted: false,
         }
     }
 }
@@ -236,6 +239,10 @@ where
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.values_exhausted {
+            return None;
+        }
+
         // initialize first range
         while self.next_range.is_none() {
             // try to get the field offset if it is known
@@ -269,9 +276,6 @@ where
         let mut range = self
             .next_range
             .expect("iter position should be initialized");
-        if range.0 >= self.buf.len() {
-            return None;
-        }
 
         // this is the return value
         let slice = &self.buf[range.0..range.1];
@@ -279,20 +283,12 @@ where
         // advance until until either we've found the next repeated value, or the end is reached
         loop {
             // if we're at end of buffer, stop iterating
-            if range.0 >= self.buf.len() {
+            if range.0 >= self.buf.len() || range.1 >= self.buf.len() {
+                self.values_exhausted = true;
                 break;
             }
 
-            // if there's possibly a next value, read tag
-            let (tag, next_pos) = if range.1 < self.buf.len() {
-                read_varint(self.buf, range.1)?
-            } else {
-                // we've reached the last value in the buffer, set this as signal that end of buffer
-                // is reached so we'll return None on the following `next` invocation
-                range.0 = self.buf.len();
-                break;
-            };
-
+            let (tag, next_pos) = read_varint(self.buf, range.1)?;
             let field = tag >> 3;
             let wire_type = tag & 7;
             range = field_value_range(self.buf, wire_type, next_pos)?;

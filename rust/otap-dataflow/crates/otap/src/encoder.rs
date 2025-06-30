@@ -273,44 +273,44 @@ mod test {
 
     fn _generate_logs_for_verify_all_columns() -> LogsData {
         LogsData::new(vec![
-                    ResourceLogs::build(
-                        Resource::build(vec![KeyValue::new(
-                            "resource_attr1",
-                            AnyValue::new_string("resource_value"),
+            ResourceLogs::build(
+                Resource::build(vec![KeyValue::new(
+                    "resource_attr1",
+                    AnyValue::new_string("resource_value"),
+                )])
+                .dropped_attributes_count(1u32),
+            )
+            .schema_url("https://schema.opentelemetry.io/resource_schema")
+            .scope_logs(vec![
+                ScopeLogs::build(
+                    InstrumentationScope::build("library")
+                        .version("scopev1")
+                        .attributes(vec![KeyValue::new(
+                            "scope_attr1",
+                            AnyValue::new_string("scope_val1"),
                         )])
-                        .dropped_attributes_count(1u32),
-                    )
-                    .schema_url("https://schema.opentelemetry.io/resource_schema")
-                    .scope_logs(vec![
-                        ScopeLogs::build(
-                            InstrumentationScope::build("library")
-                                .version("scopev1")
-                                .attributes(vec![KeyValue::new(
-                                    "scope_attr1",
-                                    AnyValue::new_string("scope_val1"),
-                                )])
-                                .dropped_attributes_count(2u32)
-                                .finish(),
-                        )
-                        .schema_url("https://schema.opentelemetry.io/scope_schema")
-                        .log_records(vec![
-                            LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
-                                .observed_time_unix_nano(3_000_000_000u64)
-                                .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
-                                .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
-                                .severity_text("Info")
-                                .attributes(vec![KeyValue::new(
-                                    "log_attr1",
-                                    AnyValue::new_string("log_val_1"),
-                                )])
-                                .dropped_attributes_count(3u32)
-                                .flags(LogRecordFlags::TraceFlagsMask)
-                                .body(AnyValue::new_string("log_body"))
-                                .finish(),
-                        ])
+                        .dropped_attributes_count(2u32)
                         .finish(),
-                    ])
-                    .finish()
+                )
+                .schema_url("https://schema.opentelemetry.io/scope_schema")
+                .log_records(vec![
+                    LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                        .observed_time_unix_nano(3_000_000_000u64)
+                        .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
+                        .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
+                        .severity_text("Info")
+                        .attributes(vec![KeyValue::new(
+                            "log_attr1",
+                            AnyValue::new_string("log_val_1"),
+                        )])
+                        .dropped_attributes_count(3u32)
+                        .flags(LogRecordFlags::TraceFlagsMask)
+                        .body(AnyValue::new_string("log_body"))
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
         ])
     }
 
@@ -810,34 +810,392 @@ mod test {
         _test_encode_logs_verify_nullability_generic(&RawLogsData::new(&logs_data_bytes));
     }
 
-
-    fn _generate_logs_no_scopes_data() -> LogsData {
+    fn _generate_logs_no_attributes() -> LogsData {
         LogsData::new(vec![
-            ResourceLogs::build(Resource::new(vec![])).schema_url("https://schema.opentelemetry.io/resource_schema").scope_logs(vec![]).finish()
+            ResourceLogs::build(Resource::new(vec![]))
+                .schema_url("https://schema.opentelemetry.io/resource_schema")
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("scope"))
+                        .log_records(vec![
+                            LogRecord::build(2_000_000_000u64, SeverityNumber::Debug, "event")
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
         ])
     }
 
-    fn _test_logs_no_scopes_generic<T>(logs_data: &T)
+    fn _test_logs_logs_no_attributes<T>(logs_view: &T)
     where
-        T: LogsDataView
+        T: LogsDataView,
     {
-        
+        let otap_batch = encode_logs_otap_batch(logs_view).unwrap();
+
+        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+
+        let expected_logs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(
+                        vec![
+                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(
+                                "schema_url",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "scope",
+                    DataType::Struct(
+                        vec![
+                            Field::new("id", DataType::UInt16, true),
+                            Field::new(
+                                "name",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "observed_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "severity_number",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // resource.id
+                        Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "schema_url",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // resource.schema_url
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from_iter_values(vec![
+                                "https://schema.opentelemetry.io/resource_schema",
+                            ])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // scope.id
+                        Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "name",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // scope.name
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from(vec!["scope"])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                // timestamps
+                Arc::new(TimestampNanosecondArray::from(vec![2_000_000_000])),
+                // observed_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![0i64])) as ArrayRef,
+                // severity_number
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(Int32Array::from(vec![5])),
+                )) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(logs_batch, &expected_logs_batch);
+
+        assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
     }
 
     #[test]
-    fn test_logs_no_scopes_proto_struct() {
-        let logs_data = _generate_logs_no_scopes_data();
-        _test_logs_no_scopes_generic(&logs_data);
+    fn test_logs_no_attributes_proto_struct() {
+        let logs_data = _generate_logs_no_attributes();
+        _test_logs_logs_no_attributes(&logs_data);
     }
 
     #[test]
-    fn test_logs_no_scopes_proto_bytes() {
-        let logs_data = _generate_logs_no_scopes_data();
+    fn test_logs_no_attributes_proto_bytes() {
+        let logs_data = _generate_logs_no_attributes();
         let mut logs_data_bytes = vec![];
         logs_data.encode(&mut logs_data_bytes).unwrap();
-        _test_logs_no_scopes_generic(&RawLogsData::new(&logs_data_bytes));
+        _test_logs_logs_no_attributes(&RawLogsData::new(&logs_data_bytes));
     }
 
+    fn _generate_logs_multiple_logs_and_attrs() -> LogsData {
+        LogsData::new(vec![
+            ResourceLogs::build(Resource::new(vec![]))
+                .schema_url("https://schema.opentelemetry.io/resource_schema")
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("scope"))
+                        .log_records(vec![
+                            LogRecord::build(0u64, SeverityNumber::Debug, "event")
+                                .attributes(vec![
+                                    KeyValue::new("key1", AnyValue::new_string("val1")),
+                                    KeyValue::new("key2", AnyValue::new_string("val2")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                    ScopeLogs::build(InstrumentationScope::new("scope2"))
+                        .log_records(vec![
+                            LogRecord::build(0u64, SeverityNumber::Info, "event").finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+            ResourceLogs::build(Resource::new(vec![]))
+                .schema_url("https://schema.opentelemetry.io/resource_schema")
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("scope"))
+                        .log_records(vec![
+                            LogRecord::build(0u64, SeverityNumber::Debug, "event")
+                                .attributes(vec![
+                                    KeyValue::new("key1", AnyValue::new_string("val1")),
+                                    KeyValue::new("key2", AnyValue::new_string("val2.b")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+        ])
+    }
+
+    fn _test_logs_multiple_logs_and_attrs_generic<T>(logs_view: &T)
+    where
+        T: LogsDataView,
+    {
+        let otap_batch = encode_logs_otap_batch(logs_view).unwrap();
+
+        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+
+        let expected_logs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(
+                        vec![
+                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(
+                                "schema_url",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "scope",
+                    DataType::Struct(
+                        vec![
+                            Field::new("id", DataType::UInt16, true),
+                            Field::new(
+                                "name",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "observed_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "severity_number",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                    true,
+                ),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt16Array::from_iter(vec![Some(0), None, Some(1)])),
+                // resource
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // resource.id
+                        Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "schema_url",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // resource.schema_url
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0, 0, 0]),
+                            Arc::new(StringArray::from_iter_values(vec![
+                                "https://schema.opentelemetry.io/resource_schema",
+                            ])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // scope.id
+                        Arc::new(UInt16Array::from(vec![0, 1, 2])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "name",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // scope.name
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0, 1, 0]),
+                            Arc::new(StringArray::from(vec!["scope", "scope2"])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                // timestamps
+                Arc::new(TimestampNanosecondArray::from(vec![0, 0, 0])),
+                // observed_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![0i64, 0, 0])) as ArrayRef,
+                // severity_number
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 1, 0]),
+                    Arc::new(Int32Array::from(vec![5, 9, 5])),
+                )) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(logs_batch, &expected_logs_batch);
+
+        let log_attrs_batch = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+
+        // check that the log_attrs record batch is what we expect
+        let expected_log_attrs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "key",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new("type", DataType::UInt8, false),
+                Field::new(
+                    "str",
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 0, 1, 1])),
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from_iter_values(vec![0, 1, 0, 1]),
+                    Arc::new(StringArray::from_iter_values(vec!["key1", "key2"])),
+                )),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::<UInt16Type>::new(
+                    UInt16Array::from_iter_values(vec![0, 1, 0, 2]),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "val1", "val2", "val2.b",
+                    ])),
+                )),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(log_attrs_batch, &expected_log_attrs_batch);
+
+        assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
+    }
+
+    #[test]
+    fn test_logs_multiple_logs_and_attrs_prost_structs() {
+        let logs_data = _generate_logs_multiple_logs_and_attrs();
+        _test_logs_multiple_logs_and_attrs_generic(&logs_data);
+    }
+
+    #[test]
+    fn test_logs_multiple_logs_and_attrs_proto_bytes() {
+        let logs_data = _generate_logs_multiple_logs_and_attrs();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_logs_multiple_logs_and_attrs_generic(&RawLogsData::new(&logs_data_bytes));
+    }
 
     fn _generate_log_body_all_field_types_data() -> LogsData {
         let log_bodies = vec![
@@ -1041,7 +1399,11 @@ mod test {
         )
         .unwrap();
 
-        assert_eq!(body_column, &expected_body)
+        assert_eq!(body_column, &expected_body);
+
+        assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
     }
 
     #[test]
