@@ -3,6 +3,7 @@
 //! Implementation of the OTLPMarshaler for converting OTLP messages to structured string reports.
 //!
 
+use crate::debug_exporter::marshaler::OTLPMarshaler;
 use crate::proto::opentelemetry::{
     collector::{
         logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
@@ -12,11 +13,9 @@ use crate::proto::opentelemetry::{
     common::v1::KeyValue,
     metrics::v1::{
         ExponentialHistogramDataPoint, HistogramDataPoint, Metric, NumberDataPoint,
-        SummaryDataPoint, metric::Data,
-        number_data_point::Value as NumberValue,
+        SummaryDataPoint, metric::Data, number_data_point::Value as NumberValue,
     },
 };
-use crate::debug_exporter::marshaler::OTLPMarshaler;
 use std::fmt::Write;
 
 /// The Normal Marshaler takes OTLP messages and converts them to a string by extracting their informations
@@ -45,7 +44,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_log.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeLog #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes {attributes}",
+                        "ScopeLog #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -69,7 +68,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
 
                     _ = writeln!(
                         &mut report,
-                        "Body: {body}, Attributes {attributes}",
+                        "Body: {body}, Attributes: {attributes}",
                         body = log_body,
                         attributes = attributes_string_normal(&log_record.attributes)
                     );
@@ -88,7 +87,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
 
             _ = writeln!(
                 &mut report,
-                "ResourceLog #{index}, Schema:[{schema}], Attributes: {attributes}",
+                "ResourceMetric #{index}, Schema:[{schema}], Attributes: {attributes}",
                 index = resource_index,
                 schema = resource_metric.schema_url,
                 attributes = resource_attributes
@@ -98,7 +97,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_metric.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeMetric #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes {attributes}",
+                        "ScopeMetric #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -160,7 +159,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
             }
             _ = writeln!(
                 &mut report,
-                "ResourceLog #{index}, Schema:[{schema}], Attributes: {attributes}",
+                "ResourceSpan #{index}, Schema:[{schema}], Attributes: {attributes}",
                 index = resource_index,
                 schema = resource_span.schema_url,
                 attributes = resource_attributes
@@ -170,7 +169,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_span.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeSpan #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes {attributes}",
+                        "ScopeSpan #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -217,7 +216,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
 
             _ = writeln!(
                 &mut report,
-                "ResourceLog #{index}, Schema:[{schema}], Attributes: {attributes}",
+                "ResourceProfile #{index}, Schema:[{schema}], Attributes: {attributes}",
                 index = resource_index,
                 schema = resource_profile.schema_url,
                 attributes = resource_attributes
@@ -226,7 +225,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_profile.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeProfile #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes {attributes}",
+                        "ScopeProfile #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -251,17 +250,11 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
     }
 }
 
-pub fn attributes_string_normal(attributes: &[KeyValue]) -> String {
+fn attributes_string_normal(attributes: &[KeyValue]) -> String {
     let mut attribute_string = String::new();
     for attribute in attributes.iter() {
         if let Some(value) = &attribute.value {
-            let attribute_value = value.to_string();
-            _ = write!(
-                &mut attribute_string,
-                "{key}={value} ",
-                key = attribute.key,
-                value = attribute_value
-            );
+            _ = write!(&mut attribute_string, "{key}={value} ", key = attribute.key,);
         }
     }
 
@@ -394,3 +387,120 @@ fn write_summary_datapoints_normal(
     }
 }
 
+#[cfg(test)]
+mod tests {
+
+    use crate::debug_exporter::marshaler::OTLPMarshaler;
+    use crate::debug_exporter::normal_otlp_marshaler::NormalOTLPMarshaler;
+    use crate::mock::{
+        create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
+    };
+
+    #[test]
+    fn test_marshal_traces() {
+        let trace = create_otlp_trace(1, 1, 1, 1, 1);
+
+        let marshaler = NormalOTLPMarshaler::default();
+
+        let marshaled_trace = marshaler.marshal_traces(trace);
+
+        let mut output_lines = Vec::new();
+        for line in marshaled_trace.lines() {
+            output_lines.push(line);
+        }
+
+        assert_eq!(
+            output_lines[0],
+            "ResourceSpan #0, Schema:[http://schema.opentelemetry.io], Attributes: ip=192.168.0.1 "
+        );
+        assert_eq!(
+            output_lines[1],
+            "ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
+        );
+        assert_eq!(
+            output_lines[2],
+            "Name: user-account, Trace ID: 4327e52011a22f9662eac217d77d1ec0, Span ID: 7271ee06d7e5925f, Attributes: hostname=host4.gov "
+        )
+    }
+
+    #[test]
+    fn test_marshal_metrics() {
+        let metrics = create_otlp_metric(1, 1, 5, 1);
+        let marshaler = NormalOTLPMarshaler::default();
+        let marshaled_metrics = marshaler.marshal_metrics(metrics);
+        let mut output_lines = Vec::new();
+        for line in marshaled_metrics.lines() {
+            output_lines.push(line);
+        }
+
+        assert_eq!(
+            output_lines[0],
+            "ResourceMetric #0, Schema:[http://schema.opentelemetry.io], Attributes: ip=192.168.0.2 "
+        );
+        assert_eq!(
+            output_lines[1],
+            "ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: instrumentation_scope_k1=k1 value "
+        );
+        assert_eq!(output_lines[2], "system.cpu.time  0");
+        assert_eq!(
+            output_lines[3],
+            "system.cpu.time freq=3GHz  count=0 sum=56 min=12 max=100.1 "
+        );
+        assert_eq!(
+            output_lines[4],
+            "system.cpu.time freq=3GHz  count=0 sum=56 min=12 max=100.1 le94.17542094619048=0 "
+        );
+        assert_eq!(
+            output_lines[5],
+            "system.cpu.time cpu_logical_processors=8  0"
+        );
+        assert_eq!(
+            output_lines[6],
+            "system.cpu.time cpu_cores=4  count=0 sum=56 q0=0 "
+        );
+    }
+
+    #[test]
+    fn test_marshal_logs() {
+        let logs = create_otlp_log(1, 1, 1);
+        let marshaler = NormalOTLPMarshaler::default();
+        let marshaled_logs = marshaler.marshal_logs(logs);
+        let mut output_lines = Vec::new();
+        for line in marshaled_logs.lines() {
+            output_lines.push(line);
+        }
+
+        assert_eq!(
+            output_lines[0],
+            "ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: version=2.0 "
+        );
+        assert_eq!(
+            output_lines[1],
+            "ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
+        );
+        assert_eq!(
+            output_lines[2],
+            "Body: Sint impedit non ut eligendi nisi neque harum maxime adipisci., Attributes: hostname=host3.thedomain.edu "
+        );
+    }
+
+    #[test]
+    fn test_marshal_profiles() {
+        let profiles = create_otlp_profile(1, 1, 1);
+        let marshaler = NormalOTLPMarshaler::default();
+        let marshaled_profiles = marshaler.marshal_profiles(profiles);
+        let mut output_lines = Vec::new();
+        for line in marshaled_profiles.lines() {
+            output_lines.push(line);
+        }
+
+        assert_eq!(
+            output_lines[0],
+            "ResourceProfile #0, Schema:[http://schema.opentelemetry.io], Attributes: hostname=host7.com "
+        );
+        assert_eq!(
+            output_lines[1],
+            "ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
+        );
+    }
+}

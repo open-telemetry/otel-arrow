@@ -4,11 +4,11 @@
 //!
 /// allows the user to configure their perf exporter
 pub mod config;
+/// implements the otlp marshaler trait for a detailed verbosity output
+pub mod detailed_otlp_marshaler;
 /// debug exporter implementation
 pub mod exporter;
 /// helps take otlp data and extract data to report on
 pub mod marshaler;
-/// implements the otlp marshaler trait for a detailed verbosity output
-pub mod detailed_otlp_marshaler;
 /// implements the otlp marshaler trait for a normal verbosity output
 pub mod normal_otlp_marshaler;

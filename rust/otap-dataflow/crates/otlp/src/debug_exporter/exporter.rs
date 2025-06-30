@@ -5,9 +5,15 @@
 //! ToDo: Handle Ack and Nack messages in the pipeline
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
+//! ToDo: Use OTLP Views instead of the OTLP Request structs
 
 use crate::LOCAL_EXPORTERS;
-use crate::debug_exporter::{config::{Config, Verbosity}, marshaler::OTLPMarshaler, detailed_otlp_marshaler::DetailedOTLPMarshaler, normal_otlp_marshaler::NormalOTLPMarshaler};
+use crate::debug_exporter::{
+    config::{Config, Verbosity},
+    detailed_otlp_marshaler::DetailedOTLPMarshaler,
+    marshaler::OTLPMarshaler,
+    normal_otlp_marshaler::NormalOTLPMarshaler,
+};
 use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::{
     collector::{
@@ -69,15 +75,20 @@ impl local::Exporter<OTLPData> for DebugExporter {
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
+        // counter to count number of objects received between timerticks
         let mut metric_count: u64 = 0;
         let mut profile_count: u64 = 0;
         let mut span_count: u64 = 0;
         let mut log_count: u64 = 0;
+
+        // create a marshaler to take the otlp objects and extract various data to report
         let marshaler: Box<dyn OTLPMarshaler> = if self.config.verbosity() == Verbosity::Normal {
             Box::new(NormalOTLPMarshaler)
         } else {
             Box::new(DetailedOTLPMarshaler)
         };
+
+        // get a writer to write to stdout or to a file
         let mut writer = get_writer(self.output);
         // Loop until a Shutdown event is received.
         loop {
@@ -86,16 +97,13 @@ impl local::Exporter<OTLPData> for DebugExporter {
                 Message::Control(ControlMsg::TimerTick { .. }) => {
                     _ = writeln!(writer, "Timer tick received");
 
-                    // output count of messages received
-                    _ = writeln!(writer, "Count of metrics objects received {}", metric_count);
-                    _ = writeln!(writer, "Count of spans objects received {}", span_count);
-                    _ = writeln!(
-                        writer,
-                        "Count of profiles objects received {}",
-                        profile_count
-                    );
-                    _ = writeln!(writer, "Count of logs objects received {}", log_count);
+                    // output count of messages received since last timertick
+                    _ = writeln!(writer, "OTLP Metric objects received: {}", metric_count);
+                    _ = writeln!(writer, "OTLP Trace objects received: {}", span_count);
+                    _ = writeln!(writer, "OTLP Profile objects received: {}", profile_count);
+                    _ = writeln!(writer, "OTLP Log objects received: {}", log_count);
 
+                    // reset counters after timertick
                     metric_count = 0;
                     span_count = 0;
                     log_count = 0;
@@ -113,9 +121,11 @@ impl local::Exporter<OTLPData> for DebugExporter {
                 //send data
                 Message::PData(message) => {
                     match message {
-                        // match on OTLPData type and use the respective client to send message
                         // ToDo: Add Ack/Nack handling, send a signal that data has been exported
-                        // check what message
+                        // ToDo: Use the views instead of OTLPData
+
+                        // match on OTLPData type and use the respective method to collect data about the received object
+                        // increment the counters for each respective OTLP Datatype
                         OTLPData::Metrics(req) => {
                             push_metric(&self.config.verbosity(), req, &marshaler, &mut writer);
                             metric_count += 1;
@@ -161,6 +171,7 @@ fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
     }
 }
 
+/// Function to collect and report the data contained in a Metrics object received by the Debug exporter
 fn push_metric(
     verbosity: &Verbosity,
     metric_request: ExportMetricsServiceRequest,
@@ -204,12 +215,13 @@ fn push_metric(
     _ = writeln!(writer, "Received {} metrics", metrics);
     _ = writeln!(writer, "Received {} data points", data_points);
 
+    // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_metrics(metric_request);
-    _ = writeln!(writer, "{}", report);
+    _ = write!(writer, "{}", report);
 }
 
 fn push_trace(
@@ -239,13 +251,13 @@ fn push_trace(
     _ = writeln!(writer, "Received {} events", events);
     _ = writeln!(writer, "Received {} links", links);
 
+    // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_traces(trace_request);
-    _ = writeln!(writer, "{}", report);
-
+    _ = write!(writer, "{}", report);
 }
 
 fn push_log(
@@ -276,8 +288,7 @@ fn push_log(
     }
 
     let report = marshaler.marshal_logs(log_request);
-    _ = writeln!(writer, "{}", report);
-
+    _ = write!(writer, "{}", report);
 }
 
 fn push_profile(
@@ -298,7 +309,7 @@ fn push_profile(
         }
     }
 
-    _ = writeln!(writer, "Received {} resource profiles, ", resource_profiles);
+    _ = writeln!(writer, "Received {} resource profiles", resource_profiles);
     _ = writeln!(writer, "Received {} samples", samples);
 
     if *verbosity == Verbosity::Basic {
@@ -306,8 +317,7 @@ fn push_profile(
     }
 
     let report = marshaler.marshal_profiles(profile_request);
-    _ = writeln!(writer, "{}", report);
-
+    _ = write!(writer, "{}", report);
 }
 
 #[cfg(test)]
@@ -316,27 +326,8 @@ mod tests {
     use crate::debug_exporter::config::{Config, Verbosity};
     use crate::debug_exporter::exporter::DebugExporter;
     use crate::grpc::OTLPData;
-    use crate::proto::opentelemetry::{
-        collector::{
-            logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
-            profiles::v1development::ExportProfilesServiceRequest,
-            trace::v1::ExportTraceServiceRequest,
-        },
-        common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value},
-        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
-        metrics::v1::{
-            Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-            HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
-            Summary, SummaryDataPoint, exemplar::Value as ExemplarValue,
-            exponential_histogram_data_point::Buckets, metric::Data,
-            number_data_point::Value as NumberValue, summary_data_point::ValueAtQuantile,
-        },
-        profiles::v1development::{Profile, ResourceProfiles, ScopeProfiles},
-        resource::v1::Resource,
-        trace::v1::{
-            ResourceSpans, ScopeSpans, Span, Status,
-            span::{Event, Link},
-        },
+    use crate::mock::{
+        create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
     };
 
     use otap_df_engine::exporter::ExporterWrapper;
@@ -345,588 +336,7 @@ mod tests {
     use tokio::time::{Duration, sleep};
 
     use std::fs::{File, remove_file};
-    use std::io::{BufReader, prelude::*};
-
-    fn create_otlp_metric(
-        resource_metrics_count: usize,
-        scope_metrics_count: usize,
-        metric_count: usize,
-        datapoint_count: usize,
-    ) -> ExportMetricsServiceRequest {
-        let mut resource_metrics: Vec<ResourceMetrics> = vec![];
-
-        for _ in 0..resource_metrics_count {
-            let mut scope_metrics: Vec<ScopeMetrics> = vec![];
-            for _ in 0..scope_metrics_count {
-                let mut metrics: Vec<Metric> = vec![];
-                for metric_index in 0..metric_count {
-                    let metric_data = if metric_index % 2 == 0 {
-                        // summary datapoint
-                        let mut datapoints = vec![];
-                        for datapoint in 0..datapoint_count {
-                            datapoints.push(SummaryDataPoint {
-                                start_time_unix_nano: 0,
-                                time_unix_nano: 1_000_000_000,
-                                attributes: vec![KeyValue {
-                                    key: "datapoint_k1".to_string(),
-                                    value: Some(AnyValue {
-                                        value: Some(Value::StringValue("k1 value".to_string())),
-                                    }),
-                                }],
-                                sum: 56.0,
-                                count: 0,
-                                flags: 0,
-                                quantile_values: vec![ValueAtQuantile {
-                                    quantile: 0.0,
-                                    value: 0.0,
-                                }],
-                            });
-                        }
-                        Data::Summary(Summary {
-                            data_points: datapoints.clone(),
-                        })
-                    } else if metric_index % 3 == 0 {
-                        // sum datapoint
-                        let mut datapoints = vec![];
-                        for datapoint in 0..datapoint_count {
-                            datapoints.push(NumberDataPoint {
-                                start_time_unix_nano: 0,
-                                time_unix_nano: 1_000_000_000,
-                                attributes: vec![KeyValue {
-                                    key: "datapoint_k1".to_string(),
-                                    value: Some(AnyValue {
-                                        value: Some(Value::StringValue("k1 value".to_string())),
-                                    }),
-                                }],
-                                value: Some(NumberValue::AsInt(datapoint as i64)),
-                                flags: 0,
-                                exemplars: vec![Exemplar {
-                                    time_unix_nano: 1_000_000_000,
-                                    span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                                    trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                                    value: Some(ExemplarValue::AsDouble(22.2)),
-                                    filtered_attributes: vec![KeyValue {
-                                        key: "************".to_string(),
-                                        value: Some(AnyValue {
-                                            value: Some(Value::BoolValue(true)),
-                                        }),
-                                    }],
-                                }],
-                            });
-                        }
-
-                        Data::Sum(Sum {
-                            data_points: datapoints.clone(),
-                            aggregation_temporality: 4, // AGGREGATION_TEMPORALITY_DELTA
-                            is_monotonic: true,
-                        })
-                    } else if metric_index % 5 == 0 {
-                        // histogram datapoint
-                        let mut datapoints = vec![];
-                        for _ in 0..datapoint_count {
-                            datapoints.push(HistogramDataPoint {
-                                attributes: vec![KeyValue {
-                                    key: "datapoint_k1".to_string(),
-                                    value: Some(AnyValue {
-                                        value: Some(Value::StringValue("k1 value".to_string())),
-                                    }),
-                                }],
-                                start_time_unix_nano: 0,
-                                time_unix_nano: 1_000_000_000,
-                                explicit_bounds: vec![],
-                                bucket_counts: vec![1, 2],
-                                sum: Some(56.0),
-                                count: 0,
-                                flags: 0,
-                                min: Some(12.0),
-                                max: Some(100.1),
-                                exemplars: vec![Exemplar {
-                                    time_unix_nano: 1_000_000_000,
-                                    span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                                    trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                                    value: Some(ExemplarValue::AsDouble(22.2)),
-                                    filtered_attributes: vec![KeyValue {
-                                        key: "************".to_string(),
-                                        value: Some(AnyValue {
-                                            value: Some(Value::BoolValue(true)),
-                                        }),
-                                    }],
-                                }],
-                            });
-                        }
-
-                        Data::Histogram(Histogram {
-                            data_points: datapoints.clone(),
-                            aggregation_temporality: 4, // AGGREGATION_TEMPORALITY_DELTA
-                        })
-                    } else if metric_index % 7 == 0 {
-                        // exponential histogram datapoint
-                        let mut datapoints = vec![];
-                        for _ in 0..datapoint_count {
-                            datapoints.push(ExponentialHistogramDataPoint {
-                                attributes: vec![KeyValue {
-                                    key: "datapoint_k1".to_string(),
-                                    value: Some(AnyValue {
-                                        value: Some(Value::StringValue("k1 value".to_string())),
-                                    }),
-                                }],
-                                start_time_unix_nano: 0,
-                                time_unix_nano: 1_000_000_000,
-                                sum: Some(56.0),
-                                count: 0,
-                                flags: 0,
-                                min: Some(12.0),
-                                max: Some(100.1),
-                                exemplars: vec![Exemplar {
-                                    time_unix_nano: 1_000_000_000,
-                                    span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                                    trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                                    value: Some(ExemplarValue::AsDouble(22.2)),
-                                    filtered_attributes: vec![KeyValue {
-                                        key: "************".to_string(),
-                                        value: Some(AnyValue {
-                                            value: Some(Value::BoolValue(true)),
-                                        }),
-                                    }],
-                                }],
-                                scale: 1,
-                                positive: Some(Buckets {
-                                    offset: 0,
-                                    bucket_counts: vec![0, 0, 0],
-                                }),
-                                negative: Some(Buckets {
-                                    offset: 0,
-                                    bucket_counts: vec![0, 0, 0],
-                                }),
-                                zero_threshold: 0.0,
-                                zero_count: 0,
-                            });
-                        }
-
-                        Data::ExponentialHistogram(ExponentialHistogram {
-                            data_points: datapoints.clone(),
-                            aggregation_temporality: 4, // AGGREGATION_TEMPORALITY_DELTA
-                        })
-                    } else {
-                        // gauge datapoint
-                        let mut datapoints = vec![];
-                        for datapoint in 0..datapoint_count {
-                            datapoints.push(NumberDataPoint {
-                                start_time_unix_nano: 0,
-                                time_unix_nano: 1_000_000_000,
-                                attributes: vec![],
-                                value: Some(NumberValue::AsInt(datapoint as i64)),
-                                flags: 0,
-                                exemplars: vec![],
-                            });
-                        }
-                        Data::Gauge(Gauge {
-                            data_points: datapoints.clone(),
-                        })
-                    };
-
-                    metrics.push(Metric {
-                        name: "metric name".to_string(),
-                        description: "metric description".to_string(),
-                        unit: "metric unit".to_string(),
-                        metadata: vec![],
-                        data: Some(metric_data),
-                    });
-                }
-                let mut instrumentation_scope_attributes = vec![
-                    KeyValue {
-                        key: "instrumentation_scope_k1".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k1 value".to_string())),
-                        }),
-                    },
-                    KeyValue {
-                        key: "instrumentation_scope_k2".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k2 value".to_string())),
-                        }),
-                    },
-                ];
-                scope_metrics.push(ScopeMetrics {
-                    schema_url: "http://schema.opentelemetry.io".to_string(),
-                    scope: Some(InstrumentationScope {
-                        name: "library".to_string(),
-                        version: "v1".to_string(),
-                        attributes: instrumentation_scope_attributes.clone(),
-                        dropped_attributes_count: 5,
-                    }),
-                    metrics: metrics.clone(),
-                });
-            }
-
-            let mut resource_metrics_attributes = vec![
-                KeyValue {
-                    key: "k1".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k1 value".to_string())),
-                    }),
-                },
-                KeyValue {
-                    key: "k2".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k2 value".to_string())),
-                    }),
-                },
-            ];
-
-            resource_metrics.push(ResourceMetrics {
-                schema_url: "http://schema.opentelemetry.io".to_string(),
-                resource: Some(Resource {
-                    attributes: resource_metrics_attributes.clone(),
-                    dropped_attributes_count: 0,
-                    entity_refs: vec![],
-                }),
-                scope_metrics: scope_metrics.clone(),
-            });
-        }
-
-        ExportMetricsServiceRequest {
-            resource_metrics: resource_metrics.clone(),
-        }
-    }
-
-    fn create_otlp_trace(
-        resource_spans_count: usize,
-        scope_spans_count: usize,
-        span_count: usize,
-        event_count: usize,
-        link_count: usize,
-    ) -> ExportTraceServiceRequest {
-        let mut resource_spans: Vec<ResourceSpans> = vec![];
-
-        for _ in 0..resource_spans_count {
-            let mut scope_spans: Vec<ScopeSpans> = vec![];
-            for _ in 0..scope_spans_count {
-                let mut spans: Vec<Span> = vec![];
-                for _ in 0..span_count {
-                    let mut span_attributes = vec![
-                        KeyValue {
-                            key: "span_attribute_key1".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("k1 value".to_string())),
-                            }),
-                        },
-                        KeyValue {
-                            key: "span_attribute_key2".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("k2 value".to_string())),
-                            }),
-                        },
-                    ];
-                    let mut links: Vec<Link> = vec![];
-                    for _ in 0..link_count {
-                        links.push(Link {
-                            trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                            span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                            attributes: vec![KeyValue {
-                                key: "link_attribute_key1".to_string(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::StringValue("k1 value".to_string())),
-                                }),
-                            }],
-                            trace_state: "trace states".to_string(),
-                            dropped_attributes_count: 0,
-                            flags: 4,
-                        });
-                    }
-                    let mut events: Vec<Event> = vec![];
-                    for _ in 0..event_count {
-                        events.push(Event {
-                            time_unix_nano: 2_000_000_000,
-                            name: "event name".to_string(),
-                            attributes: vec![KeyValue {
-                                key: "event_attribute_key1".to_string(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::StringValue("k1 value".to_string())),
-                                }),
-                            }],
-                            dropped_attributes_count: 0,
-                        });
-                    }
-                    spans.push(Span {
-                        end_time_unix_nano: 2_000_000_000,
-                        start_time_unix_nano: 1_000_000,
-                        name: "trace name".to_string(),
-                        kind: 4,
-                        trace_state: "trace states".to_string(),
-                        status: Some(Status {
-                            code: 3,
-                            message: "status_message".to_string(),
-                        }),
-                        links: links.clone(),
-                        events: events.clone(),
-                        attributes: span_attributes.clone(),
-                        trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                        span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                        parent_span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                        dropped_attributes_count: 0,
-                        flags: 4,
-                        dropped_events_count: 0,
-                        dropped_links_count: 0,
-                    });
-                }
-                let mut instrumentation_scope_attributes = vec![
-                    KeyValue {
-                        key: "instrumentation_scope_k1".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k1 value".to_string())),
-                        }),
-                    },
-                    KeyValue {
-                        key: "instrumentation_scope_k2".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k2 value".to_string())),
-                        }),
-                    },
-                ];
-                scope_spans.push(ScopeSpans {
-                    schema_url: "http://schema.opentelemetry.io".to_string(),
-                    scope: Some(InstrumentationScope {
-                        name: "library".to_string(),
-                        version: "v1".to_string(),
-                        attributes: instrumentation_scope_attributes.clone(),
-                        dropped_attributes_count: 5,
-                    }),
-                    spans: spans.clone(),
-                });
-            }
-
-            let mut resource_spans_attributes = vec![
-                KeyValue {
-                    key: "k1".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k1 value".to_string())),
-                    }),
-                },
-                KeyValue {
-                    key: "k2".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k2 value".to_string())),
-                    }),
-                },
-            ];
-
-            resource_spans.push(ResourceSpans {
-                schema_url: "http://schema.opentelemetry.io".to_string(),
-                resource: Some(Resource {
-                    attributes: resource_spans_attributes.clone(),
-                    dropped_attributes_count: 0,
-                    entity_refs: vec![],
-                }),
-                scope_spans: scope_spans.clone(),
-            });
-        }
-
-        ExportTraceServiceRequest {
-            resource_spans: resource_spans.clone(),
-        }
-    }
-
-    fn create_otlp_log(
-        resource_logs_count: usize,
-        scope_logs_count: usize,
-        log_records_count: usize,
-    ) -> ExportLogsServiceRequest {
-        let mut resource_logs: Vec<ResourceLogs> = vec![];
-
-        for _ in 0..resource_logs_count {
-            let mut scope_logs: Vec<ScopeLogs> = vec![];
-            for _ in 0..scope_logs_count {
-                let mut log_records: Vec<LogRecord> = vec![];
-                for _ in 0..log_records_count {
-                    let mut log_records_attributes = vec![
-                        KeyValue {
-                            key: "log_attribute_key1".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("k1 value".to_string())),
-                            }),
-                        },
-                        KeyValue {
-                            key: "log_attribute_key2".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("k2 value".to_string())),
-                            }),
-                        },
-                    ];
-
-                    log_records.push(LogRecord {
-                        time_unix_nano: 2_000_000_000,
-                        observed_time_unix_nano: 1_000_000,
-                        severity_text: "Severity info".to_string(),
-                        severity_number: 2,
-                        event_name: "event1".to_string(),
-                        attributes: log_records_attributes.clone(),
-                        trace_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                        span_id: Vec::from("EEE19B7EC3C1B174".as_bytes()),
-                        body: Some(AnyValue {
-                            value: Some(Value::StringValue("log_body".to_string())),
-                        }),
-                        flags: 8,
-                        dropped_attributes_count: 0,
-                    });
-                }
-                let mut instrumentation_scope_attributes = vec![
-                    KeyValue {
-                        key: "instrumentation_scope_k1".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k1 value".to_string())),
-                        }),
-                    },
-                    KeyValue {
-                        key: "instrumentation_scope_k2".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k2 value".to_string())),
-                        }),
-                    },
-                ];
-                scope_logs.push(ScopeLogs {
-                    schema_url: "http://schema.opentelemetry.io".to_string(),
-                    scope: Some(InstrumentationScope {
-                        name: "library".to_string(),
-                        version: "v1".to_string(),
-                        attributes: instrumentation_scope_attributes.clone(),
-                        dropped_attributes_count: 5,
-                    }),
-                    log_records: log_records.clone(),
-                });
-            }
-
-            let mut resource_logs_attributes = vec![
-                KeyValue {
-                    key: "k1".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k1 value".to_string())),
-                    }),
-                },
-                KeyValue {
-                    key: "k2".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k2 value".to_string())),
-                    }),
-                },
-            ];
-
-            resource_logs.push(ResourceLogs {
-                schema_url: "http://schema.opentelemetry.io".to_string(),
-                resource: Some(Resource {
-                    attributes: resource_logs_attributes.clone(),
-                    dropped_attributes_count: 0,
-                    entity_refs: vec![],
-                }),
-                scope_logs: scope_logs.clone(),
-            });
-        }
-
-        ExportLogsServiceRequest {
-            resource_logs: resource_logs.clone(),
-        }
-    }
-
-    fn create_otlp_profile(
-        resource_profiles_count: usize,
-        scope_profiles_count: usize,
-        profile_count: usize,
-    ) -> ExportProfilesServiceRequest {
-        let mut resource_profiles: Vec<ResourceProfiles> = vec![];
-
-        for _ in 0..resource_profiles_count {
-            let mut scope_profiles: Vec<ScopeProfiles> = vec![];
-            for _ in 0..scope_profiles_count {
-                let mut profiles: Vec<Profile> = vec![];
-                for _ in 0..profile_count {
-                    let mut profile_attributes = vec![
-                        KeyValue {
-                            key: "profile_attribute_key1".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("k1 value".to_string())),
-                            }),
-                        },
-                        KeyValue {
-                            key: "profile_attribute_key2".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("k2 value".to_string())),
-                            }),
-                        },
-                    ];
-
-                    profiles.push(Profile {
-                        sample_type: vec![],
-                        sample: vec![],
-                        location_indices: vec![],
-                        time_nanos: 0,
-                        duration_nanos: 0,
-                        period_type: None,
-                        period: 0,
-                        comment_strindices: vec![],
-                        default_sample_type_index: 0,
-                        profile_id: vec![],
-                        dropped_attributes_count: 0,
-                        original_payload: vec![],
-                        original_payload_format: "".to_string(),
-                        attribute_indices: vec![],
-                    });
-                }
-                let mut instrumentation_scope_attributes = vec![
-                    KeyValue {
-                        key: "instrumentation_scope_k1".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k1 value".to_string())),
-                        }),
-                    },
-                    KeyValue {
-                        key: "instrumentation_scope_k2".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("k2 value".to_string())),
-                        }),
-                    },
-                ];
-                scope_profiles.push(ScopeProfiles {
-                    schema_url: "http://schema.opentelemetry.io".to_string(),
-                    scope: Some(InstrumentationScope {
-                        name: "library".to_string(),
-                        version: "v1".to_string(),
-                        attributes: instrumentation_scope_attributes.clone(),
-                        dropped_attributes_count: 5,
-                    }),
-                    profiles: profiles.clone(),
-                });
-            }
-
-            let mut resource_profiles_attributes = vec![
-                KeyValue {
-                    key: "k1".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k1 value".to_string())),
-                    }),
-                },
-                KeyValue {
-                    key: "k2".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::StringValue("k2 value".to_string())),
-                    }),
-                },
-            ];
-
-            resource_profiles.push(ResourceProfiles {
-                schema_url: "http://schema.opentelemetry.io".to_string(),
-                resource: Some(Resource {
-                    attributes: resource_profiles_attributes.clone(),
-                    dropped_attributes_count: 0,
-                    entity_refs: vec![],
-                }),
-                scope_profiles: scope_profiles.clone(),
-            });
-        }
-
-        ExportProfilesServiceRequest {
-            resource_profiles: resource_profiles.clone(),
-        }
-    }
+    use std::io::{BufReader, prelude::*, read_to_string};
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -936,21 +346,19 @@ mod tests {
         |ctx| {
             Box::pin(async move {
                 // send some messages to the exporter to calculate pipeline statistics
-                for _ in 0..3 {
-                    // // Send a data message
-                    ctx.send_pdata(OTLPData::Metrics(create_otlp_metric(1, 1, 7, 1)))
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OTLPData::Traces(create_otlp_trace(1, 1, 7, 1, 1)))
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OTLPData::Logs(create_otlp_log(1, 1, 7)))
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OTLPData::Profiles(create_otlp_profile(1, 1, 1)))
-                        .await
-                        .expect("Failed to send data message");
-                }
+                // // Send a data message
+                ctx.send_pdata(OTLPData::Metrics(create_otlp_metric(1, 1, 5, 1)))
+                    .await
+                    .expect("Failed to send data message");
+                ctx.send_pdata(OTLPData::Traces(create_otlp_trace(1, 1, 1, 1, 1)))
+                    .await
+                    .expect("Failed to send data message");
+                ctx.send_pdata(OTLPData::Logs(create_otlp_log(1, 1, 1)))
+                    .await
+                    .expect("Failed to send data message");
+                ctx.send_pdata(OTLPData::Profiles(create_otlp_profile(1, 1, 1)))
+                    .await
+                    .expect("Failed to send data message");
 
                 // TODO ADD DELAY BETWEEN HERE
                 _ = sleep(Duration::from_millis(5000));
@@ -979,11 +387,27 @@ mod tests {
                 // read the output file
                 // assert each line accordingly
                 let file = File::open(output_file).expect("failed to open file");
-                let reader = BufReader::new(file);
-                let mut lines = Vec::new();
-                for line in reader.lines() {
-                    lines.push(line.unwrap());
-                }
+                let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
+
+                /// check the the exporter has received the expected number of messages
+                assert!(reader.contains("Timer tick received"));
+                assert!(reader.contains("OTLP Metric objects received: 0"));
+                assert!(reader.contains("OTLP Trace objects received: 0"));
+                assert!(reader.contains("OTLP Profile objects received: 0"));
+                assert!(reader.contains("OTLP Log objects received: 0"));
+                assert!(reader.contains("Received 1 resource metrics"));
+                assert!(reader.contains("Received 5 metrics"));
+                assert!(reader.contains("Received 5 data points"));
+                assert!(reader.contains("Received 1 resource spans"));
+                assert!(reader.contains("Received 1 spans"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Received 1 links"));
+                assert!(reader.contains("Received 1 resource logs"));
+                assert!(reader.contains("Received 1 log records"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Received 1 resource profiles"));
+                assert!(reader.contains("Received 0 samples"));
+                assert!(reader.contains("Shutdown message received"));
             })
         }
     }
@@ -1004,7 +428,7 @@ mod tests {
             .run_validation(validation_procedure(output_file.clone()));
 
         // remove the created file, prevent accidental check in of report
-        // remove_file(output_file).expect("Failed to remove file");
+        remove_file(output_file).expect("Failed to remove file");
     }
 
     #[test]
@@ -1023,7 +447,7 @@ mod tests {
             .run_validation(validation_procedure(output_file.clone()));
 
         // remove the created file, prevent accidental check in of report
-        // remove_file(output_file).expect("Failed to remove file");
+        remove_file(output_file).expect("Failed to remove file");
     }
 
     #[test]
@@ -1042,6 +466,6 @@ mod tests {
             .run_validation(validation_procedure(output_file.clone()));
 
         // remove the created file, prevent accidental check in of report
-        // remove_file(output_file).expect("Failed to remove file");
+        remove_file(output_file).expect("Failed to remove file");
     }
 }

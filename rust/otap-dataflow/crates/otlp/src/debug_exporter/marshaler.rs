@@ -8,10 +8,11 @@ use crate::proto::opentelemetry::{
         logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
         profiles::v1development::ExportProfilesServiceRequest,
         trace::v1::ExportTraceServiceRequest,
-    },common::v1::{AnyValue, any_value::Value},
+    },
+    common::v1::{AnyValue, any_value::Value},
 };
-use crate::debug_exporter::normal_otlp_marshaler::attributes_string_normal;
 use std::fmt;
+use std::fmt::Write;
 
 /// Trait that provides methods to take OTLP messages and extract information from them and generate a report
 pub trait OTLPMarshaler {
@@ -24,7 +25,6 @@ pub trait OTLPMarshaler {
     /// extract data from profiles and generate string report
     fn marshal_profiles(&self, profiles: ExportProfilesServiceRequest) -> String;
 }
-
 
 impl fmt::Display for AnyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,9 +49,18 @@ impl fmt::Display for AnyValue {
                     }
                 }
                 Value::KvlistValue(kvlist) => {
-
-                    let string = attributes_string_normal(&kvlist.values);
-                    write!(f, "{}", string)?;
+                    let mut kv_string = String::new();
+                    for kv in kvlist.values.iter() {
+                        if let Some(value) = &kv.value {
+                            _ = write!(
+                                &mut kv_string,
+                                "{key}={value} ",
+                                key = kv.key,
+                                value = value
+                            );
+                        }
+                    }
+                    write!(f, "{}", kv_string)?;
                 }
                 Value::BytesValue(bytes) => {
                     if let Ok(byte_string) = String::from_utf8(bytes.to_vec()) {
