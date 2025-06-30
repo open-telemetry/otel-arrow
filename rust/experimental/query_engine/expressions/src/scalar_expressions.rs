@@ -1,6 +1,6 @@
 use crate::{
     DoubleScalarExpression, Expression, ExpressionError, IntegerScalarExpression,
-    LogicalExpression, QueryLocation, StaticScalarExpression, ValueAccessor, ValueType,
+    LogicalExpression, QueryLocation, StaticScalarExpression, ValueAccessor, primitives::*,
 };
 
 #[derive(Debug, Clone, PartialEq)]
