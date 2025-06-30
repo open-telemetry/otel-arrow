@@ -1,6 +1,6 @@
 use chrono::{DateTime, FixedOffset};
 
-use crate::{Expression, QueryLocation};
+use crate::{Expression, QueryLocation, primitives::*};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StaticScalarExpression {
@@ -57,15 +57,17 @@ impl BooleanScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> bool {
-        self.value
-    }
 }
 
 impl Expression for BooleanScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+}
+
+impl BooleanValue for BooleanScalarExpression {
+    fn get_value(&self) -> bool {
+        self.value
     }
 }
 
@@ -85,15 +87,17 @@ impl DateTimeScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> DateTime<FixedOffset> {
-        self.value
-    }
 }
 
 impl Expression for DateTimeScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+}
+
+impl DateTimeValue for DateTimeScalarExpression {
+    fn get_value(&self) -> DateTime<FixedOffset> {
+        self.value
     }
 }
 
@@ -110,15 +114,17 @@ impl DoubleScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> f64 {
-        self.value
-    }
 }
 
 impl Expression for DoubleScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+}
+
+impl DoubleValue for DoubleScalarExpression {
+    fn get_value(&self) -> f64 {
+        self.value
     }
 }
 
@@ -135,15 +141,17 @@ impl IntegerScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> i64 {
-        self.value
-    }
 }
 
 impl Expression for IntegerScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+}
+
+impl IntegerValue for IntegerScalarExpression {
+    fn get_value(&self) -> i64 {
+        self.value
     }
 }
 
@@ -160,10 +168,6 @@ impl StringScalarExpression {
             value: value.into(),
         }
     }
-
-    pub fn get_value(&self) -> &str {
-        &self.value
-    }
 }
 
 impl Expression for StringScalarExpression {
@@ -172,11 +176,8 @@ impl Expression for StringScalarExpression {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum ValueType {
-    Boolean,
-    Integer,
-    DateTime,
-    Double,
-    String,
+impl StringValue for StringScalarExpression {
+    fn get_value(&self) -> &str {
+        &self.value
+    }
 }
