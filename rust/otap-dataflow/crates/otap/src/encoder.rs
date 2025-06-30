@@ -272,75 +272,76 @@ mod test {
     use prost::Message;
 
     fn _generate_logs_for_verify_all_columns() -> LogsData {
-        LogsData::new((0..2).map(|_|
-            ResourceLogs::build(
-                Resource::build(vec![KeyValue::new(
-                    "resource_attr1",
-                    AnyValue::new_string("resource_value"),
-                )])
-                .dropped_attributes_count(1u32),
-            )
-            .schema_url("https://schema.opentelemetry.io/resource_schema")
-            .scope_logs(vec![
-                ScopeLogs::build(
-                    InstrumentationScope::build("library")
-                        .version("scopev1")
-                        .attributes(vec![KeyValue::new(
-                            "scope_attr1",
-                            AnyValue::new_string("scope_val1"),
+        LogsData::new(
+            (0..2)
+                .map(|_| {
+                    ResourceLogs::build(
+                        Resource::build(vec![KeyValue::new(
+                            "resource_attr1",
+                            AnyValue::new_string("resource_value"),
                         )])
-                        .dropped_attributes_count(2u32)
-                        .finish(),
-                )
-                .schema_url("https://schema.opentelemetry.io/scope_schema")
-                .log_records(vec![
-                    LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
-                        .observed_time_unix_nano(3_000_000_000u64)
-                        .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
-                        .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
-                        .severity_text("Info")
-                        .attributes(vec![KeyValue::new(
-                            "log_attr1",
-                            AnyValue::new_string("log_val_1"),
-                        )])
-                        .dropped_attributes_count(3u32)
-                        .flags(LogRecordFlags::TraceFlagsMask)
-                        .body(AnyValue::new_string("log_body"))
-                        .finish(),
-                    LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
-                        .observed_time_unix_nano(3_000_000_000u64)
-                        .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
-                        .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
-                        .severity_text("Info")
-                        .attributes(vec![
-                            KeyValue::new(
-                                "log_attr1",
-                                AnyValue::new_string("log_val_1"),
-                            ),
-                            
+                        .dropped_attributes_count(1u32),
+                    )
+                    .schema_url("https://schema.opentelemetry.io/resource_schema")
+                    .scope_logs(vec![
+                        ScopeLogs::build(
+                            InstrumentationScope::build("library")
+                                .version("scopev1")
+                                .attributes(vec![KeyValue::new(
+                                    "scope_attr1",
+                                    AnyValue::new_string("scope_val1"),
+                                )])
+                                .dropped_attributes_count(2u32)
+                                .finish(),
+                        )
+                        .schema_url("https://schema.opentelemetry.io/scope_schema")
+                        .log_records(vec![
+                            LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                                .observed_time_unix_nano(3_000_000_000u64)
+                                .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
+                                .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
+                                .severity_text("Info")
+                                .attributes(vec![KeyValue::new(
+                                    "log_attr1",
+                                    AnyValue::new_string("log_val_1"),
+                                )])
+                                .dropped_attributes_count(3u32)
+                                .flags(LogRecordFlags::TraceFlagsMask)
+                                .body(AnyValue::new_string("log_body"))
+                                .finish(),
+                            LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                                .observed_time_unix_nano(3_000_000_000u64)
+                                .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
+                                .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
+                                .severity_text("Info")
+                                .attributes(vec![KeyValue::new(
+                                    "log_attr1",
+                                    AnyValue::new_string("log_val_1"),
+                                )])
+                                .dropped_attributes_count(3u32)
+                                .flags(LogRecordFlags::TraceFlagsMask)
+                                .body(AnyValue::new_string("log_body"))
+                                .finish(),
+                            LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                                .observed_time_unix_nano(3_000_000_000u64)
+                                .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
+                                .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
+                                .severity_text("Info")
+                                .attributes(vec![KeyValue::new(
+                                    "log_attr1",
+                                    AnyValue::new_string("log_val_1"),
+                                )])
+                                .dropped_attributes_count(3u32)
+                                .flags(LogRecordFlags::TraceFlagsMask)
+                                .body(AnyValue::new_string("log_body"))
+                                .finish(),
                         ])
-                        .dropped_attributes_count(3u32)
-                        .flags(LogRecordFlags::TraceFlagsMask)
-                        .body(AnyValue::new_string("log_body"))
                         .finish(),
-                    LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
-                        .observed_time_unix_nano(3_000_000_000u64)
-                        .trace_id(vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
-                        .span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
-                        .severity_text("Info")
-                        .attributes(vec![KeyValue::new(
-                            "log_attr1",
-                            AnyValue::new_string("log_val_1"),
-                        )])
-                        .dropped_attributes_count(3u32)
-                        .flags(LogRecordFlags::TraceFlagsMask)
-                        .body(AnyValue::new_string("log_body"))
-                        .finish()
-                ])
-                .finish(),
-            ])
-            .finish()
-        ).collect::<Vec<_>>())
+                    ])
+                    .finish()
+                })
+                .collect::<Vec<_>>(),
+        )
     }
 
     fn _test_encode_logs_verify_all_columns_generic<T>(logs_data: T)
@@ -349,12 +350,12 @@ mod test {
     {
         // verify that every column for each record batch gets encoded as the correct type
         let result = encode_logs_otap_batch(&logs_data);
-        assert!(result.is_ok());
+        // TODO re-add this?
+        // assert!(result.is_ok());
         let otap_batch = result.unwrap();
 
-
         // TODO remove all this
-        let logs_batch  = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         arrow::util::pretty::print_batches(&[logs_batch.clone()]).unwrap();
 
         let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
@@ -794,7 +795,8 @@ mod test {
         // - using default values
 
         let result = encode_logs_otap_batch(logs_data);
-        assert!(result.is_ok());
+        // TODO add this back in?
+        // assert!(result.is_ok());
         let otap_batch = result.unwrap();
 
         let expected_logs_batch = RecordBatch::try_new(

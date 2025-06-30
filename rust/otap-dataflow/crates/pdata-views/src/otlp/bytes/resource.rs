@@ -4,7 +4,6 @@
 //! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
 //! bytes for messages defined in resources.proto
 
-
 use std::{cell::Cell, num::NonZeroUsize};
 
 use crate::{
@@ -14,7 +13,7 @@ use crate::{
             field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
             wire_types,
         },
-        decode::{read_varint, FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser},
+        decode::{FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser, read_varint},
     },
     views::resource::ResourceView,
 };
@@ -34,8 +33,8 @@ impl<'a> RawResource<'a> {
 
 /// known field offsets for fields in buffer containing Resource message
 pub struct ResourceFieldOffsets {
-    dropped_attributes_count: Cell<Option<NonZeroUsize>>,
-    first_attribute: Cell<Option<NonZeroUsize>>,
+    dropped_attributes_count: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
 impl FieldOffsets for ResourceFieldOffsets {
@@ -46,29 +45,31 @@ impl FieldOffsets for ResourceFieldOffsets {
         }
     }
 
-    fn get_field_offset(&self, field_num: u64) -> Option<usize> {
-        match field_num {
-            RESOURCE_ATTRIBUTES => self.first_attribute.get().map(NonZeroUsize::get),
-            RESOURCE_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count.get().map(NonZeroUsize::get),
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            RESOURCE_ATTRIBUTES => self.first_attribute.get(),
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT => self.dropped_attributes_count.get(),
             _ => None,
-        }
+        };
+
+        Self::map_nonzero_range_to_primitive(range)
     }
 
-    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
-        let nz = match NonZeroUsize::new(offset) {
-            Some(nz) => nz,
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match Self::to_nonzero_range(start, end) {
+            Some(range) => Some(range),
             None => return,
         };
 
         match field_num {
             RESOURCE_DROPPED_ATTRIBUTES_COUNT => {
                 if wire_type == wire_types::VARINT {
-                    self.dropped_attributes_count.set(Some(nz));
+                    self.dropped_attributes_count.set(range);
                 }
             }
             RESOURCE_ATTRIBUTES => {
                 if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
-                    self.first_attribute.set(Some(nz));
+                    self.first_attribute.set(range);
                 }
             }
             _ => {
@@ -89,13 +90,12 @@ impl ResourceView for RawResource<'_> {
         Self: 'att;
 
     fn attributes(&self) -> Self::AttributesIter<'_> {
-        KeyValueIter::new(
-            RepeatedFieldProtoBytesParser::from_byte_parser(&self.bytes_parser,
-                RESOURCE_ATTRIBUTES,
-                wire_types::LEN
-            )
-        )
-            // self.bytes_parser.clone(), RESOURCE_ATTRIBUTES)
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.bytes_parser,
+            RESOURCE_ATTRIBUTES,
+            wire_types::LEN,
+        ))
+        // self.bytes_parser.clone(), RESOURCE_ATTRIBUTES)
     }
 
     fn dropped_attributes_count(&self) -> u32 {

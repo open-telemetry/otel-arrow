@@ -8,7 +8,7 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use otap_df_otap::encoder::encode_logs_otap_batch;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
@@ -132,7 +132,7 @@ fn bench_encode_logs(c: &mut Criterion) {
         &input_bytes,
         |b, input| {
             b.iter_batched(
-                || RawLogsData::new(input.as_ref()),      // setup: create view wrapper
+                || RawLogsData::new(input.as_ref()), // setup: create view wrapper
                 |logs_data| {
                     let result = encode_logs_otap_batch(&logs_data).expect("no error");
                     black_box(result)
@@ -150,7 +150,8 @@ fn bench_encode_logs(c: &mut Criterion) {
             b.iter_batched(
                 || input,
                 |input| {
-                    let logs_data = LogsData::decode(input.as_ref()).expect("can decode proto bytes");
+                    let logs_data =
+                        LogsData::decode(input.as_ref()).expect("can decode proto bytes");
                     let result = encode_logs_otap_batch(&logs_data).expect("no error");
                     black_box(result)
                 },
@@ -165,10 +166,8 @@ fn bench_encode_logs(c: &mut Criterion) {
         &input,
         |b, input| {
             b.iter_batched(
-                || input,                     // setup: clone input (cheap clone or ref)
-                |logs_data| {
-                    encode_logs_otap_batch(logs_data).expect("no error")
-                },
+                || input, // setup: clone input (cheap clone or ref)
+                |logs_data| encode_logs_otap_batch(logs_data).expect("no error"),
                 BatchSize::SmallInput,
             )
         },

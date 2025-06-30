@@ -17,7 +17,9 @@ use crate::otlp::bytes::consts::field_num::logs::{
     SCOPE_LOGS_LOG_RECORDS, SCOPE_LOGS_SCHEMA_URL,
 };
 use crate::otlp::bytes::consts::wire_types;
-use crate::otlp::bytes::decode::{read_len_delim, read_varint, FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser};
+use crate::otlp::bytes::decode::{
+    FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser, read_len_delim, read_varint,
+};
 use crate::otlp::bytes::resource::RawResource;
 use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 
@@ -42,9 +44,9 @@ pub struct RawResourceLogs<'a> {
 
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct ResourceLogsFieldOffsets {
-    resource: Cell<Option<NonZeroUsize>>,
-    schema_url: Cell<Option<NonZeroUsize>>,
-    first_scope_logs: Cell<Option<NonZeroUsize>>,
+    resource: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    schema_url: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_scope_logs: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
 impl FieldOffsets for ResourceLogsFieldOffsets {
@@ -56,24 +58,30 @@ impl FieldOffsets for ResourceLogsFieldOffsets {
         }
     }
 
-    fn get_field_offset(&self, field_num: u64) -> Option<usize> {
-        match field_num {
-            RESOURCE_LOGS_RESOURCE => self.resource.get().map(NonZeroUsize::get),
-            RESOURCE_LOGS_SCHEMA_URL => self.schema_url.get().map(NonZeroUsize::get),
-            RESOURCE_LOGS_SCOPE_LOGS => self.first_scope_logs.get().map(NonZeroUsize::get),
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            RESOURCE_LOGS_RESOURCE => self.resource.get(),
+            RESOURCE_LOGS_SCHEMA_URL => self.schema_url.get(),
+            RESOURCE_LOGS_SCOPE_LOGS => self.first_scope_logs.get(),
             _ => None,
-        }
+        };
+
+        Self::map_nonzero_range_to_primitive(range)
     }
 
-    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match Self::to_nonzero_range(start, end) {
+            Some(range) => Some(range),
+            None => return,
+        };
+
         if wire_type == wire_types::LEN {
-            let nz = NonZeroUsize::new(offset);
             match field_num {
-                RESOURCE_LOGS_RESOURCE => self.resource.set(nz),
-                RESOURCE_LOGS_SCHEMA_URL => self.schema_url.set(nz),
+                RESOURCE_LOGS_RESOURCE => self.resource.set(range),
+                RESOURCE_LOGS_SCHEMA_URL => self.schema_url.set(range),
                 RESOURCE_LOGS_SCOPE_LOGS => {
                     if self.first_scope_logs.get().is_none() {
-                        self.first_scope_logs.set(nz);
+                        self.first_scope_logs.set(range);
                     }
                 }
                 _ => { /* ignore */ }
@@ -89,9 +97,9 @@ pub struct RawScopeLogs<'a> {
 
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct ScopeLogsFieldOffsets {
-    scope: Cell<Option<NonZeroUsize>>,
-    schema_url: Cell<Option<NonZeroUsize>>,
-    first_log_record: Cell<Option<NonZeroUsize>>,
+    scope: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    schema_url: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
+    first_log_record: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
 impl FieldOffsets for ScopeLogsFieldOffsets {
@@ -103,24 +111,29 @@ impl FieldOffsets for ScopeLogsFieldOffsets {
         }
     }
 
-    fn get_field_offset(&self, field_num: u64) -> Option<usize> {
-        match field_num {
-            SCOPE_LOG_SCOPE => self.scope.get().map(NonZeroUsize::get),
-            SCOPE_LOGS_SCHEMA_URL => self.schema_url.get().map(NonZeroUsize::get),
-            SCOPE_LOGS_LOG_RECORDS => self.first_log_record.get().map(NonZeroUsize::get),
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = match field_num {
+            SCOPE_LOG_SCOPE => self.scope.get(),
+            SCOPE_LOGS_SCHEMA_URL => self.schema_url.get(),
+            SCOPE_LOGS_LOG_RECORDS => self.first_log_record.get(),
             _ => None,
-        }
+        };
+
+        Self::map_nonzero_range_to_primitive(range)
     }
 
-    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
+        let range = match Self::to_nonzero_range(start, end) {
+            Some(range) => Some(range),
+            None => return,
+        };
         if wire_type == wire_types::LEN {
-            let nz = NonZeroUsize::new(offset);
             match field_num {
-                SCOPE_LOG_SCOPE => self.scope.set(nz),
-                SCOPE_LOGS_SCHEMA_URL => self.schema_url.set(nz),
+                SCOPE_LOG_SCOPE => self.scope.set(range),
+                SCOPE_LOGS_SCHEMA_URL => self.schema_url.set(range),
                 SCOPE_LOGS_LOG_RECORDS => {
                     if self.first_log_record.get().is_none() {
-                        self.first_log_record.set(nz)
+                        self.first_log_record.set(range)
                     }
                 }
                 _ => { /* ignore unknown field */ }
@@ -136,8 +149,8 @@ pub struct RawLogRecord<'a> {
 
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct LogFieldOffsets {
-    scalar_fields: [Cell<Option<NonZeroUsize>>; 13],
-    first_attribute: Cell<Option<NonZeroUsize>>,
+    scalar_fields: [Cell<Option<(NonZeroUsize, NonZeroUsize)>>; 13],
+    first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
 impl FieldOffsets for LogFieldOffsets {
@@ -148,7 +161,7 @@ impl FieldOffsets for LogFieldOffsets {
         }
     }
 
-    fn set_field_offset(&self, field_num: u64, wire_type: u64, offset: usize) {
+    fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
         const WIRE_TYPES: [u64; 13] = [
             0,                   // unused
             wire_types::FIXED64, // time_unix_nano = 1
@@ -165,31 +178,33 @@ impl FieldOffsets for LogFieldOffsets {
             wire_types::LEN,     // event_name = 12
         ];
 
-        let nz = match NonZeroUsize::new(offset) {
-            Some(nz) => nz,
+        let range = match Self::to_nonzero_range(start, end) {
+            Some(range) => Some(range),
             None => return,
         };
 
         if field_num == LOG_RECORD_ATTRIBUTES {
             if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
-                self.first_attribute.set(Some(nz));
+                self.first_attribute.set(range);
             }
         } else if field_num < 13 {
             let idx = field_num as usize;
             if wire_type == WIRE_TYPES[idx] {
-                self.scalar_fields[idx].set(Some(nz));
+                self.scalar_fields[idx].set(range);
             }
         }
     }
 
-    fn get_field_offset(&self, field_num: u64) -> Option<usize> {
-        if field_num == LOG_RECORD_ATTRIBUTES {
-            self.first_attribute.get().map(NonZeroUsize::get)
+    fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
+        let range = if field_num == LOG_RECORD_ATTRIBUTES {
+            self.first_attribute.get()
         } else {
             self.scalar_fields
                 .get(field_num as usize)
-                .and_then(|c| c.get().map(NonZeroUsize::get))
-        }
+                .and_then(|c| c.get())
+        };
+
+        Self::map_nonzero_range_to_primitive(range)
     }
 }
 
@@ -324,10 +339,10 @@ impl ResourceLogsView for RawResourceLogs<'_> {
             // field_index: 0,
             // byte_parser: self.byte_parser.clone(),
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
-                &self.byte_parser, 
-                RESOURCE_LOGS_SCOPE_LOGS, 
-                wire_types::LEN
-            )
+                &self.byte_parser,
+                RESOURCE_LOGS_SCOPE_LOGS,
+                wire_types::LEN,
+            ),
         }
     }
 }
@@ -353,8 +368,8 @@ impl ScopeLogsView for RawScopeLogs<'_> {
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
                 &self.byte_parser,
                 SCOPE_LOGS_LOG_RECORDS,
-                wire_types::LEN
-            )
+                wire_types::LEN,
+            ),
         }
     }
 
@@ -392,11 +407,10 @@ impl LogRecordView for RawLogRecord<'_> {
     fn attributes(&self) -> Self::AttributeIter<'_> {
         KeyValueIter::new(
             RepeatedFieldProtoBytesParser::from_byte_parser(
-                &self.bytes_parser, 
+                &self.bytes_parser,
                 LOG_RECORD_ATTRIBUTES,
-                wire_types::LEN
-            )
-            // self.bytes_parser.clone(), LOG_RECORD_ATTRIBUTES
+                wire_types::LEN,
+            ), // self.bytes_parser.clone(), LOG_RECORD_ATTRIBUTES
         )
     }
 
