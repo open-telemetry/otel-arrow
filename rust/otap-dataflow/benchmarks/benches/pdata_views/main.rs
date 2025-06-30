@@ -1,18 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Benchmarks executing encoding OTAP data.
-//!
-//! For now, this just contains a simple benchmark for encoding logs. We'll likely add more to
-//! this in the future.
+//! Benchmarks for implementations of pdata view implementations
 
-use std::hint::black_box;
-
-use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-
-use otap_df_otap::encoder::encode_logs_otap_batch;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata_views::views::bench_helpers::visit_logs_data;
+use otap_df_pdata_views::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
 use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
 use otel_arrow_rust::proto::opentelemetry::logs::v1::{
     LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -20,11 +13,7 @@ use otel_arrow_rust::proto::opentelemetry::logs::v1::{
 use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
 use prost::Message;
 
-use mimalloc::MiMalloc;
-
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
-
+/// creates a log data with every field present in the proto message
 fn create_logs_data() -> LogsData {
     let attr_values = vec![
         AnyValue::new_string("terry"),
@@ -118,111 +107,103 @@ fn create_logs_data() -> LogsData {
     )
 }
 
-fn bench_encode_logs(c: &mut Criterion) {
+fn bench_logs_view_impl_ordered(c: &mut Criterion) {
+    let input = create_logs_data();
+    let mut input_bytes = vec![];
+    input
+        .encode(&mut input_bytes)
+        .expect("can decode proto bytes");
+
+    let mut group = c.benchmark_group("bench_logs_view_impl_ordered");
+
+    let _ = group.bench_with_input(
+        BenchmarkId::new("proto_bytes", "default"),
+        &input_bytes,
+        |b, input| {
+            b.iter(|| {
+                let logs_data = RawLogsData::new(input);
+                visit_logs_data_ordered(&logs_data);
+            })
+        },
+    );
+
+    let _ = group.bench_with_input(
+        BenchmarkId::new("proto_structs_decode", "default"),
+        &input_bytes,
+        |b, input| {
+            b.iter(|| {
+                let logs_data = LogsData::decode(input.as_ref()).expect("can decode proto bytes");
+                visit_logs_data_ordered(&logs_data);
+            })
+        },
+    );
+
+    let _ = group.bench_with_input(
+        BenchmarkId::new("proto_struct_no_decode", "default"),
+        &input,
+        |b, input| {
+            b.iter(|| {
+                visit_logs_data_ordered(input);
+            })
+        },
+    );
+
+    group.finish();
+}
+
+fn bench_logs_view_impl_unordered(c: &mut Criterion) {
     let input = create_logs_data();
     let mut input_bytes = vec![];
     input
         .encode(&mut input_bytes)
         .expect("can encode proto bytes");
 
-    // benchmark encoding OTAP logs
-    let mut group = c.benchmark_group("encode_otap_logs_using_views");
-    let _ = group.sample_size(1000);
+    let mut group = c.benchmark_group("bench_logs_view_impl_unordered");
 
-    // 1. proto_bytes->views->OTAP
     let _ = group.bench_with_input(
-        BenchmarkId::new("proto_bytes->views->OTAP", "default"),
+        BenchmarkId::new("proto_bytes", "default"),
         &input_bytes,
         |b, input| {
-            b.iter_batched(
-                || RawLogsData::new(input.as_ref()),
-                |logs_data| {
-                    let result = encode_logs_otap_batch(&logs_data).expect("no error");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            )
+            b.iter(|| {
+                let logs_data = RawLogsData::new(input);
+                visit_logs_data(&logs_data);
+            })
         },
     );
 
-    // 2. proto_bytes->prost->views->OTAP
     let _ = group.bench_with_input(
-        BenchmarkId::new("proto_bytes->prost->views->OTAP", "default"),
+        BenchmarkId::new("proto_structs_decode", "default"),
         &input_bytes,
         |b, input| {
-            b.iter_batched(
-                || input,
-                |input| {
-                    let logs_data =
-                        LogsData::decode(input.as_ref()).expect("can decode proto bytes");
-                    let result = encode_logs_otap_batch(&logs_data).expect("no error");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            )
+            b.iter(|| {
+                let logs_data = LogsData::decode(input.as_ref()).expect("can decode proto bytes");
+                visit_logs_data(&logs_data);
+            })
         },
     );
 
-    // 3. prost->views->OTAP
     let _ = group.bench_with_input(
-        BenchmarkId::new("prost->views->OTAP", "default"),
+        BenchmarkId::new("proto_struct_no_decode", "default"),
         &input,
         |b, input| {
-            b.iter_batched(
-                || input,
-                |logs_data| encode_logs_otap_batch(logs_data).expect("no error"),
-                BatchSize::SmallInput,
-            )
+            b.iter(|| {
+                visit_logs_data(input);
+            })
         },
     );
 
     group.finish();
-
-    // Separate decode benchmark group
-    let mut decode_to_prost_group = c.benchmark_group("decode_proto_bytes");
-    let _ = decode_to_prost_group.sample_size(1000);
-
-    let _ = decode_to_prost_group.bench_with_input(
-        BenchmarkId::new("proto_bytes->prost", "default"),
-        &input_bytes,
-        |b, input| {
-            b.iter_batched(
-                || input.as_ref(),
-                |bytes| {
-                    let result = LogsData::decode(bytes).expect("can decode proto bytes");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            )
-        },
-    );
-
-    decode_to_prost_group.finish();
-
-    let mut traverse_view_group = c.benchmark_group("traverse_views");
-    let _ = traverse_view_group.sample_size(1000);
-    let _ = traverse_view_group.bench_with_input(
-        BenchmarkId::new("proto_bytes->view->traverse views", "default"),
-        &input_bytes,
-        |b, input| {
-            b.iter_batched(
-                || RawLogsData::new(input.as_ref()),
-                |logs_data| {
-                    visit_logs_data(&logs_data);
-                },
-                BatchSize::SmallInput,
-            )
-        },
-    );
-
-    traverse_view_group.finish();
 }
 
 #[allow(missing_docs)]
 mod bench_entry {
     use super::*;
 
-    criterion_group!(benches, bench_encode_logs);
+    criterion_group!(
+        name = benches;
+        config = Criterion::default();
+        targets = bench_logs_view_impl_ordered, bench_logs_view_impl_unordered,
+    );
 }
 
 criterion_main!(bench_entry::benches);
