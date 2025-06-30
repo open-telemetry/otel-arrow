@@ -30,6 +30,7 @@ from ..wrappers import HookWrapper
 
 HookAddStrategy = Literal["append", "replace"]
 
+
 class HooksConfig(BaseModel):
     """Base configuration model that specifies a hook to set on a component or test"""
 
