@@ -50,10 +50,6 @@ pub trait FieldRanges {
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize);
 }
 
-/// helper type for storing a range of offset in byte using `NonZeroUsize`s. Some Implementations
-/// of field offset may wish to keep range for values in a `Cell` of this type
-pub type NonZeroRange = (NonZeroUsize, NonZeroUsize);
-
 /// helper convert an Option of `NonZeroRange` into an `Option<(usize, usize)>` to adapt internal
 /// range to expected return type in `FieldOffset`
 #[must_use]

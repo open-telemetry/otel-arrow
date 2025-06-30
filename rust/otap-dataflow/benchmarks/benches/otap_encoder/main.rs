@@ -12,6 +12,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 
 use otap_df_otap::encoder::encode_logs_otap_batch;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
+use otap_df_pdata_views::views::bench_helpers::visit_logs_data;
 use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
 use otel_arrow_rust::proto::opentelemetry::logs::v1::{
     LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -124,6 +125,7 @@ fn bench_encode_logs(c: &mut Criterion) {
         .encode(&mut input_bytes)
         .expect("can encode proto bytes");
 
+    // benchmark encoding OTAP logs
     let mut group = c.benchmark_group("encode_otap_logs_using_views");
     let _ = group.sample_size(1000);
 
@@ -133,7 +135,7 @@ fn bench_encode_logs(c: &mut Criterion) {
         &input_bytes,
         |b, input| {
             b.iter_batched(
-                || RawLogsData::new(input.as_ref()), // setup: create view wrapper
+                || RawLogsData::new(input.as_ref()), 
                 |logs_data| {
                     let result = encode_logs_otap_batch(&logs_data).expect("no error");
                     black_box(result)
@@ -167,7 +169,7 @@ fn bench_encode_logs(c: &mut Criterion) {
         &input,
         |b, input| {
             b.iter_batched(
-                || input, // setup: clone input (cheap clone or ref)
+                || input, 
                 |logs_data| encode_logs_otap_batch(logs_data).expect("no error"),
                 BatchSize::SmallInput,
             )
@@ -196,6 +198,25 @@ fn bench_encode_logs(c: &mut Criterion) {
     );
 
     decode_to_prost_group.finish();
+
+
+    let mut traverse_view_group = c.benchmark_group("traverse_views");
+    let _ = traverse_view_group.sample_size(1000);
+    let _ = traverse_view_group.bench_with_input(
+        BenchmarkId::new("proto_bytes->view->traverse views", "default"),
+        &input_bytes,
+        |b, input| {
+            b.iter_batched(
+                || RawLogsData::new(input.as_ref()),
+                |logs_data| {
+                    visit_logs_data(&logs_data);
+                },
+                BatchSize::SmallInput,
+            )
+        },
+    );
+
+    traverse_view_group.finish();
 }
 
 #[allow(missing_docs)]
