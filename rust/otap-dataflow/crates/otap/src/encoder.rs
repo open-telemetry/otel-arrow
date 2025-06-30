@@ -1435,7 +1435,7 @@ mod test {
             .into_iter()
             .enumerate()
             .map(|(i, val)| KeyValue {
-                key: format!("{:?}", i),
+                key: format!("{i:?}"),
                 value: Some(val),
             })
             .collect::<Vec<_>>();

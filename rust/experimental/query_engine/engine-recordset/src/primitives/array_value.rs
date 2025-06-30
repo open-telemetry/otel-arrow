@@ -55,7 +55,7 @@ impl ArrayValueData {
         execution_context.add_message_for_expression_id(
             expression_id,
             ExpressionMessage::warn(
-                format!("AnyValue '{:?}' provided as right side of array equality comparison was not an array", other)));
+                format!("AnyValue '{other:?}' provided as right side of array equality comparison was not an array")));
 
         Ok(false)
     }

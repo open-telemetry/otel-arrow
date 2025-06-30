@@ -20,7 +20,7 @@ pub enum Error {
 impl From<ciborium::ser::Error<std::io::Error>> for Error {
     fn from(e: ciborium::ser::Error<std::io::Error>) -> Self {
         Self::CborError {
-            error: format!("{}", e),
+            error: format!("{e}"),
         }
     }
 }

@@ -16,7 +16,7 @@ pub(crate) fn parse_comparison_expression(
 
     let left = match left_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(left_rule, state)?,
-        _ => panic!("Unexpected rule in comparison_expression: {}", left_rule),
+        _ => panic!("Unexpected rule in comparison_expression: {left_rule}"),
     };
 
     let operation_rule = comparison_rules.next().unwrap();
@@ -25,7 +25,7 @@ pub(crate) fn parse_comparison_expression(
 
     let right = match right_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(right_rule, state)?,
-        _ => panic!("Unexpected rule in comparison_expression: {}", right_rule),
+        _ => panic!("Unexpected rule in comparison_expression: {right_rule}"),
     };
 
     match operation_rule.as_rule() {
@@ -63,7 +63,7 @@ pub(crate) fn parse_comparison_expression(
             )),
         ))),
 
-        _ => panic!("Unexpected rule in operation_rule: {}", operation_rule),
+        _ => panic!("Unexpected rule in operation_rule: {operation_rule}"),
     }
 }
 
@@ -87,8 +87,16 @@ pub(crate) fn parse_logical_expression(
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        let value = scalar.to_value();
-                        if value.is_some() && !matches!(value, Some(Value::Boolean(_))) {
+                        let value_type_result = scalar.try_resolve_value_type();
+                        if let Err(e) = value_type_result {
+                            return Err(ParserError::SyntaxError(
+                                e.get_query_location().clone(),
+                                e.to_string(),
+                            ));
+                        }
+                        if let Some(t) = value_type_result.unwrap()
+                            && t != ValueType::Boolean
+                        {
                             return Err(ParserError::QueryLanguageDiagnostic {
                                 location: scalar.get_query_location().clone(),
                                 diagnostic_id: "KS141",
@@ -99,10 +107,9 @@ pub(crate) fn parse_logical_expression(
                         Ok(LogicalExpression::Scalar(scalar))
                     }
                 }
-                _ => panic!(
-                    "Unexpected rule in logical_expression_rule: {}",
-                    logical_expression_rule
-                ),
+                _ => {
+                    panic!("Unexpected rule in logical_expression_rule: {logical_expression_rule}")
+                }
             }
         };
 
@@ -123,7 +130,7 @@ pub(crate) fn parse_logical_expression(
             Rule::or_token => chain_rules.push(ChainedLogicalExpression::Or(parse_rule(
                 logical_rules.next().unwrap(),
             )?)),
-            _ => panic!("Unexpected rule in chain_rule: {}", chain_rule),
+            _ => panic!("Unexpected rule in chain_rule: {chain_rule}"),
         }
     }
 
