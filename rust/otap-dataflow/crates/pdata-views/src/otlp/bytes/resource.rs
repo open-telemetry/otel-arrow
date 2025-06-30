@@ -13,7 +13,10 @@ use crate::{
             field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
             wire_types,
         },
-        decode::{FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser, read_varint},
+        decode::{
+            FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+            from_option_nonzero_range_to_primitive, read_varint, to_nonzero_range,
+        },
     },
     views::resource::ResourceView,
 };
@@ -37,7 +40,7 @@ pub struct ResourceFieldOffsets {
     first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
-impl FieldOffsets for ResourceFieldOffsets {
+impl FieldRanges for ResourceFieldOffsets {
     fn new() -> Self {
         Self {
             dropped_attributes_count: Cell::new(None),
@@ -52,11 +55,11 @@ impl FieldOffsets for ResourceFieldOffsets {
             _ => None,
         };
 
-        Self::map_nonzero_range_to_primitive(range)
+        from_option_nonzero_range_to_primitive(range)
     }
 
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
-        let range = match Self::to_nonzero_range(start, end) {
+        let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
             None => return,
         };
@@ -95,7 +98,6 @@ impl ResourceView for RawResource<'_> {
             RESOURCE_ATTRIBUTES,
             wire_types::LEN,
         ))
-        // self.bytes_parser.clone(), RESOURCE_ATTRIBUTES)
     }
 
     fn dropped_attributes_count(&self) -> u32 {

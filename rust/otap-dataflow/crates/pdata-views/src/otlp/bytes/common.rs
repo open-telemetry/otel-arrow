@@ -17,8 +17,9 @@ use crate::otlp::bytes::consts::field_num::common::{
 };
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
-    FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser, read_fixed64, read_len_delim,
-    read_varint,
+    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+    from_option_nonzero_range_to_primitive, read_fixed64, read_len_delim, read_varint,
+    to_nonzero_range,
 };
 use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
 
@@ -123,7 +124,7 @@ pub struct InstrumentationScopeFieldOffsets {
     first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
-impl FieldOffsets for InstrumentationScopeFieldOffsets {
+impl FieldRanges for InstrumentationScopeFieldOffsets {
     fn new() -> Self {
         Self {
             name: Cell::new(None),
@@ -142,11 +143,11 @@ impl FieldOffsets for InstrumentationScopeFieldOffsets {
             _ => None,
         };
 
-        Self::map_nonzero_range_to_primitive(range)
+        from_option_nonzero_range_to_primitive(range)
     }
 
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
-        let range = match Self::to_nonzero_range(start, end) {
+        let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
             None => return,
         };
@@ -183,15 +184,16 @@ impl FieldOffsets for InstrumentationScopeFieldOffsets {
 
 /// Iterator of KeyValues - produces implementation of KeyValueView from the byte array which
 /// contains a protobuf serialized repeated KeyValues
-pub struct KeyValueIter<'a, T: FieldOffsets> {
+pub struct KeyValueIter<'a, T: FieldRanges> {
     bytes_parser: RepeatedFieldProtoBytesParser<'a, T>,
 }
 
 impl<'a, T> KeyValueIter<'a, T>
 where
-    T: FieldOffsets,
+    T: FieldRanges,
 {
     /// Create a new instance of `KeyValueIter`
+    #[must_use]
     pub fn new(bytes_parser: RepeatedFieldProtoBytesParser<'a, T>) -> Self {
         Self { bytes_parser }
     }
@@ -199,7 +201,7 @@ where
 
 impl<'a, T> Iterator for KeyValueIter<'a, T>
 where
-    T: FieldOffsets,
+    T: FieldRanges,
 {
     type Item = RawKeyValue<'a>;
 
@@ -435,16 +437,9 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
                 .get()
                 .expect("expect to have been initialized");
             let (slice, _) = read_len_delim(self.buf, value_offset)?;
-            // Some(KeyValueIter {
-            //     target_field_number: KEY_VALUE_LIST_VALUES,
-            //     field_index: 0,
-            //     bytes_parser: ProtoBytesParser::new(slice),
-            // })
-            // TODO dumb variable name
-            let tmp = ProtoBytesParser::new(slice);
             Some(KeyValueIter::new(
                 RepeatedFieldProtoBytesParser::from_byte_parser(
-                    &tmp,
+                    &ProtoBytesParser::new(slice),
                     KEY_VALUE_LIST_VALUES,
                     wire_types::LEN,
                 ),
@@ -460,7 +455,7 @@ pub struct KeyValuesListFieldOffsets {
     first_offset: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
-impl FieldOffsets for KeyValuesListFieldOffsets {
+impl FieldRanges for KeyValuesListFieldOffsets {
     fn new() -> Self {
         Self {
             first_offset: Cell::new(None),
@@ -474,14 +469,15 @@ impl FieldOffsets for KeyValuesListFieldOffsets {
     }
 
     fn set_field_range(&self, field_tag: u64, wire_type: u64, start: usize, end: usize) {
-        if field_tag == KEY_VALUE_LIST_VALUES && wire_type == wire_types::LEN {
-            if self.first_offset.get().is_none() {
-                if let Some(startnz) = NonZeroUsize::new(start) {
-                    if let Some(endnz) = NonZeroUsize::new(end) {
-                        self.first_offset.set(Some((startnz, endnz)));
-                    }
-                }
-            }
+        let range = match to_nonzero_range(start, end) {
+            Some(range) => Some(range),
+            None => return,
+        };
+        if field_tag == KEY_VALUE_LIST_VALUES
+            && wire_type == wire_types::LEN
+            && self.first_offset.get().is_none()
+        {
+            self.first_offset.set(range);
         }
     }
 }

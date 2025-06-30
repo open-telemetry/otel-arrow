@@ -18,7 +18,8 @@ use crate::otlp::bytes::consts::field_num::logs::{
 };
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
-    FieldOffsets, ProtoBytesParser, RepeatedFieldProtoBytesParser, read_len_delim, read_varint,
+    FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+    from_option_nonzero_range_to_primitive, read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::otlp::bytes::resource::RawResource;
 use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
@@ -49,7 +50,7 @@ pub struct ResourceLogsFieldOffsets {
     first_scope_logs: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
-impl FieldOffsets for ResourceLogsFieldOffsets {
+impl FieldRanges for ResourceLogsFieldOffsets {
     fn new() -> Self {
         Self {
             resource: Cell::new(None),
@@ -66,11 +67,11 @@ impl FieldOffsets for ResourceLogsFieldOffsets {
             _ => None,
         };
 
-        Self::map_nonzero_range_to_primitive(range)
+        from_option_nonzero_range_to_primitive(range)
     }
 
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
-        let range = match Self::to_nonzero_range(start, end) {
+        let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
             None => return,
         };
@@ -102,7 +103,7 @@ pub struct ScopeLogsFieldOffsets {
     first_log_record: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
-impl FieldOffsets for ScopeLogsFieldOffsets {
+impl FieldRanges for ScopeLogsFieldOffsets {
     fn new() -> Self {
         Self {
             scope: Cell::new(None),
@@ -119,11 +120,11 @@ impl FieldOffsets for ScopeLogsFieldOffsets {
             _ => None,
         };
 
-        Self::map_nonzero_range_to_primitive(range)
+        from_option_nonzero_range_to_primitive(range)
     }
 
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
-        let range = match Self::to_nonzero_range(start, end) {
+        let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
             None => return,
         };
@@ -153,7 +154,7 @@ pub struct LogFieldOffsets {
     first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
 }
 
-impl FieldOffsets for LogFieldOffsets {
+impl FieldRanges for LogFieldOffsets {
     fn new() -> Self {
         Self {
             scalar_fields: std::array::from_fn(|_| Cell::new(None)),
@@ -178,7 +179,7 @@ impl FieldOffsets for LogFieldOffsets {
             wire_types::LEN,     // event_name = 12
         ];
 
-        let range = match Self::to_nonzero_range(start, end) {
+        let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
             None => return,
         };
@@ -204,7 +205,7 @@ impl FieldOffsets for LogFieldOffsets {
                 .and_then(|c| c.get())
         };
 
-        Self::map_nonzero_range_to_primitive(range)
+        from_option_nonzero_range_to_primitive(range)
     }
 }
 
@@ -250,12 +251,6 @@ impl<'a> Iterator for ScopeLogsIter<'a> {
     type Item = RawScopeLogs<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // let slice = self.byte_parser.advance_to_find_next_repeated(
-        //     RESOURCE_LOGS_SCOPE_LOGS,
-        //     self.field_index,
-        //     wire_types::LEN,
-        // )?;
-        // self.field_index += 1;
         let slice = self.byte_parser.next()?;
 
         Some(RawScopeLogs {
@@ -267,7 +262,6 @@ impl<'a> Iterator for ScopeLogsIter<'a> {
 /// Iterator of LogsRecord - produces implementation of `ResourceLogs` view from byte array
 /// containing a serialized LogsData message
 pub struct LogRecordsIter<'a> {
-    // field_index: usize,
     byte_parser: RepeatedFieldProtoBytesParser<'a, ScopeLogsFieldOffsets>,
 }
 
@@ -276,7 +270,6 @@ impl<'a> Iterator for LogRecordsIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let slice = self.byte_parser.next()?;
-        // self.field_index += 1;
 
         Some(RawLogRecord {
             bytes_parser: ProtoBytesParser::new(slice),
@@ -363,8 +356,6 @@ impl ScopeLogsView for RawScopeLogs<'_> {
 
     fn log_records(&self) -> Self::LogRecordsIter<'_> {
         LogRecordsIter {
-            // field_index: 0,
-            // byte_parser: self.byte_parser.clone(),
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
                 &self.byte_parser,
                 SCOPE_LOGS_LOG_RECORDS,
@@ -403,13 +394,11 @@ impl LogRecordView for RawLogRecord<'_> {
         Self: 'bod;
 
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        KeyValueIter::new(
-            RepeatedFieldProtoBytesParser::from_byte_parser(
-                &self.bytes_parser,
-                LOG_RECORD_ATTRIBUTES,
-                wire_types::LEN,
-            ), // self.bytes_parser.clone(), LOG_RECORD_ATTRIBUTES
-        )
+        KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
+            &self.bytes_parser,
+            LOG_RECORD_ATTRIBUTES,
+            wire_types::LEN,
+        ))
     }
 
     fn body(&self) -> Option<Self::Body<'_>> {
