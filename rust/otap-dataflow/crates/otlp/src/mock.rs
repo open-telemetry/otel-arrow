@@ -175,7 +175,7 @@ pub fn create_otlp_metric(
                 let metric_data = if (metric_index + 1) % 5 == 0 {
                     // summary datapoint
                     let mut datapoints = vec![];
-                    for datapoint in 0..datapoint_count {
+                    for _ in 0..datapoint_count {
                         datapoints.push(SummaryDataPoint {
                             start_time_unix_nano: 1650499200000000100,
                             time_unix_nano: 1663718400000001400,

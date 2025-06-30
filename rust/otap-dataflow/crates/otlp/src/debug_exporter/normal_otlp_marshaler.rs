@@ -299,33 +299,31 @@ fn write_histogram_datapoints_normal(
     datapoints: &[HistogramDataPoint],
 ) {
     for datapoint in datapoints.iter() {
-        let datapoint_attributes = attributes_string_normal(&datapoint.attributes);
         let mut values = String::new();
-        _ = write!(&mut values, "count={} ", datapoint.count);
+        _ = write!(&mut values, "count={count} ", count = datapoint.count);
         if let Some(sum) = datapoint.sum {
-            _ = write!(&mut values, "sum={} ", sum);
+            _ = write!(&mut values, "sum={sum} ");
         }
         if let Some(min) = datapoint.min {
-            _ = write!(&mut values, "min={} ", min);
+            _ = write!(&mut values, "min={min} ");
         }
         if let Some(max) = datapoint.max {
-            _ = write!(&mut values, "max={} ", max);
+            _ = write!(&mut values, "max={max} ");
         }
 
         for (i, bucket) in datapoint.bucket_counts.iter().enumerate() {
             let mut bucket_bound = String::new();
             if i < datapoint.explicit_bounds.len() {
-                bucket_bound = format!("le{}=", datapoint.explicit_bounds[i]);
+                bucket_bound = format!("le{bound}=", bound = datapoint.explicit_bounds[i]);
             }
-            _ = write!(&mut values, "{}{} ", bucket_bound, bucket);
+            _ = write!(&mut values, "{bucket_bound}{bucket} ");
         }
 
         _ = writeln!(
             &mut report,
             "{name} {attributes} {values}",
             name = metric.name,
-            attributes = datapoint_attributes,
-            values = values
+            attributes = attributes_string_normal(&datapoint.attributes),
         );
     }
 }
@@ -336,27 +334,24 @@ fn write_exponential_histogram_datapoints_normal(
     datapoints: &[ExponentialHistogramDataPoint],
 ) {
     for datapoint in datapoints.iter() {
-        let datapoint_attributes = attributes_string_normal(&datapoint.attributes);
-
         let mut values = String::new();
-        _ = write!(&mut values, "count={} ", datapoint.count);
+        _ = write!(&mut values, "count={count} ", count = datapoint.count);
 
         if let Some(sum) = datapoint.sum {
-            _ = write!(&mut values, "sum={} ", sum);
+            _ = write!(&mut values, "sum={sum} ");
         }
         if let Some(min) = datapoint.min {
-            _ = write!(&mut values, "min={} ", min);
+            _ = write!(&mut values, "min={min} ");
         }
         if let Some(max) = datapoint.max {
-            _ = write!(&mut values, "max={} ", max);
+            _ = write!(&mut values, "max={max} ");
         }
 
         _ = writeln!(
             &mut report,
             "{name} {attributes} {values}",
             name = metric.name,
-            attributes = datapoint_attributes,
-            values = values
+            attributes = attributes_string_normal(&datapoint.attributes),
         );
     }
 }
@@ -367,22 +362,26 @@ fn write_summary_datapoints_normal(
     datapoints: &[SummaryDataPoint],
 ) {
     for datapoint in datapoints.iter() {
-        let datapoint_attributes = attributes_string_normal(&datapoint.attributes);
         let mut values = String::new();
 
-        _ = write!(&mut values, "count={} ", datapoint.count);
-        _ = write!(&mut values, "sum={} ", datapoint.sum);
+        _ = write!(&mut values, "count={count} ", count = datapoint.count);
+        _ = write!(&mut values, "sum={sum} ", sum = datapoint.sum);
 
         for quantile in datapoint.quantile_values.iter() {
-            write!(&mut values, "q{}={} ", quantile.quantile, quantile.value).unwrap();
+            write!(
+                &mut values,
+                "q{quantile}={value} ",
+                quantile = quantile.quantile,
+                value = quantile.value
+            )
+            .unwrap();
         }
 
         _ = writeln!(
             &mut report,
             "{name} {attributes} {values}",
             name = metric.name,
-            attributes = datapoint_attributes,
-            values = values
+            attributes = attributes_string_normal(&datapoint.attributes),
         );
     }
 }

@@ -98,10 +98,10 @@ impl local::Exporter<OTLPData> for DebugExporter {
                     _ = writeln!(writer, "Timer tick received");
 
                     // output count of messages received since last timertick
-                    _ = writeln!(writer, "OTLP Metric objects received: {}", metric_count);
-                    _ = writeln!(writer, "OTLP Trace objects received: {}", span_count);
-                    _ = writeln!(writer, "OTLP Profile objects received: {}", profile_count);
-                    _ = writeln!(writer, "OTLP Log objects received: {}", log_count);
+                    _ = writeln!(writer, "OTLP Metric objects received: {metric_count}");
+                    _ = writeln!(writer, "OTLP Trace objects received: {span_count}");
+                    _ = writeln!(writer, "OTLP Profile objects received: {profile_count}");
+                    _ = writeln!(writer, "OTLP Log objects received: {log_count}");
 
                     // reset counters after timertick
                     metric_count = 0;
@@ -181,7 +181,7 @@ fn push_metric(
     // collect number of resource metrics
     // collect number of metrics
     // collect number of datapoints
-    let resouce_metrics = metric_request.resource_metrics.len();
+    let resource_metrics = metric_request.resource_metrics.len();
     let mut data_points = 0;
     let mut metrics = 0;
     for resource_metrics in &metric_request.resource_metrics {
@@ -211,9 +211,9 @@ fn push_metric(
         }
     }
 
-    _ = writeln!(writer, "Received {} resource metrics", resouce_metrics);
-    _ = writeln!(writer, "Received {} metrics", metrics);
-    _ = writeln!(writer, "Received {} data points", data_points);
+    _ = writeln!(writer, "Received {resource_metrics} resource metrics");
+    _ = writeln!(writer, "Received {metrics} metrics");
+    _ = writeln!(writer, "Received {data_points} data points");
 
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
@@ -221,7 +221,7 @@ fn push_metric(
     }
 
     let report = marshaler.marshal_metrics(metric_request);
-    _ = write!(writer, "{}", report);
+    _ = write!(writer, "{report}");
 }
 
 fn push_trace(
@@ -246,10 +246,10 @@ fn push_trace(
         }
     }
 
-    _ = writeln!(writer, "Received {} resource spans", resource_spans);
-    _ = writeln!(writer, "Received {} spans", spans);
-    _ = writeln!(writer, "Received {} events", events);
-    _ = writeln!(writer, "Received {} links", links);
+    _ = writeln!(writer, "Received {resource_spans} resource spans");
+    _ = writeln!(writer, "Received {spans} spans");
+    _ = writeln!(writer, "Received {events} events");
+    _ = writeln!(writer, "Received {links} links");
 
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
@@ -257,7 +257,7 @@ fn push_trace(
     }
 
     let report = marshaler.marshal_traces(trace_request);
-    _ = write!(writer, "{}", report);
+    _ = write!(writer, "{report}");
 }
 
 fn push_log(
@@ -279,16 +279,16 @@ fn push_log(
             }
         }
     }
-    _ = writeln!(writer, "Received {} resource logs", resource_logs);
-    _ = writeln!(writer, "Received {} log records", log_records);
-    _ = writeln!(writer, "Received {} events", events);
+    _ = writeln!(writer, "Received {resource_logs} resource logs");
+    _ = writeln!(writer, "Received {log_records} log records");
+    _ = writeln!(writer, "Received {events} events");
 
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_logs(log_request);
-    _ = write!(writer, "{}", report);
+    _ = write!(writer, "{report}");
 }
 
 fn push_profile(
@@ -309,15 +309,15 @@ fn push_profile(
         }
     }
 
-    _ = writeln!(writer, "Received {} resource profiles", resource_profiles);
-    _ = writeln!(writer, "Received {} samples", samples);
+    _ = writeln!(writer, "Received {resource_profiles} resource profiles");
+    _ = writeln!(writer, "Received {samples} samples");
 
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_profiles(profile_request);
-    _ = write!(writer, "{}", report);
+    _ = write!(writer, "{report}");
 }
 
 #[cfg(test)]
@@ -336,7 +336,7 @@ mod tests {
     use tokio::time::{Duration, sleep};
 
     use std::fs::{File, remove_file};
-    use std::io::{BufReader, prelude::*, read_to_string};
+    use std::io::{BufReader, read_to_string};
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -389,7 +389,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                /// check the the exporter has received the expected number of messages
+                // check the the exporter has received the expected number of messages
                 assert!(reader.contains("Timer tick received"));
                 assert!(reader.contains("OTLP Metric objects received: 0"));
                 assert!(reader.contains("OTLP Trace objects received: 0"));

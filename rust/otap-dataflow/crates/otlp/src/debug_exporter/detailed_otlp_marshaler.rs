@@ -264,24 +264,28 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                     if !span.links.is_empty() {
                         _ = writeln!(&mut report, "Links: ");
                         for (index, link) in span.links.iter().enumerate() {
-                            _ = writeln!(&mut report, "SpanLink: {}", index);
+                            _ = writeln!(&mut report, "SpanLink: {index}");
                             if let Ok(trace_id) = std::str::from_utf8(&link.trace_id) {
-                                _ = writeln!(&mut report, "     -> Trace ID: {}", trace_id);
+                                _ = writeln!(&mut report, "     -> Trace ID: {trace_id}");
                             }
                             if let Ok(span_id) = std::str::from_utf8(&link.span_id) {
-                                _ = writeln!(&mut report, "     -> Span ID: {}", span_id);
+                                _ = writeln!(&mut report, "     -> Span ID: {span_id}");
                             }
 
-                            _ = writeln!(&mut report, "     -> TraceState: {}", link.trace_state);
                             _ = writeln!(
                                 &mut report,
-                                "     -> DroppedAttributesCount: {}",
-                                link.dropped_attributes_count
+                                "     -> TraceState: {state}",
+                                state = link.trace_state
                             );
                             _ = writeln!(
                                 &mut report,
-                                "     -> Attributes: {}",
-                                attributes_string_detailed(&link.attributes)
+                                "     -> DroppedAttributesCount: {count}",
+                                count = link.dropped_attributes_count
+                            );
+                            _ = writeln!(
+                                &mut report,
+                                "     -> Attributes: {attributes}",
+                                attributes = attributes_string_detailed(&link.attributes)
                             );
                         }
                     }
@@ -326,7 +330,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 for (profile_index, profile) in scope_profile.profiles.iter().enumerate() {
                     _ = writeln!(&mut report, "Profile {index}", index = profile_index);
                     if let Ok(profile_id) = std::str::from_utf8(&profile.profile_id) {
-                        _ = writeln!(&mut report, "Profile ID: {}", profile_id);
+                        _ = writeln!(&mut report, "Profile ID: {profile_id}");
                     }
                     _ = writeln!(
                         &mut report,
@@ -388,11 +392,15 @@ fn write_datapoints_detailed(mut report: &mut String, data: &Data) {
         }
         Data::Sum(sum) => {
             _ = writeln!(&mut report, "     -> DataType: Sum");
-            _ = writeln!(&mut report, "     -> IsMonotonic: {}", sum.is_monotonic);
             _ = writeln!(
                 &mut report,
-                "     -> AggregationTemporality: {}",
-                sum.aggregation_temporality
+                "     -> IsMonotonic: {is_monotonic}",
+                is_monotonic = sum.is_monotonic
+            );
+            _ = writeln!(
+                &mut report,
+                "     -> AggregationTemporality: {aggregation_temporality}",
+                aggregation_temporality = sum.aggregation_temporality
             );
             write_number_datapoints_detailed(report, &sum.data_points);
         }
@@ -400,8 +408,8 @@ fn write_datapoints_detailed(mut report: &mut String, data: &Data) {
             _ = writeln!(&mut report, "     -> DataType: Histogram");
             _ = writeln!(
                 &mut report,
-                "     -> AggregationTemporality: {}",
-                histogram.aggregation_temporality
+                "     -> AggregationTemporality: {aggregation_temporality}",
+                aggregation_temporality = histogram.aggregation_temporality
             );
             write_histogram_datapoints_detailed(report, &histogram.data_points);
         }
@@ -409,8 +417,8 @@ fn write_datapoints_detailed(mut report: &mut String, data: &Data) {
             _ = writeln!(&mut report, "     -> DataType: Exponential Histogram");
             _ = writeln!(
                 &mut report,
-                "     -> AggregationTemporality: {}",
-                exponential_histogram.aggregation_temporality
+                "     -> AggregationTemporality: {aggregation_temporality}",
+                aggregation_temporality = exponential_histogram.aggregation_temporality
             );
             write_exponential_histogram_datapoints_detailed(
                 report,
@@ -463,29 +471,33 @@ fn write_number_datapoints_detailed(mut report: &mut String, datapoints: &[Numbe
 
 fn write_histogram_datapoints_detailed(mut report: &mut String, datapoints: &[HistogramDataPoint]) {
     for (index, datapoint) in datapoints.iter().enumerate() {
-        _ = writeln!(&mut report, "HistogramDataPoints {}", index);
+        _ = writeln!(&mut report, "HistogramDataPoints {index}");
         _ = writeln!(
             &mut report,
-            "Attributes: {}",
-            attributes_string_detailed(&datapoint.attributes)
+            "Attributes: {attributes}",
+            attributes = attributes_string_detailed(&datapoint.attributes)
         );
 
         _ = writeln!(
             &mut report,
-            "StartTimestamp: {}",
-            datapoint.start_time_unix_nano
+            "StartTimestamp: {timestamp}",
+            timestamp = datapoint.start_time_unix_nano
         );
-        _ = writeln!(&mut report, "Timestamp: {}", datapoint.time_unix_nano);
-        _ = writeln!(&mut report, "Count: {}", datapoint.count);
+        _ = writeln!(
+            &mut report,
+            "Timestamp: {timestamp}",
+            timestamp = datapoint.time_unix_nano
+        );
+        _ = writeln!(&mut report, "Count: {count}", count = datapoint.count);
 
         if let Some(sum) = &datapoint.sum {
-            _ = writeln!(&mut report, "Sum: {}", sum);
+            _ = writeln!(&mut report, "Sum: {sum}");
         }
         if let Some(min) = &datapoint.min {
-            _ = writeln!(&mut report, "Min: {}", min);
+            _ = writeln!(&mut report, "Min: {min}");
         }
         if let Some(max) = &datapoint.max {
-            _ = writeln!(&mut report, "Max: {}", max);
+            _ = writeln!(&mut report, "Max: {max}");
         }
 
         for (index, bound) in datapoint.explicit_bounds.iter().enumerate() {
@@ -511,24 +523,28 @@ fn write_exponential_histogram_datapoints_detailed(
         );
         _ = writeln!(
             &mut report,
-            "Attributes: {}",
-            attributes_string_detailed(&datapoint.attributes)
+            "Attributes: {attributes}",
+            attributes = attributes_string_detailed(&datapoint.attributes)
         );
         _ = writeln!(
             &mut report,
-            "StartTimestamp: {}",
-            datapoint.start_time_unix_nano
+            "StartTimestamp: {timestamp}",
+            timestamp = datapoint.start_time_unix_nano
         );
-        _ = writeln!(&mut report, "Timestamp: {}", datapoint.time_unix_nano);
-        _ = writeln!(&mut report, "Count: {}", datapoint.count);
+        _ = writeln!(
+            &mut report,
+            "Timestamp: {timestamp}",
+            timestamp = datapoint.time_unix_nano
+        );
+        _ = writeln!(&mut report, "Count: {count}", count = datapoint.count);
         if let Some(sum) = &datapoint.sum {
-            _ = writeln!(&mut report, "Sum: {}", sum);
+            _ = writeln!(&mut report, "Sum: {sum}");
         }
         if let Some(min) = &datapoint.min {
-            _ = writeln!(&mut report, "Min: {}", min);
+            _ = writeln!(&mut report, "Min: {min}");
         }
         if let Some(max) = &datapoint.max {
-            _ = writeln!(&mut report, "Max: {}", max);
+            _ = writeln!(&mut report, "Max: {max}");
         }
 
         // calcualate the base -> 2^(2^(-scale)) -> e^(ln(2) * 2^(-scale))
@@ -542,13 +558,13 @@ fn write_exponential_histogram_datapoints_detailed(
 
                 let index: f64 = negative.offset as f64 + updated_position as f64;
                 // calculate lower bound base^index
-                let lower_bound = (index * base).exp();
+                let lower_bound = -(index * base).exp();
                 // calculate upper bound base^(index + 1)
-                let upper_bound = ((index + 1.0) * base).exp();
+                let upper_bound = -((index + 1.0) * base).exp();
                 _ = writeln!(
                     report,
-                    "Bucket [{}, {}), Count: {}",
-                    -upper_bound, -lower_bound, negative.bucket_counts[updated_position]
+                    "Bucket [{upper_bound}, {lower_bound}), Count: {count}",
+                    count = negative.bucket_counts[updated_position]
                 );
             }
         }
@@ -561,8 +577,8 @@ fn write_exponential_histogram_datapoints_detailed(
                 let upper_bound = ((index + 1.0) * base).exp();
                 _ = writeln!(
                     report,
-                    "Bucket ({}, {}], Count: {}",
-                    lower_bound, upper_bound, positive.bucket_counts[position]
+                    "Bucket ({lower_bound}, {upper_bound}], Count: {count}",
+                    count = positive.bucket_counts[position]
                 );
             }
         }
@@ -570,8 +586,8 @@ fn write_exponential_histogram_datapoints_detailed(
         if datapoint.zero_count != 0 {
             _ = writeln!(
                 &mut report,
-                "Bucket [0, 0], Count: {}",
-                datapoint.zero_count
+                "Bucket [0, 0], Count: {count}",
+                count = datapoint.zero_count
             );
         }
 
@@ -678,16 +694,65 @@ mod tests {
         create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
     };
 
-    #[test]
+        #[test]
     fn test_marshal_traces() {
         let trace = create_otlp_trace(1, 1, 1, 1, 1);
+        let marshaler = DetailedOTLPMarshaler::default();
+        let marshaled_trace = marshaler.marshal_traces(trace);
+        let mut output_lines = Vec::new();
+        for line in marshaled_trace.lines() {
+            output_lines.push(line);
+        }
+
+        assert_eq!(output_lines[0], "ResourceSpan #0");
+        assert_eq!(output_lines[1], "Resource SchemaURL: http://schema.opentelemetry.io");
+        assert_eq!(output_lines[2], "Resource attributes ");
+        assert_eq!(output_lines[3], "     -> ip: 192.168.0.1");
+        assert_eq!(output_lines[4], "ScopeSpans #0");
+        assert_eq!(output_lines[5], "ScopeSpans SchemaURL: http://schema.opentelemetry.io");
+        assert_eq!(output_lines[6], "Instrumentation Scope library @v1");
+        assert_eq!(output_lines[7], "Instrumentation Scope Attributes: ");
+        assert_eq!(output_lines[8], "     -> hostname: host5.retailer.com");
+        assert_eq!(output_lines[9], "Span 0");
+        assert_eq!(output_lines[10], "Trace ID: 4327e52011a22f9662eac217d77d1ec0");
+        assert_eq!(output_lines[11], "Parent ID: 7271ee06d7e5925f");
+        assert_eq!(output_lines[12], "ID: 7271ee06d7e5925f");
+        assert_eq!(output_lines[13], "Name: user-account");
+        assert_eq!(output_lines[14], "Kind: 4");
+        assert_eq!(output_lines[15], "TraceState: ended");
+        assert_eq!(output_lines[16], "Start time: 1647648000000000106");
+        assert_eq!(output_lines[17], "End time: 1647648000000000104");
+        assert_eq!(output_lines[18], "Status code: 2");
+        assert_eq!(output_lines[19], "Status message: Error");
+        assert_eq!(output_lines[20], "Attributes: ");
+        assert_eq!(output_lines[21], "     -> hostname: host4.gov");
+        assert_eq!(output_lines[22], "Events: ");
+        assert_eq!(output_lines[23], "SpanEvent 0");
+        assert_eq!(output_lines[24], "     -> Name: message-receive");
+        assert_eq!(output_lines[25], "     -> Timestamp: 1647648000000000108");
+        assert_eq!(output_lines[26], "     -> DroppedAttributesCount: 0");
+        assert_eq!(output_lines[27], "     -> Attributes: ");
+        assert_eq!(output_lines[28], "     -> hostname: host5.retailer.com");
+        assert_eq!(output_lines[29], "Links: ");
+        assert_eq!(output_lines[30], "SpanLink: 0");
+        assert_eq!(output_lines[31], "     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0");
+        assert_eq!(output_lines[32], "     -> Span ID: 7271ee06d7e5925f");
+        assert_eq!(output_lines[33], "     -> TraceState: ended");
+        assert_eq!(output_lines[34], "     -> DroppedAttributesCount: 0");
+        assert_eq!(output_lines[35], "     -> Attributes: ");
+        assert_eq!(output_lines[36], "     -> hostname: host2.org");
+
+    }
+    #[test]
+    fn test_marshal_metrics() {
+        let metric = create_otlp_metric(1, 1, 5, 1);
 
         let marshaler = DetailedOTLPMarshaler::default();
 
-        let marshaled_trace = marshaler.marshal_traces(trace);
+        let marshaled_metrics = marshaler.marshal_metrics(metric);
 
         let mut output_lines = Vec::new();
-        for line in marshaled_trace.lines() {
+        for line in marshaled_metrics.lines() {
             output_lines.push(line);
         }
 

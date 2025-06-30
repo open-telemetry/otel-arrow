@@ -25,7 +25,6 @@ Received 1 resource profiles
 Received 0 samples
 Shutdown message received
 
-
 ## Example Output => Normal Verbosity
 
 Timer tick received
