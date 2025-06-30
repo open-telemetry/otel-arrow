@@ -13,3 +13,6 @@ otel-arrow-rust = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+bench = []

@@ -518,20 +518,35 @@ where
     <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = String> + 'static,
 {
     fn append_str(&mut self, value: &str) {
-        // temporarily move the value of default_value to avoid borrowing self as mut and non-mut
-        // at the same time
-        let default_value = std::mem::take(&mut self.default_value);
-        let is_default = || Self::is_default_value(&default_value, &value);
-        self.handle_append(
-            is_default,
-            &default_value,
-            |native| native.append_str(value),
-            |dict| dict.append_str(value),
-            |me| me.append_str(value),
-        );
+        // the logic is duplicated here and in handle_append, but it turns out having the duplicated
+        // logic is a good performance gain and because appending strings is so common (e.g. this
+        // is called for all attr keys), it's worth it to have the code duplicated.
 
-        // restore value of default value
-        self.default_value = default_value
+        match &mut self.inner {
+            InnerBuilder::Native(native_builder) => {
+                native_builder.append_str(value);
+            }
+            InnerBuilder::Dictionary(dictionary_builder) => {
+                match dictionary_builder.append_str(value) {
+                    Ok(_) => {}
+                    Err(DictionaryBuilderError::DictOverflow {}) => {
+                        let mut native = TN::new(self.inner_args.clone());
+                        dictionary_builder.to_native(&mut native);
+                        self.inner = InnerBuilder::Native(native);
+                        self.append_str(value); // retry
+                    }
+                }
+            }
+            InnerBuilder::Uninitialized(prefix) => {
+                if Self::is_default_value(&self.default_value, &value) {
+                    prefix.append_value();
+                } else {
+                    let mut prefix = self.initialize_inner().expect("can get prefix");
+                    prefix.init_builder(self, self.default_value.clone());
+                    self.append_str(value); // retry
+                }
+            }
+        }
     }
 }
 
