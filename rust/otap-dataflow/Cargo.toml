@@ -16,7 +16,7 @@ publish = false
 rust-version = "1.86.0"
 
 [workspace.dependencies]
-arrow = {version="55", features=["prettyprint", "chrono-tz"] }
+arrow = "55"
 arrow-ipc = { version = "55", features=["zstd"] }
 ciborium = "0.2.2"
 futures-timer = "3.0"
