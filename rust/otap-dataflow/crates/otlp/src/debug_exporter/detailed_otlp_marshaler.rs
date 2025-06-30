@@ -20,7 +20,7 @@ use crate::proto::opentelemetry::{
 
 use std::fmt::Write;
 
-/// The Detailed Marshaler takes OTLP messages and converts them to a string by extracting their informations
+/// The Detailed Marshaler takes OTLP messages and converts them to a string by extracting their information
 /// the finalized string will be the output for a detailed verbosity level
 #[derive(Default)]
 pub struct DetailedOTLPMarshaler;

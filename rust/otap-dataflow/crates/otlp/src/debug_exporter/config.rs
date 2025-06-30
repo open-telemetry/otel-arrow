@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-/// Enum that allows the user to specify how much information they want displayeds
+/// Enum that allows the user to specify how much information they want displayed
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub enum Verbosity {
     /// display the most detailed information available

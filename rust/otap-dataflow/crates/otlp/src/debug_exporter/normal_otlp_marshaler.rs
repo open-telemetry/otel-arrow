@@ -18,7 +18,7 @@ use crate::proto::opentelemetry::{
 };
 use std::fmt::Write;
 
-/// The Normal Marshaler takes OTLP messages and converts them to a string by extracting their informations
+/// The Normal Marshaler takes OTLP messages and converts them to a string by extracting their information
 /// the finalized string will be the output for a normal verbosity level
 #[derive(Default)]
 pub struct NormalOTLPMarshaler;

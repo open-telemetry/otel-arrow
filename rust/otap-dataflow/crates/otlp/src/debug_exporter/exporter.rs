@@ -3,7 +3,7 @@
 //! Implementation of the OTLP Debug exporter node
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
-//! ToDo: Handle configuratin changes
+//! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
