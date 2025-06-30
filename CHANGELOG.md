@@ -35,7 +35,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   [#508](https://github.com/open-telemetry/otel-arrow/pull/508)
 - Fix time unit of `DurationTimeUnixNano` to `Duration_ns` in Traces.
   [#517](https://github.com/open-telemetry/otel-arrow/pull/517)
-- Upgrade to v0.129.0 / v1.33.0 of collector dependencies.
+- Upgrade to v0.127.0 / v1.33.0 of collector dependencies.
   [#526](https://github.com/open-telemetry/otel-arrow/pull/526)
 - Retract `github.com/open-telemetry/otel-arrow v0.36.0`.
   [#567](https://github.com/open-telemetry/otel-arrow/pull/567)
