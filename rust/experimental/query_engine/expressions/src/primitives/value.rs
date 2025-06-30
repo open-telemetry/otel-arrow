@@ -92,15 +92,6 @@ impl Value<'_> {
         }
     }
 
-    /// Note: Only call this for tests and errors as it will copy the string to
-    /// the heap. Call convert_to_string instead to operate on the &str behind
-    /// the value.
-    fn to_string(&self) -> Box<str> {
-        let mut value: Option<Box<str>> = None;
-        self.convert_to_string(&mut |s: &str| value = Some(s.into()));
-        value.expect("msg")
-    }
-
     pub fn are_values_equal(
         left: &Value,
         right: &Value,
@@ -264,6 +255,15 @@ impl Value<'_> {
 
             Ok(compare_ordered_values(v_left, v_right))
         }
+    }
+
+    /// Note: Only call this for tests and errors as it will copy the string to
+    /// the heap. Call convert_to_string instead to operate on the &str behind
+    /// the value.
+    fn to_string(&self) -> Box<str> {
+        let mut value: Option<Box<str>> = None;
+        self.convert_to_string(&mut |s: &str| value = Some(s.into()));
+        value.expect("msg")
     }
 }
 
