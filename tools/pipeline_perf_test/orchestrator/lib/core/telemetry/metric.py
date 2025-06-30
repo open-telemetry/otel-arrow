@@ -55,6 +55,7 @@ from opentelemetry.sdk.metrics.export import (
     ExponentialHistogram,
 )
 
+from ..helpers import aggregate
 from .signal_retriever import SignalRetriever
 
 
@@ -123,6 +124,31 @@ class MetricDataFrame(pd.DataFrame):
         if missing:
             raise ValueError(f"Missing required columns: {missing}")
 
+    def with_aggregation(
+        self,
+        by: Optional[list[str]] = None,
+        agg_func: Union[str, Callable, list[Union[str, Callable]]] = None,
+        collapsed_metric_name: Optional[str] = None,
+    ) -> "MetricDataFrame":
+        return aggregate(
+            self,
+            by=by,
+            agg_func=agg_func,
+            agg_collapsed_metric_name=collapsed_metric_name,
+        )
+
+    def with_attributes(self, attributes: Dict[str, Any]) -> "MetricDataFrame":
+        df = self.copy()
+        for col, new_data in attributes.items():
+            if col not in df.columns:
+                raise ValueError(f"Column '{col}' does not exist in DataFrame")
+            df[col] = df[col].apply(
+                lambda existing: (
+                    {**existing, **new_data} if isinstance(existing, dict) else new_data
+                )
+            )
+        return MetricDataFrame(df)
+
     def query_metrics(
         self,
         metric_name: Optional[Union[str, list[str]]] = None,
@@ -153,9 +179,12 @@ class MetricDataFrame(pd.DataFrame):
                 )
 
             start, end = time_range
-            start = ensure_utc(start)
-            end = ensure_utc(end)
-            df = df[(df["timestamp"] >= start) & (df["timestamp"] <= end)]
+            if start:
+                start = ensure_utc(start)
+                df = df[(df["timestamp"] >= start)]
+            if end:
+                end = ensure_utc(end)
+                df = df[(df["timestamp"] <= end)]
 
         def dict_filter(attr_filter: Dict[str, Any]):
             return lambda d: isinstance(d, dict) and all(

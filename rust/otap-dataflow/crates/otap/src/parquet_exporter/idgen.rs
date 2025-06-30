@@ -67,7 +67,7 @@ impl PartitionSequenceIdGenerator {
         // If the IDs are already decoded, this is a no-op.
         otap_batch.decode_transport_optimized_ids().map_err(|e| {
             IdGeneratorError::InvalidRecordBatch {
-                error: format!("failed to decode transport optimized IDs: {}", e),
+                error: format!("failed to decode transport optimized IDs: {e}"),
             }
         })?;
 
@@ -173,7 +173,7 @@ impl PartitionSequenceIdGenerator {
             Ok(id_col) => id_col,
             Err(err) => {
                 return Err(IdGeneratorError::InvalidRecordBatch {
-                    error: format!("could not cast ID column to UInt32: {}", err),
+                    error: format!("could not cast ID column to UInt32: {err}"),
                 });
             }
         };
@@ -181,7 +181,7 @@ impl PartitionSequenceIdGenerator {
             Ok(col) => col,
             Err(e) => {
                 return Err(IdGeneratorError::UnknownError {
-                    error: format!("{}", e),
+                    error: format!("{e}"),
                 });
             }
         };
@@ -351,7 +351,7 @@ pub mod test {
         assert_ne!(curr_partition_id, id_generator.part_id);
         let val = get_schema_metadata(logs_rb.schema_ref(), PARTITION_METADATA_KEY).unwrap();
         assert_eq!(val, &format!("{}", id_generator.part_id));
-        assert_ne!(val, &format!("{}", curr_partition_id));
+        assert_ne!(val, &format!("{curr_partition_id}"));
     }
 
     #[test]

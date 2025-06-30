@@ -13,8 +13,10 @@ psutil>=5.8.0
 kubernetes>=23.6.0
 
 # Other dependencies
+opentelemetry-exporter-otlp>=1.34.0
 opentelemetry-sdk>=1.33.1
 opentelemetry-proto>=1.12.0
 prometheus_client>=0.22.0
 pandas>=2.2.3
 pyarrow>=20.0.0
+jinja2

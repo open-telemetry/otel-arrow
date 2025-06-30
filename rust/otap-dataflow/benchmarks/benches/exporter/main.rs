@@ -253,7 +253,7 @@ pub fn create_batch_arrow_record_helper(
     let nanos = timestamp.subsec_nanos().to_string();
 
     // string formatted with timestamp secs : timestamp subsec_nanos
-    let timestamp_string = format!("{}:{}", secs, nanos);
+    let timestamp_string = format!("{secs}:{nanos}");
     let timestamp_bytes = timestamp_string.as_bytes();
 
     // convert time to
