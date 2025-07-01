@@ -24,7 +24,15 @@ pub(crate) fn parse_scalar_expression(
         Rule::double_literal => ScalarExpression::Static(parse_double_literal(scalar_rule)?),
         Rule::integer_literal => ScalarExpression::Static(parse_integer_literal(scalar_rule)?),
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
-        Rule::accessor_expression => parse_accessor_expression(scalar_rule, state)?,
+        Rule::accessor_expression => {
+            // Note: When used as a scalar expression it is valid for an
+            // accessor to fold into a static at the root so
+            // allow_root_scalar=true is passed here. Example: iff([logical],
+            // [scalar], [scalar]) evaluated as iff([logical],
+            // accessor(some_constant1), accessor(some_constant2)) can safely
+            // fold to iff([logical], String("constant1"), String("constant2")).
+            parse_accessor_expression(scalar_rule, state, true)?
+        }
         Rule::logical_expression => {
             let l = parse_logical_expression(scalar_rule, state)?;
 
@@ -36,7 +44,7 @@ pub(crate) fn parse_scalar_expression(
         }
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
-        _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
+        _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 
     if matches!(&scalar, ScalarExpression::Static(_)) {

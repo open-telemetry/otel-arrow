@@ -604,8 +604,7 @@ mod test {
             otap_batch.set(*metric_type, record_batch.clone());
             assert!(
                 otap_batch.get(*metric_type).is_some(),
-                "Failed for type: {:?}",
-                metric_type
+                "Failed for type: {metric_type:?}"
             );
         }
     }
@@ -638,8 +637,7 @@ mod test {
             otap_batch.set(*trace_type, record_batch.clone());
             assert!(
                 otap_batch.get(*trace_type).is_some(),
-                "Failed for type: {:?}",
-                trace_type
+                "Failed for type: {trace_type:?}"
             );
         }
     }

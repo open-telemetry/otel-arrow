@@ -350,25 +350,24 @@ where
     T16: DictionaryArrayAppend<Native = T> + ArrayBuilderConstructor,
 {
     pub fn append_value(&mut self, value: &T) -> Result<usize> {
-        let append_result = match &mut self.variant {
-            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_value(value),
-            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_value(value),
-        };
+        loop {
+            let append_result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_value(value),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_value(value),
+            };
 
-        match append_result {
-            Ok(index) => {
-                if index + 1 > self.max_cardinality as usize {
-                    // if we're here, it means we did append successfully to the underlying builder
-                    // but we shouldn't have, because have overflowed the configured max cardinality
-                    self.overflow_index = Some(index);
-                    Err(DictionaryBuilderError::DictOverflow {})
-                } else {
-                    Ok(index)
+            match append_result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
                 }
-            }
-            Err(DictionaryBuilderError::DictOverflow {}) => {
-                self.upgrade_key()?;
-                self.append_value(value)
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    // retry in the next loop iteration
+                }
             }
         }
     }
@@ -380,25 +379,24 @@ where
     TD16: DictionaryArrayAppendStr + ArrayBuilderConstructor,
 {
     pub fn append_str(&mut self, value: &str) -> Result<usize> {
-        let append_result = match &mut self.variant {
-            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_str(value),
-            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_str(value),
-        };
+        loop {
+            let result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_str(value),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_str(value),
+            };
 
-        match append_result {
-            Ok(index) => {
-                if index + 1 > self.max_cardinality as usize {
-                    // if we're here, it means we did append successfully to the underlying builder
-                    // but we shouldn't have, because have overflowed the configured max cardinality
-                    self.overflow_index = Some(index);
-                    Err(DictionaryBuilderError::DictOverflow {})
-                } else {
-                    Ok(index)
+            match result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
                 }
-            }
-            Err(DictionaryBuilderError::DictOverflow {}) => {
-                self.upgrade_key()?;
-                self.append_str(value)
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    continue;
+                }
             }
         }
     }
@@ -410,25 +408,25 @@ where
     TD16: DictionaryArrayAppendSlice<Native = T> + ArrayBuilderConstructor,
 {
     pub fn append_slice(&mut self, value: &[T]) -> Result<usize> {
-        let append_result = match &mut self.variant {
-            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
-            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
-        };
+        loop {
+            let append_result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
+            };
 
-        match append_result {
-            Ok(index) => {
-                if index + 1 > self.max_cardinality as usize {
-                    // if we're here, it means we did append successfully to the underlying builder
-                    // but we shouldn't have, because have overflowed the configured max cardinality
-                    self.overflow_index = Some(index);
-                    Err(DictionaryBuilderError::DictOverflow {})
-                } else {
-                    Ok(index)
+            match append_result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        // overflow occurred after a successful insert
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
                 }
-            }
-            Err(DictionaryBuilderError::DictOverflow {}) => {
-                self.upgrade_key()?;
-                self.append_slice(value)
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    // retry after upgrading
+                }
             }
         }
     }
@@ -440,33 +438,33 @@ where
     T16: CheckedDictionaryArrayAppend<Native = T> + ArrayBuilderConstructor,
 {
     pub fn append_value_checked(&mut self, value: &T) -> checked::Result<usize> {
-        let append_result = match &mut self.variant {
-            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_value(value),
-            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_value(value),
-        };
+        loop {
+            let append_result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_value(value),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_value(value),
+            };
 
-        match append_result {
-            Ok(index) => {
-                if index + 1 > self.max_cardinality as usize {
-                    // if we're here, it means we did append successfully to the underlying builder
-                    // but we shouldn't have, because have overflowed the configured max cardinality
-                    self.overflow_index = Some(index);
-                    Err(checked::DictionaryBuilderError::DictOverflow {})
-                } else {
-                    Ok(index)
-                }
-            }
-            Err(checked::DictionaryBuilderError::DictOverflow {}) => {
-                self.upgrade_key().map_err(|err| match err {
-                    DictionaryBuilderError::DictOverflow {} => {
-                        checked::DictionaryBuilderError::DictOverflow {}
+            match append_result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(checked::DictionaryBuilderError::DictOverflow {});
                     }
-                })?;
-                self.append_value_checked(value)
-            }
+                    return Ok(index);
+                }
 
-            // return other types of errors to caller
-            e => e,
+                Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                    // try to upgrade and continue loop
+                    self.upgrade_key().map_err(|err| match err {
+                        DictionaryBuilderError::DictOverflow {} => {
+                            checked::DictionaryBuilderError::DictOverflow {}
+                        }
+                    })?;
+                }
+
+                // return any other error immediately
+                other => return other,
+            }
         }
     }
 }
@@ -477,33 +475,30 @@ where
     TD16: CheckedDictionaryAppendSlice<Native = T> + ArrayBuilderConstructor,
 {
     pub fn append_slice_checked(&mut self, value: &[T]) -> checked::Result<usize> {
-        let append_result = match &mut self.variant {
-            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
-            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
-        };
+        loop {
+            let append_result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
+            };
 
-        match append_result {
-            Ok(index) => {
-                if index + 1 > self.max_cardinality as usize {
-                    // if we're here, it means we did append successfully to the underlying builder
-                    // but we shouldn't have, because have overflowed the configured max cardinality
-                    self.overflow_index = Some(index);
-                    Err(checked::DictionaryBuilderError::DictOverflow {})
-                } else {
-                    Ok(index)
-                }
-            }
-            Err(checked::DictionaryBuilderError::DictOverflow {}) => {
-                self.upgrade_key().map_err(|err| match err {
-                    DictionaryBuilderError::DictOverflow {} => {
-                        checked::DictionaryBuilderError::DictOverflow {}
+            match append_result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(checked::DictionaryBuilderError::DictOverflow {});
                     }
-                })?;
-                self.append_slice_checked(value)
+                    return Ok(index);
+                }
+                Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key().map_err(|err| match err {
+                        DictionaryBuilderError::DictOverflow {} => {
+                            checked::DictionaryBuilderError::DictOverflow {}
+                        }
+                    })?;
+                    // continue the loop and retry
+                }
+                other => return other,
             }
-
-            // return other types of errors to caller
-            e => e,
         }
     }
 }
@@ -671,7 +666,7 @@ mod test {
                     BinaryDictionaryBuilder<UInt16Type>,
                 >::new(opts, ())
             },
-            |i| format!("{:?}", i).encode_to_vec(),
+            |i| format!("{i:?}").encode_to_vec(),
             DataType::Binary,
         );
     }

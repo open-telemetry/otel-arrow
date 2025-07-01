@@ -201,7 +201,7 @@ pub fn create_simple_trace_arrow_record_batches(
                     create_ids_array::<UInt32Type>(&options),
                     create_ids_array::<UInt16Type>(&options),
                     Arc::new(StringArray::from_iter_values(
-                        (0..options.num_rows).map(|i| format!("name{}", i)),
+                        (0..options.num_rows).map(|i| format!("name{i}")),
                     )),
                 ],
             )
