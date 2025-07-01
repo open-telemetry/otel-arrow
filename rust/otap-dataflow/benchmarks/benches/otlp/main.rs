@@ -22,7 +22,7 @@ fn make_large_trace_fixture(
                         scope: None,
                         spans: (0..spans_per_scope)
                             .map(|i| Span {
-                                name: format!("span_{}_{}_{}", r, s, i),
+                                name: format!("span_{r}_{s}_{i}"),
                                 ..Default::default()
                             })
                             .collect(),
