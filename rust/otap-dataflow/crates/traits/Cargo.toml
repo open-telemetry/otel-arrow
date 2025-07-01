@@ -1,0 +1,16 @@
+[package]
+name = "otap-df-traits"
+description = "Shared traits for the OTAP dataflow system"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# No dependencies - this is a pure trait crate

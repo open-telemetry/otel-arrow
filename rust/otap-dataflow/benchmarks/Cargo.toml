@@ -22,6 +22,7 @@ otap-df-engine = { path = "../crates/engine"}
 otap-df-otap = { path="../crates/otap"}
 otap-df-otlp = { path="../crates/otlp"}
 otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
+otap-dataflow = { path = ".." }
 otel-arrow-rust = { path = "../../otel-arrow-rust"}
 fluke-hpack = "0.3.1"
 futures-channel = "0.3"
@@ -60,6 +61,10 @@ harness = false
 
 [[bench]]
 name = "pdata_views"
+harness = false
+
+[[bench]]
+name = "retry_processor"
 harness = false
 
 [profile.bench]
