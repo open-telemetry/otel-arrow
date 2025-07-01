@@ -1,11 +1,11 @@
-use otap_df_traits::Retryable;
+use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::{ControlMsg, Message};
-use async_trait::async_trait;
+use otap_df_traits::Retryable;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
 
 /// Defines the control messages used by the retry processor for handling acknowledgments
 /// and negative acknowledgments from exporters.
@@ -44,24 +44,24 @@ pub struct ErrorDetail {
 }
 
 /// Configuration for the retry processor
-/// 
+///
 /// This configuration provides comprehensive control over retry behavior and memory safety.
-/// 
+///
 /// # Memory Safety Features
-/// 
+///
 /// - **`max_pending_messages`**: Prevents unbounded memory growth by limiting the number of
 ///   messages kept in the retry queue. When this limit is reached, new messages are still
 ///   forwarded but won't be tracked for retry.
-/// 
+///
 /// - **`cleanup_interval_secs`**: Periodic cleanup removes expired messages from the retry
 ///   queue based on their deadlines, preventing memory leaks from messages that will never
 ///   be retried.
-/// 
+///
 /// # Example Usage
-/// 
+///
 /// ```rust
 /// use otap_dataflow::retry_processor::RetryConfig;
-/// 
+///
 /// // Production configuration with memory safety
 /// let config = RetryConfig {
 ///     max_retries: 5,
@@ -96,7 +96,7 @@ impl Default for RetryConfig {
             max_retry_delay_ms: 30000,
             backoff_multiplier: 2.0,
             max_pending_messages: 10000, // Default to 10,000 pending messages
-            cleanup_interval_secs: 60, // Default to 60-second cleanup interval
+            cleanup_interval_secs: 60,   // Default to 60-second cleanup interval
         }
     }
 }
@@ -153,16 +153,21 @@ impl<T: Retryable> RetryProcessor<T> {
             if pending.retry_count <= self.config.max_retries {
                 // Calculate next retry time with exponential backoff
                 let delay_ms = (self.config.initial_retry_delay_ms as f64
-                    * self.config.backoff_multiplier.powi(pending.retry_count as i32 - 1))
-                    .min(self.config.max_retry_delay_ms as f64) as u64;
-                
+                    * self
+                        .config
+                        .backoff_multiplier
+                        .powi(pending.retry_count as i32 - 1))
+                .min(self.config.max_retry_delay_ms as f64) as u64;
+
                 pending.next_retry_time = Instant::now() + Duration::from_millis(delay_ms);
                 let _ = self.pending_messages.insert(id, pending);
             } else {
                 // Max retries exceeded, log and drop the message
                 log::error!(
                     "Message {} exceeded max retries ({}), dropping. Last error: {}",
-                    id, self.config.max_retries, pending.last_error
+                    id,
+                    self.config.max_retries,
+                    pending.last_error
                 );
             }
         }
@@ -196,18 +201,18 @@ impl<T: Retryable> RetryProcessor<T> {
     /// Periodically cleans up expired messages from the pending queue
     fn cleanup_expired_messages(&mut self) {
         let now = Instant::now();
-        if now.duration_since(self.last_cleanup_time) < Duration::from_secs(self.config.cleanup_interval_secs) {
+        if now.duration_since(self.last_cleanup_time)
+            < Duration::from_secs(self.config.cleanup_interval_secs)
+        {
             return; // Not time for cleanup yet
         }
 
-        let expired_ids: Vec<u64> = self.pending_messages.iter()
+        let expired_ids: Vec<u64> = self
+            .pending_messages
+            .iter()
             .filter_map(|(&id, pending)| {
                 if let Some(deadline) = pending.data.deadline() {
-                    if now > deadline {
-                        Some(id)
-                    } else {
-                        None
-                    }
+                    if now > deadline { Some(id) } else { None }
                 } else {
                     None
                 }
@@ -317,38 +322,38 @@ impl<T: Retryable> Default for RetryProcessor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::message::{ControlMsg, Message};
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::message::{ControlMsg, Message};
+    use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_otap::grpc::OTAPData;
+    use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::BatchArrowRecords;
     use otap_df_otlp::grpc::OTLPData;
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otap_df_otlp::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    use otap_df_otap::grpc::OTAPData;
-    use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::BatchArrowRecords;
     use std::time::Duration;
-    
+
     // Helper functions for creating realistic test data
-    
+
     /// Creates test OTLP logs data
     fn create_otlp_logs_data() -> OTLPData {
         let logs_request = ExportLogsServiceRequest::default();
         OTLPData::Logs(logs_request)
     }
-    
+
     /// Creates test OTLP metrics data
     fn create_otlp_metrics_data() -> OTLPData {
         let metrics_request = ExportMetricsServiceRequest::default();
         OTLPData::Metrics(metrics_request)
     }
-    
+
     /// Creates test OTLP trace data
     fn create_otlp_trace_data() -> OTLPData {
         let trace_request = ExportTraceServiceRequest::default();
         OTLPData::Traces(trace_request)
     }
-    
+
     /// Creates test OTAP arrow logs data
     fn create_otap_logs_data(batch_id: i32) -> OTAPData {
         let batch = BatchArrowRecords {
@@ -358,7 +363,7 @@ mod tests {
         };
         OTAPData::ArrowLogs(batch)
     }
-    
+
     /// Creates test OTAP arrow metrics data
     fn create_otap_metrics_data(batch_id: i32) -> OTAPData {
         let batch = BatchArrowRecords {
@@ -368,7 +373,7 @@ mod tests {
         };
         OTAPData::ArrowMetrics(batch)
     }
-    
+
     /// Creates test OTAP arrow traces data
     fn create_otap_traces_data(batch_id: i32) -> OTAPData {
         let batch = BatchArrowRecords {
@@ -385,7 +390,7 @@ mod tests {
         let processor = RetryProcessor::new();
         let config = ProcessorConfig::new("retry_processor_ack_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -393,12 +398,12 @@ mod tests {
                 let otlp_data = create_otlp_logs_data();
                 let message_id = otlp_data.id();
                 ctx.process(Message::PData(otlp_data)).await.unwrap();
-                
+
                 // Send an ACK for the message
                 ctx.process(Message::Control(ControlMsg::Ack { id: message_id }))
                     .await
                     .unwrap();
-                
+
                 // Verify the message was forwarded
                 let emitted = ctx.drain_pdata().await;
                 assert_eq!(emitted.len(), 1);
@@ -420,7 +425,7 @@ mod tests {
         let processor = RetryProcessor::with_config(config);
         let config = ProcessorConfig::new("retry_processor_nack_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -428,7 +433,7 @@ mod tests {
                 let otap_data = create_otap_metrics_data(42);
                 let message_id = otap_data.id();
                 ctx.process(Message::PData(otap_data)).await.unwrap();
-                
+
                 // Send a NACK for the message
                 ctx.process(Message::Control(ControlMsg::Nack {
                     id: message_id,
@@ -436,15 +441,15 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-                
+
                 // Wait a bit for retry delay
                 tokio::time::sleep(Duration::from_millis(15)).await;
-                
+
                 // Send a timer tick to trigger retry processing
                 ctx.process(Message::Control(ControlMsg::TimerTick {}))
                     .await
                     .unwrap();
-                
+
                 // Verify messages were sent (original + retry)
                 let emitted = ctx.drain_pdata().await;
                 assert_eq!(emitted.len(), 2);
@@ -466,7 +471,7 @@ mod tests {
         let processor = RetryProcessor::with_config(config);
         let config = ProcessorConfig::new("retry_processor_max_retries_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -474,7 +479,7 @@ mod tests {
                 let otlp_data = create_otlp_trace_data();
                 let message_id = otlp_data.id();
                 ctx.process(Message::PData(otlp_data)).await.unwrap();
-                
+
                 // Send first NACK
                 ctx.process(Message::Control(ControlMsg::Nack {
                     id: message_id,
@@ -482,13 +487,13 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-                
+
                 // Wait and trigger retry
                 tokio::time::sleep(Duration::from_millis(15)).await;
                 ctx.process(Message::Control(ControlMsg::TimerTick {}))
                     .await
                     .unwrap();
-                
+
                 // Send second NACK (should exceed max retries)
                 ctx.process(Message::Control(ControlMsg::Nack {
                     id: message_id,
@@ -496,12 +501,12 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-                
+
                 // Trigger retry processing again
                 ctx.process(Message::Control(ControlMsg::TimerTick {}))
                     .await
                     .unwrap();
-                
+
                 // Should have original + one retry + shutdown attempt (3 total)
                 // Note: Even though max retries was exceeded, shutdown still attempts to send pending messages
                 let emitted = ctx.drain_pdata().await;
@@ -516,7 +521,7 @@ mod tests {
         let processor = RetryProcessor::new();
         let config = ProcessorConfig::new("retry_processor_config_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -530,11 +535,13 @@ mod tests {
                     cleanup_interval_secs: 30,
                 };
                 let config_json = serde_json::to_value(new_config).unwrap();
-                
-                ctx.process(Message::Control(ControlMsg::Config { config: config_json }))
-                    .await
-                    .unwrap();
-                
+
+                ctx.process(Message::Control(ControlMsg::Config {
+                    config: config_json,
+                }))
+                .await
+                .unwrap();
+
                 // No assertions needed, just verify it doesn't crash
             })
             .validate(|_| async {});
@@ -546,7 +553,7 @@ mod tests {
         let processor = RetryProcessor::new();
         let config = ProcessorConfig::new("retry_processor_shutdown_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -554,7 +561,7 @@ mod tests {
                 let otap_data = create_otap_logs_data(123);
                 let message_id = otap_data.id();
                 ctx.process(Message::PData(otap_data)).await.unwrap();
-                
+
                 // Send NACK to put message in retry queue
                 ctx.process(Message::Control(ControlMsg::Nack {
                     id: message_id,
@@ -562,7 +569,7 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-                
+
                 // Send shutdown - should attempt to send pending messages
                 ctx.process(Message::Control(ControlMsg::Shutdown {
                     deadline: Duration::from_secs(5),
@@ -570,7 +577,7 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-                
+
                 // Should have original message + shutdown attempt
                 let emitted = ctx.drain_pdata().await;
                 assert_eq!(emitted.len(), 2);
@@ -584,7 +591,7 @@ mod tests {
         let processor = RetryProcessor::new();
         let config = ProcessorConfig::new("retry_processor_data_types_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -592,20 +599,26 @@ mod tests {
                 let logs_data = create_otlp_logs_data();
                 let metrics_data = create_otlp_metrics_data();
                 let traces_data = create_otlp_trace_data();
-                
-                ctx.process(Message::PData(logs_data.clone())).await.unwrap();
-                ctx.process(Message::PData(metrics_data.clone())).await.unwrap();
-                ctx.process(Message::PData(traces_data.clone())).await.unwrap();
-                
+
+                ctx.process(Message::PData(logs_data.clone()))
+                    .await
+                    .unwrap();
+                ctx.process(Message::PData(metrics_data.clone()))
+                    .await
+                    .unwrap();
+                ctx.process(Message::PData(traces_data.clone()))
+                    .await
+                    .unwrap();
+
                 // Verify all messages were forwarded
                 let emitted = ctx.drain_pdata().await;
                 assert_eq!(emitted.len(), 3);
-                
+
                 // Verify each data type has unique IDs
                 let logs_id = logs_data.id();
                 let metrics_id = metrics_data.id();
                 let traces_id = traces_data.id();
-                
+
                 // All IDs should be different
                 assert_ne!(logs_id, metrics_id);
                 assert_ne!(logs_id, traces_id);
@@ -613,14 +626,14 @@ mod tests {
             })
             .validate(|_| async {});
     }
-    
+
     #[test]
     fn test_retry_processor_different_otap_data_types() {
         let runtime = TestRuntime::<OTAPData>::new();
         let processor = RetryProcessor::new();
         let config = ProcessorConfig::new("retry_processor_otap_data_types_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -628,15 +641,21 @@ mod tests {
                 let logs_data = create_otap_logs_data(100);
                 let metrics_data = create_otap_metrics_data(200);
                 let traces_data = create_otap_traces_data(300);
-                
-                ctx.process(Message::PData(logs_data.clone())).await.unwrap();
-                ctx.process(Message::PData(metrics_data.clone())).await.unwrap();
-                ctx.process(Message::PData(traces_data.clone())).await.unwrap();
-                
+
+                ctx.process(Message::PData(logs_data.clone()))
+                    .await
+                    .unwrap();
+                ctx.process(Message::PData(metrics_data.clone()))
+                    .await
+                    .unwrap();
+                ctx.process(Message::PData(traces_data.clone()))
+                    .await
+                    .unwrap();
+
                 // Verify all messages were forwarded
                 let emitted = ctx.drain_pdata().await;
                 assert_eq!(emitted.len(), 3);
-                
+
                 // Verify each data type has the expected batch ID as its ID
                 assert_eq!(logs_data.id(), 100);
                 assert_eq!(metrics_data.id(), 200);
@@ -659,42 +678,37 @@ mod tests {
 
         // Manually calculate expected delays for different retry counts
         // Formula: initial_delay * multiplier^(retry_count - 1)
-        
+
         // Retry 1: 1000 * 2.0^0 = 1000ms
-        let delay_1 = (config.initial_retry_delay_ms as f64
-            * config.backoff_multiplier.powi(0))
+        let delay_1 = (config.initial_retry_delay_ms as f64 * config.backoff_multiplier.powi(0))
             .min(config.max_retry_delay_ms as f64) as u64;
         assert_eq!(delay_1, 1000);
-        
+
         // Retry 2: 1000 * 2.0^1 = 2000ms
-        let delay_2 = (config.initial_retry_delay_ms as f64
-            * config.backoff_multiplier.powi(1))
+        let delay_2 = (config.initial_retry_delay_ms as f64 * config.backoff_multiplier.powi(1))
             .min(config.max_retry_delay_ms as f64) as u64;
         assert_eq!(delay_2, 2000);
-        
+
         // Retry 3: 1000 * 2.0^2 = 4000ms
-        let delay_3 = (config.initial_retry_delay_ms as f64
-            * config.backoff_multiplier.powi(2))
+        let delay_3 = (config.initial_retry_delay_ms as f64 * config.backoff_multiplier.powi(2))
             .min(config.max_retry_delay_ms as f64) as u64;
         assert_eq!(delay_3, 4000);
-        
+
         // Retry 4: 1000 * 2.0^3 = 8000ms
-        let delay_4 = (config.initial_retry_delay_ms as f64
-            * config.backoff_multiplier.powi(3))
+        let delay_4 = (config.initial_retry_delay_ms as f64 * config.backoff_multiplier.powi(3))
             .min(config.max_retry_delay_ms as f64) as u64;
         assert_eq!(delay_4, 8000);
-        
+
         // Retry 5: 1000 * 2.0^4 = 16000ms
-        let delay_5 = (config.initial_retry_delay_ms as f64
-            * config.backoff_multiplier.powi(4))
+        let delay_5 = (config.initial_retry_delay_ms as f64 * config.backoff_multiplier.powi(4))
             .min(config.max_retry_delay_ms as f64) as u64;
         assert_eq!(delay_5, 16000);
-        
+
         // Test that max delay is capped
         // If we had more retries, they would be capped at max_retry_delay_ms
         let delay_large = (config.initial_retry_delay_ms as f64
             * config.backoff_multiplier.powi(10)) // 1000 * 2^10 = 1,024,000
-            .min(config.max_retry_delay_ms as f64) as u64;
+        .min(config.max_retry_delay_ms as f64) as u64;
         assert_eq!(delay_large, 30000); // Should be capped at max_retry_delay_ms
     }
 
@@ -704,36 +718,36 @@ mod tests {
         let otlp_logs = create_otlp_logs_data();
         let otlp_metrics = create_otlp_metrics_data();
         let otlp_traces = create_otlp_trace_data();
-        
+
         let otap_logs = create_otap_logs_data(1001);
         let otap_metrics = create_otap_metrics_data(1002);
         let otap_traces = create_otap_traces_data(1003);
-        
+
         // Test that IDs are deterministic
         let otlp_logs_2 = create_otlp_logs_data();
         assert_eq!(otlp_logs.id(), otlp_logs_2.id());
-        
+
         // Test that different OTLP types have different IDs
         assert_ne!(otlp_logs.id(), otlp_metrics.id());
         assert_ne!(otlp_logs.id(), otlp_traces.id());
         assert_ne!(otlp_metrics.id(), otlp_traces.id());
-        
+
         // Test that OTAP IDs match batch IDs
         assert_eq!(otap_logs.id(), 1001);
         assert_eq!(otap_metrics.id(), 1002);
         assert_eq!(otap_traces.id(), 1003);
-        
+
         // Test deadlines (should be None for both types currently)
         assert!(otlp_logs.deadline().is_none());
         assert!(otap_logs.deadline().is_none());
-        
+
         println!("Real telemetry data types work correctly for retry processor testing!");
     }
 
     #[test]
     fn test_backoff_multiplier_different_values() {
         // Test with different backoff multipliers
-        
+
         // Test with multiplier 1.5
         let config_1_5 = RetryConfig {
             max_retries: 3,
@@ -743,18 +757,18 @@ mod tests {
             max_pending_messages: 10000,
             cleanup_interval_secs: 60,
         };
-        
+
         let delay_1 = (config_1_5.initial_retry_delay_ms as f64
             * config_1_5.backoff_multiplier.powi(0)) as u64; // 1000ms
         let delay_2 = (config_1_5.initial_retry_delay_ms as f64
             * config_1_5.backoff_multiplier.powi(1)) as u64; // 1500ms
         let delay_3 = (config_1_5.initial_retry_delay_ms as f64
             * config_1_5.backoff_multiplier.powi(2)) as u64; // 2250ms
-        
+
         assert_eq!(delay_1, 1000);
         assert_eq!(delay_2, 1500);
         assert_eq!(delay_3, 2250);
-        
+
         // Test with multiplier 3.0 (more aggressive)
         let config_3_0 = RetryConfig {
             max_retries: 3,
@@ -764,24 +778,19 @@ mod tests {
             max_pending_messages: 10000,
             cleanup_interval_secs: 60,
         };
-        
+
         let delay_1 = (config_3_0.initial_retry_delay_ms as f64
             * config_3_0.backoff_multiplier.powi(0)) as u64; // 500ms
         let delay_2 = (config_3_0.initial_retry_delay_ms as f64
             * config_3_0.backoff_multiplier.powi(1)) as u64; // 1500ms
         let delay_3 = (config_3_0.initial_retry_delay_ms as f64
             * config_3_0.backoff_multiplier.powi(2)) as u64; // 4500ms
-        
+
         assert_eq!(delay_1, 500);
         assert_eq!(delay_2, 1500);
         assert_eq!(delay_3, 4500);
     }
-    
-    
-    
-    
-    
-    
+
     #[test]
     fn test_retry_queue_memory_limit_with_otlp_data() {
         let runtime = TestRuntime::<OTLPData>::new();
@@ -796,7 +805,7 @@ mod tests {
         let processor = RetryProcessor::with_config(config);
         let config = ProcessorConfig::new("memory_limit_test");
         let wrapper = ProcessorWrapper::local(processor, &config);
-        
+
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -804,18 +813,18 @@ mod tests {
                 let otlp_data_1 = create_otlp_logs_data();
                 let otlp_data_2 = create_otlp_metrics_data();
                 let otlp_data_3 = create_otlp_trace_data(); // This should trigger the limit
-                
+
                 ctx.process(Message::PData(otlp_data_1)).await.unwrap();
                 ctx.process(Message::PData(otlp_data_2)).await.unwrap();
                 ctx.process(Message::PData(otlp_data_3)).await.unwrap(); // Should still work but log warning
-                
+
                 // All messages should still be forwarded even if queue is full
                 let emitted = ctx.drain_pdata().await;
                 assert_eq!(emitted.len(), 3);
             })
             .validate(|_| async {});
     }
-    
+
     #[test]
     fn test_expired_message_cleanup() {
         // This test verifies that the cleanup functionality exists and can be configured
@@ -829,24 +838,24 @@ mod tests {
             cleanup_interval_secs: 1, // Very short cleanup interval for testing
         };
         let processor = RetryProcessor::<OTLPData>::with_config(config);
-        
+
         // Verify the processor was created with the correct cleanup interval
         assert_eq!(processor.config.cleanup_interval_secs, 1);
-        
+
         // Note: Testing the actual cleanup behavior would require either:
         // 1. Exposing internal state (not ideal for encapsulation)
         // 2. Integration tests with actual message expiration
         // 3. Dependency injection for time (more complex)
         // For now, we test that the configuration is properly set
     }
-    
+
     #[test]
     fn test_memory_safety_config_validation() {
         // Test that configuration includes memory safety parameters
         let default_config = RetryConfig::default();
         assert_eq!(default_config.max_pending_messages, 10000);
         assert_eq!(default_config.cleanup_interval_secs, 60);
-        
+
         // Test custom config
         let custom_config = RetryConfig {
             max_retries: 5,
@@ -856,10 +865,10 @@ mod tests {
             max_pending_messages: 5000,
             cleanup_interval_secs: 30,
         };
-        
+
         assert_eq!(custom_config.max_pending_messages, 5000);
         assert_eq!(custom_config.cleanup_interval_secs, 30);
-        
+
         // Verify the processor accepts the config
         let processor = RetryProcessor::<OTLPData>::with_config(custom_config);
         assert_eq!(processor.config.max_pending_messages, 5000);
