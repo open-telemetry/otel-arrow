@@ -23,6 +23,7 @@ pub mod perf_exporter;
 /// testing utilities
 #[cfg(test)]
 mod mock;
+pub mod fake_data_generator;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OTAPData)]
@@ -33,13 +34,15 @@ mod tests {
     use crate::OTAP_PIPELINE_FACTORY;
     use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
+    use crate::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
+    use crate::perf_exporter::exporter::PERF_EXPORTER_URN;
 
     #[test]
     fn test_build_runtime_pipeline() {
         let config = PipelineConfigBuilder::new()
-            .add_receiver("receiver", "urn:otel:otap:receiver", None)
-            .add_exporter("exporter1", "urn:otel:otap:perf:exporter", Some(json!({})))
-            .add_exporter("exporter2", "urn:otel:otap:exporter", None)
+            .add_receiver("receiver", OTAP_FAKE_DATA_GENERATOR_URN, None)
+            .add_exporter("exporter1", PERF_EXPORTER_URN, Some(json!({})))
+            .add_exporter("exporter2", PERF_EXPORTER_URN, Some(json!({})))
             // ToDo(LQ): Check the validity of the outport.
             .broadcast(
                 "receiver",
@@ -61,5 +64,6 @@ mod tests {
             "Expected 3 nodes in the pipeline"
         );
         dbg!(runtime_pipeline.config());
+        runtime_pipeline.start().expect("Failed to start pipeline");
     }
 }

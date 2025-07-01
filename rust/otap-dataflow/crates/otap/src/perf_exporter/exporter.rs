@@ -18,6 +18,7 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use sysinfo::{
@@ -25,12 +26,16 @@ use sysinfo::{
     System, get_current_pid,
 };
 use tokio::time::{Duration, Instant};
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::control::ControlMsg;
 use otap_df_engine::{distributed_slice, ExporterFactory};
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::exporter::ExporterWrapper;
 use crate::grpc::OTAPData;
 use crate::OTAP_EXPORTER_FACTORIES;
+
+/// The URN for the OTAP Perf exporter
+pub const PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
@@ -45,9 +50,9 @@ pub struct PerfExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
-    name: "urn:otel:otap:perf:exporter",
-    create: |config: &Value, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(PerfExporter::from_config(config), exporter_config)
+    name: PERF_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        ExporterWrapper::local(PerfExporter::from_config(&node_config.config), node_config, exporter_config)
     },
 };
 
@@ -546,7 +551,7 @@ fn display_report_pipeline(
 mod tests {
 
     use crate::perf_exporter::config::Config;
-    use crate::perf_exporter::exporter::PerfExporter;
+    use crate::perf_exporter::exporter::{PerfExporter, PERF_EXPORTER_URN};
     use crate::proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
@@ -558,7 +563,9 @@ mod tests {
 
     use std::fs::{File, remove_file};
     use std::io::{BufReader, prelude::*};
+    use std::rc::Rc;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use otap_df_config::node::NodeUserConfig;
     use crate::grpc::OTAPData;
 
     const TRACES_BATCH_ID: i64 = 0;
@@ -744,8 +751,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let config = Config::new(1000, 0.3, true, true, true, true, true);
         let output_file = "perf_output.txt".to_string();
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PERF_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             PerfExporter::new(config, Some(output_file.clone())),
+            node_config,
             test_runtime.config(),
         );
 

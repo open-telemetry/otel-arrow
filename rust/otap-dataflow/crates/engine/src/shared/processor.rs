@@ -36,6 +36,7 @@ use crate::message::Message;
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use std::borrow::Cow;
+use crate::shared::message::SharedSender;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -84,14 +85,14 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
+    msg_sender: SharedSender<PData>,
 }
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>, msg_sender: tokio::sync::mpsc::Sender<PData>) -> Self {
+    pub fn new(name: Cow<'static, str>, msg_sender: SharedSender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore { node_name: name },
             msg_sender,
@@ -109,11 +110,10 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
         self.msg_sender
             .send(data)
             .await
-            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
     }
 
     // More methods will be added in the future as needed.

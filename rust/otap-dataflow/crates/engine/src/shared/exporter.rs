@@ -42,6 +42,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
+use crate::shared::message::SharedReceiver;
 
 /// A trait for egress exporters (Send definition).
 #[async_trait]
@@ -63,8 +64,8 @@ pub trait Exporter<PData> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<tokio::sync::mpsc::Receiver<ControlMsg>>,
-    pdata_rx: Option<tokio::sync::mpsc::Receiver<PData>>,
+    control_rx: Option<SharedReceiver<ControlMsg>>,
+    pdata_rx: Option<SharedReceiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
@@ -76,8 +77,8 @@ impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
     pub fn new(
-        control_rx: tokio::sync::mpsc::Receiver<ControlMsg>,
-        pdata_rx: tokio::sync::mpsc::Receiver<PData>,
+        control_rx: SharedReceiver<ControlMsg>,
+        pdata_rx: SharedReceiver<PData>,
     ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
@@ -135,8 +136,8 @@ impl<PData> MessageChannel<PData> {
 
                     // 1) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
-                        Some(pdata) => return Ok(Message::PData(pdata)),
-                        None => {
+                        Ok(pdata) => return Ok(Message::PData(pdata)),
+                        Err(e) => {
                             // pdata channel closed → emit Shutdown
                             let shutdown = self.pending_shutdown
                                 .take()
@@ -163,7 +164,7 @@ impl<PData> MessageChannel<PData> {
 
                 // A) Control first
                 ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
-                    Some(ControlMsg::Shutdown { deadline, reason }) => {
+                    Ok(ControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
                             self.shutdown();
@@ -175,18 +176,18 @@ impl<PData> MessageChannel<PData> {
                         self.pending_shutdown = Some(ControlMsg::Shutdown { deadline: Duration::ZERO, reason });
                         continue; // re-enter the loop into draining mode
                     }
-                    Some(msg) => return Ok(Message::Control(msg)),
-                    None  => return Err(RecvError::Closed),
+                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Err(e)  => return Err(e),
                 },
 
                 // B) Then pdata
                 pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                     match pdata {
-                        Some(pdata) => {
+                        Ok(pdata) => {
                             return Ok(Message::PData(pdata));
                         }
-                        None => {
-                            return Err(RecvError::Closed);
+                        Err(e) => {
+                            return Err(e);
                         }
                     }
                 }

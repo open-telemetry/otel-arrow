@@ -34,12 +34,12 @@
 use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::Sender;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use crate::local::message::LocalSender;
 
 /// A trait for ingress receivers (!Send definition).
 ///
@@ -118,14 +118,14 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: Sender<PData>,
+    msg_sender: LocalSender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
     #[must_use]
-    pub fn new(receiver_name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
+    pub fn new(receiver_name: Cow<'static, str>, msg_sender: LocalSender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore {
                 node_name: receiver_name,

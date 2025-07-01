@@ -6,6 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+use std::rc::Rc;
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OTAPData;
 use crate::proto::opentelemetry::experimental::arrow::v1::{
@@ -25,6 +26,10 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
 use serde_json::Value;
+use otap_df_config::node::NodeUserConfig;
+
+/// The URN for the OTAP exporter
+pub const OTAP_EXPORTER_URN : &str = "urn:otel:otap:exporter";
 
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
@@ -39,9 +44,9 @@ pub struct OTAPExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
-    name: "urn:otel:otap:exporter",
-    create: |config: &Value, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(OTAPExporter::from_config(config), exporter_config)
+    name: OTAP_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        ExporterWrapper::local(OTAPExporter::from_config(&node_config.config), node_config, exporter_config)
     },
 };
 
@@ -186,7 +191,7 @@ mod tests {
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
         create_batch_arrow_record,
     };
-    use crate::otap_exporter::OTAPExporter;
+    use crate::otap_exporter::{OTAPExporter, OTAP_EXPORTER_URN};
     use crate::proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
@@ -196,11 +201,13 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
+    use std::rc::Rc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+    use otap_df_config::node::NodeUserConfig;
 
     const METRIC_BATCH_ID: i64 = 0;
     const LOG_BATCH_ID: i64 = 1;
@@ -318,8 +325,10 @@ mod tests {
                 .expect("Test gRPC server has failed");
         });
 
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTAPExporter::new(grpc_endpoint, None),
+            node_config,
             test_runtime.config(),
         );
 

@@ -18,6 +18,9 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::node::NodeWithPDataReceiver;
+use crate::shared::message::{SharedReceiver, SharedSender};
 
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
@@ -189,24 +192,25 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the exporter for the test runtime and returns the test phase.
-    pub fn set_exporter(self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
+    pub fn set_exporter(self, mut exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = match &exporter {
             ExporterWrapper::Local { .. } => {
                 let (pdata_tx, pdata_rx) =
                     create_not_send_channel(self.config.control_channel.capacity);
-                (Sender::LocalMpsc(pdata_tx), Receiver::LocalMpsc(pdata_rx))
+                (Sender::Local(LocalSender::MpscSender(pdata_tx)), Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx)))
             }
             ExporterWrapper::Shared { .. } => {
                 let (pdata_tx, pdata_rx) =
                     tokio::sync::mpsc::channel(self.config.control_channel.capacity);
-                (Sender::SharedMpsc(pdata_tx), Receiver::SharedMpsc(pdata_rx))
+                (Sender::Shared(SharedSender::MpscSender(pdata_tx)), Receiver::Shared(SharedReceiver::MpscReceiver(pdata_rx)))
             }
         };
 
+        exporter.set_pdata_receiver(self.config.name, pdata_rx).expect("Failed to set PData receiver");
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
-                .start(pdata_rx)
+                .start()
                 .await
                 .expect("Exporter event loop failed");
         });

@@ -5,3 +5,4 @@
 pub mod exporter;
 pub mod processor;
 pub mod receiver;
+pub mod message;

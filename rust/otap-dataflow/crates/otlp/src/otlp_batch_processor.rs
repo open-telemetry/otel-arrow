@@ -14,6 +14,8 @@ use std::borrow::Cow;
 use std::time::{Duration, Instant};
 use otap_df_engine::control::ControlMsg;
 
+const OTLP_BATCH_PROCESSOR_URN: &'static str = "urn:otel:otlp:batch::processor";
+
 /// Trait for hierarchical batch splitting
 ///
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
@@ -629,6 +631,8 @@ impl Processor<OTLPData> for GenericBatcher {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+    use otap_df_config::node::NodeUserConfig;
     use super::*;
     use crate::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue, any_value,
@@ -647,8 +651,9 @@ mod tests {
     where
         P: Processor<OTLPData> + 'static,
     {
+        let node_config = Rc::new(NodeUserConfig::new_processor_config(OTLP_BATCH_PROCESSOR_URN));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, &config)
+        ProcessorWrapper::local(processor, node_config, &config)
     }
 
     #[test]
@@ -1889,15 +1894,18 @@ mod integration_tests {
     use otap_df_engine::processor::ProcessorWrapper;
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::rc::Rc;
     use std::time::Duration;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::ControlMsg;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
+        let node_config = Rc::new(NodeUserConfig::new_processor_config(OTLP_BATCH_PROCESSOR_URN));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, &config)
+        ProcessorWrapper::local(processor, node_config, &config)
     }
 
     // Helper: Write string to a file

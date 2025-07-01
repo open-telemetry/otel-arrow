@@ -14,13 +14,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// Configuration for a node in the pipeline.
-/// Each node contains its own settings and defines how it connects to downstream nodes via out_ports.
+/// User configuration for a node in the pipeline.
+/// Each node contains its own settings (i.e. user config) and defines how it connects to downstream
+/// nodes via out_ports.
 /// Each out_port is a named output (e.g. "success", "error") that defines a hyper-edge:
 /// - The hyper-edge configuration determines which downstream nodes are connected,
 ///   and how messages are routed (broadcast, round-robin, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct NodeConfig {
+pub struct NodeUserConfig {
     /// The kind of this node, which determines its role in the pipeline.
     /// 4 kinds are currently specified:
     /// - `Receiver`: A node that receives data from an external source.
@@ -93,4 +94,59 @@ pub enum NodeKind {
     // Connector,
     /// A merged chain of consecutive processors (experimental).
     ProcessorChain,
+}
+
+impl NodeUserConfig {
+    /// Creates a new Receiver `NodeUserConfig` with the plugin URN.
+    pub fn new_receiver_config<U: Into<Urn>>(plugin_urn: U) -> Self {
+        Self {
+            kind: NodeKind::Receiver,
+            plugin_urn: plugin_urn.into(),
+            description: None,
+            out_ports: HashMap::new(),
+            config: Value::Null,
+        }
+    }
+
+    /// Creates a new Exporter `NodeUserConfig` with the plugin URN.
+    pub fn new_exporter_config<U: Into<Urn>>(plugin_urn: U) -> Self {
+        Self {
+            kind: NodeKind::Exporter,
+            plugin_urn: plugin_urn.into(),
+            description: None,
+            out_ports: HashMap::new(),
+            config: Value::Null,
+        }
+    }
+
+    /// Creates a new Processor `NodeUserConfig` with the plugin URN.
+    pub fn new_processor_config<U: Into<Urn>>(plugin_urn: U) -> Self {
+        Self {
+            kind: NodeKind::Processor,
+            plugin_urn: plugin_urn.into(),
+            description: None,
+            out_ports: HashMap::new(),
+            config: Value::Null,
+        }
+    }
+
+    /// Creates a new `NodeUserConfig` with the specified kind, plugin URN, and user configuration.
+    pub fn with_user_config(
+        kind: NodeKind,
+        plugin_urn: Urn,
+        user_config: Value,
+    ) -> Self {
+        Self {
+            kind,
+            plugin_urn,
+            description: None,
+            out_ports: HashMap::new(),
+            config: user_config,
+        }
+    }
+    
+    /// Adds an out port to this node's configuration.
+    pub fn add_out_port(&mut self, port_name: PortName, edge_config: HyperEdgeConfig) -> Option<HyperEdgeConfig> {
+        self.out_ports.insert(port_name, edge_config)
+    }
 }

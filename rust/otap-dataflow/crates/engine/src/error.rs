@@ -161,4 +161,22 @@ pub enum Error<T> {
         /// The kind of the node that is not supported.
         kind: Cow<'static, str>,
     },
+
+    /// A task error that occurred during the execution of the pipeline.
+    #[error("Task error: {error}, cancelled: {is_cancelled}, panic: {is_panic}")]
+    TaskError {
+        /// Flag indicating whether the task was cancelled.
+        is_cancelled: bool,
+        /// Flag indicating whether the task panicked.
+        is_panic: bool,
+        /// The error that occurred.
+        error: String,
+    },
+
+    /// A list of errors that occurred during the execution of the pipeline.
+    #[error("Errors detected during the execution of the engine: {errors:?}")]
+    EngineErrors {
+        /// A list of errors that occurred during the execution of the pipeline.
+        errors: Vec<Error<T>>,
+    },
 }

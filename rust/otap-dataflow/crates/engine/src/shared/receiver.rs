@@ -39,6 +39,7 @@ use otap_df_channel::error::{RecvError, SendError};
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use crate::shared::message::{SharedReceiver, SharedSender};
 
 /// A trait for ingress receivers (Send definition).
 ///
@@ -59,13 +60,13 @@ pub trait Receiver<PData> {
 /// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel {
-    rx: tokio::sync::mpsc::Receiver<ControlMsg>,
+    rx: SharedReceiver<ControlMsg>,
 }
 
 impl ControlChannel {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
-    pub fn new(rx: tokio::sync::mpsc::Receiver<ControlMsg>) -> Self {
+    pub fn new(rx: SharedReceiver<ControlMsg>) -> Self {
         Self { rx }
     }
 
@@ -75,7 +76,7 @@ impl ControlChannel {
     ///
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
-        self.rx.recv().await.ok_or(RecvError::Closed)
+        self.rx.recv().await
     }
 }
 
@@ -85,7 +86,7 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
+    msg_sender: SharedSender<PData>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -97,7 +98,7 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn new(
         receiver_name: Cow<'static, str>,
-        msg_sender: tokio::sync::mpsc::Sender<PData>,
+        msg_sender: SharedSender<PData>,
     ) -> Self {
         EffectHandler {
             core: EffectHandlerCore {
@@ -118,13 +119,10 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
         self.msg_sender
             .send(data)
             .await
-            .map_err(|tokio::sync::mpsc::error::SendError(pdata)| {
-                Error::ChannelSendError(SendError::Full(pdata))
-            })
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

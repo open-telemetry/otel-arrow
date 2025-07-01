@@ -6,13 +6,20 @@
 //! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
 //! See [`shared::Processor`] for the Send implementation.
 
+use std::rc::Rc;
+use otap_df_channel::error::SendError;
 use crate::config::ProcessorConfig;
 use crate::control::ControlMsg;
 use crate::error::Error;
 use crate::local::processor as local;
-use crate::message::{Message, Receiver, Sender};
+use crate::message::{MessageChannel, Receiver, Sender};
 use crate::shared::processor as shared;
 use otap_df_channel::mpsc;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_config::{NodeId, PortName};
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::node::{Node, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::shared::message::{SharedReceiver, SharedSender};
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -22,98 +29,225 @@ use otap_df_channel::mpsc;
 pub enum ProcessorWrapper<PData> {
     /// A processor with a `!Send` implementation.
     Local {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Rc<NodeUserConfig>,
+        /// The runtime configuration for the processor.
+        runtime_config: ProcessorConfig,
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
-        /// The effect handler for the processor.
-        effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: Sender<ControlMsg>,
+        control_sender: LocalSender<ControlMsg>,
         /// A receiver for control messages.
-        control_receiver: Receiver<ControlMsg>,
+        control_receiver: LocalReceiver<ControlMsg>,
+        /// Sender for PData messages.
+        /// ToDo(LQ): Support multiple ports
+        pdata_sender: Option<LocalSender<PData>>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<Receiver<PData>>,
+        pdata_receiver: Option<LocalReceiver<PData>>,
     },
     /// A processor with a `Send` implementation.
     Shared {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Rc<NodeUserConfig>,
+        /// The runtime configuration for the processor.
+        runtime_config: ProcessorConfig,
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
-        /// The effect handler for the processor.
-        effect_handler: shared::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+        control_sender: SharedSender<ControlMsg>,
         /// A receiver for control messages.
-        control_receiver: tokio::sync::mpsc::Receiver<ControlMsg>,
+        control_receiver: SharedReceiver<ControlMsg>,
+        /// Sender for PData messages.
+        /// ToDo(LQ): Support multiple ports
+        pdata_sender: Option<SharedSender<PData>>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
+        pdata_receiver: Option<SharedReceiver<PData>>,
     },
 }
 
 impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
-    pub fn local<P>(processor: P, config: &ProcessorConfig) -> Self
+    pub fn local<P>(processor: P, user_config: Rc<NodeUserConfig>, config: &ProcessorConfig) -> Self
     where
         P: local::Processor<PData> + 'static,
     {
+        let runtime_config = config.clone();
         let (control_sender, control_receiver) =
             mpsc::Channel::new(config.control_channel.capacity);
-        let (pdata_sender, pdata_receiver) =
-            mpsc::Channel::new(config.output_pdata_channel.capacity);
 
         ProcessorWrapper::Local {
+            user_config,
+            runtime_config,
             processor: Box::new(processor),
-            effect_handler: local::EffectHandler::new(
-                config.name.clone(),
-                Sender::LocalMpsc(pdata_sender),
-            ),
-            control_sender: Sender::LocalMpsc(control_sender),
-            control_receiver: Receiver::LocalMpsc(control_receiver),
-            pdata_receiver: Some(Receiver::LocalMpsc(pdata_receiver)),
+            control_sender: LocalSender::MpscSender(control_sender),
+            control_receiver: LocalReceiver::MpscReceiver(control_receiver),
+            pdata_sender: None,
+            pdata_receiver: None,
         }
     }
 
     /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
-    pub fn shared<P>(processor: P, config: &ProcessorConfig) -> Self
+    pub fn shared<P>(processor: P, user_config: Rc<NodeUserConfig>, config: &ProcessorConfig) -> Self
     where
         P: shared::Processor<PData> + 'static,
     {
+        let runtime_config = config.clone();
         let (control_sender, control_receiver) =
             tokio::sync::mpsc::channel(config.control_channel.capacity);
-        let (pdata_sender, pdata_receiver) =
-            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
 
         ProcessorWrapper::Shared {
+            user_config,
+            runtime_config,
             processor: Box::new(processor),
-            effect_handler: shared::EffectHandler::new(config.name.clone(), pdata_sender),
-            control_sender,
-            control_receiver,
-            pdata_receiver: Some(pdata_receiver),
+            control_sender: SharedSender::MpscSender(control_sender),
+            control_receiver: SharedReceiver::MpscReceiver(control_receiver),
+            pdata_sender: None,
+            pdata_receiver: None,
         }
     }
 
-    /// Call the processor's `process` method.
-    pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
+    /// Start the processor.
+    pub async fn start(self) -> Result<(), Error<PData>> {
         match self {
-            ProcessorWrapper::Local {
-                effect_handler,
-                processor,
-                ..
-            } => processor.process(msg, effect_handler).await,
-            ProcessorWrapper::Shared {
-                effect_handler,
-                processor,
-                ..
-            } => processor.process(msg, effect_handler).await,
+            ProcessorWrapper::Local { mut processor, runtime_config, control_receiver, pdata_sender, pdata_receiver, .. } => {
+                let mut msg_chan = MessageChannel::new(
+                    Receiver::Local(control_receiver),
+                    Receiver::Local(pdata_receiver.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata receiver must be defined at this stage".to_owned() }
+                    })?),
+                );
+                let mut effect_handler = local::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata sender must be defined at this stage".to_owned() }
+                    })?,
+                );
+                while let Ok(msg) = msg_chan.recv().await {
+                    // Process the message using the local processor.
+                    processor.process(msg, &mut effect_handler).await?;
+                }
+            }
+            ProcessorWrapper::Shared { mut processor, runtime_config, control_receiver, pdata_sender, pdata_receiver, .. } => {
+                let mut msg_chan = MessageChannel::new(
+                    Receiver::Shared(control_receiver),
+                    Receiver::Shared(pdata_receiver.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata receiver must be defined at this stage".to_owned() }
+                    })?),
+                );
+                let mut effect_handler = shared::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata sender must be defined at this stage".to_owned() }
+                    })?,
+                );
+                while let Ok(msg) = msg_chan.recv().await {
+                    // Process the message using the local processor.
+                    processor.process(msg, &mut effect_handler).await?;
+                }
+            }
         }
+        Ok(())
     }
-
+    
     /// Takes the PData receiver from the wrapper and returns it.
     pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ProcessorWrapper::Local { pdata_receiver, .. } => {
-                pdata_receiver.take().expect("pdata_receiver is None")
+                Receiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
             }
             ProcessorWrapper::Shared { pdata_receiver, .. } => {
-                Receiver::SharedMpsc(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Node for ProcessorWrapper<PData> {
+    fn is_shared(&self) -> bool {
+        match self {
+            ProcessorWrapper::Local { .. } => false,
+            ProcessorWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn user_config(&self) -> Rc<NodeUserConfig> {
+        match self {
+            ProcessorWrapper::Local { user_config: config, .. } => config.clone(),
+            ProcessorWrapper::Shared { user_config: config, .. } => config.clone(),
+        }
+    }
+    
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        match self {
+            ProcessorWrapper::Local { control_sender, .. } => {
+                control_sender.send(msg).await
+            }
+            ProcessorWrapper::Shared { control_sender, .. } => {
+                control_sender.send(msg).await
+            }
+        }
+    }
+}
+
+impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
+    fn set_pdata_sender(&mut self, node_id: NodeId, _port: PortName, sender: Sender<PData>) -> Result<(), Error<PData>> {
+        match (self, sender) {
+            (ProcessorWrapper::Local { pdata_sender, .. }, Sender::Local(sender)) => {
+                *pdata_sender = Some(sender);
+                Ok(())
+            }
+            (ProcessorWrapper::Shared { pdata_sender, .. }, Sender::Shared(sender)) => {
+                *pdata_sender = Some(sender);
+                Ok(())
+            }
+            (ProcessorWrapper::Local { .. }, _) => {
+                Err(Error::ProcessorError {
+                    processor: node_id,
+                    error: "Expected a local sender for PData".to_owned(),
+                })
+            }
+            (ProcessorWrapper::Shared { .. }, _) => {
+                Err(Error::ProcessorError {
+                    processor: node_id,
+                    error: "Expected a shared sender for PData".to_owned(),
+                })
+            }
+        }
+    }
+}
+
+impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
+    fn set_pdata_receiver(&mut self, node_id: NodeId, receiver: Receiver<PData>) -> Result<(), Error<PData>> {
+        match (self, receiver) {
+            (ProcessorWrapper::Local { pdata_receiver, .. }, Receiver::Local(receiver)) => {
+                *pdata_receiver = Some(receiver);
+                Ok(())
+            }
+            (ProcessorWrapper::Shared { pdata_receiver, .. }, Receiver::Shared(receiver)) => {
+                *pdata_receiver = Some(receiver);
+                Ok(())
+            }
+            (ProcessorWrapper::Local { .. }, _) => {
+                Err(Error::ProcessorError {
+                    processor: node_id,
+                    error: "Expected a local sender for PData".to_owned(),
+                })
+            }
+            (ProcessorWrapper::Shared { .. }, _) => {
+                Err(Error::ProcessorError {
+                    processor: node_id,
+                    error: "Expected a shared sender for PData".to_owned(),
+                })
             }
         }
     }
@@ -132,7 +266,9 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::Value;
     use std::pin::Pin;
+    use std::rc::Rc;
     use std::time::Duration;
+    use otap_df_config::node::NodeUserConfig;
 
     /// A generic test processor that counts message events.
     /// Works with any type of processor !Send or Send.
@@ -263,8 +399,10 @@ mod tests {
     #[test]
     fn test_processor_local() {
         let test_runtime = TestRuntime::new();
+        let user_config = Rc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::local(
             TestProcessor::new(test_runtime.counters()),
+            user_config,
             test_runtime.config(),
         );
 
@@ -277,8 +415,10 @@ mod tests {
     #[test]
     fn test_processor_shared() {
         let test_runtime = TestRuntime::new();
+        let user_config = Rc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::shared(
             TestProcessor::new(test_runtime.counters()),
+            user_config,
             test_runtime.config(),
         );
 

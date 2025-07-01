@@ -28,8 +28,12 @@ use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
+use otap_df_config::node::NodeUserConfig;
+
+const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 
 /// A Receiver that listens for OTAP messages
 pub struct OTAPReceiver {
@@ -45,9 +49,9 @@ pub struct OTAPReceiver {
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OTAPData> = ReceiverFactory {
-    name: "urn:otel:otap:receiver",
-    create: |config: &Value, receiver_config: &ReceiverConfig| {
-        ReceiverWrapper::shared(OTAPReceiver::from_config(config), receiver_config)
+    name: OTAP_RECEIVER_URN,
+    create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+        ReceiverWrapper::shared(OTAPReceiver::from_config(&node_config.config), node_config, receiver_config)
     },
 };
 
@@ -159,7 +163,7 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
 mod tests {
     use crate::grpc::OTAPData;
     use crate::mock::create_batch_arrow_record;
-    use crate::otap_receiver::OTAPReceiver;
+    use crate::otap_receiver::{OTAPReceiver, OTAP_RECEIVER_URN};
     use crate::proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -171,7 +175,9 @@ mod tests {
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
+    use std::rc::Rc;
     use tokio::time::{Duration, timeout};
+    use otap_df_config::node::NodeUserConfig;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
@@ -302,8 +308,10 @@ mod tests {
         let message_size = 100;
 
         // create our receiver
+        let node_config = Rc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
         let receiver = ReceiverWrapper::shared(
             OTAPReceiver::new(addr, None, message_size),
+            node_config,
             test_runtime.config(),
         );
 

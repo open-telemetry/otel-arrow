@@ -3,7 +3,7 @@
 //! Pipeline configuration specification.
 
 use crate::error::{Context, Error};
-use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeConfig, NodeKind};
+use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeUserConfig, NodeKind};
 use crate::{Description, NamespaceId, NodeId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ pub struct PipelineConfig {
     settings: PipelineSettings,
 
     /// All nodes in this pipeline, keyed by node ID.
-    nodes: HashMap<NodeId, Rc<NodeConfig>>,
+    nodes: HashMap<NodeId, Rc<NodeUserConfig>>,
 }
 
 fn default_control_channel_size() -> usize {
@@ -107,12 +107,12 @@ impl PipelineConfig {
     }
 
     /// Returns an iterator visiting all nodes in the pipeline.
-    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Rc<NodeConfig>)> {
+    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Rc<NodeUserConfig>)> {
         self.nodes.iter()
     }
 
     /// Creates a consuming iterator over the nodes in the pipeline.
-    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Rc<NodeConfig>)> {
+    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Rc<NodeUserConfig>)> {
         self.nodes.into_iter()
     }
 
@@ -175,7 +175,7 @@ impl PipelineConfig {
     fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
         fn visit(
             node: &NodeId,
-            nodes: &HashMap<NodeId, Rc<NodeConfig>>,
+            nodes: &HashMap<NodeId, Rc<NodeUserConfig>>,
             visiting: &mut HashSet<NodeId>,
             visited: &mut HashSet<NodeId>,
             current_path: &mut Vec<NodeId>,
@@ -232,7 +232,7 @@ impl PipelineConfig {
 /// A builder for constructing a [`PipelineConfig`].
 pub struct PipelineConfigBuilder {
     description: Option<Description>,
-    nodes: HashMap<NodeId, NodeConfig>,
+    nodes: HashMap<NodeId, NodeUserConfig>,
     duplicate_nodes: Vec<NodeId>,
     pending_connections: Vec<PendingConnection>,
 }
@@ -279,7 +279,7 @@ impl PipelineConfigBuilder {
         } else {
             _ = self.nodes.insert(
                 id.clone(),
-                NodeConfig {
+                NodeUserConfig {
                     kind,
                     plugin_urn,
                     description: None,

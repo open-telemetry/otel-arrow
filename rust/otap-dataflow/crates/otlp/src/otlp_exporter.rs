@@ -6,6 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+use std::rc::Rc;
 use crate::OTLP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::grpc::OTLPData;
@@ -25,6 +26,9 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use serde_json::Value;
+use otap_df_config::node::NodeUserConfig;
+
+const OTLP_EXPORTER_URN: &'static str = "urn:otel:otlp:exporter";
 
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
@@ -39,9 +43,9 @@ pub struct OTLPExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
-    name: "urn:otel:otlp:exporter",
-    create: |config: &Value, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(OTLPExporter::from_config(config), exporter_config)
+    name: OTLP_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        ExporterWrapper::local(OTLPExporter::from_config(&node_config.config), node_config, exporter_config)
     },
 };
 
@@ -186,7 +190,7 @@ mod tests {
 
     use crate::grpc::OTLPData;
     use crate::mock::{LogsServiceMock, MetricsServiceMock, ProfilesServiceMock, TraceServiceMock};
-    use crate::otlp_exporter::OTLPExporter;
+    use crate::otlp_exporter::{OTLPExporter, OTLP_EXPORTER_URN};
     use crate::proto::opentelemetry::collector::{
         logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
@@ -199,11 +203,13 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
+    use std::rc::Rc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+    use otap_df_config::node::NodeUserConfig;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -317,8 +323,10 @@ mod tests {
                 .expect("Test gRPC server has failed");
         });
 
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTLPExporter::new(grpc_endpoint, None),
+            node_config,
             test_runtime.config(),
         );
 

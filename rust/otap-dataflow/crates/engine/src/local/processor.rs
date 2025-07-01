@@ -33,9 +33,10 @@
 
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::{Message, Sender};
+use crate::message::Message;
 use async_trait::async_trait;
 use std::borrow::Cow;
+use crate::local::message::LocalSender;
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -84,14 +85,14 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: Sender<PData>,
+    msg_sender: LocalSender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
+    pub fn new(name: Cow<'static, str>, msg_sender: LocalSender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore { node_name: name },
             msg_sender,

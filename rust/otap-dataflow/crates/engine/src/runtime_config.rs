@@ -2,24 +2,41 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use otap_df_channel::error::SendError;
-use otap_df_config::{NodeId, PortName, node::NodeConfig, pipeline::PipelineConfig};
+use crate::control::ControlMsg;
+use crate::error::Error;
+use crate::error::Error::EngineErrors;
+use crate::message::{Receiver, Sender};
+use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
+use crate::node::Node;
+use otap_df_config::{node::NodeUserConfig, pipeline::PipelineConfig, NodeId};
 use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
-use crate::control::{ControlMsg, Controllable};
-use crate::error::Error;
-use crate::message::{MessageChannel, Receiver, Sender};
-use crate::{error, exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 pub struct RuntimePipeline<PData> {
     /// The pipeline configuration that defines the structure and behavior of the pipeline.
     config: PipelineConfig,
-    /// A map of node id -> runtime node, where each node can be a receiver, processor, or exporter.
-    /// This map allows for quick access to nodes by their unique identifiers.
-    nodes: HashMap<NodeId, RuntimeNode<PData>>,
+    /// A map node id to receiver runtime node.
+    receivers: HashMap<NodeId, ReceiverWrapper<PData>>,
+    /// A map node id to processor runtime node.
+    processors: HashMap<NodeId, ProcessorWrapper<PData>>,
+    /// A map node id to exporter runtime node.
+    exporters: HashMap<NodeId, ExporterWrapper<PData>>,
+    /// A precomputed map of all node IDs to their Node trait objects for efficient access
+    nodes: HashMap<NodeId, NodeType>,
+}
+
+/// Enum to identify the type of a node for registry lookups
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeType {
+    /// Represents a node that acts as a receiver, receiving data from an external source.
+    Receiver,
+    /// Represents a node that processes data, transforming or analyzing it.
+    Processor,
+    /// Represents a node that exports data to an external destination.
+    Exporter,
 }
 
 /// Represents a node in the runtime pipeline, which can be a receiver, processor, or exporter.
@@ -27,7 +44,7 @@ pub enum RuntimeNode<PData> {
     /// A node that acts as a receiver, receiving data from an external source.
     Receiver {
         /// The configuration for the node, including its name and channel settings.
-        config: Rc<NodeConfig>,
+        config: Rc<NodeUserConfig>,
         /// The instance of the receiver that processes incoming data.
         instance: ReceiverWrapper<PData>,
         /// Sender for PData messages.
@@ -37,7 +54,7 @@ pub enum RuntimeNode<PData> {
     /// A node that processes data, transforming or analyzing it.
     Processor {
         /// The configuration for the node, including its name and channel settings.
-        config: Rc<NodeConfig>,
+        config: Rc<NodeUserConfig>,
         /// The instance of the processor that performs operations on the data.
         instance: ProcessorWrapper<PData>,
         /// Sender for PData messages.
@@ -49,7 +66,7 @@ pub enum RuntimeNode<PData> {
     /// A node that exports data to an external destination.
     Exporter {
         /// The configuration for the node, including its name and channel settings.
-        config: Rc<NodeConfig>,
+        config: Rc<NodeUserConfig>,
         /// The instance of the exporter that sends data to an external system.
         instance: ExporterWrapper<PData>,
         /// Receiver for PData messages.
@@ -57,108 +74,33 @@ pub enum RuntimeNode<PData> {
     },
 }
 
-#[async_trait::async_trait(?Send)]
-impl<PData> Controllable for RuntimeNode<PData> {
-    /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
-        match self {
-            RuntimeNode::Receiver { instance, .. } => instance.send_control_msg(msg).await,
-            RuntimeNode::Processor { .. } => {
-                unimplemented!("Processor control message handling is not implemented yet");
-            }
-            RuntimeNode::Exporter { .. } => {
-                unimplemented!("Exporter control message handling is not implemented yet");
-            }
-        }
-    }
-
-    /// Returns the control message sender for the node.
-    fn control_sender(&self) -> Sender<ControlMsg> {
-        match self {
-            RuntimeNode::Receiver { instance, .. } => instance.control_sender(),
-            RuntimeNode::Processor { .. } => {
-                unimplemented!("Processor control message handling is not implemented yet");
-            }
-            RuntimeNode::Exporter { .. } => {
-                unimplemented!("Exporter control message handling is not implemented yet");
-            }
-        }
-    }
-}
-
-impl<PData> RuntimeNode<PData> {
-    /// Flag indicating whether the node is shared (true) or local (false).
-    #[must_use]
-    pub fn is_shared(&self) -> bool {
-        matches!(
-            self,
-            RuntimeNode::Receiver {
-                instance: ReceiverWrapper::Shared { .. },
-                ..
-            } | RuntimeNode::Processor {
-                instance: ProcessorWrapper::Shared { .. },
-                ..
-            } | RuntimeNode::Exporter {
-                instance: ExporterWrapper::Shared { .. },
-                ..
-            }
-        )
-    }
-
-    /// Returns true if the node is an exporter.
-    #[must_use]
-    pub fn is_exporter(&self) -> bool {
-        matches!(self, RuntimeNode::Exporter { .. })
-    }
-
-    /// Returns the configuration of the node.
-    #[must_use]
-    pub fn config(&self) -> Rc<NodeConfig> {
-        match self {
-            RuntimeNode::Receiver { config, .. } => config.clone(),
-            RuntimeNode::Processor { config, .. } => config.clone(),
-            RuntimeNode::Exporter { config, .. } => config.clone(),
-        }
-    }
-
-    /// Sets the sender for PData messages.
-    /// ToDo(LQ): Support multiple ports
-    pub fn set_pdata_sender(
-        &mut self,
-        _port: PortName,
-        sender: Sender<PData>,
-    ) -> Result<(), Error<PData>> {
-        match self {
-            RuntimeNode::Receiver { pdata_sender, .. } => *pdata_sender = Some(sender),
-            RuntimeNode::Processor { pdata_sender, .. } => *pdata_sender = Some(sender),
-            RuntimeNode::Exporter { .. } => return Err(Error::PdataSenderNotSupported),
-        }
-        Ok(())
-    }
-
-    /// Sets the receiver for PData messages.
-    pub fn set_pdata_receiver(&mut self, receiver: Receiver<PData>) -> Result<(), Error<PData>> {
-        match self {
-            RuntimeNode::Receiver { .. } => return Err(Error::PdataReceiverNotSupported),
-            RuntimeNode::Processor { pdata_receiver, .. } => *pdata_receiver = Some(receiver),
-            RuntimeNode::Exporter { pdata_receiver, .. } => *pdata_receiver = Some(receiver),
-        }
-        Ok(())
-    }
-}
-
 // ToDo create 2 versions of this function into otlp and otap crates.
-impl<PData> RuntimePipeline<PData> {
+impl<PData: 'static> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
     #[must_use]
-    pub fn new(config: PipelineConfig, nodes: HashMap<NodeId, RuntimeNode<PData>>) -> Self {
-        Self { config, nodes }
+    pub fn new(
+        config: PipelineConfig,
+        receivers: HashMap<NodeId, ReceiverWrapper<PData>>,
+        processors: HashMap<NodeId, ProcessorWrapper<PData>>,
+        exporters: HashMap<NodeId, ExporterWrapper<PData>>,
+    ) -> Self {
+        let mut nodes = HashMap::new();
+        for id in receivers.keys() {
+            _ = nodes.insert(id.clone(), NodeType::Receiver);
+        }
+        for id in processors.keys() {
+            _ = nodes.insert(id.clone(), NodeType::Processor);
+        }
+        for id in exporters.keys() {
+            _ = nodes.insert(id.clone(), NodeType::Exporter);
+        }
+        Self { config, receivers, processors, exporters, nodes }
     }
 
     /// Returns the number of nodes in the pipeline.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.nodes.len()
+        self.receivers.len() + self.processors.len() + self.exporters.len()
     }
 
     /// Returns a reference to the pipeline configuration.
@@ -168,53 +110,64 @@ impl<PData> RuntimePipeline<PData> {
     }
 
     /// Starts the pipeline by
-    pub async fn start(self) -> Result<(), Error<PData>> {
+    pub fn start(self) -> Result<(), Error<PData>> {
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
+        let mut handlers = Vec::with_capacity(self.node_count());
 
-        for (node_id, node) in self.nodes.into_iter() {
-            match node {
-                RuntimeNode::Receiver { instance, .. } => {
-                    local_tasks.spawn_local(async move {
-                        instance.start().await.map_err(|e| Error::ReceiverError {
-                            receiver: node_id,
-                            error: e.to_string(),
-                        })
-                    });
-                }
-                RuntimeNode::Processor { mut instance, pdata_receiver, .. } => {
-                    // ToDo(LQ): Il n'y a pas de control_receiver pour le processor.
-                    // ToDo(LQ): C'est le bordel entre ProcessorWrapper et le RuntimeMode qui contiennent tous les deux des senders/receivers.
-                    // let mut msg_channel = MessageChannel::new(pdata_receiver);
-                    // loop {
-                    //     let msg = msg_channel.recv().await?;
-                    //     instance.process(msg).await.map_err(|e| Error::ProcessorError {
-                    //         processor: node_id,
-                    //         error: e.to_string(),
-                    //     })?;
-                    // }
-                    unimplemented!()
-                }
-                RuntimeNode::Exporter { instance, pdata_receiver, .. } => {
-                    local_tasks.spawn_local(async move {
-                        // ToDo(LQ): We could probably eliminate the Option here
-                        let pdata_receiver = pdata_receiver.expect("Exporter should have a receiver");
-                        instance.start(pdata_receiver).await.map_err(|e| Error::ExporterError {
-                            exporter: node_id,
-                            error: e.to_string(),
-                        })
-                    });
-                }
-            }
+        for (_node_id, exporter) in self.exporters.into_iter() {
+            handlers.push(local_tasks.spawn_local(async move {
+                exporter.start().await
+            }));
+        }
+        for (_node_id, processor) in self.processors.into_iter() {
+            handlers.push(local_tasks.spawn_local(async move { 
+                processor.start().await 
+            }));
+        }
+        for (_node_id, receiver) in self.receivers.into_iter() {
+            handlers.push(local_tasks.spawn_local(async move { 
+                receiver.start().await 
+            }));
         }
 
-        // Block on the local set to run all tasks to completion
-        rt.block_on(local_tasks);
-
+        // Wait for all tasks to complete, gathering any errors
+        let results = rt.block_on(async {
+            local_tasks
+                .run_until(async {
+                    futures::future::join_all(handlers).await
+                })
+                .await
+        });
+        
+        let mut errors = Vec::new();
+        for result in results {
+            match result {
+                Ok(Ok(())) => continue,                                        // Task completed successfully
+                Ok(Err(e)) => errors.push(e),                   // Task completed with an error
+                Err(e) => errors.push(Error::TaskError {    // Task panicked
+                    is_cancelled: e.is_cancelled(), 
+                    is_panic: e.is_panic(), 
+                    error: e.to_string() 
+                }), 
+            }
+        }
+        if !errors.is_empty() {
+            return Err(EngineErrors { errors });
+        }
         Ok(())
+    }
+
+    /// Gets a reference to any node by its ID as a Node trait object
+    pub fn get_node(&self, node_id: &NodeId) -> Option<&dyn Node> {
+        match self.nodes.get(node_id)? {
+            NodeType::Receiver => self.receivers.get(node_id).map(|r| r as &dyn Node),
+            NodeType::Processor => self.processors.get(node_id).map(|p| p as &dyn Node),
+            NodeType::Exporter => self.exporters.get(node_id).map(|e| e as &dyn Node),
+        }
     }
 
     /// Sends a control message to the specified node.
@@ -223,11 +176,11 @@ impl<PData> RuntimePipeline<PData> {
         node_id: NodeId,
         ctrl_msg: ControlMsg,
     ) -> Result<(), Error<PData>> {
-        if let Some(node) = self.nodes.get(&node_id) {
+        if let Some(node) = self.get_node(&node_id) {
             node.send_control_msg(ctrl_msg)
                 .await
                 .map_err(|e| Error::ControlMsgSendError {
-                    node: node_id,
+                    node: node_id.clone(),
                     error: e,
                 })
         } else {
