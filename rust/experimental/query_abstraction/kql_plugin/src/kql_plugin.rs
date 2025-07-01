@@ -1059,7 +1059,7 @@ mod tests {
 
         for input in invalid_inputs {
             let result = KqlPlugin::process_query(input);
-            assert!(result.is_err(), "Expected error for input: {}", input);
+            assert!(result.is_err(), "Expected error for input: {input}");
             assert!(matches!(result, Err(QueryError::ParseError(_))));
         }
     }

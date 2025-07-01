@@ -1,0 +1,75 @@
+# `{{ registry_name }}`
+
+## Plugin Summary
+
+| Type Name | Module | Class | Config Class | Description Summary |
+|-----------|--------|-------|--------------|----------------------|
+{%- for row in summary_rows %}
+| `{{ row.type_name }}` | `{{ row.module }}` | `{{ row.class_name }}` | `{{ row.config_name }}` | {{ row.summary }} |
+{%- endfor %}
+
+---
+
+{%- for section in detailed_sections %}
+
+## `{{ section.type_name }}`
+
+**Class**: `{{ section.class_path }}`
+
+{%- if section.config_class %}
+
+**Config Class**: `{{ section.config_class }}`
+{%- endif %}
+
+{%- if section.supported_contexts %}
+
+**Supported Contexts:**
+{% for ctx in section.supported_contexts %}
+- {{ ctx }}
+{%- endfor %}
+{%- endif %}
+
+{%- if section.installs_hooks %}
+
+**Installs Default Hooks:**
+{% for hook in section.installs_hooks %}
+- {{ hook }}
+{%- endfor %}
+{%- endif %}
+
+{%- if section.cli_flags %}
+
+**CLI Flags:**
+{% for group_name, flags in section.cli_flags.items() %}
+**{{ group_name }}:**
+
+| Flag | Description | Default | Required |
+|------|-------------|---------|----------|
+{%- for f in flags %}
+| `{{ f.flag }}` | {{ f.help }} | {{ f.default or "-" }} | {{ "Y" if f.required else "-" }} |
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+
+**Description:**
+
+```python
+"""
+{{ section.docstring }}
+"""
+```
+
+{%- if section.notes %}
+
+**Notes:**
+
+{{ section.notes | wrap80 }}
+{%- endif %}
+
+**Example YAML:**
+
+```yaml
+{{ section.example_yaml }}
+```
+{%- endfor %}
+

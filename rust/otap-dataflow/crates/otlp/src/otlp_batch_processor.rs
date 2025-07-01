@@ -1179,8 +1179,7 @@ mod tests {
                                         .unwrap_or_default();
                                     assert!(
                                         seen.insert(name.clone()),
-                                        "duplicate scope group: {}",
-                                        name
+                                        "duplicate scope group: {name}"
                                     );
                                 }
                             }
@@ -1915,7 +1914,7 @@ mod integration_tests {
             .append(true)
             .open("/tmp/generic_batch_proc_test.json")
             .expect("could not open /tmp file for writing");
-        writeln!(f, "{}\n", s).expect("Write failed");
+        writeln!(f, "{s}\n").expect("Write failed");
     }
 
     fn sample_trace() -> ExportTraceServiceRequest {
@@ -2016,21 +2015,21 @@ mod integration_tests {
             .run_test(|mut ctx| async move {
                 // TRACE INPUT
                 let trace_req = sample_trace();
-                log_to_file(&format!("INPUT TRACE:\n{:#?}", trace_req));
+                log_to_file(&format!("INPUT TRACE:\n{trace_req:#?}"));
                 ctx.process(Message::PData(OTLPData::Traces(trace_req)))
                     .await
                     .unwrap();
 
                 // METRICS INPUT
                 let metrics_req = sample_metrics();
-                log_to_file(&format!("INPUT METRIC:\n{:#?}", metrics_req));
+                log_to_file(&format!("INPUT METRIC:\n{metrics_req:#?}"));
                 ctx.process(Message::PData(OTLPData::Metrics(metrics_req)))
                     .await
                     .unwrap();
 
                 // LOGS INPUT
                 let logs_req = sample_logs();
-                log_to_file(&format!("INPUT LOGS:\n{:#?}", logs_req));
+                log_to_file(&format!("INPUT LOGS:\n{logs_req:#?}"));
                 ctx.process(Message::PData(OTLPData::Logs(logs_req)))
                     .await
                     .unwrap();
@@ -2048,17 +2047,17 @@ mod integration_tests {
                 for (i, out) in outputs.iter().enumerate() {
                     match out {
                         OTLPData::Traces(req) => {
-                            log_to_file(&format!("OUTPUT[{}] TRACE:\n{:#?}", i, req));
+                            log_to_file(&format!("OUTPUT[{i}] TRACE:\n{req:#?}"));
                         }
                         OTLPData::Metrics(req) => {
-                            log_to_file(&format!("OUTPUT[{}] METRICS:\n{:#?}", i, req));
+                            log_to_file(&format!("OUTPUT[{i}] METRICS:\n{req:#?}"));
                         }
                         OTLPData::Logs(req) => {
-                            log_to_file(&format!("OUTPUT[{}] LOGS:\n{:#?}", i, req));
+                            log_to_file(&format!("OUTPUT[{i}] LOGS:\n{req:#?}"));
                         }
                         #[allow(unreachable_patterns)]
                         _ => {
-                            log_to_file(&format!("OUTPUT[{}] UNKNOWN:\n<unhandled type>", i));
+                            log_to_file(&format!("OUTPUT[{i}] UNKNOWN:\n<unhandled type>"));
                         }
                     }
                 }

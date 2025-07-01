@@ -197,8 +197,8 @@ impl AttributeView for ObjKeyValue<'_> {
         Cow::Borrowed(self.key)
     }
 
-    fn value(&self) -> Option<&Self::Val<'_>> {
-        self.val.as_ref()
+    fn value(&self) -> Option<Self::Val<'_>> {
+        self.val
     }
 }
 

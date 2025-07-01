@@ -7,7 +7,7 @@
 # for the components that are included in the build, which are all of
 # those with sources in this repository plus a few commonly useful
 # accessories (e.g., the profiler extension).
-FROM golang:1.24@sha256:10c131810f80a4802c49cab0961bbe18a16f4bb2fb99ef16deaa23e4246fc817 AS sandbox
+FROM golang:1.24@sha256:1bb140b73b0c33df854496d07cb8d05ac62b358923ab513c18ede977f880c8b6 AS sandbox
 
 WORKDIR /otel-arrow
 COPY . .
