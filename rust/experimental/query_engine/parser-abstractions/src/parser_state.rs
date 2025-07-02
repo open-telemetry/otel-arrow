@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use data_engine_expressions::{QueryLocation, StaticScalarExpression};
+use data_engine_expressions::*;
 
 pub struct ParserOptions {
     default_source_map_key: Option<Box<str>>,
@@ -38,37 +38,39 @@ impl Default for ParserOptions {
     }
 }
 
-pub struct ParserState<'a> {
-    query: &'a str,
+pub struct ParserState {
     default_source_map_key: Option<Box<str>>,
     attached_data_names: HashSet<Box<str>>,
     variable_names: HashSet<Box<str>>,
     constants: HashMap<Box<str>, StaticScalarExpression>,
+    pipeline_builder: PipelineExpressionBuilder,
 }
 
-impl<'a> ParserState<'a> {
-    pub fn new(query: &'a str) -> ParserState<'a> {
+impl ParserState {
+    pub fn new(query: &str) -> ParserState {
         ParserState::new_with_options(query, ParserOptions::new())
     }
 
-    pub fn new_with_options(query: &'a str, options: ParserOptions) -> ParserState<'a> {
+    pub fn new_with_options(query: &str, options: ParserOptions) -> ParserState {
         Self {
-            query,
             default_source_map_key: options.default_source_map_key,
             attached_data_names: options.attached_data_names,
             variable_names: HashSet::new(),
             constants: HashMap::new(),
+            pipeline_builder: PipelineExpressionBuilder::new(query),
         }
     }
 
     pub fn get_query(&self) -> &str {
-        self.query
+        self.get_pipeline().get_query()
     }
 
     pub fn get_query_slice(&self, query_location: &QueryLocation) -> &str {
-        let (start, end) = query_location.get_start_and_end_positions();
+        self.get_pipeline().get_query_slice(query_location)
+    }
 
-        &self.query[start..end]
+    pub fn get_pipeline(&self) -> &PipelineExpression {
+        self.pipeline_builder.as_ref()
     }
 
     pub fn get_default_source_map_key(&self) -> Option<&str> {
@@ -100,5 +102,13 @@ impl<'a> ParserState<'a> {
 
     pub fn push_constant(&mut self, name: &str, value: StaticScalarExpression) {
         self.constants.insert(name.into(), value);
+    }
+
+    pub fn push_expression(&mut self, expression: DataExpression) {
+        self.pipeline_builder.push_expression(expression)
+    }
+
+    pub fn build(self) -> Result<PipelineExpression, Vec<ExpressionError>> {
+        self.pipeline_builder.build()
     }
 }

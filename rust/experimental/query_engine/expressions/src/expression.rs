@@ -20,6 +20,9 @@ impl QueryLocation {
         line_number: usize,
         column_number: usize,
     ) -> QueryLocation {
+        assert!(line_number >= 1);
+        assert!(column_number >= 1);
+
         Self {
             start,
             end,
