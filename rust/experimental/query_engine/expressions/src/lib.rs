@@ -16,7 +16,6 @@ pub use expression_error::ExpressionError;
 pub use pipeline_expression::PipelineExpression;
 
 pub use value_accessor::ValueAccessor;
-pub use value_accessor::ValueSelector;
 
 pub use data_expressions::*;
 pub use logical_expressions::*;

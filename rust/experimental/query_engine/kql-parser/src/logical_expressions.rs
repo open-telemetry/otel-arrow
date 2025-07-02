@@ -244,8 +244,11 @@ mod tests {
                 )),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "source_path"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "source_path",
+                        )),
                     )]),
                 )),
             )),
@@ -261,8 +264,11 @@ mod tests {
                 ScalarExpression::Attached(AttachedScalarExpression::new(
                     QueryLocation::new_fake(),
                     "resource",
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key",
+                        )),
                     )]),
                 )),
             )),
@@ -385,8 +391,11 @@ mod tests {
             "source.name",
             LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "name"),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "name",
+                    )),
                 )]),
             ))),
         );
@@ -397,13 +406,11 @@ mod tests {
                 QueryLocation::new_fake(),
                 "resource",
                 ValueAccessor::new_with_selectors(vec![
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "attributes",
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                     )),
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "service.name",
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "service.name"),
                     )),
                 ]),
             ))),
@@ -454,8 +461,11 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "SeverityText"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "SeverityText",
+                        )),
                     )]),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -489,8 +499,11 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "SeverityNumber"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "SeverityNumber",
+                        )),
                     )]),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(

@@ -160,8 +160,11 @@ mod tests {
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "new_attribute"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "new_attribute",
+                        )),
                     )]),
                 )),
             )),
