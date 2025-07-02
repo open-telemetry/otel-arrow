@@ -4,6 +4,8 @@
 //!
 /// allows the user to configure their perf exporter
 pub mod config;
+/// implements the debug counter to allow the debug exporter to keep track of certain stats
+pub mod counter;
 /// implements the otlp marshaler trait for a detailed verbosity output
 pub mod detailed_otlp_marshaler;
 /// debug exporter implementation

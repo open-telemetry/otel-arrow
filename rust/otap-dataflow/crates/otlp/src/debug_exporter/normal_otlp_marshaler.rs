@@ -44,7 +44,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_log.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeLog #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
+                        "   ScopeLog #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -54,22 +54,20 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "ScopeLog #{index}, Schema:, Schema: [{schema}]",
+                        "   ScopeLog #{index}, Schema:, Schema: [{schema}]",
                         index = scope_index,
                         schema = scope_log.schema_url,
                     );
                 }
 
                 for log_record in scope_log.log_records.iter() {
-                    let mut log_body = String::new();
                     if let Some(body) = &log_record.body {
-                        log_body = body.to_string();
+                        _ = write!(&mut report, "      Body: {body}, ");
                     }
-
+                    // TODO
                     _ = writeln!(
                         &mut report,
-                        "Body: {body}, Attributes: {attributes}",
-                        body = log_body,
+                        "Attributes: {attributes}",
                         attributes = attributes_string_normal(&log_record.attributes)
                     );
                 }
@@ -97,7 +95,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_metric.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeMetric #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
+                        "   ScopeMetric #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -107,7 +105,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "ScopeMetric #{index}, Schema: [{schema}]",
+                        "   ScopeMetric #{index}, Schema: [{schema}]",
                         index = scope_index,
                         schema = scope_metric.schema_url,
                     );
@@ -169,7 +167,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_span.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeSpan #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
+                        "   ScopeSpan #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -179,7 +177,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "ScopeSpan #{index}, Schema: [{schema}]",
+                        "   ScopeSpan #{index}, Schema: [{schema}]",
                         index = scope_index,
                         schema = scope_span.schema_url,
                     );
@@ -187,12 +185,12 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
 
                 for span in scope_span.spans.iter() {
                     // write line " {name} {trace_id} {span_id} {attributes}"
-                    _ = write!(&mut report, "Name: {name}, ", name = &span.name,);
+                    _ = write!(&mut report, "      Name: {name}, ", name = &span.name,);
                     if let Ok(trace_id) = String::from_utf8(span.trace_id.clone()) {
-                        _ = write!(&mut report, "Trace ID: {trace_id}, ", trace_id = trace_id);
+                        _ = write!(&mut report, "Trace ID: {trace_id}, ");
                     }
                     if let Ok(span_id) = String::from_utf8(span.span_id.clone()) {
-                        _ = write!(&mut report, "Span ID: {span_id}, ", span_id = span_id);
+                        _ = write!(&mut report, "Span ID: {span_id}, ");
                     }
 
                     _ = writeln!(
@@ -225,7 +223,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_profile.scope {
                     _ = writeln!(
                         &mut report,
-                        "ScopeProfile #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
+                        "   ScopeProfile #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         index = scope_index,
                         name = scope.name,
                         version = scope.version,
@@ -235,7 +233,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "ScopeProfile #{index}:, Schema: [{schema}]",
+                        "   ScopeProfile #{index}:, Schema: [{schema}]",
                         index = scope_index,
                         schema = scope_profile.schema_url,
                     );
@@ -270,22 +268,20 @@ fn write_number_datapoints_normal(
         let datapoint_attributes = attributes_string_normal(&datapoint.attributes);
         if let Some(value) = datapoint.value {
             match value {
-                NumberValue::AsDouble(double) => {
+                NumberValue::AsDouble(value) => {
                     _ = writeln!(
                         &mut report,
-                        "{name} {attributes} {value}",
+                        "      {name} {attributes}{value}",
                         name = metric.name,
                         attributes = datapoint_attributes,
-                        value = double
                     );
                 }
-                NumberValue::AsInt(int) => {
+                NumberValue::AsInt(value) => {
                     _ = writeln!(
                         &mut report,
-                        "{name} {attributes} {value}",
+                        "      {name} {attributes}{value}",
                         name = metric.name,
                         attributes = datapoint_attributes,
-                        value = int
                     );
                 }
             }
@@ -321,7 +317,7 @@ fn write_histogram_datapoints_normal(
 
         _ = writeln!(
             &mut report,
-            "{name} {attributes} {values}",
+            "      {name} {attributes}{values}",
             name = metric.name,
             attributes = attributes_string_normal(&datapoint.attributes),
         );
@@ -349,7 +345,7 @@ fn write_exponential_histogram_datapoints_normal(
 
         _ = writeln!(
             &mut report,
-            "{name} {attributes} {values}",
+            "      {name} {attributes}{values}",
             name = metric.name,
             attributes = attributes_string_normal(&datapoint.attributes),
         );
@@ -379,7 +375,7 @@ fn write_summary_datapoints_normal(
 
         _ = writeln!(
             &mut report,
-            "{name} {attributes} {values}",
+            "      {name} {attributes}{values}",
             name = metric.name,
             attributes = attributes_string_normal(&datapoint.attributes),
         );
@@ -414,11 +410,11 @@ mod tests {
         );
         assert_eq!(
             output_lines[1],
-            "ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
+            "   ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
         );
         assert_eq!(
             output_lines[2],
-            "Name: user-account, Trace ID: 4327e52011a22f9662eac217d77d1ec0, Span ID: 7271ee06d7e5925f, Attributes: hostname=host4.gov "
+            "      Name: user-account, Trace ID: 4327e52011a22f9662eac217d77d1ec0, Span ID: 7271ee06d7e5925f, Attributes: hostname=host4.gov "
         )
     }
 
@@ -438,24 +434,24 @@ mod tests {
         );
         assert_eq!(
             output_lines[1],
-            "ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: instrumentation_scope_k1=k1 value "
+            "   ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: instrumentation_scope_k1=k1 value "
         );
-        assert_eq!(output_lines[2], "system.cpu.time  0");
+        assert_eq!(output_lines[2], "      system.cpu.time 0");
         assert_eq!(
             output_lines[3],
-            "system.cpu.time freq=3GHz  count=0 sum=56 min=12 max=100.1 "
+            "      system.cpu.time freq=3GHz count=0 sum=56 min=12 max=100.1 "
         );
         assert_eq!(
             output_lines[4],
-            "system.cpu.time freq=3GHz  count=0 sum=56 min=12 max=100.1 le94.17542094619048=0 "
+            "      system.cpu.time freq=3GHz count=0 sum=56 min=12 max=100.1 le94.17542094619048=0 "
         );
         assert_eq!(
             output_lines[5],
-            "system.cpu.time cpu_logical_processors=8  0"
+            "      system.cpu.time cpu_logical_processors=8 0"
         );
         assert_eq!(
             output_lines[6],
-            "system.cpu.time cpu_cores=4  count=0 sum=56 q0=0 "
+            "      system.cpu.time cpu_cores=4 count=0 sum=56 q0=0 "
         );
     }
 
@@ -475,11 +471,11 @@ mod tests {
         );
         assert_eq!(
             output_lines[1],
-            "ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
+            "   ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
         );
         assert_eq!(
             output_lines[2],
-            "Body: Sint impedit non ut eligendi nisi neque harum maxime adipisci., Attributes: hostname=host3.thedomain.edu "
+            "      Body: Sint impedit non ut eligendi nisi neque harum maxime adipisci., Attributes: hostname=host3.thedomain.edu "
         );
     }
 
@@ -499,7 +495,7 @@ mod tests {
         );
         assert_eq!(
             output_lines[1],
-            "ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
+            "   ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com "
         );
     }
 }

@@ -31,22 +31,20 @@ impl fmt::Display for AnyValue {
         if let Some(value) = &self.value {
             match value {
                 Value::StringValue(string) => {
-                    write!(f, "{}", string)?;
+                    write!(f, "{string}")?;
                 }
                 Value::BoolValue(bool) => {
-                    write!(f, "{}", bool)?;
+                    write!(f, "{bool}")?;
                 }
                 Value::IntValue(int) => {
-                    write!(f, "{}", int)?;
+                    write!(f, "{int}")?;
                 }
                 Value::DoubleValue(double) => {
-                    write!(f, "{}", double)?;
+                    write!(f, "{double}")?;
                 }
                 Value::ArrayValue(array) => {
                     let values = &array.values;
-                    for value in values {
-                        write!(f, "{}", value)?;
-                    }
+                    write!(f, "{values:?}")?;
                 }
                 Value::KvlistValue(kvlist) => {
                     let mut kv_string = String::new();
@@ -64,7 +62,7 @@ impl fmt::Display for AnyValue {
                 }
                 Value::BytesValue(bytes) => {
                     if let Ok(byte_string) = String::from_utf8(bytes.to_vec()) {
-                        write!(f, "{}", byte_string)?;
+                        write!(f, "{byte_string}")?;
                     }
                     write!(f, "")?;
                 }

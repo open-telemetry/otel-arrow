@@ -10,6 +10,7 @@
 use crate::LOCAL_EXPORTERS;
 use crate::debug_exporter::{
     config::{Config, Verbosity},
+    counter::DebugCounter,
     detailed_otlp_marshaler::DetailedOTLPMarshaler,
     marshaler::OTLPMarshaler,
     normal_otlp_marshaler::NormalOTLPMarshaler,
@@ -31,8 +32,9 @@ use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
+
 /// Exporter that outputs all data received to stdout
-struct DebugExporter {
+pub struct DebugExporter {
     config: Config,
     output: Option<String>,
 }
@@ -56,12 +58,12 @@ impl DebugExporter {
         DebugExporter { config, output }
     }
 
-    // Creates a new DebugExporter from a configuration object
+    /// Creates a new DebugExporter from a configuration object
     #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
+    pub fn from_config(config: &Value) -> Self {
         // ToDo: implement config parsing
         DebugExporter {
-            config: Config::default(),
+            config: serde_json::from_value(config.clone()).expect("Unable to parse config"),
             output: None,
         }
     }
@@ -76,10 +78,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
         effect_handler: local::EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
         // counter to count number of objects received between timerticks
-        let mut metric_count: u64 = 0;
-        let mut profile_count: u64 = 0;
-        let mut span_count: u64 = 0;
-        let mut log_count: u64 = 0;
+        let mut counter = DebugCounter::default();
 
         // create a marshaler to take the otlp objects and extract various data to report
         let marshaler: Box<dyn OTLPMarshaler> = if self.config.verbosity() == Verbosity::Normal {
@@ -98,16 +97,10 @@ impl local::Exporter<OTLPData> for DebugExporter {
                     _ = writeln!(writer, "Timer tick received");
 
                     // output count of messages received since last timertick
-                    _ = writeln!(writer, "OTLP Metric objects received: {metric_count}");
-                    _ = writeln!(writer, "OTLP Trace objects received: {span_count}");
-                    _ = writeln!(writer, "OTLP Profile objects received: {profile_count}");
-                    _ = writeln!(writer, "OTLP Log objects received: {log_count}");
+                    _ = write!(writer, "{report}", report = counter.signals_count_report());
 
                     // reset counters after timertick
-                    metric_count = 0;
-                    span_count = 0;
-                    log_count = 0;
-                    profile_count = 0;
+                    counter.reset_signal_count();
                 }
                 Message::Control(ControlMsg::Config { .. }) => {
                     _ = writeln!(writer, "Config message received");
@@ -116,6 +109,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
                 Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
                     _ = writeln!(writer, "Shutdown message received");
+                    _ = write!(writer, "{report}", report = counter.debug_report());
                     break;
                 }
                 //send data
@@ -127,20 +121,44 @@ impl local::Exporter<OTLPData> for DebugExporter {
                         // match on OTLPData type and use the respective method to collect data about the received object
                         // increment the counters for each respective OTLP Datatype
                         OTLPData::Metrics(req) => {
-                            push_metric(&self.config.verbosity(), req, &*marshaler, &mut writer);
-                            metric_count += 1;
+                            push_metric(
+                                &self.config.verbosity(),
+                                req,
+                                &*marshaler,
+                                &mut writer,
+                                &mut counter,
+                            );
+                            counter.increment_metric_signal_count();
                         }
                         OTLPData::Logs(req) => {
-                            push_log(&self.config.verbosity(), req, &*marshaler, &mut writer);
-                            log_count += 1;
+                            push_log(
+                                &self.config.verbosity(),
+                                req,
+                                &*marshaler,
+                                &mut writer,
+                                &mut counter,
+                            );
+                            counter.increment_log_signal_count();
                         }
                         OTLPData::Traces(req) => {
-                            push_trace(&self.config.verbosity(), req, &*marshaler, &mut writer);
-                            span_count += 1;
+                            push_trace(
+                                &self.config.verbosity(),
+                                req,
+                                &*marshaler,
+                                &mut writer,
+                                &mut counter,
+                            );
+                            counter.increment_span_signal_count();
                         }
                         OTLPData::Profiles(req) => {
-                            push_profile(&self.config.verbosity(), req, &*marshaler, &mut writer);
-                            profile_count += 1;
+                            push_profile(
+                                &self.config.verbosity(),
+                                req,
+                                &*marshaler,
+                                &mut writer,
+                                &mut counter,
+                            );
+                            counter.increment_profile_signal_count();
                         }
                     }
                 }
@@ -177,6 +195,7 @@ fn push_metric(
     metric_request: ExportMetricsServiceRequest,
     marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
+    counter: &mut DebugCounter,
 ) {
     // collect number of resource metrics
     // collect number of metrics
@@ -214,14 +233,14 @@ fn push_metric(
     _ = writeln!(writer, "Received {resource_metrics} resource metrics");
     _ = writeln!(writer, "Received {metrics} metrics");
     _ = writeln!(writer, "Received {data_points} data points");
-
+    counter.update_metric_data(resource_metrics as u64, metrics as u64, data_points as u64);
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_metrics(metric_request);
-    _ = write!(writer, "{report}");
+    _ = writeln!(writer, "{report}");
 }
 
 fn push_trace(
@@ -229,6 +248,7 @@ fn push_trace(
     trace_request: ExportTraceServiceRequest,
     marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
+    counter: &mut DebugCounter,
 ) {
     // collect number of resource spans
     // collect number of spans
@@ -250,14 +270,19 @@ fn push_trace(
     _ = writeln!(writer, "Received {spans} spans");
     _ = writeln!(writer, "Received {events} events");
     _ = writeln!(writer, "Received {links} links");
-
+    counter.update_span_data(
+        resource_spans as u64,
+        spans as u64,
+        events as u64,
+        links as u64,
+    );
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_traces(trace_request);
-    _ = write!(writer, "{report}");
+    _ = writeln!(writer, "{report}");
 }
 
 fn push_log(
@@ -265,6 +290,7 @@ fn push_log(
     log_request: ExportLogsServiceRequest,
     marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
+    counter: &mut DebugCounter,
 ) {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
@@ -282,13 +308,13 @@ fn push_log(
     _ = writeln!(writer, "Received {resource_logs} resource logs");
     _ = writeln!(writer, "Received {log_records} log records");
     _ = writeln!(writer, "Received {events} events");
-
+    counter.update_log_data(resource_logs as u64, log_records as u64, events as u64);
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_logs(log_request);
-    _ = write!(writer, "{report}");
+    _ = writeln!(writer, "{report}");
 }
 
 fn push_profile(
@@ -296,6 +322,7 @@ fn push_profile(
     profile_request: ExportProfilesServiceRequest,
     marshaler: &dyn OTLPMarshaler,
     writer: &mut impl Write,
+    counter: &mut DebugCounter,
 ) {
     // collect number of resource profiles
     // collect number of sample records
@@ -311,13 +338,13 @@ fn push_profile(
 
     _ = writeln!(writer, "Received {resource_profiles} resource profiles");
     _ = writeln!(writer, "Received {samples} samples");
-
+    counter.update_profile_data(resource_profiles as u64, samples as u64);
     if *verbosity == Verbosity::Basic {
         return;
     }
 
     let report = marshaler.marshal_profiles(profile_request);
-    _ = write!(writer, "{report}");
+    _ = writeln!(writer, "{report}");
 }
 
 #[cfg(test)]
