@@ -72,7 +72,7 @@ where
                 Value::Text(kv.key().to_string()),
                 match kv.value() {
                     None => Value::Null,
-                    Some(val) => cbor_value_from_any_value(val),
+                    Some(val) => cbor_value_from_any_value(&val),
                 },
             )
         })

@@ -1,6 +1,7 @@
 use chrono::{DateTime, FixedOffset};
+use regex::Regex;
 
-use crate::{Expression, QueryLocation};
+use crate::{Expression, QueryLocation, primitives::*};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StaticScalarExpression {
@@ -16,18 +17,22 @@ pub enum StaticScalarExpression {
     /// Resolve a static integer value provided directly in a query.
     Integer(IntegerScalarExpression),
 
+    /// Resolve a static regex value provided directly in a query.
+    Regex(RegexScalarExpression),
+
     /// Resolve a static string value provided directly in a query.
     String(StringScalarExpression),
 }
 
 impl StaticScalarExpression {
-    pub fn to_value(&self) -> Value {
+    pub fn get_value_type(&self) -> ValueType {
         match self {
-            StaticScalarExpression::Boolean(b) => b.to_value(),
-            StaticScalarExpression::DateTime(d) => d.to_value(),
-            StaticScalarExpression::Double(d) => d.to_value(),
-            StaticScalarExpression::Integer(i) => i.to_value(),
-            StaticScalarExpression::String(s) => s.to_value(),
+            StaticScalarExpression::Boolean(_) => ValueType::Boolean,
+            StaticScalarExpression::DateTime(_) => ValueType::DateTime,
+            StaticScalarExpression::Double(_) => ValueType::Double,
+            StaticScalarExpression::Integer(_) => ValueType::Integer,
+            StaticScalarExpression::Regex(_) => ValueType::Regex,
+            StaticScalarExpression::String(_) => ValueType::String,
         }
     }
 }
@@ -39,6 +44,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::DateTime(d) => d.get_query_location(),
             StaticScalarExpression::Double(d) => d.get_query_location(),
             StaticScalarExpression::Integer(i) => i.get_query_location(),
+            StaticScalarExpression::Regex(r) => r.get_query_location(),
             StaticScalarExpression::String(s) => s.get_query_location(),
         }
     }
@@ -57,19 +63,17 @@ impl BooleanScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> bool {
-        self.value
-    }
-
-    pub fn to_value(&self) -> Value {
-        Value::Boolean(self.get_value())
-    }
 }
 
 impl Expression for BooleanScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+}
+
+impl BooleanValue for BooleanScalarExpression {
+    fn get_value(&self) -> bool {
+        self.value
     }
 }
 
@@ -89,19 +93,17 @@ impl DateTimeScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> DateTime<FixedOffset> {
-        self.value
-    }
-
-    pub fn to_value(&self) -> Value {
-        Value::DateTime(self.get_value())
-    }
 }
 
 impl Expression for DateTimeScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+}
+
+impl DateTimeValue for DateTimeScalarExpression {
+    fn get_value(&self) -> DateTime<FixedOffset> {
+        self.value
     }
 }
 
@@ -118,19 +120,17 @@ impl DoubleScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> f64 {
-        self.value
-    }
-
-    pub fn to_value(&self) -> Value {
-        Value::Double(self.get_value())
-    }
 }
 
 impl Expression for DoubleScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+}
+
+impl DoubleValue for DoubleScalarExpression {
+    fn get_value(&self) -> f64 {
+        self.value
     }
 }
 
@@ -147,14 +147,6 @@ impl IntegerScalarExpression {
             value,
         }
     }
-
-    pub fn get_value(&self) -> i64 {
-        self.value
-    }
-
-    pub fn to_value(&self) -> Value {
-        Value::Integer(self.get_value())
-    }
 }
 
 impl Expression for IntegerScalarExpression {
@@ -163,7 +155,50 @@ impl Expression for IntegerScalarExpression {
     }
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+impl IntegerValue for IntegerScalarExpression {
+    fn get_value(&self) -> i64 {
+        self.value
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RegexScalarExpression {
+    query_location: QueryLocation,
+    value: Regex,
+}
+
+impl RegexScalarExpression {
+    pub fn new(query_location: QueryLocation, value: Regex) -> RegexScalarExpression {
+        Self {
+            query_location,
+            value,
+        }
+    }
+
+    pub fn get_value(&self) -> &Regex {
+        &self.value
+    }
+}
+
+impl Expression for RegexScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+impl RegexValue for RegexScalarExpression {
+    fn get_value(&self) -> &Regex {
+        &self.value
+    }
+}
+
+impl PartialEq for RegexScalarExpression {
+    fn eq(&self, other: &Self) -> bool {
+        self.query_location == other.query_location && self.value.as_str() == other.value.as_str()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct StringScalarExpression {
     query_location: QueryLocation,
     value: Box<str>,
@@ -176,14 +211,6 @@ impl StringScalarExpression {
             value: value.into(),
         }
     }
-
-    pub fn get_value(&self) -> &str {
-        &self.value
-    }
-
-    pub fn to_value(&self) -> Value {
-        Value::String(self.get_value())
-    }
 }
 
 impl Expression for StringScalarExpression {
@@ -192,10 +219,8 @@ impl Expression for StringScalarExpression {
     }
 }
 
-pub enum Value<'a> {
-    Boolean(bool),
-    Integer(i64),
-    DateTime(DateTime<FixedOffset>),
-    Double(f64),
-    String(&'a str),
+impl StringValue for StringScalarExpression {
+    fn get_value(&self) -> &str {
+        &self.value
+    }
 }

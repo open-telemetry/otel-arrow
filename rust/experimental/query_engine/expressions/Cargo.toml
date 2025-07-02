@@ -9,5 +9,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+caseless = "0.2.2"
+
 chrono = { workspace = true }
+regex = { workspace = true }
 thiserror = { workspace = true }

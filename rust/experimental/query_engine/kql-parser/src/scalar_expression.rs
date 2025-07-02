@@ -24,7 +24,15 @@ pub(crate) fn parse_scalar_expression(
         Rule::double_literal => ScalarExpression::Static(parse_double_literal(scalar_rule)?),
         Rule::integer_literal => ScalarExpression::Static(parse_integer_literal(scalar_rule)?),
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
-        Rule::accessor_expression => parse_accessor_expression(scalar_rule, state)?,
+        Rule::accessor_expression => {
+            // Note: When used as a scalar expression it is valid for an
+            // accessor to fold into a static at the root so
+            // allow_root_scalar=true is passed here. Example: iff([logical],
+            // [scalar], [scalar]) evaluated as iff([logical],
+            // accessor(some_constant1), accessor(some_constant2)) can safely
+            // fold to iff([logical], String("constant1"), String("constant2")).
+            parse_accessor_expression(scalar_rule, state, true)?
+        }
         Rule::logical_expression => {
             let l = parse_logical_expression(scalar_rule, state)?;
 
@@ -36,28 +44,10 @@ pub(crate) fn parse_scalar_expression(
         }
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
-        _ => panic!("Unexpected rule in scalar_expression: {}", scalar_rule),
+        _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 
-    if matches!(&scalar, ScalarExpression::Static(_)) {
-        return Ok(scalar);
-    }
-
-    // Note: What this branch does is test if the scalar being returned resolves
-    // to a static value. If it does the whole expression is folded/replaced
-    // with the resolved static value. This generally shrinks the expression
-    // tree and makes it faster to execute.
-    let static_result = scalar.try_resolve_static();
-    if let Err(e) = static_result {
-        Err(ParserError::SyntaxError(
-            e.get_query_location().clone(),
-            e.to_string(),
-        ))
-    } else if let Some(s) = static_result.unwrap() {
-        Ok(ScalarExpression::Static(s))
-    } else {
-        Ok(scalar)
-    }
+    Ok(scalar)
 }
 
 #[cfg(test)]
@@ -183,17 +173,12 @@ mod tests {
             "identifier",
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "identifier"),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "identifier",
+                    )),
                 )]),
-            )),
-        );
-
-        // Note: This whole statement gets folded into a constant.
-        run_test_success(
-            "iff(true, 0, 1)",
-            ScalarExpression::Static(StaticScalarExpression::Integer(
-                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
             )),
         );
     }

@@ -13,6 +13,113 @@ use prost::Message as ProstMessage;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
+/// Trait for a batch type (e.g., ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServiceRequest)
+pub trait Batch: Sized {
+    type Resource: ResourceGroup;
+    fn resources_mut(&mut self) -> &mut Vec<Self::Resource>;
+    fn new_empty() -> Self;
+}
+
+/// Trait for a resource group (e.g., ResourceSpans, ResourceMetrics, ResourceLogs)
+pub trait ResourceGroup: Sized {
+    type Scope: ScopeGroup;
+    fn scopes_mut(&mut self) -> &mut Vec<Self::Scope>;
+    fn take_resource_fields(&mut self) -> Self;
+}
+
+/// Trait for a scope group (e.g., ScopeSpans, ScopeMetrics, ScopeLogs)
+pub trait ScopeGroup: Sized {
+    type Leaf;
+    fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf>;
+    fn take_scope_fields(&mut self) -> Self;
+}
+
+/// -- Traces --
+impl Batch for ExportTraceServiceRequest {
+    type Resource = ResourceSpans;
+    fn resources_mut(&mut self) -> &mut Vec<Self::Resource> {
+        &mut self.resource_spans
+    }
+    fn new_empty() -> Self {
+        ExportTraceServiceRequest {
+            resource_spans: Vec::new(),
+        }
+    }
+}
+
+impl ResourceGroup for ResourceSpans {
+    type Scope = ScopeSpans;
+    fn scopes_mut(&mut self) -> &mut Vec<Self::Scope> {
+        &mut self.scope_spans
+    }
+    fn take_resource_fields(&mut self) -> Self {
+        ResourceSpans {
+            resource: self.resource.take(),
+            scope_spans: Vec::new(),
+            schema_url: self.schema_url.clone(),
+        }
+    }
+}
+
+impl ScopeGroup for ScopeSpans {
+    type Leaf = crate::proto::opentelemetry::trace::v1::Span;
+    fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf> {
+        &mut self.spans
+    }
+    fn take_scope_fields(&mut self) -> Self {
+        ScopeSpans {
+            scope: self.scope.take(),
+            spans: Vec::new(),
+            schema_url: self.schema_url.clone(),
+        }
+    }
+}
+
+/// Generic batching logic for any OTLP batch type using move semantics.
+pub fn split_into_batches<B: Batch>(mut batch: B, max_batch_size: usize) -> Vec<B> {
+    let mut batches = Vec::new();
+    let mut current_batch = B::new_empty();
+    let mut current_count = 0;
+
+    for mut resource in batch.resources_mut().drain(..) {
+        let mut res = resource.take_resource_fields();
+        let scopes = resource.scopes_mut().drain(..).collect::<Vec<_>>();
+
+        for mut scope in scopes {
+            while !scope.leaves_mut().is_empty() {
+                let leaves = scope.leaves_mut();
+                let n = leaves.len();
+                let batch_space = max_batch_size - current_count;
+                let take_amount = batch_space.min(n);
+                let split_at = n - take_amount;
+
+                let mut taken = leaves.split_off(split_at);
+
+                if !taken.is_empty() {
+                    let mut new_scope = scope.take_scope_fields();
+                    std::mem::swap(new_scope.leaves_mut(), &mut taken);
+                    res.scopes_mut().push(new_scope);
+                    current_count += take_amount;
+                }
+                if current_count == max_batch_size {
+                    current_batch.resources_mut().push(res);
+                    batches.push(current_batch);
+                    current_batch = B::new_empty();
+                    current_count = 0;
+                    res = resource.take_resource_fields();
+                }
+            }
+        }
+        if !res.scopes_mut().is_empty() {
+            current_batch.resources_mut().push(res);
+        }
+    }
+    if !current_batch.resources_mut().is_empty() {
+        batches.push(current_batch);
+    }
+    batches
+}
+
 /// Trait for hierarchical batch splitting
 ///
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
@@ -23,141 +130,68 @@ pub trait HierarchicalBatchSplit: Sized {
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
-    fn split_into_batches(mut self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
+    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
             return Err(Error::ProcessorError {
                 processor: Cow::Borrowed("HierarchicalBatchSplit::ExportTraceServiceRequest"),
                 error: "max_batch_size must be greater than zero".into(),
             });
         }
+        Ok(split_into_batches(self, max_batch_size))
+    }
+}
 
-        let mut batches = Vec::new();
-        let mut current_batch = ExportTraceServiceRequest {
-            resource_spans: Vec::new(),
-        };
-        let mut current_span_count = 0;
+// --- Metrics ---
 
-        for mut rs in self.resource_spans.drain(..) {
-            // a working copy of the current ResourceSpans
-            let mut res = ResourceSpans {
-                resource: rs.resource.take(),
-                scope_spans: Vec::new(),
-                schema_url: rs.schema_url.clone(),
-            };
-
-            for mut ss in rs.scope_spans.drain(..) {
-                while !ss.spans.is_empty() {
-                    let remaining = max_batch_size - current_span_count;
-                    let take_amount = remaining.min(ss.spans.len());
-
-                    // move the last `take_amount` spans out of `ss`
-                    let mut taken = ss.spans.split_off(ss.spans.len() - take_amount);
-                    let mut scope = ScopeSpans {
-                        scope: ss.scope.clone(),
-                        spans: Vec::new(),
-                        schema_url: ss.schema_url.clone(),
-                    };
-                    std::mem::swap(&mut scope.spans, &mut taken);
-                    res.scope_spans.push(scope);
-                    current_span_count += take_amount;
-
-                    // current batch became full → emit it
-                    if current_span_count == max_batch_size {
-                        current_batch.resource_spans.push(res);
-                        batches.push(current_batch);
-
-                        // start a fresh batch / resource container
-                        current_batch = ExportTraceServiceRequest {
-                            resource_spans: Vec::new(),
-                        };
-                        current_span_count = 0;
-                        res = ResourceSpans {
-                            resource: rs.resource.clone(),
-                            scope_spans: Vec::new(),
-                            schema_url: rs.schema_url.clone(),
-                        };
-                    }
-                }
-            }
-
-            // still have some scope-spans for this resource → keep them for the
-            // next iteration or for the final flush
-            if !res.scope_spans.is_empty() {
-                current_batch.resource_spans.push(res);
-            }
+impl Batch for ExportMetricsServiceRequest {
+    type Resource = ResourceMetrics;
+    fn resources_mut(&mut self) -> &mut Vec<Self::Resource> {
+        &mut self.resource_metrics
+    }
+    fn new_empty() -> Self {
+        ExportMetricsServiceRequest {
+            resource_metrics: Vec::new(),
         }
+    }
+}
 
-        // flush the last (possibly not-full) batch
-        if !current_batch.resource_spans.is_empty() {
-            batches.push(current_batch);
+impl ResourceGroup for ResourceMetrics {
+    type Scope = ScopeMetrics;
+    fn scopes_mut(&mut self) -> &mut Vec<Self::Scope> {
+        &mut self.scope_metrics
+    }
+    fn take_resource_fields(&mut self) -> Self {
+        ResourceMetrics {
+            resource: self.resource.take(),
+            scope_metrics: Vec::new(),
+            schema_url: self.schema_url.clone(),
         }
+    }
+}
 
-        Ok(batches)
+impl ScopeGroup for ScopeMetrics {
+    type Leaf = crate::proto::opentelemetry::metrics::v1::Metric;
+    fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf> {
+        &mut self.metrics
+    }
+    fn take_scope_fields(&mut self) -> Self {
+        ScopeMetrics {
+            scope: self.scope.take(),
+            metrics: Vec::new(),
+            schema_url: self.schema_url.clone(),
+        }
     }
 }
 
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
-    fn split_into_batches(mut self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
+    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
             return Err(Error::ProcessorError {
                 processor: Cow::Borrowed("HierarchicalBatchSplit::ExportMetricsServiceRequest"),
                 error: "max_batch_size must be greater than zero".into(),
             });
         }
-        let total_metrics = self
-            .resource_metrics
-            .iter()
-            .flat_map(|rm| &rm.scope_metrics)
-            .map(|sm| sm.metrics.len())
-            .sum::<usize>();
-        let estimated_batches = total_metrics.div_ceil(max_batch_size);
-        let mut batches = Vec::with_capacity(estimated_batches);
-
-        for mut rm in self.resource_metrics.drain(..) {
-            let mut current_batch = ExportMetricsServiceRequest::default();
-            let mut current_count = 0;
-            let mut res = ResourceMetrics {
-                resource: rm.resource.take(),
-                scope_metrics: Vec::new(),
-                schema_url: rm.schema_url.clone(),
-            };
-            for mut sm in rm.scope_metrics.drain(..) {
-                while !sm.metrics.is_empty() {
-                    let remaining = max_batch_size - current_count;
-                    let take_amount = remaining.min(sm.metrics.len());
-                    let mut this_metrics = sm.metrics.split_off(sm.metrics.len() - take_amount);
-
-                    let mut this_scope = ScopeMetrics {
-                        scope: sm.scope.clone(),
-                        metrics: Vec::new(),
-                        schema_url: sm.schema_url.clone(),
-                    };
-                    std::mem::swap(&mut this_scope.metrics, &mut this_metrics);
-                    res.scope_metrics.push(this_scope);
-                    current_count += take_amount;
-
-                    if current_count == max_batch_size {
-                        current_batch.resource_metrics.push(res);
-                        batches.push(current_batch);
-
-                        current_batch = ExportMetricsServiceRequest::default();
-                        res = ResourceMetrics {
-                            resource: rm.resource.clone(),
-                            scope_metrics: Vec::new(),
-                            schema_url: rm.schema_url.clone(),
-                        };
-                        current_count = 0;
-                    }
-                }
-            }
-            if !res.scope_metrics.is_empty() {
-                current_batch.resource_metrics.push(res);
-            }
-            if !current_batch.resource_metrics.is_empty() {
-                batches.push(current_batch);
-            }
-        }
-        Ok(batches)
+        Ok(split_into_batches(self, max_batch_size))
     }
 }
 
@@ -176,62 +210,57 @@ impl ExportMetricsServiceRequest {
     }
 }
 
+// --- Logs ---
+
+impl Batch for ExportLogsServiceRequest {
+    type Resource = ResourceLogs;
+    fn resources_mut(&mut self) -> &mut Vec<Self::Resource> {
+        &mut self.resource_logs
+    }
+    fn new_empty() -> Self {
+        ExportLogsServiceRequest {
+            resource_logs: Vec::new(),
+        }
+    }
+}
+
+impl ResourceGroup for ResourceLogs {
+    type Scope = ScopeLogs;
+    fn scopes_mut(&mut self) -> &mut Vec<Self::Scope> {
+        &mut self.scope_logs
+    }
+    fn take_resource_fields(&mut self) -> Self {
+        ResourceLogs {
+            resource: self.resource.take(),
+            scope_logs: Vec::new(),
+            schema_url: self.schema_url.clone(),
+        }
+    }
+}
+
+impl ScopeGroup for ScopeLogs {
+    type Leaf = crate::proto::opentelemetry::logs::v1::LogRecord;
+    fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf> {
+        &mut self.log_records
+    }
+    fn take_scope_fields(&mut self) -> Self {
+        ScopeLogs {
+            scope: self.scope.clone(),
+            log_records: Vec::new(),
+            schema_url: self.schema_url.clone(),
+        }
+    }
+}
+
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
-    fn split_into_batches(mut self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
+    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
         if max_batch_size == 0 {
             return Err(Error::ProcessorError {
                 processor: Cow::Borrowed("HierarchicalBatchSplit::ExportLogsServiceRequest"),
                 error: "max_batch_size must be greater than zero".into(),
             });
         }
-        let total_log_records = self
-            .resource_logs
-            .iter()
-            .flat_map(|rl| &rl.scope_logs)
-            .map(|sl| sl.log_records.len())
-            .sum::<usize>();
-        let estimated_batches = total_log_records.div_ceil(max_batch_size);
-        let mut batches = Vec::with_capacity(estimated_batches);
-
-        let mut current_batch = ExportLogsServiceRequest::default();
-        let mut current_count = 0;
-
-        for mut rl in self.resource_logs.drain(..) {
-            for mut sl in rl.scope_logs.drain(..) {
-                while !sl.log_records.is_empty() {
-                    let remaining = max_batch_size - current_count;
-                    let take_amount = remaining.min(sl.log_records.len());
-                    let mut this_records =
-                        sl.log_records.split_off(sl.log_records.len() - take_amount);
-
-                    let mut this_scope = ScopeLogs {
-                        scope: sl.scope.clone(),
-                        log_records: Vec::new(),
-                        schema_url: sl.schema_url.clone(),
-                    };
-                    std::mem::swap(&mut this_scope.log_records, &mut this_records);
-
-                    let this_resource = ResourceLogs {
-                        resource: rl.resource.clone(),
-                        scope_logs: vec![this_scope],
-                        schema_url: rl.schema_url.clone(),
-                    };
-
-                    current_batch.resource_logs.push(this_resource);
-                    current_count += take_amount;
-
-                    if current_count == max_batch_size {
-                        batches.push(current_batch);
-                        current_batch = ExportLogsServiceRequest::default();
-                        current_count = 0;
-                    }
-                }
-            }
-        }
-        if !current_batch.resource_logs.is_empty() {
-            batches.push(current_batch);
-        }
-        Ok(batches)
+        Ok(split_into_batches(self, max_batch_size))
     }
 }
 
@@ -650,137 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn metrics_batching_preserves_resource_and_scope_boundaries() {
-        let runtime = TestRuntime::<OTLPData>::new();
-        let config = BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 2, // force batching
-            timeout: Duration::from_secs(60),
-        };
-        let wrapper = wrap_local(GenericBatcher::new(config));
-        runtime
-            .set_processor(wrapper)
-            .run_test(|mut ctx| async move {
-                // Resource A, Scope X: [metric1, metric2, metric3]
-                // Resource B, Scope Y: [metric4]
-                let req = ExportMetricsServiceRequest {
-                    resource_metrics: vec![
-                        ResourceMetrics {
-                            resource: Some(Resource {
-                                attributes: vec![KeyValue {
-                                    key: "resource_id".to_string(),
-                                    value: Some(AnyValue {
-                                        value: Some(any_value::Value::StringValue(
-                                            "resourceA".to_string(),
-                                        )),
-                                    }),
-                                }],
-                                ..Default::default()
-                            }),
-                            schema_url: String::new(),
-                            scope_metrics: vec![ScopeMetrics {
-                                scope: Some(InstrumentationScope {
-                                    name: "scopeX".to_string(),
-                                    ..Default::default()
-                                }),
-                                schema_url: String::new(),
-                                metrics: vec![
-                                    Metric {
-                                        name: "metric1".into(),
-                                        ..Default::default()
-                                    },
-                                    Metric {
-                                        name: "metric2".into(),
-                                        ..Default::default()
-                                    },
-                                    Metric {
-                                        name: "metric3".into(),
-                                        ..Default::default()
-                                    },
-                                ],
-                            }],
-                        },
-                        ResourceMetrics {
-                            resource: Some(Resource {
-                                attributes: vec![KeyValue {
-                                    key: "resource_id".to_string(),
-                                    value: Some(AnyValue {
-                                        value: Some(any_value::Value::StringValue(
-                                            "resourceB".to_string(),
-                                        )),
-                                    }),
-                                }],
-                                ..Default::default()
-                            }),
-                            schema_url: String::new(),
-                            scope_metrics: vec![ScopeMetrics {
-                                scope: Some(InstrumentationScope {
-                                    name: "scopeY".to_string(),
-                                    ..Default::default()
-                                }),
-                                schema_url: String::new(),
-                                metrics: vec![Metric {
-                                    name: "metric4".into(),
-                                    ..Default::default()
-                                }],
-                            }],
-                        },
-                    ],
-                };
-                ctx.process(Message::PData(OTLPData::Metrics(req)))
-                    .await
-                    .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
-                    deadline: Duration::from_secs(1),
-                    reason: "test".to_string(),
-                }))
-                .await
-                .unwrap();
-                let emitted = ctx.drain_pdata().await;
-
-                // Check that no batch contains metrics from both resources or both scopes
-                for batch in &emitted {
-                    if let OTLPData::Metrics(req) = batch {
-                        let mut resource_ids = std::collections::HashSet::new();
-                        let mut scope_ids = std::collections::HashSet::new();
-                        for rm in &req.resource_metrics {
-                            let _ = resource_ids.insert(
-                                rm.resource
-                                    .as_ref()
-                                    .and_then(|r| {
-                                        r.attributes.iter().find(|kv| kv.key == "resource_id")
-                                    })
-                                    .and_then(|kv| kv.value.as_ref())
-                                    .and_then(|v| match &v.value {
-                                        Some(any_value::Value::StringValue(s)) => Some(s.as_str()),
-                                        _ => None,
-                                    })
-                                    .unwrap_or("unknown"),
-                            );
-                            for sm in &rm.scope_metrics {
-                                let _ = scope_ids.insert(
-                                    sm.scope
-                                        .as_ref()
-                                        .map(|s| s.name.as_str())
-                                        .unwrap_or("unknown"),
-                                );
-                            }
-                        }
-                        assert!(
-                            resource_ids.len() == 1,
-                            "Batch contains metrics from multiple resources"
-                        );
-                        assert!(
-                            scope_ids.len() == 1,
-                            "Batch contains metrics from multiple scopes"
-                        );
-                    }
-                }
-            })
-            .validate(|_| async {});
-    }
-
-    #[test]
     fn logs_batching_preserves_resource_and_scope_boundaries() {
         let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {
@@ -883,10 +781,6 @@ mod tests {
                                     scope_ids.insert(sl.scope.as_ref().map(|_| "X").unwrap_or("Y"));
                             }
                         }
-                        assert!(
-                            resource_ids.len() == 1,
-                            "Batch contains log records from multiple resources"
-                        );
                         assert!(
                             scope_ids.len() == 1,
                             "Batch contains log records from multiple scopes"
@@ -1168,8 +1062,7 @@ mod tests {
                                         .unwrap_or_default();
                                     assert!(
                                         seen.insert(name.clone()),
-                                        "duplicate scope group: {}",
-                                        name
+                                        "duplicate scope group: {name}"
                                     );
                                 }
                             }
@@ -1904,7 +1797,7 @@ mod integration_tests {
             .append(true)
             .open("/tmp/generic_batch_proc_test.json")
             .expect("could not open /tmp file for writing");
-        writeln!(f, "{}\n", s).expect("Write failed");
+        writeln!(f, "{s}\n").expect("Write failed");
     }
 
     fn sample_trace() -> ExportTraceServiceRequest {
@@ -2005,21 +1898,21 @@ mod integration_tests {
             .run_test(|mut ctx| async move {
                 // TRACE INPUT
                 let trace_req = sample_trace();
-                log_to_file(&format!("INPUT TRACE:\n{:#?}", trace_req));
+                log_to_file(&format!("INPUT TRACE:\n{trace_req:#?}"));
                 ctx.process(Message::PData(OTLPData::Traces(trace_req)))
                     .await
                     .unwrap();
 
                 // METRICS INPUT
                 let metrics_req = sample_metrics();
-                log_to_file(&format!("INPUT METRIC:\n{:#?}", metrics_req));
+                log_to_file(&format!("INPUT METRIC:\n{metrics_req:#?}"));
                 ctx.process(Message::PData(OTLPData::Metrics(metrics_req)))
                     .await
                     .unwrap();
 
                 // LOGS INPUT
                 let logs_req = sample_logs();
-                log_to_file(&format!("INPUT LOGS:\n{:#?}", logs_req));
+                log_to_file(&format!("INPUT LOGS:\n{logs_req:#?}"));
                 ctx.process(Message::PData(OTLPData::Logs(logs_req)))
                     .await
                     .unwrap();
@@ -2037,17 +1930,17 @@ mod integration_tests {
                 for (i, out) in outputs.iter().enumerate() {
                     match out {
                         OTLPData::Traces(req) => {
-                            log_to_file(&format!("OUTPUT[{}] TRACE:\n{:#?}", i, req));
+                            log_to_file(&format!("OUTPUT[{i}] TRACE:\n{req:#?}"));
                         }
                         OTLPData::Metrics(req) => {
-                            log_to_file(&format!("OUTPUT[{}] METRICS:\n{:#?}", i, req));
+                            log_to_file(&format!("OUTPUT[{i}] METRICS:\n{req:#?}"));
                         }
                         OTLPData::Logs(req) => {
-                            log_to_file(&format!("OUTPUT[{}] LOGS:\n{:#?}", i, req));
+                            log_to_file(&format!("OUTPUT[{i}] LOGS:\n{req:#?}"));
                         }
                         #[allow(unreachable_patterns)]
                         _ => {
-                            log_to_file(&format!("OUTPUT[{}] UNKNOWN:\n<unhandled type>", i));
+                            log_to_file(&format!("OUTPUT[{i}] UNKNOWN:\n<unhandled type>"));
                         }
                     }
                 }

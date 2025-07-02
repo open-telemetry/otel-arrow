@@ -113,8 +113,7 @@ impl MapValueData {
         execution_context.add_message_for_expression_id(
             expression_id,
             ExpressionMessage::warn(format!(
-                "AnyValue '{:?}' provided as right side of map equality comparison was not a map",
-                other
+                "AnyValue '{other:?}' provided as right side of map equality comparison was not a map"
             )),
         );
 

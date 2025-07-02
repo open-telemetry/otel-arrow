@@ -8,6 +8,7 @@ They may be consumed by reporting strategies (e.g. to identify interesting inter
 for observing metrics), or used for general debugging as part of distributed trace
 spans.
 """
+
 from enum import Enum
 
 

@@ -90,28 +90,5 @@ mod tests {
                 )),
             )),
         );
-
-        // Note: The inner statements get folded into constants.
-        run_test_success(
-            "iif(1 > 0, iif(true, 'a', 'b'), iff(false, 'c', 'd'))",
-            ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                QueryLocation::new_fake(),
-                LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                    QueryLocation::new_fake(),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                    )),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "d"),
-                )),
-            )),
-        );
     }
 }
