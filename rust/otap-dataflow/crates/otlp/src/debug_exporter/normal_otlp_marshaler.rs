@@ -383,7 +383,7 @@ mod tests {
     fn test_marshal_traces() {
         let trace = create_otlp_trace(1, 1, 1, 1, 1);
 
-        let marshaler = NormalOTLPMarshaler::default();
+        let marshaler = NormalOTLPMarshaler;
 
         let marshaled_trace = marshaler.marshal_traces(trace);
 
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn test_marshal_metrics() {
         let metrics = create_otlp_metric(1, 1, 5, 1);
-        let marshaler = NormalOTLPMarshaler::default();
+        let marshaler = NormalOTLPMarshaler;
         let marshaled_metrics = marshaler.marshal_metrics(metrics);
         let mut output_lines = Vec::new();
         for line in marshaled_metrics.lines() {
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn test_marshal_logs() {
         let logs = create_otlp_log(1, 1, 1);
-        let marshaler = NormalOTLPMarshaler::default();
+        let marshaler = NormalOTLPMarshaler;
         let marshaled_logs = marshaler.marshal_logs(logs);
         let mut output_lines = Vec::new();
         for line in marshaled_logs.lines() {
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn test_marshal_profiles() {
         let profiles = create_otlp_profile(1, 1, 1);
-        let marshaler = NormalOTLPMarshaler::default();
+        let marshaler = NormalOTLPMarshaler;
         let marshaled_profiles = marshaler.marshal_profiles(profiles);
         let mut output_lines = Vec::new();
         for line in marshaled_profiles.lines() {

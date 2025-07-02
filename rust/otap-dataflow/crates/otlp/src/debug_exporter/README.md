@@ -68,7 +68,7 @@ Received 1 resource spans
 Received 1 spans
 Received 1 events
 Received 1 links
-ResourceSpan #0, Schema:[http://schema.opentelemetry.io], Attributes: ip=192.168.0.1 
+ResourceSpan #0, Schema:[http://schema.opentelemetry.io], Attributes: ip=192.168.0.1
    ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com
       Name: user-account, Trace ID: 4327e52011a22f9662eac217d77d1ec0, Span ID: 7271ee06d7e5925f, Attributes: hostname=host4.gov
 
