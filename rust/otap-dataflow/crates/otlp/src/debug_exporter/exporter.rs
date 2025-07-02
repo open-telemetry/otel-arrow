@@ -6,7 +6,7 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
-//! 
+//!
 
 use crate::LOCAL_EXPORTERS;
 use crate::debug_exporter::{
