@@ -4,8 +4,9 @@ use pest::iterators::Pair;
 use regex::Regex;
 
 use crate::{
-    Rule, logical_expressions::parse_logical_expression,
-    scalar_primitive_expressions::parse_accessor_expression,
+    Rule,
+    logical_expressions::parse_logical_expression,
+    scalar_primitive_expressions::{parse_accessor_expression, parse_string_literal},
     shared_expressions::parse_assignment_expression,
 };
 
@@ -218,7 +219,7 @@ pub(crate) fn parse_project_keep_expression(
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
                 if let Some(scalar) =
-                    parse_identifier_or_pattern(state, rule_location.clone(), rule.as_str())?
+                    parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
                 {
                     let result =
                         map_selection.push_key_or_key_pattern(ScalarExpression::Static(scalar));
@@ -329,7 +330,7 @@ pub(crate) fn parse_project_away_expression(
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
                 if let Some(scalar) =
-                    parse_identifier_or_pattern(state, rule_location.clone(), rule.as_str())?
+                    parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
                 {
                     let result =
                         map_selection.push_key_or_key_pattern(ScalarExpression::Static(scalar));
@@ -518,13 +519,26 @@ fn get_root_map_key_from_source_scalar_expression(
     None
 }
 
-fn parse_identifier_or_pattern(
+fn parse_identifier_or_pattern_literal(
     state: &ParserState,
     location: QueryLocation,
-    value: &str,
+    identifier_or_pattern_literal: Pair<Rule>,
 ) -> Result<Option<StaticScalarExpression>, ParserError> {
+    let raw = identifier_or_pattern_literal.as_str();
+
+    let value: Box<str> = match identifier_or_pattern_literal.into_inner().next() {
+        Some(r) => match r.as_rule() {
+            Rule::string_literal => match parse_string_literal(r) {
+                StaticScalarExpression::String(v) => v.get_value().into(),
+                _ => panic!("Unexpected type returned from parse_string_literal"),
+            },
+            _ => panic!("Unexpected rule in identifier_or_pattern_literal: {r}"),
+        },
+        None => raw.into(),
+    };
+
     if value.contains("*") {
-        let pattern = regex::escape(value).replace("\\*", ".*");
+        let pattern = regex::escape(&value).replace("\\*", ".*");
         let regex = Regex::new(&pattern);
         if regex.is_err() {
             return Err(ParserError::SyntaxError(
@@ -538,11 +552,11 @@ fn parse_identifier_or_pattern(
         Ok(Some(StaticScalarExpression::Regex(
             RegexScalarExpression::new(location, regex.unwrap()),
         )))
-    } else if state.is_well_defined_identifier(value) {
+    } else if state.is_well_defined_identifier(&value) {
         Ok(None)
     } else {
         Ok(Some(StaticScalarExpression::String(
-            StringScalarExpression::new(location, value),
+            StringScalarExpression::new(location, &value),
         )))
     }
 }
@@ -1138,7 +1152,7 @@ mod tests {
         };
 
         run_test_success(
-            "project-keep key*",
+            "project-keep ['namespace.*']",
             TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
                 MapKeyListExpression::new(
                     QueryLocation::new_fake(),
@@ -1149,7 +1163,7 @@ mod tests {
                     vec![ScalarExpression::Static(StaticScalarExpression::Regex(
                         RegexScalarExpression::new(
                             QueryLocation::new_fake(),
-                            Regex::new("key.*").unwrap(),
+                            Regex::new("namespace\\..*").unwrap(),
                         ),
                     ))],
                 ),
