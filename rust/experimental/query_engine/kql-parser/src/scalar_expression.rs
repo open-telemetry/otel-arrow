@@ -47,25 +47,7 @@ pub(crate) fn parse_scalar_expression(
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 
-    if matches!(&scalar, ScalarExpression::Static(_)) {
-        return Ok(scalar);
-    }
-
-    // Note: What this branch does is test if the scalar being returned resolves
-    // to a static value. If it does the whole expression is folded/replaced
-    // with the resolved static value. This generally shrinks the expression
-    // tree and makes it faster to execute.
-    let static_result = scalar.try_resolve_static();
-    if let Err(e) = static_result {
-        Err(ParserError::SyntaxError(
-            e.get_query_location().clone(),
-            e.to_string(),
-        ))
-    } else if let Some(s) = static_result.unwrap() {
-        Ok(ScalarExpression::Static(s))
-    } else {
-        Ok(scalar)
-    }
+    Ok(scalar)
 }
 
 #[cfg(test)]
@@ -191,17 +173,12 @@ mod tests {
             "identifier",
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "identifier"),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "identifier",
+                    )),
                 )]),
-            )),
-        );
-
-        // Note: This whole statement gets folded into a constant.
-        run_test_success(
-            "iff(true, 0, 1)",
-            ScalarExpression::Static(StaticScalarExpression::Integer(
-                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
             )),
         );
     }

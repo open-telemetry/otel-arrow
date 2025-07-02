@@ -1,4 +1,5 @@
 use chrono::{DateTime, FixedOffset, SecondsFormat};
+use regex::Regex;
 
 use crate::{Expression, ExpressionError, QueryLocation, ValueType};
 
@@ -7,6 +8,7 @@ pub enum Value<'a> {
     Integer(&'a dyn IntegerValue),
     DateTime(&'a dyn DateTimeValue),
     Double(&'a dyn DoubleValue),
+    Regex(&'a dyn RegexValue),
     String(&'a dyn StringValue),
 }
 
@@ -17,6 +19,7 @@ impl Expression for Value<'_> {
             Value::Integer(i) => i.get_query_location(),
             Value::DateTime(d) => d.get_query_location(),
             Value::Double(d) => d.get_query_location(),
+            Value::Regex(r) => r.get_query_location(),
             Value::String(s) => s.get_query_location(),
         }
     }
@@ -29,6 +32,7 @@ impl Value<'_> {
             Value::Integer(_) => ValueType::Integer,
             Value::DateTime(_) => ValueType::DateTime,
             Value::Double(_) => ValueType::Double,
+            Value::Regex(_) => ValueType::Regex,
             Value::String(_) => ValueType::String,
         }
     }
@@ -88,6 +92,7 @@ impl Value<'_> {
             Value::Integer(i) => i.to_string(action),
             Value::DateTime(d) => d.to_string(action),
             Value::Double(d) => d.to_string(action),
+            Value::Regex(r) => r.to_string(action),
             Value::String(s) => (action)(s.get_value()),
         }
     }
@@ -142,6 +147,15 @@ impl Value<'_> {
                     ),
                 )),
             },
+            Value::Regex(r) => {
+                let mut c = None;
+
+                right.convert_to_string(&mut |o| c = Some(r.get_value().as_str() == o));
+
+                Ok(c.expect(
+                    "Encountered a type which does not correctly implement convert_to_string",
+                ))
+            }
             Value::String(s) => {
                 let mut r = None;
 
@@ -300,6 +314,14 @@ pub trait DoubleValue: Expression {
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
         (action)(&self.get_value().to_string())
+    }
+}
+
+pub trait RegexValue: Expression {
+    fn get_value(&self) -> &Regex;
+
+    fn to_string(&self, action: &mut dyn FnMut(&str)) {
+        (action)(self.get_value().as_str())
     }
 }
 

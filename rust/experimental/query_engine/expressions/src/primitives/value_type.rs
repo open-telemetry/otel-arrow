@@ -4,5 +4,6 @@ pub enum ValueType {
     Integer,
     DateTime,
     Double,
+    Regex,
     String,
 }

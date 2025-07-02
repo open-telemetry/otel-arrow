@@ -1,4 +1,5 @@
 use chrono::{DateTime, FixedOffset};
+use regex::Regex;
 
 use crate::{Expression, QueryLocation, primitives::*};
 
@@ -16,6 +17,9 @@ pub enum StaticScalarExpression {
     /// Resolve a static integer value provided directly in a query.
     Integer(IntegerScalarExpression),
 
+    /// Resolve a static regex value provided directly in a query.
+    Regex(RegexScalarExpression),
+
     /// Resolve a static string value provided directly in a query.
     String(StringScalarExpression),
 }
@@ -27,6 +31,7 @@ impl StaticScalarExpression {
             StaticScalarExpression::DateTime(_) => ValueType::DateTime,
             StaticScalarExpression::Double(_) => ValueType::Double,
             StaticScalarExpression::Integer(_) => ValueType::Integer,
+            StaticScalarExpression::Regex(_) => ValueType::Regex,
             StaticScalarExpression::String(_) => ValueType::String,
         }
     }
@@ -39,6 +44,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::DateTime(d) => d.get_query_location(),
             StaticScalarExpression::Double(d) => d.get_query_location(),
             StaticScalarExpression::Integer(i) => i.get_query_location(),
+            StaticScalarExpression::Regex(r) => r.get_query_location(),
             StaticScalarExpression::String(s) => s.get_query_location(),
         }
     }
@@ -155,7 +161,44 @@ impl IntegerValue for IntegerScalarExpression {
     }
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone)]
+pub struct RegexScalarExpression {
+    query_location: QueryLocation,
+    value: Regex,
+}
+
+impl RegexScalarExpression {
+    pub fn new(query_location: QueryLocation, value: Regex) -> RegexScalarExpression {
+        Self {
+            query_location,
+            value,
+        }
+    }
+
+    pub fn get_value(&self) -> &Regex {
+        &self.value
+    }
+}
+
+impl Expression for RegexScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+impl RegexValue for RegexScalarExpression {
+    fn get_value(&self) -> &Regex {
+        &self.value
+    }
+}
+
+impl PartialEq for RegexScalarExpression {
+    fn eq(&self, other: &Self) -> bool {
+        self.query_location == other.query_location && self.value.as_str() == other.value.as_str()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct StringScalarExpression {
     query_location: QueryLocation,
     value: Box<str>,
