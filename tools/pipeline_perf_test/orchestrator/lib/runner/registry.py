@@ -39,9 +39,9 @@ from ..cli.plugin_api import register_argument_hook, get_or_create_arg_group
 @dataclass
 class CliFlag:
     flag: str  # e.g. "--docker.build-containers"
-    dest: str # e.g. docker_build_containers
+    dest: str  # e.g. docker_build_containers
     help: str
-    group: str # e.g. "Docker Options"
+    group: str  # e.g. "Docker Options"
     action: Optional[str] = None  # e.g. "store_true"
     default: Optional[Any] = None
     required: bool = False
@@ -49,13 +49,23 @@ class CliFlag:
 
 
 @dataclass
+class ReportMeta:
+    """Structured metadata for report plugins."""
+
+    supported_aggregations: Optional[list[str]]
+    sample_output: Optional[dict[str, str]] = None
+
+
+@dataclass
 class PluginMeta:
     """Structured metadata for registered plugins."""
+
     supported_contexts: Optional[list[str]]
     yaml_example: Optional[str]
     installs_hooks: list[str]
     notes: Optional[str] = None
     cli_flags: Optional[list[CliFlag]] = None
+    report_meta: Optional[ReportMeta] = None
 
 
 T = TypeVar("T")
@@ -97,10 +107,7 @@ class ElementRegistry:
 
                 def add_args(parser):
                     for flag in plugin_meta.cli_flags:
-                        group = get_or_create_arg_group(
-                            parser,
-                            group_name=flag.group
-                        )
+                        group = get_or_create_arg_group(parser, group_name=flag.group)
 
                         kwargs = {
                             "dest": flag.dest,

@@ -10,6 +10,7 @@ Classes:
     EventFilterConfig: Represents filtering criteria for a single event.
     BetweenEventsConfig: Represents a configuration for specifying a range between two events.
 """
+
 from typing import Dict, Optional, Any
 from pydantic import BaseModel
 
@@ -23,6 +24,7 @@ class EventFilterConfig(BaseModel):
         attributes (Optional[Dict[str, Any]]): A dictionary of attribute filters
             to match specific properties of the event.
     """
+
     name: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
 
@@ -35,5 +37,6 @@ class BetweenEventsConfig(BaseModel):
         start (EventFilterConfig): The filter configuration for the starting event.
         end (EventFilterConfig): The filter configuration for the ending event.
     """
+
     start: EventFilterConfig
     end: EventFilterConfig

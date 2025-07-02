@@ -22,6 +22,7 @@ Functions:
 This module centralizes framework object construction to promote modularity, reuse,
 and consistency across the system.
 """
+
 import argparse
 
 from enum import Enum
@@ -79,12 +80,7 @@ def get_hookable_phase(enum_cls: Type[Enum], base_phase: str, timing: str) -> En
 
 def register_hooks_from_config(
     target: FrameworkElement | ManagedComponent,
-    config: (
-        ManagedComponentConfiguration
-        | SuiteConfig
-        | ScenarioConfig
-        | StepConfig
-    ),
+    config: ManagedComponentConfiguration | SuiteConfig | ScenarioConfig | StepConfig,
     enum_cls: Type[Enum],
 ):
     """
@@ -218,7 +214,9 @@ def build_test_definition(config: ScenarioConfig) -> Scenario:
     return td
 
 
-def build_test_suite(config: SuiteConfig, telemetry_runtime: TelemetryRuntime, args: argparse.Namespace) -> Suite:
+def build_test_suite(
+    config: SuiteConfig, telemetry_runtime: TelemetryRuntime, args: argparse.Namespace
+) -> Suite:
     """
     Constructs a TestSuite instance from its configuration.
 
@@ -249,12 +247,11 @@ def build_test_suite(config: SuiteConfig, telemetry_runtime: TelemetryRuntime, a
     for test_def in config.tests:
         tests.append(build_test_definition(test_def))
 
-
     ts = Suite(
         name=config.name,
         components=components,
         tests=tests,
-        telemetry_runtime=telemetry_runtime
+        telemetry_runtime=telemetry_runtime,
     )
     ts.get_or_create_runtime("args", lambda: args)
     ts.context.metadata = ts.context.merge_ctx_metadata(**git_info)
