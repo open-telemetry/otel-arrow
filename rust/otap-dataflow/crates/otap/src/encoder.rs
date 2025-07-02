@@ -79,14 +79,14 @@ where
                 // set the resource
                 logs.resource.append_id(Some(curr_resource_id));
                 logs.resource
-                    .append_schema_url(resource_schema_url.as_deref());
+                    .append_schema_url(resource_schema_url);
                 logs.resource
                     .append_dropped_attributes_count(resource_dropped_attrs_count);
 
                 // set the scope
                 logs.scope.append_id(Some(curr_scope_id));
-                logs.scope.append_name(scope_name.as_deref());
-                logs.scope.append_version(scope_version.as_deref());
+                logs.scope.append_name(scope_name);
+                logs.scope.append_version(scope_version);
                 logs.scope
                     .append_dropped_attributes_count(scope_dropped_attributes_count);
 
@@ -94,9 +94,9 @@ where
                 logs.append_observed_time_unix_nano(
                     log_record.observed_time_unix_nano().map(|v| v as i64),
                 );
-                logs.append_schema_url(scope_schema_url.as_deref());
+                logs.append_schema_url(scope_schema_url);
                 logs.append_severity_number(log_record.severity_number());
-                logs.append_severity_text(log_record.severity_text().as_deref());
+                logs.append_severity_text(log_record.severity_text());
                 logs.append_dropped_attributes_count(log_record.dropped_attributes_count());
                 logs.append_flags(log_record.flags());
                 logs.append_trace_id(log_record.trace_id())?;
@@ -106,7 +106,7 @@ where
                     match body.value_type() {
                         ValueType::String => {
                             logs.body
-                                .append_str(&body.as_string().expect("body to be string"));
+                                .append_str(body.as_string().expect("body to be string"));
                         }
                         ValueType::Double => {
                             logs.body
@@ -200,12 +200,12 @@ where
     KV: AttributeView,
 {
     let key = kv.key();
-    attribute_rb_builder.append_key(&key);
+    attribute_rb_builder.append_key(key);
 
     if let Some(val) = kv.value() {
         match val.value_type() {
             ValueType::String => {
-                attribute_rb_builder.append_str(&val.as_string().expect("value to be string"));
+                attribute_rb_builder.append_str(val.as_string().expect("value to be string"));
             }
             ValueType::Int64 => {
                 attribute_rb_builder.append_int(val.as_int64().expect("value to be int64"))
