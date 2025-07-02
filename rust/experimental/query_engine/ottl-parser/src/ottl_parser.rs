@@ -28,7 +28,6 @@ mod pest_tests {
         );
     }
 
-
     #[test]
     fn test_integer_literal() {
         pest_test_helpers::test_pest_rule::<OttlParser, Rule>(

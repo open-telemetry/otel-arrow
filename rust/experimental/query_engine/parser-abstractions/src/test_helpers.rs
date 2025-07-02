@@ -109,7 +109,7 @@ pub mod parse_test_helpers {
 
             match expr {
                 StaticScalarExpression::Integer(v) => assert_eq!(*expected, v.get_value()),
-                _ => panic!("Unexpected type returned from parse_integer_literal")
+                _ => panic!("Unexpected type returned from parse_integer_literal"),
             }
         }
     }
@@ -126,7 +126,7 @@ pub mod parse_test_helpers {
 
             match expr {
                 StaticScalarExpression::Double(v) => assert_eq!(*expected, v.get_value()),
-                _ => panic!("Unexpected type returned from parse_float_literal")
+                _ => panic!("Unexpected type returned from parse_float_literal"),
             }
         }
     }
@@ -143,7 +143,7 @@ pub mod parse_test_helpers {
 
             match expr {
                 StaticScalarExpression::String(v) => assert_eq!(*expected, v.get_value()),
-                _ => panic!("Unexpected type returned from parse_string_literal")
+                _ => panic!("Unexpected type returned from parse_string_literal"),
             }
         }
     }

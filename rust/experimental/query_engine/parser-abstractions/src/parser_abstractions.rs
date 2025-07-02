@@ -45,8 +45,7 @@ pub fn parse_standard_integer_literal<R: RuleType>(
         return Err(ParserError::SyntaxError(
             to_query_location(&integer_literal_rule),
             format!(
-                "'{}' could not be parsed as a literal of type 'integer'",
-                raw_value
+                "'{raw_value}' could not be parsed as a literal of type 'integer'"
             ),
         ));
     }
@@ -69,8 +68,7 @@ pub fn parse_standard_float_literal<R: RuleType>(
         return Err(ParserError::SyntaxError(
             to_query_location(&float_literal_rule),
             format!(
-                "'{}' could not be parsed as a literal of type 'float'",
-                raw_value
+                "'{raw_value}' could not be parsed as a literal of type 'float'"
             ),
         ));
     }
