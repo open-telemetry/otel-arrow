@@ -27,8 +27,18 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use serde_json::Value;
 use otap_df_config::node::NodeUserConfig;
+use serde::{Deserialize, Serialize};
 
 const OTLP_EXPORTER_URN: &'static str = "urn:otel:otlp:exporter";
+
+/// Configuration for the OTLP exporter
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// The gRPC endpoint to connect to
+    pub grpc_endpoint: String,
+    /// The compression method to use for the gRPC connection
+    pub compression_method: Option<CompressionMethod>,
+}
 
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
@@ -62,11 +72,16 @@ impl OTLPExporter {
 
     /// Creates a new OTLPExporter from a configuration object
     #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
+    pub fn from_config(config: &Value) -> Self {
+        let config: Config = serde_json::from_value(config.clone())
+            .unwrap_or_else(|_| Config {
+                grpc_endpoint: "127.0.0.1:4317".to_owned(),
+                compression_method: None,
+            });
+        dbg!(&config);
         OTLPExporter {
-            grpc_endpoint: "127.0.0.1:4317".to_owned(),
-            compression_method: None,
+            grpc_endpoint: config.grpc_endpoint,
+            compression_method: config.compression_method,
         }
     }
 }

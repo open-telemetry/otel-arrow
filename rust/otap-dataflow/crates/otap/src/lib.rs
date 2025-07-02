@@ -35,35 +35,33 @@ mod tests {
     use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
     use crate::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
-    use crate::perf_exporter::exporter::PERF_EXPORTER_URN;
+    use crate::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 
     #[test]
     fn test_build_runtime_pipeline() {
         let config = PipelineConfigBuilder::new()
-            .add_receiver("receiver", OTAP_FAKE_DATA_GENERATOR_URN, None)
-            .add_exporter("exporter1", PERF_EXPORTER_URN, Some(json!({})))
-            .add_exporter("exporter2", PERF_EXPORTER_URN, Some(json!({})))
+            .add_receiver("receiver", OTAP_FAKE_DATA_GENERATOR_URN, Some(json!({
+                "batch_count": 10 
+            })))
+            .add_exporter("exporter", OTAP_PERF_EXPORTER_URN, Some(json!({})))
             // ToDo(LQ): Check the validity of the outport.
             .broadcast(
                 "receiver",
                 "out_port",
-                ["exporter1", "exporter2"],
+                ["exporter"],
             )
             .build(PipelineType::OTAP, "namespace", "pipeline")
             .expect("Failed to build pipeline config");
-        let result = OTAP_PIPELINE_FACTORY.build(config);
-        assert!(
-            result.is_ok(),
-            "Failed to create runtime pipeline: {:?}",
-            result.err()
-        );
-        let runtime_pipeline = result.unwrap();
+        
+        let runtime_pipeline = OTAP_PIPELINE_FACTORY
+            .build(config)
+            .expect("Failed to create runtime pipeline");
         assert_eq!(
             runtime_pipeline.node_count(),
-            3,
-            "Expected 3 nodes in the pipeline"
+            2,
+            "Expected 2 nodes in the pipeline"
         );
-        dbg!(runtime_pipeline.config());
-        runtime_pipeline.start().expect("Failed to start pipeline");
+
+        _ = runtime_pipeline.start().expect("Failed to start pipeline");
     }
 }

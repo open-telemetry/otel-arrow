@@ -30,11 +30,21 @@ use otap_df_engine::shared::receiver as shared;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use serde::{Deserialize, Serialize};
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use otap_df_config::node::NodeUserConfig;
 
 const OTLP_RECEIVER_URN: &'static str = "urn:otel:otlp:receiver";
+
+/// Configuration for the OTLP receiver
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// The address to listen for incoming OTLP messages
+    pub listening_addr: SocketAddr,
+    /// The compression method to use for the gRPC connection
+    pub compression_method: Option<CompressionMethod>,
+}
 
 /// A Receiver that listens for OTLP messages
 pub struct OTLPReceiver {
@@ -67,11 +77,15 @@ impl OTLPReceiver {
 
     /// Creates a new OTLPReceiver from a configuration object
     #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
+    pub fn from_config(config: &Value) -> Self {
+        let config: Config = serde_json::from_value(config.clone())
+            .unwrap_or_else(|_| Config {
+                listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
+                compression_method: None,
+            });
         OTLPReceiver {
-            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-            compression_method: None,
+            listening_addr: config.listening_addr,
+            compression_method: config.compression_method,
         }
     }
 }

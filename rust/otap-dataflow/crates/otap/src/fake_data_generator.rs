@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! A fake data generator receiver.
+//! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::grpc::OTAPData;
@@ -14,13 +15,23 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::local::receiver as local;
 use serde_json::Value;
 use std::rc::Rc;
+use serde::{Deserialize, Serialize};
 use otap_df_config::node::NodeUserConfig;
 
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
 
+/// Configuration for the Fake Data Generator Receiver
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// Number of batches to generate
+    pub batch_count: usize,
+}
+
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
+    /// Configuration for the fake data generator
+    config: Config,
 }
 
 /// Declares the fake data generator as a local receiver factory
@@ -41,35 +52,41 @@ impl FakeGeneratorReceiver {
     #[must_use]
     pub fn new(
     ) -> Self {
-        FakeGeneratorReceiver {}
+        FakeGeneratorReceiver {
+            config: Config {
+                batch_count: 10, // Default batch count
+            },
+        }
     }
 
     /// Creates a new fake data generator from a configuration object
     #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
+    pub fn from_config(config: &Value) -> Self {
+        let config: Config = serde_json::from_value(config.clone())
+            .unwrap_or_else(|_| Config {
+                batch_count: 10, // Default batch count if parsing fails
+            });
         FakeGeneratorReceiver {
+            config,
         }
     }
 }
 
-// Use the async_trait due to the need for thread safety because of tonic requiring Send and Sync traits
-// The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
-//
+/// Implement the Receiver trait for the FakeGeneratorReceiver
 #[async_trait(?Send)]
 impl local::Receiver<OTAPData> for FakeGeneratorReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: local::ControlChannel,
-        mut effect_handler: local::EffectHandler<OTAPData>,
+        _ctrl_msg_recv: local::ControlChannel,
+        effect_handler: local::EffectHandler<OTAPData>,
     ) -> Result<(), Error<OTAPData>> {
-        for i in 0..10 {
+        for _ in 0..self.config.batch_count {
             let msg = OTAPData::ArrowLogs(BatchArrowRecords::default());
             // Send the fake data message to the effect handler
             effect_handler.send_message(msg).await?;
         }
 
-        //Exit event loop
+        // Exit the receiver gracefully
         Ok(())
     }
 }
