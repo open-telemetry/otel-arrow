@@ -849,7 +849,7 @@ mod tests {
                 Regex::new(".*").unwrap(),
             )),
             false,
-            true
+            true,
         );
     }
 
