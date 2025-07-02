@@ -53,11 +53,14 @@ string_literal = @{
 }
 datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
-identifier_or_pattern_literal = @{ ("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|".")}
+identifier_or_pattern_literal = {
+	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
+    | ("[" ~ string_literal ~ "]")
+}
 
 // Expressions
 accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
-accessor = _{ identifier_literal ~ accessor_index? }
+accessor = _{ (identifier_literal | ("[" ~ string_literal ~ "]")) ~ accessor_index? }
 accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
 
 boolean_expression = _{ true_literal | false_literal }
