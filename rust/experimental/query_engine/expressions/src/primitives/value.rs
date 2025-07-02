@@ -632,6 +632,14 @@ mod tests {
             )),
             "2025-06-29T00:00:00Z",
         );
+
+        run_test_success(
+            Value::Regex(&RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").unwrap(),
+            )),
+            ".*",
+        );
     }
 
     #[test]
@@ -829,6 +837,19 @@ mod tests {
             )),
             false,
             "String value 'hello world' on right side of equality operation could not be converted to DateTime",
+        );
+
+        run_test_success(
+            Value::Regex(&RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").unwrap(),
+            )),
+            Value::Regex(&RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").unwrap(),
+            )),
+            false,
+            true
         );
     }
 
