@@ -29,7 +29,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
     fn marshal_logs(&self, logs: ExportLogsServiceRequest) -> String {
         let mut report = String::new();
         for (resource_index, resource_log) in logs.resource_logs.iter().enumerate() {
-            _ = writeln!(&mut report, "ResourceLog #{index}", index = resource_index);
+            _ = writeln!(&mut report, "ResourceLog #{resource_index}",);
             _ = writeln!(
                 &mut report,
                 "   -> Resource SchemaURL: {schema_url}",
@@ -44,7 +44,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
             }
 
             for (scope_index, scope_log) in resource_log.scope_logs.iter().enumerate() {
-                _ = writeln!(&mut report, "   ScopeLogs #{index}", index = scope_index);
+                _ = writeln!(&mut report, "   ScopeLogs #{scope_index}",);
                 _ = writeln!(
                     &mut report,
                     "      -> ScopeLogs SchemaURL: {schema_url}",
@@ -55,11 +55,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 }
 
                 for (record_index, log_record) in scope_log.log_records.iter().enumerate() {
-                    _ = writeln!(
-                        &mut report,
-                        "      LogRecord #{index}",
-                        index = record_index
-                    );
+                    _ = writeln!(&mut report, "      LogRecord #{record_index}",);
                     _ = writeln!(
                         &mut report,
                         "         -> ObservedTimestamp: {timestamp}",
@@ -98,19 +94,11 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                             attributes_string_detailed(&log_record.attributes, "            ->"),
                     );
                     if let Ok(trace_id) = std::str::from_utf8(&log_record.trace_id) {
-                        _ = writeln!(
-                            &mut report,
-                            "         -> Trace ID: {trace_id}",
-                            trace_id = trace_id
-                        );
+                        _ = writeln!(&mut report, "         -> Trace ID: {trace_id}",);
                     }
 
                     if let Ok(span_id) = std::str::from_utf8(&log_record.span_id) {
-                        _ = writeln!(
-                            &mut report,
-                            "         -> Span ID: {span_id}",
-                            span_id = span_id
-                        );
+                        _ = writeln!(&mut report, "         -> Span ID: {span_id}",);
                     }
 
                     _ = writeln!(
@@ -126,11 +114,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
     fn marshal_metrics(&self, metrics: ExportMetricsServiceRequest) -> String {
         let mut report = String::new();
         for (resource_index, resource_metric) in metrics.resource_metrics.iter().enumerate() {
-            _ = writeln!(
-                &mut report,
-                "ResourceMetric #{index}",
-                index = resource_index
-            );
+            _ = writeln!(&mut report, "ResourceMetric #{resource_index}",);
             _ = writeln!(
                 &mut report,
                 "   -> Resource SchemaURL: {schema_url}",
@@ -145,7 +129,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 );
             }
             for (scope_index, scope_metric) in resource_metric.scope_metrics.iter().enumerate() {
-                _ = writeln!(&mut report, "   ScopeMetrics #{index}", index = scope_index);
+                _ = writeln!(&mut report, "   ScopeMetrics #{scope_index}",);
                 _ = writeln!(
                     &mut report,
                     "      -> ScopeMetrics SchemaURL: {schema_url}",
@@ -156,7 +140,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 }
 
                 for (metric_index, metric) in scope_metric.metrics.iter().enumerate() {
-                    _ = writeln!(&mut report, "      Metric #{index}", index = metric_index);
+                    _ = writeln!(&mut report, "      Metric #{metric_index}",);
                     _ = writeln!(&mut report, "         -> Name: {name}", name = metric.name);
                     _ = writeln!(
                         &mut report,
@@ -175,7 +159,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
     fn marshal_traces(&self, traces: ExportTraceServiceRequest) -> String {
         let mut report = String::new();
         for (resource_index, resource_span) in traces.resource_spans.iter().enumerate() {
-            _ = writeln!(&mut report, "ResourceSpan #{index}", index = resource_index);
+            _ = writeln!(&mut report, "ResourceSpan #{resource_index}",);
             _ = writeln!(
                 &mut report,
                 "   -> Resource SchemaURL: {schema_url}",
@@ -189,7 +173,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 );
             }
             for (scope_index, scope_span) in resource_span.scope_spans.iter().enumerate() {
-                _ = writeln!(&mut report, "   ScopeSpans #{index}", index = scope_index);
+                _ = writeln!(&mut report, "   ScopeSpans #{scope_index}",);
                 _ = writeln!(
                     &mut report,
                     "      -> ScopeSpans SchemaURL: {schema_url}",
@@ -200,23 +184,15 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 }
 
                 for (span_index, span) in scope_span.spans.iter().enumerate() {
-                    _ = writeln!(&mut report, "      Span #{index}", index = span_index);
+                    _ = writeln!(&mut report, "      Span #{span_index}",);
                     if let Ok(trace_id) = std::str::from_utf8(&span.trace_id) {
-                        _ = writeln!(
-                            &mut report,
-                            "         -> Trace ID: {trace_id}",
-                            trace_id = trace_id
-                        );
+                        _ = writeln!(&mut report, "         -> Trace ID: {trace_id}",);
                     }
                     if let Ok(parent_span_id) = std::str::from_utf8(&span.parent_span_id) {
-                        _ = writeln!(
-                            &mut report,
-                            "         -> Parent ID: {parent_span_id}",
-                            parent_span_id = parent_span_id
-                        );
+                        _ = writeln!(&mut report, "         -> Parent ID: {parent_span_id}",);
                     }
                     if let Ok(span_id) = std::str::from_utf8(&span.span_id) {
-                        _ = writeln!(&mut report, "         -> ID: {span_id}", span_id = span_id);
+                        _ = writeln!(&mut report, "         -> ID: {span_id}",);
                     }
 
                     _ = writeln!(&mut report, "         -> Name: {name}", name = span.name);
@@ -261,11 +237,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                     if !span.events.is_empty() {
                         _ = writeln!(&mut report, "         -> Events:");
                         for (event_index, event) in span.events.iter().enumerate() {
-                            _ = writeln!(
-                                &mut report,
-                                "            SpanEvent #{index}",
-                                index = event_index
-                            );
+                            _ = writeln!(&mut report, "            SpanEvent #{event_index}",);
                             _ = writeln!(
                                 &mut report,
                                 "               -> Name: {name}",
@@ -333,11 +305,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
 
         // ToDo: Display profile mapping, profile location, profile functions,
         for (resource_index, resource_profile) in profiles.resource_profiles.iter().enumerate() {
-            _ = writeln!(
-                &mut report,
-                "ResourceProfile #{index}",
-                index = resource_index
-            );
+            _ = writeln!(&mut report, "ResourceProfile #{resource_index}",);
             _ = writeln!(
                 &mut report,
                 "   -> Resource SchemaURL: {schema_url}",
@@ -351,11 +319,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 );
             }
             for (scope_index, scope_profile) in resource_profile.scope_profiles.iter().enumerate() {
-                _ = writeln!(
-                    &mut report,
-                    "   ScopeProfiles #{index}",
-                    index = scope_index
-                );
+                _ = writeln!(&mut report, "   ScopeProfiles #{scope_index}",);
                 _ = writeln!(
                     &mut report,
                     "      -> ScopeProfiles SchemaURL: {schema_url}",
@@ -366,7 +330,7 @@ impl OTLPMarshaler for DetailedOTLPMarshaler {
                 }
 
                 for (profile_index, profile) in scope_profile.profiles.iter().enumerate() {
-                    _ = writeln!(&mut report, "      Profile #{index}", index = profile_index);
+                    _ = writeln!(&mut report, "      Profile #{profile_index}",);
                     if let Ok(profile_id) = std::str::from_utf8(&profile.profile_id) {
                         _ = writeln!(&mut report, "         -> Profile ID: {profile_id}");
                     }
@@ -474,8 +438,7 @@ fn write_number_datapoints_detailed(mut report: &mut String, datapoints: &[Numbe
     for (datapoint_index, datapoint) in datapoints.iter().enumerate() {
         _ = writeln!(
             &mut report,
-            "            NumberDataPoints #{index}",
-            index = datapoint_index
+            "            NumberDataPoints #{datapoint_index}",
         );
         _ = writeln!(
             &mut report,
@@ -495,15 +458,11 @@ fn write_number_datapoints_detailed(mut report: &mut String, datapoints: &[Numbe
         );
         if let Some(value) = &datapoint.value {
             match value {
-                NumberValue::AsInt(int) => {
-                    _ = writeln!(&mut report, "               -> Value: {value}", value = int);
+                NumberValue::AsInt(value) => {
+                    _ = writeln!(&mut report, "               -> Value: {value}");
                 }
-                NumberValue::AsDouble(double) => {
-                    _ = writeln!(
-                        &mut report,
-                        "               -> Value: {value}",
-                        value = double
-                    );
+                NumberValue::AsDouble(value) => {
+                    _ = writeln!(&mut report, "               -> Value: {value}",);
                 }
             }
         }
@@ -572,8 +531,7 @@ fn write_exponential_histogram_datapoints_detailed(
     for (datapoint_index, datapoint) in datapoints.iter().enumerate() {
         _ = writeln!(
             &mut report,
-            "            ExponentialHistogramDataPoints #{index}",
-            index = datapoint_index
+            "            ExponentialHistogramDataPoints #{datapoint_index}",
         );
         _ = writeln!(
             &mut report,
@@ -658,8 +616,7 @@ fn write_summary_datapoints_detailed(mut report: &mut String, datapoints: &[Summ
     for (datapoint_index, datapoint) in datapoints.iter().enumerate() {
         _ = writeln!(
             &mut report,
-            "            SummaryDataPoints #{index}",
-            index = datapoint_index
+            "            SummaryDataPoints #{datapoint_index}",
         );
         _ = writeln!(
             &mut report,
@@ -690,8 +647,7 @@ fn write_summary_datapoints_detailed(mut report: &mut String, datapoints: &[Summ
         for (quantile_index, quantile) in datapoint.quantile_values.iter().enumerate() {
             _ = writeln!(
                 &mut report,
-                "               -> QuantileValue #{index}: Quantile {quantile}, Value {value}",
-                index = quantile_index,
+                "               -> QuantileValue #{quantile_index}: Quantile {quantile}, Value {value}",
                 quantile = quantile.quantile,
                 value = quantile.value
             );
@@ -704,24 +660,12 @@ fn write_exemplars(mut report: &mut String, exemplars: &[Exemplar]) {
         _ = writeln!(&mut report, "               -> Exemplars:");
 
         for (exemplar_index, exemplar) in exemplars.iter().enumerate() {
-            _ = writeln!(
-                &mut report,
-                "                  Exemplar #{index}",
-                index = exemplar_index
-            );
+            _ = writeln!(&mut report, "                  Exemplar #{exemplar_index}",);
             if let Ok(trace_id) = std::str::from_utf8(&exemplar.trace_id) {
-                _ = writeln!(
-                    &mut report,
-                    "                     -> Trace ID: {trace_id}",
-                    trace_id = trace_id
-                );
+                _ = writeln!(&mut report, "                     -> Trace ID: {trace_id}",);
             }
             if let Ok(span_id) = std::str::from_utf8(&exemplar.span_id) {
-                _ = writeln!(
-                    &mut report,
-                    "                     -> Span ID: {span_id}",
-                    span_id = span_id
-                );
+                _ = writeln!(&mut report, "                     -> Span ID: {span_id}",);
             }
             _ = writeln!(
                 &mut report,
@@ -730,19 +674,11 @@ fn write_exemplars(mut report: &mut String, exemplars: &[Exemplar]) {
             );
             if let Some(value) = &exemplar.value {
                 match value {
-                    ExemplarValue::AsInt(int) => {
-                        _ = writeln!(
-                            &mut report,
-                            "                     -> Value: {value}",
-                            value = int
-                        );
+                    ExemplarValue::AsInt(value) => {
+                        _ = writeln!(&mut report, "                     -> Value: {value}",);
                     }
-                    ExemplarValue::AsDouble(double) => {
-                        _ = writeln!(
-                            &mut report,
-                            "                     -> Value: {value}",
-                            value = double
-                        );
+                    ExemplarValue::AsDouble(value) => {
+                        _ = writeln!(&mut report, "                     -> Value: {value}",);
                     }
                 }
             }

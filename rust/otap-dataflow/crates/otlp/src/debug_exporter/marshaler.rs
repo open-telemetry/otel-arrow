@@ -58,7 +58,7 @@ impl fmt::Display for AnyValue {
                             );
                         }
                     }
-                    write!(f, "{}", kv_string)?;
+                    write!(f, "{kv_string}")?;
                 }
                 Value::BytesValue(bytes) => {
                     if let Ok(byte_string) = String::from_utf8(bytes.to_vec()) {

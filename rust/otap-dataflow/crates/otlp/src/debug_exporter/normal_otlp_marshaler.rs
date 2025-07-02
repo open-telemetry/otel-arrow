@@ -34,8 +34,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
 
             _ = writeln!(
                 &mut report,
-                "ResourceLog #{index}, Schema:[{schema}], Attributes: {attributes}",
-                index = resource_index,
+                "ResourceLog #{resource_index}, Schema:[{schema}], Attributes: {attributes}",
                 schema = resource_log.schema_url,
                 attributes = resource_attributes
             );
@@ -44,8 +43,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_log.scope {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeLog #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
-                        index = scope_index,
+                        "   ScopeLog #{scope_index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         name = scope.name,
                         version = scope.version,
                         schema = scope_log.schema_url,
@@ -54,8 +52,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeLog #{index}, Schema:, Schema: [{schema}]",
-                        index = scope_index,
+                        "   ScopeLog #{scope_index}, Schema:, Schema: [{schema}]",
                         schema = scope_log.schema_url,
                     );
                 }
@@ -85,8 +82,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
 
             _ = writeln!(
                 &mut report,
-                "ResourceMetric #{index}, Schema:[{schema}], Attributes: {attributes}",
-                index = resource_index,
+                "ResourceMetric #{resource_index}, Schema:[{schema}], Attributes: {attributes}",
                 schema = resource_metric.schema_url,
                 attributes = resource_attributes
             );
@@ -95,8 +91,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_metric.scope {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeMetric #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
-                        index = scope_index,
+                        "   ScopeMetric #{scope_index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         name = scope.name,
                         version = scope.version,
                         schema = scope_metric.schema_url,
@@ -105,8 +100,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeMetric #{index}, Schema: [{schema}]",
-                        index = scope_index,
+                        "   ScopeMetric #{scope_index}, Schema: [{schema}]",
                         schema = scope_metric.schema_url,
                     );
                 }
@@ -157,8 +151,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
             }
             _ = writeln!(
                 &mut report,
-                "ResourceSpan #{index}, Schema:[{schema}], Attributes: {attributes}",
-                index = resource_index,
+                "ResourceSpan #{resource_index}, Schema:[{schema}], Attributes: {attributes}",
                 schema = resource_span.schema_url,
                 attributes = resource_attributes
             );
@@ -167,8 +160,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_span.scope {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeSpan #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
-                        index = scope_index,
+                        "   ScopeSpan #{scope_index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         name = scope.name,
                         version = scope.version,
                         schema = scope_span.schema_url,
@@ -177,8 +169,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeSpan #{index}, Schema: [{schema}]",
-                        index = scope_index,
+                        "   ScopeSpan #{scope_index}, Schema: [{schema}]",
                         schema = scope_span.schema_url,
                     );
                 }
@@ -214,8 +205,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
 
             _ = writeln!(
                 &mut report,
-                "ResourceProfile #{index}, Schema:[{schema}], Attributes: {attributes}",
-                index = resource_index,
+                "ResourceProfile #{resource_index}, Schema:[{schema}], Attributes: {attributes}",
                 schema = resource_profile.schema_url,
                 attributes = resource_attributes
             );
@@ -223,8 +213,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 if let Some(scope) = &scope_profile.scope {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeProfile #{index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
-                        index = scope_index,
+                        "   ScopeProfile #{scope_index}, Name: {name}, Version: @{version}, Schema: [{schema}], Attributes: {attributes}",
                         name = scope.name,
                         version = scope.version,
                         schema = scope_profile.schema_url,
@@ -233,8 +222,7 @@ impl OTLPMarshaler for NormalOTLPMarshaler {
                 } else {
                     _ = writeln!(
                         &mut report,
-                        "   ScopeProfile #{index}:, Schema: [{schema}]",
-                        index = scope_index,
+                        "   ScopeProfile #{scope_index}:, Schema: [{schema}]",
                         schema = scope_profile.schema_url,
                     );
                 }

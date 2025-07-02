@@ -56,33 +56,33 @@ OTLP Log objects received: 0
 Received 1 resource metrics
 Received 5 metrics
 Received 5 data points
-ResourceMetric #0, Schema:[http://schema.opentelemetry.io], Attributes: ip=192.168.0.2 
-   ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: instrumentation_scope_k1=k1 value 
+ResourceMetric #0, Schema:[http://schema.opentelemetry.io], Attributes: ip=192.168.0.2
+   ScopeMetric #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: instrumentation_scope_k1=k1 value
       system.cpu.time 0
-      system.cpu.time freq=3GHz count=0 sum=56 min=12 max=100.1 
-      system.cpu.time freq=3GHz count=0 sum=56 min=12 max=100.1 le94.17542094619048=0 
+      system.cpu.time freq=3GHz count=0 sum=56 min=12 max=100.1
+      system.cpu.time freq=3GHz count=0 sum=56 min=12 max=100.1 le94.17542094619048=0
       system.cpu.time cpu_logical_processors=8 0
-      system.cpu.time cpu_cores=4 count=0 sum=56 q0=0 
+      system.cpu.time cpu_cores=4 count=0 sum=56 q0=0
 
 Received 1 resource spans
 Received 1 spans
 Received 1 events
 Received 1 links
 ResourceSpan #0, Schema:[http://schema.opentelemetry.io], Attributes: ip=192.168.0.1 
-   ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com 
-      Name: user-account, Trace ID: 4327e52011a22f9662eac217d77d1ec0, Span ID: 7271ee06d7e5925f, Attributes: hostname=host4.gov 
+   ScopeSpan #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com
+      Name: user-account, Trace ID: 4327e52011a22f9662eac217d77d1ec0, Span ID: 7271ee06d7e5925f, Attributes: hostname=host4.gov
 
 Received 1 resource logs
 Received 1 log records
 Received 1 events
-ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: version=2.0 
-   ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com 
-      Body: Sint impedit non ut eligendi nisi neque harum maxime adipisci., Attributes: hostname=host3.thedomain.edu 
+ResourceLog #0, Schema:[http://schema.opentelemetry.io], Attributes: version=2.0
+   ScopeLog #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com
+      Body: Sint impedit non ut eligendi nisi neque harum maxime adipisci., Attributes: hostname=host3.thedomain.edu
 
 Received 1 resource profiles
 Received 0 samples
-ResourceProfile #0, Schema:[http://schema.opentelemetry.io], Attributes: hostname=host7.com 
-   ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com 
+ResourceProfile #0, Schema:[http://schema.opentelemetry.io], Attributes: hostname=host7.com
+   ScopeProfile #0, Name: library, Version: @v1, Schema: [http://schema.opentelemetry.io], Attributes: hostname=host5.retailer.com
 
 Shutdown message received
 Debug Exporter Summary:
@@ -299,7 +299,7 @@ ResourceProfile #0
       -> Instrumentation Scope Attributes:
          -> hostname: host5.retailer.com
       Profile #0
-         -> Profile ID: 
+         -> Profile ID:
          -> Start time: 0
          -> Duration: 0
          -> Dropped attributes count: 0
@@ -323,5 +323,4 @@ Received 1 log events
 OTLP Profile objects received: 1
 Received 1 Resource profiles
 Received 0 samples
-
 ```

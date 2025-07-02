@@ -62,8 +62,10 @@ impl DebugExporter {
     #[must_use]
     pub fn from_config(config: &Value) -> Self {
         // ToDo: implement config parsing
+        let config: Config = serde_json::from_value(config.clone())
+            .unwrap_or_else(|_| Config::new(Verbosity::Normal));
         DebugExporter {
-            config: serde_json::from_value(config.clone()).expect("Unable to parse config"),
+            config,
             output: None,
         }
     }
