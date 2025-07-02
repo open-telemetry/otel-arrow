@@ -99,29 +99,92 @@ impl local::Exporter<OTAPData> for PerfExporter {
         let mut writer = get_writer(self.output);
 
         let sys_refresh_list = sys_refresh_list(&self.config);
+
+        // Helper function to generate performance report
+        let generate_report = |
+            received_arrow_records_count: u64,
+            received_otlp_signal_count: u64,
+            received_pdata_batch_count: u64,
+            total_received_arrow_records_count: u128,
+            total_received_otlp_signal_count: u128,
+            total_received_pdata_batch_count: u64,
+            average_pipeline_latency: f64,
+            last_perf_time: Instant,
+            system: &mut System,
+            config: &Config,
+            writer: &mut Box<dyn Write>,
+            process_pid: sysinfo::Pid,
+        | -> Result<(), Error<OTAPData>> {
+            let now = Instant::now();
+            let duration = now - last_perf_time;
+
+            // display pipeline report
+            _ = writeln!(
+                writer,
+                "====================Pipeline Report===================="
+            );
+            display_report_pipeline(
+                received_arrow_records_count,
+                received_otlp_signal_count,
+                received_pdata_batch_count,
+                total_received_arrow_records_count,
+                total_received_otlp_signal_count,
+                total_received_pdata_batch_count,
+                average_pipeline_latency,
+                duration,
+                writer,
+            );
+
+            // update sysinfo data
+            system.refresh_specifics(sys_refresh_list);
+            let process = system.process(process_pid).ok_or(Error::ExporterError {
+                exporter: effect_handler.exporter_name(),
+                error: "Failed to get process".to_owned(),
+            })?;
+
+            // check configuration and display data accordingly
+            if config.mem_usage() {
+                _ = writeln!(
+                    writer,
+                    "=====================Memory Usage======================"
+                );
+                display_mem_usage(process, writer);
+            }
+            if config.cpu_usage() {
+                _ = writeln!(
+                    writer,
+                    "=======================Cpu Usage======================="
+                );
+                display_cpu_usage(process, system, writer);
+            }
+            if config.disk_usage() {
+                _ = writeln!(
+                    writer,
+                    "======================Disk Usage======================="
+                );
+                let disk_usage = process.disk_usage();
+                display_disk_usage(disk_usage, duration, writer);
+            }
+            if config.io_usage() {
+                let networks = Networks::new_with_refreshed_list();
+                _ = writeln!(
+                    writer,
+                    "=====================Network Usage====================="
+                );
+                for (interface_name, network) in &networks {
+                    display_io_usage(interface_name, network, duration, writer);
+                }
+            }
+
+            Ok(())
+        };
+
         // Loop until a Shutdown event is received.
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
                 Message::Control(ControlMsg::TimerTick { .. }) => {
-                    /*
-                    Calculates the time elapsed since the last report
-                    Computes message and event throughput (items per second)
-                    Formats performance statistics
-                    If the meter is enabled, collects system resource usage
-                    Prints all metrics to the console
-                    Resets counters for the next interval
-                    */
-                    // get delta time
-                    let now = Instant::now();
-                    let duration = now - last_perf_time;
-
-                    // display pipeline report
-                    _ = writeln!(
-                        writer,
-                        "====================Pipeline Report===================="
-                    );
-                    display_report_pipeline(
+                    generate_report(
                         received_arrow_records_count,
                         received_otlp_signal_count,
                         received_pdata_batch_count,
@@ -129,62 +192,37 @@ impl local::Exporter<OTAPData> for PerfExporter {
                         total_received_otlp_signal_count,
                         total_received_pdata_batch_count,
                         average_pipeline_latency,
-                        duration,
+                        last_perf_time,
+                        &mut system,
+                        &self.config,
                         &mut writer,
-                    );
+                        process_pid,
+                    )?;
 
-                    // update sysinfo data
-                    system.refresh_specifics(sys_refresh_list);
-                    let process = system.process(process_pid).ok_or(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
-                        error: "Failed to get process".to_owned(),
-                    })?;
-
-                    // check configuration and display data accordingly
-                    if self.config.mem_usage() {
-                        // get process
-                        _ = writeln!(
-                            writer,
-                            "=====================Memory Usage======================"
-                        );
-                        display_mem_usage(process, &mut writer);
-                    }
-                    if self.config.cpu_usage() {
-                        _ = writeln!(
-                            writer,
-                            "=======================Cpu Usage======================="
-                        );
-                        display_cpu_usage(process, &system, &mut writer);
-                    }
-                    if self.config.disk_usage() {
-                        _ = writeln!(
-                            writer,
-                            "======================Disk Usage======================="
-                        );
-                        let disk_usage = process.disk_usage();
-                        display_disk_usage(disk_usage, duration, &mut writer);
-                    }
-                    if self.config.io_usage() {
-                        let networks = Networks::new_with_refreshed_list();
-                        _ = writeln!(
-                            writer,
-                            "=====================Network Usage====================="
-                        );
-                        for (interface_name, network) in &networks {
-                            display_io_usage(interface_name, network, duration, &mut writer);
-                        }
-                    }
-
-                    // reset received counters
-                    // update last_perf_time
+                    // reset received counters and update last_perf_time
                     received_arrow_records_count = 0;
                     received_otlp_signal_count = 0;
                     received_pdata_batch_count = 0;
-                    last_perf_time = now;
+                    last_perf_time = Instant::now();
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(ControlMsg::Config { .. }) => {}
                 Message::Control(ControlMsg::Shutdown { .. }) => {
+                    // Generate final performance report before shutting down
+                    generate_report(
+                        received_arrow_records_count,
+                        received_otlp_signal_count,
+                        received_pdata_batch_count,
+                        total_received_arrow_records_count,
+                        total_received_otlp_signal_count,
+                        total_received_pdata_batch_count,
+                        average_pipeline_latency,
+                        last_perf_time,
+                        &mut system,
+                        &self.config,
+                        &mut writer,
+                        process_pid,
+                    )?;
                     break;
                 }
                 Message::PData(OTAPData::ArrowMetrics(batch)) |

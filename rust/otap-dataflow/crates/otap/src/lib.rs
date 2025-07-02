@@ -38,12 +38,15 @@ mod tests {
     use crate::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 
     #[test]
-    fn test_build_runtime_pipeline() {
+    fn test_mini_pipeline() {
         let config = PipelineConfigBuilder::new()
             .add_receiver("receiver", OTAP_FAKE_DATA_GENERATOR_URN, Some(json!({
-                "batch_count": 10 
+                "batch_count": 10000000 
             })))
-            .add_exporter("exporter", OTAP_PERF_EXPORTER_URN, Some(json!({})))
+            .add_exporter("exporter", OTAP_PERF_EXPORTER_URN, Some(json!({
+                "disk_usage": false,
+                "io_usage": false
+            })))
             // ToDo(LQ): Check the validity of the outport.
             .broadcast(
                 "receiver",
