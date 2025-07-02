@@ -6,6 +6,7 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
+//! 
 
 use crate::LOCAL_EXPORTERS;
 use crate::debug_exporter::{
@@ -61,7 +62,6 @@ impl DebugExporter {
     /// Creates a new DebugExporter from a configuration object
     #[must_use]
     pub fn from_config(config: &Value) -> Self {
-        // ToDo: implement config parsing
         let config: Config = serde_json::from_value(config.clone())
             .unwrap_or_else(|_| Config::new(Verbosity::Normal));
         DebugExporter {
