@@ -53,7 +53,7 @@ string_literal = @{
 }
 datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
-identifier_or_pattern_literal = {
+identifier_or_pattern_literal = ${
 	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
     | ("[" ~ string_literal ~ "]")
 }

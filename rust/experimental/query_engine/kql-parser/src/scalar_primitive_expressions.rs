@@ -809,10 +809,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_identifier_literal_rule() {
+    fn test_pest_parse_identifier_literal_rule() {
         pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
             Rule::identifier_literal,
             &["Abc", "abc_123", "_abc"],
+            &[],
+        );
+    }
+
+    #[test]
+    fn test_pest_parse_identifier_or_pattern_literal_rule() {
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::identifier_or_pattern_literal,
+            &["*", "abc*", "a*b*c", "['something.*']"],
             &[],
         );
     }
