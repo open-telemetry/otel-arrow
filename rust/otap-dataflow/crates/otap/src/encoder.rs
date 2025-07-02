@@ -78,8 +78,7 @@ where
             for log_record in scope_logs.log_records() {
                 // set the resource
                 logs.resource.append_id(Some(curr_resource_id));
-                logs.resource
-                    .append_schema_url(resource_schema_url);
+                logs.resource.append_schema_url(resource_schema_url);
                 logs.resource
                     .append_dropped_attributes_count(resource_dropped_attrs_count);
 
