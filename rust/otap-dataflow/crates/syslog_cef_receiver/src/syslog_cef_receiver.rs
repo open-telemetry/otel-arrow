@@ -9,9 +9,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 #[allow(dead_code)]
 enum Protocol {
     /// TCP protocol
-    TCP,
+    Tcp,
     /// UDP protocol
-    UDP,
+    Udp,
 }
 
 /// Syslog CEF receiver that can listen on TCP or UDP
@@ -29,7 +29,7 @@ impl SyslogCefReceiver {
     fn new(listening_addr: SocketAddr) -> Self {
         SyslogCefReceiver {
             listening_addr,
-            protocol: Protocol::UDP,
+            protocol: Protocol::Udp,
         }
     }
 
@@ -40,7 +40,7 @@ impl SyslogCefReceiver {
         // ToDo: implement config parsing
         SyslogCefReceiver {
             listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-            protocol: Protocol::UDP,
+            protocol: Protocol::Udp,
         }
     }
 }
@@ -53,7 +53,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
         effect_handler: local::EffectHandler<Vec<u8>>,
     ) -> Result<(), Error<Vec<u8>>> {
         match self.protocol {
-            Protocol::TCP => {
+            Protocol::Tcp => {
                 let listener = effect_handler.tcp_listener(self.listening_addr)?;
                 loop {
                     tokio::select! {
@@ -127,7 +127,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                     }
                 }
             }
-            Protocol::UDP => {
+            Protocol::Udp => {
                 let socket = effect_handler.udp_socket(self.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 loop {
@@ -429,7 +429,7 @@ mod tests {
 
         // addr and port for the UDP server to run at
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
-        let listening_addr: SocketAddr = format!("127.0.0.1:{}", listening_port).parse().unwrap();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         // create our UDP receiver
         let receiver = ReceiverWrapper::local(
@@ -450,11 +450,11 @@ mod tests {
 
         // addr and port for the TCP server to run at
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
-        let listening_addr: SocketAddr = format!("127.0.0.1:{}", listening_port).parse().unwrap();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         // create our TCP receiver - we need to modify the receiver to support TCP
         let mut receiver = SyslogCefReceiver::new(listening_addr);
-        receiver.protocol = Protocol::TCP;
+        receiver.protocol = Protocol::Tcp;
 
         let receiver_wrapper = ReceiverWrapper::local(receiver, test_runtime.config());
 
@@ -471,11 +471,11 @@ mod tests {
 
         // addr and port for the TCP server to run at
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
-        let listening_addr: SocketAddr = format!("127.0.0.1:{}", listening_port).parse().unwrap();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         // create our TCP receiver
         let mut receiver = SyslogCefReceiver::new(listening_addr);
-        receiver.protocol = Protocol::TCP;
+        receiver.protocol = Protocol::Tcp;
 
         let receiver_wrapper = ReceiverWrapper::local(receiver, test_runtime.config());
 
