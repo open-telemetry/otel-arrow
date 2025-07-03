@@ -31,7 +31,8 @@ pub(crate) fn parse_query(
         };
 
         errors.push(ParserError::SyntaxNotSupported(
-            QueryLocation::new(start, end, line, column),
+            QueryLocation::new(start, end, line, column)
+                .expect("QueryLocation could not be constructed"),
             pest_error.variant.message().into(),
         ));
 

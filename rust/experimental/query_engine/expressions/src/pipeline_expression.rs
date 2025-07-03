@@ -11,7 +11,7 @@ impl PipelineExpression {
     pub(crate) fn new(query: &str) -> PipelineExpression {
         Self {
             query: query.into(),
-            query_location: QueryLocation::new(0, query.len(), 1, 1),
+            query_location: QueryLocation::new(0, query.len(), 1, 1).unwrap(),
             expressions: Vec::new(),
         }
     }
