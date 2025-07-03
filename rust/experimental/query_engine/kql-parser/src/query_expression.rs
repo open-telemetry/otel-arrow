@@ -123,8 +123,11 @@ mod tests {
                         )),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "a",
+                                )),
                             )]),
                         )),
                     ),
@@ -150,8 +153,11 @@ mod tests {
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "a",
+                                    )),
                                 )]),
                             )),
                         ),
@@ -168,13 +174,17 @@ mod tests {
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
                                 ValueAccessor::new_with_selectors(vec![
-                                    ValueSelector::MapKey(StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "attributes",
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "attributes",
+                                        ),
                                     )),
-                                    ValueSelector::MapKey(StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "attr",
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "attr",
+                                        ),
                                     )),
                                 ]),
                             )),
@@ -200,8 +210,11 @@ mod tests {
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "a",
+                                    )),
                                 )]),
                             )),
                         ),
@@ -217,8 +230,11 @@ mod tests {
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "b",
+                                    )),
                                 )]),
                             )),
                         ),

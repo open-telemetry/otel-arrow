@@ -252,7 +252,16 @@ pub(crate) fn parse_accessor_expression(
 
     let mut accessor_rules = accessor_expression_rule.into_inner();
 
-    let root_accessor_identity = accessor_rules.next().unwrap().as_str();
+    let root_accessor_identity_rule = accessor_rules.next().unwrap();
+
+    let root_accessor_identity: Box<str> = match root_accessor_identity_rule.as_rule() {
+        Rule::string_literal => match parse_string_literal(root_accessor_identity_rule) {
+            StaticScalarExpression::String(v) => v.get_value().into(),
+            _ => panic!("Unexpected type returned from parse_string_literal"),
+        },
+        Rule::identifier_literal => root_accessor_identity_rule.as_str().into(),
+        _ => panic!("Unexpected rule in accessor_expression: {root_accessor_identity_rule}"),
+    };
 
     let mut value_accessor = ValueAccessor::new();
 
@@ -279,53 +288,58 @@ pub(crate) fn parse_accessor_expression(
                         ));
                     }
 
-                    value_accessor.push_selector(ValueSelector::ArrayIndex(v));
+                    value_accessor.push_selector(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(v),
+                    ));
                 }
                 _ => panic!("Unexpected type returned from parse_integer_literal"),
             },
             Rule::string_literal => match parse_string_literal(pair) {
-                StaticScalarExpression::String(v) => {
-                    value_accessor.push_selector(ValueSelector::MapKey(v))
-                }
+                StaticScalarExpression::String(v) => value_accessor
+                    .push_selector(ScalarExpression::Static(StaticScalarExpression::String(v))),
                 _ => panic!("Unexpected type returned from parse_string_literal"),
             },
             Rule::identifier_literal => {
-                value_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
-                    to_query_location(&pair),
-                    pair.as_str(),
-                )));
+                value_accessor.push_selector(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        to_query_location(&pair),
+                        pair.as_str(),
+                    )),
+                ));
             }
             Rule::scalar_expression => {
                 let scalar = parse_scalar_expression(pair, state)?;
 
-                // Note: If the returned scalar is a statically known string or
-                // integer we fold it into a MapKey or ArrayIndex. Otherwise we
-                // return an error that the value is invalid for an accessor
-                // expression.
-                if let ScalarExpression::Static(s) = &scalar {
-                    if let StaticScalarExpression::String(str) = s {
-                        if negate_location.is_some() {
-                            return Err(ParserError::QueryLanguageDiagnostic {
-                                location: scalar.get_query_location().clone(),
-                                diagnostic_id: "KS141",
-                                message: "The expression must have the type int".into(),
-                            });
-                        }
+                let value_type_result = scalar.try_resolve_value_type();
+                if let Err(e) = value_type_result {
+                    return Err(ParserError::SyntaxError(
+                        e.get_query_location().clone(),
+                        e.to_string(),
+                    ));
+                }
 
-                        value_accessor.push_selector(ValueSelector::MapKey(str.clone()));
-                    } else if let StaticScalarExpression::Integer(i) = s {
-                        if negate_location.is_some() {
-                            value_accessor.push_selector(ValueSelector::ArrayIndex(
-                                IntegerScalarExpression::new(
-                                    negate_location.unwrap(),
-                                    -i.get_value(),
-                                ),
-                            ));
-                            negate_location = None;
-                        } else {
-                            value_accessor.push_selector(ValueSelector::ArrayIndex(i.clone()));
-                        }
-                    } else {
+                let value_type = value_type_result.unwrap();
+
+                if negate_location.is_some() {
+                    if let Some(t) = value_type
+                        && t != ValueType::Integer
+                    {
+                        return Err(ParserError::QueryLanguageDiagnostic {
+                            location: scalar.get_query_location().clone(),
+                            diagnostic_id: "KS141",
+                            message: "The expression must have the type int".into(),
+                        });
+                    }
+
+                    value_accessor.push_selector(ScalarExpression::Negate(
+                        NegateScalarExpression::new(negate_location.unwrap(), scalar),
+                    ));
+                    negate_location = None;
+                } else {
+                    if let Some(t) = value_type
+                        && t != ValueType::Integer
+                        && t != ValueType::String
+                    {
                         return Err(ParserError::QueryLanguageDiagnostic {
                             location: scalar.get_query_location().clone(),
                             diagnostic_id: "KS141",
@@ -333,50 +347,8 @@ pub(crate) fn parse_accessor_expression(
                                 .into(),
                         });
                     }
-                } else {
-                    let value_type_result = scalar.try_resolve_value_type();
-                    if let Err(e) = value_type_result {
-                        return Err(ParserError::SyntaxError(
-                            e.get_query_location().clone(),
-                            e.to_string(),
-                        ));
-                    }
 
-                    let value_type = value_type_result.unwrap();
-
-                    if negate_location.is_some() {
-                        if let Some(t) = value_type
-                            && t != ValueType::Integer
-                        {
-                            return Err(ParserError::QueryLanguageDiagnostic {
-                                location: scalar.get_query_location().clone(),
-                                diagnostic_id: "KS141",
-                                message: "The expression must have the type int".into(),
-                            });
-                        }
-
-                        value_accessor.push_selector(ValueSelector::ScalarExpression(
-                            ScalarExpression::Negate(NegateScalarExpression::new(
-                                negate_location.unwrap(),
-                                scalar,
-                            )),
-                        ));
-                        negate_location = None;
-                    } else {
-                        if let Some(t) = value_type
-                            && t != ValueType::Integer
-                            && t != ValueType::String
-                        {
-                            return Err(ParserError::QueryLanguageDiagnostic {
-                                location: scalar.get_query_location().clone(),
-                                diagnostic_id: "KS141",
-                                message: "The expression must have one of the types: int or string"
-                                    .into(),
-                            });
-                        }
-
-                        value_accessor.push_selector(ValueSelector::ScalarExpression(scalar));
-                    }
+                    value_accessor.push_selector(scalar);
                 }
             }
             Rule::minus_token => {
@@ -386,21 +358,21 @@ pub(crate) fn parse_accessor_expression(
         }
     }
 
-    if root_accessor_identity == "source" {
+    if root_accessor_identity.as_ref() == "source" {
         Ok(ScalarExpression::Source(SourceScalarExpression::new(
             query_location,
             value_accessor,
         )))
-    } else if state.is_attached_data_defined(root_accessor_identity) {
+    } else if state.is_attached_data_defined(&root_accessor_identity) {
         return Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
             query_location,
-            root_accessor_identity,
+            &root_accessor_identity,
             value_accessor,
         )));
-    } else if state.is_variable_defined(root_accessor_identity) {
+    } else if state.is_variable_defined(&root_accessor_identity) {
         return Ok(ScalarExpression::Variable(VariableScalarExpression::new(
             query_location,
-            root_accessor_identity,
+            &root_accessor_identity,
             value_accessor,
         )));
     } else {
@@ -414,7 +386,7 @@ pub(crate) fn parse_accessor_expression(
         // * extend const_str = 1: This expression needs to execute as
         //   source['const_str'] = 1 so the const_str is not evaluated.
         if allow_root_scalar {
-            if let Some(constant) = state.try_get_constant(root_accessor_identity) {
+            if let Some(constant) = state.try_get_constant(&root_accessor_identity) {
                 if value_accessor.has_selectors() {
                     // Note: It is not currently supported to access into a constant.
                     // This is because statics are currently simple things like string,
@@ -429,10 +401,10 @@ pub(crate) fn parse_accessor_expression(
 
         value_accessor.insert_selector(
             0,
-            ValueSelector::MapKey(StringScalarExpression::new(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
                 query_location.clone(),
-                root_accessor_identity,
-            )),
+                &root_accessor_identity,
+            ))),
         );
 
         return Ok(ScalarExpression::Source(SourceScalarExpression::new(
@@ -837,10 +809,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_identifier_literal_rule() {
+    fn test_pest_parse_identifier_literal_rule() {
         pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
             Rule::identifier_literal,
             &["Abc", "abc_123", "_abc"],
+            &[],
+        );
+    }
+
+    #[test]
+    fn test_pest_parse_identifier_or_pattern_literal_rule() {
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::identifier_or_pattern_literal,
+            &["*", "abc*", "a*b*c", "['something.*']"],
             &[],
         );
     }
@@ -852,6 +833,14 @@ mod tests {
             &[
                 (Rule::accessor_expression, "Abc"),
                 (Rule::identifier_literal, "Abc"),
+            ],
+        );
+
+        pest_test_helpers::test_compound_pest_rule(
+            KqlParser::parse(Rule::accessor_expression, "['hello world']").unwrap(),
+            &[
+                (Rule::accessor_expression, "['hello world']"),
+                (Rule::string_literal, "'hello world'"),
             ],
         );
 
@@ -973,17 +962,14 @@ mod tests {
         if let ScalarExpression::Source(s) = expression {
             assert_eq!(
                 &[
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "subkey"
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "subkey")
                     )),
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "array"
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "array")
                     )),
-                    ValueSelector::ArrayIndex(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        0
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0)
                     ))
                 ]
                 .to_vec(),
@@ -996,10 +982,13 @@ mod tests {
 
     #[test]
     fn test_parse_accessor_expression_implicit_source() {
-        let mut result =
-            KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]").unwrap();
+        let mut result = KqlParser::parse(
+            Rule::accessor_expression,
+            "['sub.key thing'][var][-neg_attr]",
+        )
+        .unwrap();
 
-        let mut state = ParserState::new("subkey[var][-neg_attr]");
+        let mut state = ParserState::new("['sub.key thing'][var][-neg_attr]");
 
         state.push_variable_name("var");
 
@@ -1008,30 +997,25 @@ mod tests {
         if let ScalarExpression::Source(s) = expression {
             assert_eq!(
                 &[
-                    ValueSelector::MapKey(StringScalarExpression::new(
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "sub.key thing")
+                    )),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
                         QueryLocation::new_fake(),
-                        "subkey"
+                        "var",
+                        ValueAccessor::new()
                     )),
-                    ValueSelector::ScalarExpression(ScalarExpression::Variable(
-                        VariableScalarExpression::new(
+                    ScalarExpression::Negate(NegateScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
-                            "var",
-                            ValueAccessor::new()
-                        )
-                    )),
-                    ValueSelector::ScalarExpression(ScalarExpression::Negate(
-                        NegateScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ScalarExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "neg_attr"
-                                    )
-                                )]),
-                            ))
-                        )
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "neg_attr"
+                                ))
+                            )]),
+                        ))
                     ))
                 ]
                 .to_vec(),
@@ -1058,9 +1042,8 @@ mod tests {
 
         if let ScalarExpression::Source(s) = expression {
             assert_eq!(
-                &[ValueSelector::MapKey(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "subkey"
+                &[ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "subkey")
                 ))]
                 .to_vec(),
                 s.get_value_accessor().get_selectors()
@@ -1088,9 +1071,8 @@ mod tests {
         if let ScalarExpression::Attached(a) = expression {
             assert_eq!("resource", a.get_name());
             assert_eq!(
-                &[ValueSelector::MapKey(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "~at'tr~"
+                &[ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "~at'tr~")
                 ))]
                 .to_vec(),
                 a.get_value_accessor().get_selectors()
@@ -1113,9 +1095,8 @@ mod tests {
         if let ScalarExpression::Variable(v) = expression {
             assert_eq!("a", v.get_name());
             assert_eq!(
-                &[ValueSelector::ArrayIndex(IntegerScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    -1
+                &[ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), -1)
                 ))]
                 .to_vec(),
                 v.get_value_accessor().get_selectors()
@@ -1239,36 +1220,37 @@ mod tests {
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "hello world",
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                     )),
-                    ValueSelector::ArrayIndex(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                     )),
                 ]),
             )),
         );
 
-        // Note: The inner scalar is folded into a constant in this test.
+        // Note: The inner accessors are folded into constants in this test.
         run_test_success(
             "source[iif(const_bool_false, 'a', const_str)]",
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
-                )]),
-            )),
-        );
-
-        // Note: The inner scalar is folded into a constant in this test.
-        run_test_success(
-            "source[-iif(const_bool_true, const_int, 0)]",
-            ScalarExpression::Source(SourceScalarExpression::new(
-                QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ValueSelector::ArrayIndex(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Conditional(
+                    ConditionalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                        )),
+                    ),
                 )]),
             )),
         );
@@ -1323,8 +1305,11 @@ mod tests {
             "const_str",
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "const_str"),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "const_str",
+                    )),
                 )]),
             )),
         );
@@ -1334,13 +1319,11 @@ mod tests {
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
                 ValueAccessor::new_with_selectors(vec![
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "const_str",
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "const_str"),
                     )),
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "hello world",
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                     )),
                 ]),
             )),
