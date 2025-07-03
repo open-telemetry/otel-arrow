@@ -10,7 +10,9 @@ use otel_arrow_rust::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value,
 };
 
-use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType};
+use crate::views::common::{
+    AnyValueView, AttributeView, InstrumentationScopeView, SpanId, Str, TraceId, ValueType,
+};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 
@@ -235,4 +237,23 @@ impl InstrumentationScopeView for ObjInstrumentationScope<'_> {
     fn dropped_attributes_count(&self) -> u32 {
         self.inner.dropped_attributes_count
     }
+}
+
+/// A helper function for converting &str into optional Cows while dropping empty strings.
+pub(crate) fn read_str<'a>(s: &'a str) -> Option<Str<'a>> {
+    (!s.is_empty()).then_some(Cow::Borrowed(s))
+}
+
+// The theory behind these two functions comes from Lexi Lambda's "Parse, don't validate" article.
+
+/// Valid `TraceId`s are exactly 16 bytes and are not all zeros.
+pub(crate) fn parse_trace_id(data: &[u8]) -> Option<&TraceId> {
+    let trace_id: &TraceId = data.try_into().ok()?;
+    (trace_id != &[0; 16]).then_some(trace_id)
+}
+
+/// Valid `SpanId`s are exactly 8 bytes and are not all zeros.
+pub(crate) fn parse_span_id(data: &[u8]) -> Option<&SpanId> {
+    let span_id: &SpanId = data.try_into().ok()?;
+    (span_id != &[0; 8]).then_some(span_id)
 }

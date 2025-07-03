@@ -14,6 +14,12 @@ use std::borrow::Cow;
 /// Note: String::from_utf8_lossy returns Cow<'src, str> which is not zero-cost.
 pub type Str<'src> = Cow<'src, str>;
 
+/// Trace IDs are 16 binary bytes.
+pub type TraceId = [u8; 16];
+
+/// Span IDs are 8 binary bytes.
+pub type SpanId = [u8; 8];
+
 /// View for AnyValue
 pub trait AnyValueView<'val> {
     /// The `AttributeView` type associated with this impl of the `AnyValueView` trait.

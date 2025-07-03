@@ -271,17 +271,9 @@ impl LogRecordView for ObjLogRecord<'_> {
 }
 
 fn is_valid_trace_id(buf: &[u8]) -> bool {
-    if buf.len() != 16 {
-        return false;
-    }
-
-    buf != [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    buf.len() == 16 && buf != [0; 16]
 }
 
 fn is_valid_span_id(buf: &[u8]) -> bool {
-    if buf.len() != 8 {
-        return false;
-    }
-
-    buf != [0, 0, 0, 0, 0, 0, 0, 0]
+    buf.len() == 8 && buf != [0; 8]
 }

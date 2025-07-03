@@ -5,21 +5,209 @@ use otap_df_pdata_views::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     resource::ResourceView,
+    trace::{
+        EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
+    },
 };
 use otel_arrow_rust::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
         logs::LogsRecordBatchBuilder,
+        spans::{EventsBuilder, LinksBuilder, SpansRecordBatchBuilder},
     },
-    otap::{Logs, OtapBatch},
+    otap::{Logs, OtapBatch, Traces},
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 
-use crate::encoder::error::Result;
+use crate::encoder::error::{Error, Result};
 
 mod cbor;
 mod error;
+
+/// Traverse the trace structure within the TracesView and produces an `OtapBatch' for the span
+/// data.
+pub fn encode_spans_otap_batch<T>(traces_view: &T) -> Result<OtapBatch>
+where
+    T: TracesView,
+{
+    let mut resource_attrs = AttributesRecordBatchBuilder::<u16>::new();
+    let mut scope_attrs = AttributesRecordBatchBuilder::<u16>::new();
+    let mut span_attrs = AttributesRecordBatchBuilder::<u16>::new();
+    let mut event_attrs = AttributesRecordBatchBuilder::<u32>::new();
+    let mut link_attrs = AttributesRecordBatchBuilder::<u32>::new();
+
+    let mut curr_resource_id: u16 = 0;
+    let mut curr_scope_id: u16 = 0;
+    let mut curr_span_id: u16 = 0;
+    let mut curr_event_id: u32 = 0;
+    let mut curr_link_id: u32 = 0;
+
+    let mut spans = SpansRecordBatchBuilder::new();
+    let mut events = EventsBuilder::new();
+    let mut links = LinksBuilder::new();
+
+    // First, we traverse the view collecting the trace data into our RecordBatch builders.
+
+    #[allow(clippy::explicit_counter_loop)]
+    for resource_spans in traces_view.resources() {
+        if let Some(resource) = resource_spans.resource() {
+            for kv in resource.attributes() {
+                resource_attrs.append_parent_id(&curr_resource_id);
+                append_attribute_value(&mut resource_attrs, &kv)?;
+            }
+        }
+
+        for scope_spans in resource_spans.scopes() {
+            if let Some(scope) = scope_spans.scope() {
+                for kv in scope.attributes() {
+                    scope_attrs.append_parent_id(&curr_scope_id);
+                    append_attribute_value(&mut scope_attrs, &kv)?;
+                }
+            }
+
+            for span in scope_spans.spans() {
+                // set the resource
+                spans.resource.append_id(Some(curr_resource_id));
+                spans
+                    .resource
+                    .append_schema_url(resource_spans.schema_url().as_deref());
+                spans.resource.append_dropped_attributes_count(
+                    resource_spans
+                        .resource()
+                        .map(|r| r.dropped_attributes_count())
+                        .unwrap_or(0),
+                );
+
+                // set the scope
+                spans.scope.append_id(Some(curr_scope_id));
+                if let Some(scope) = scope_spans.scope() {
+                    spans.scope.append_name(scope.name().as_deref());
+                    spans.scope.append_version(scope.version().as_deref());
+                    spans
+                        .scope
+                        .append_dropped_attributes_count(scope.dropped_attributes_count());
+                } else {
+                    spans.scope.append_name(None);
+                    spans.scope.append_version(None);
+                    spans.scope.append_dropped_attributes_count(0);
+                }
+
+                spans.append_id(Some(curr_span_id));
+
+                for kv in span.attributes() {
+                    span_attrs.append_parent_id(&curr_span_id);
+                    append_attribute_value(&mut span_attrs, &kv)?;
+                }
+
+                spans.append_start_time_unix_nano(span.start_time_unix_nano().map(|v| v as i64));
+                let duration = match (span.start_time_unix_nano(), span.end_time_unix_nano()) {
+                    (Some(start), Some(end)) => Some((end as i64) - (start as i64)),
+                    _ => None,
+                };
+                spans.append_duration_time_unix_nano(duration);
+
+                spans.append_trace_id(span.trace_id())?;
+                spans.append_span_id(span.span_id())?;
+                spans.append_trace_state(span.trace_state().as_deref());
+                spans.append_parent_span_id(span.parent_span_id())?;
+                spans.append_name(span.name().as_deref());
+                spans.append_kind(Some(span.kind()));
+                spans.append_dropped_attributes_count(span.dropped_attributes_count());
+                spans.append_dropped_events_count(span.dropped_events_count());
+                spans.append_dropped_links_count(span.dropped_links_count());
+
+                if let Some(status) = span.status() {
+                    spans.append_status_code(Some(status.status_code()));
+                    spans.append_status_status_message(status.message().as_deref());
+                } else {
+                    spans.append_status_code(None);
+                    spans.append_status_status_message(None);
+                }
+
+                for event in span.events() {
+                    events.append_id(Some(curr_event_id));
+                    events.append_parent_id(Some(curr_span_id));
+                    events.append_time_unix_nano(event.time_unix_nano().map(|v| v as i64));
+                    events.append_name(event.name().as_deref());
+                    events.append_dropped_attributes_count(event.dropped_attributes_count());
+
+                    for kv in event.attributes() {
+                        event_attrs.append_parent_id(&curr_event_id);
+                        append_attribute_value(&mut event_attrs, &kv)?;
+                    }
+
+                    curr_event_id = curr_event_id
+                        .checked_add(1)
+                        .ok_or(Error::U32OverflowError)?;
+                }
+
+                for link in span.links() {
+                    links.append_id(Some(curr_link_id));
+                    links.append_parent_id(Some(curr_span_id));
+                    links.append_trace_id(link.trace_id())?;
+                    links.append_span_id(link.span_id())?;
+                    links.append_trace_state(link.trace_state().as_deref());
+                    links.append_dropped_attributes_count(link.dropped_attributes_count());
+
+                    for kv in link.attributes() {
+                        link_attrs.append_parent_id(&curr_link_id);
+                        append_attribute_value(&mut link_attrs, &kv)?;
+                    }
+
+                    curr_link_id = curr_link_id.checked_add(1).ok_or(Error::U32OverflowError)?;
+                }
+
+                curr_span_id = curr_span_id.checked_add(1).ok_or(Error::U16OverflowError)?;
+            }
+
+            curr_scope_id = curr_scope_id
+                .checked_add(1)
+                .ok_or(Error::U16OverflowError)?;
+        }
+
+        curr_resource_id = curr_resource_id
+            .checked_add(1)
+            .ok_or(Error::U16OverflowError)?;
+    }
+
+    // Then we build up an OTAP Batch from the RecordBatch builders....
+
+    let mut otap_batch = OtapBatch::Traces(Traces::default());
+
+    // Append spans records along with events and links!
+    otap_batch.set(ArrowPayloadType::Spans, spans.finish()?);
+    otap_batch.set(ArrowPayloadType::SpanEvents, events.finish()?);
+    otap_batch.set(ArrowPayloadType::SpanLinks, links.finish()?);
+
+    // Append attrs for spans, scopes, resources, events and links!
+    let span_attrs_rb = span_attrs.finish()?;
+    if span_attrs_rb.num_rows() > 0 {
+        otap_batch.set(ArrowPayloadType::SpanAttrs, span_attrs_rb);
+    }
+
+    let resource_attrs_rb = resource_attrs.finish()?;
+    if resource_attrs_rb.num_rows() > 0 {
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
+    }
+
+    let scope_attrs_rb = scope_attrs.finish()?;
+    if scope_attrs_rb.num_rows() > 0 {
+        otap_batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb);
+    }
+
+    let event_attrs_rb = event_attrs.finish()?;
+    if event_attrs_rb.num_rows() > 0 {
+        otap_batch.set(ArrowPayloadType::SpanEventAttrs, event_attrs_rb);
+    }
+
+    let link_attrs_rb = link_attrs.finish()?;
+    if link_attrs_rb.num_rows() > 0 {
+        otap_batch.set(ArrowPayloadType::SpanLinkAttrs, link_attrs_rb);
+    }
+
+    Ok(otap_batch)
+}
 
 /// traverse the log structure within the LogDataView and produces an `OtapBatch' for the log data
 pub fn encode_logs_otap_batch<T>(logs_view: &T) -> Result<OtapBatch>
@@ -136,21 +324,24 @@ where
                     logs.body.append_null();
                 }
 
-                let mut log_attrs_count = 0;
+                let mut log_attrs_seen = false;
                 for kv in log_record.attributes() {
                     log_attrs.append_parent_id(&curr_log_id);
-                    log_attrs_count += 1;
+                    log_attrs_seen = true;
                     append_attribute_value(&mut log_attrs, &kv)?;
                 }
 
-                if log_attrs_count > 0 {
+                if log_attrs_seen {
                     logs.append_id(Some(curr_log_id));
-                    curr_log_id += 1;
+                    curr_log_id = curr_log_id.checked_add(1).ok_or(Error::U16OverflowError)?;
                 } else {
                     logs.append_id(None);
                 }
             }
-            curr_scope_id += 1;
+
+            curr_scope_id = curr_scope_id
+                .checked_add(1)
+                .ok_or(Error::U16OverflowError)?;
         }
     }
 
