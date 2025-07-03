@@ -87,12 +87,9 @@ pub(crate) fn parse_logical_expression(
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        let value_type_result = scalar.try_resolve_value_type();
+                        let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
                         if let Err(e) = value_type_result {
-                            return Err(ParserError::SyntaxError(
-                                e.get_query_location().clone(),
-                                e.to_string(),
-                            ));
+                            return Err(ParserError::from(&e));
                         }
                         if let Some(t) = value_type_result.unwrap()
                             && t != ValueType::Boolean
