@@ -114,7 +114,7 @@ impl<T: DataRecord> GenericDataRecordAnyValueResolverCache<T> {
         {
             let cache_read_borrow = self.cache.borrow();
             let resolver = cache_read_borrow.get(path);
-            if resolver.is_some() {
+            if let Some(resolver) = &resolver {
                 execution_context.add_message_for_expression_id(
                     expression_id,
                     ExpressionMessage::info(format!(
@@ -123,7 +123,7 @@ impl<T: DataRecord> GenericDataRecordAnyValueResolverCache<T> {
                     )),
                 );
 
-                return action(resolver.as_ref().unwrap(), data_record);
+                return action(resolver, data_record);
             }
         }
 

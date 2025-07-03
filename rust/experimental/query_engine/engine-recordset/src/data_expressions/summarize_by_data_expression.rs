@@ -312,7 +312,7 @@ impl DataExpressionInternal for SummarizeByDataExpression {
                                         execution_context.add_message_for_expression(
                                             self,
                                             ExpressionMessage::info(
-                                                format!("SummarizeByDataExpression resolved value converted to String: {:?}", any_value)));
+                                                format!("SummarizeByDataExpression resolved value converted to String: {any_value:?}")));
                                     },
                                     None => {
                                         grouping.push(
@@ -323,7 +323,7 @@ impl DataExpressionInternal for SummarizeByDataExpression {
                                         execution_context.add_message_for_expression(
                                             self,
                                             ExpressionMessage::warn(
-                                                format!("SummarizeByDataExpression resolved value could not be converted into a String: {:?}", any_value)));
+                                                format!("SummarizeByDataExpression resolved value could not be converted into a String: {any_value:?}")));
                                     },
                                 }
                             });
@@ -407,16 +407,14 @@ impl SummarizeByDataExpression {
                     execution_context.add_message_for_expression(
                         self,
                         ExpressionMessage::info(format!(
-                            "SummarizeByDataExpression summary updated: {:?}",
-                            summary
+                            "SummarizeByDataExpression summary updated: {summary:?}"
                         )),
                     );
                 } else {
                     execution_context.add_message_for_expression(
                         self,
                         ExpressionMessage::info(format!(
-                            "SummarizeByDataExpression summary established: {:?}",
-                            summary
+                            "SummarizeByDataExpression summary established: {summary:?}"
                         )),
                     );
                 }
