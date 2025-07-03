@@ -1,4 +1,7 @@
-use crate::{Expression, ExpressionError, QueryLocation, ScalarExpression, StaticScalarExpression};
+use crate::{
+    Expression, ExpressionError, PipelineExpression, QueryLocation, ResolvedStaticScalarExpression,
+    ScalarExpression,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalExpression {
@@ -31,9 +34,16 @@ pub enum LogicalExpression {
 }
 
 impl LogicalExpression {
-    pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
+    pub fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
         match self {
-            LogicalExpression::Scalar(s) => s.try_resolve_static(),
+            LogicalExpression::Scalar(s) => s.try_resolve_static(pipeline),
             // todo: Implement static resolution of logicals:
             LogicalExpression::EqualTo(_) => Ok(None),
             LogicalExpression::GreaterThan(_) => Ok(None),

@@ -1,7 +1,4 @@
-use crate::{
-    DoubleScalarExpression, Expression, ExpressionError, IntegerScalarExpression,
-    LogicalExpression, QueryLocation, StaticScalarExpression, ValueAccessor, primitives::*,
-};
+use crate::{primitives::*, *};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
@@ -30,6 +27,9 @@ pub enum ScalarExpression {
     /// Resolve a static value provided directly in a query.
     Static(StaticScalarExpression),
 
+    /// A constant static value defined in a collection on [`PipelineExpression`].
+    Constant(ConstantScalarExpression),
+
     /// Negate the value returned by the inner scalar expression.
     Negate(NegateScalarExpression),
 
@@ -41,27 +41,39 @@ pub enum ScalarExpression {
 }
 
 impl ScalarExpression {
-    pub fn try_resolve_value_type(&self) -> Result<Option<ValueType>, ExpressionError> {
+    pub fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
             ScalarExpression::Source(_) => Ok(None),
             ScalarExpression::Attached(_) => Ok(None),
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
-            ScalarExpression::Negate(n) => n.try_resolve_value_type(),
+            ScalarExpression::Constant(c) => Ok(Some(c.get_value_type())),
+            ScalarExpression::Negate(n) => n.try_resolve_value_type(pipeline),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
-            ScalarExpression::Conditional(c) => c.try_resolve_value_type(),
+            ScalarExpression::Conditional(c) => c.try_resolve_value_type(pipeline),
         }
     }
 
-    pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
+    pub fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
         match self {
             ScalarExpression::Source(_) => Ok(None),
             ScalarExpression::Attached(_) => Ok(None),
             ScalarExpression::Variable(_) => Ok(None),
-            ScalarExpression::Static(s) => Ok(Some(s.clone())),
-            ScalarExpression::Negate(n) => n.try_resolve_static(),
-            ScalarExpression::Logical(l) => l.try_resolve_static(),
-            ScalarExpression::Conditional(c) => c.try_resolve_static(),
+            ScalarExpression::Static(s) => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
+            ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(pipeline))),
+            ScalarExpression::Negate(n) => n.try_resolve_static(pipeline),
+            ScalarExpression::Logical(l) => l.try_resolve_static(pipeline),
+            ScalarExpression::Conditional(c) => c.try_resolve_static(pipeline),
         }
     }
 }
@@ -73,9 +85,25 @@ impl Expression for ScalarExpression {
             ScalarExpression::Attached(a) => a.get_query_location(),
             ScalarExpression::Variable(v) => v.get_query_location(),
             ScalarExpression::Static(s) => s.get_query_location(),
+            ScalarExpression::Constant(c) => c.get_query_location(),
             ScalarExpression::Negate(n) => n.get_query_location(),
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ResolvedStaticScalarExpression<'a> {
+    Reference(&'a StaticScalarExpression),
+    Value(StaticScalarExpression),
+}
+
+impl AsRef<StaticScalarExpression> for ResolvedStaticScalarExpression<'_> {
+    fn as_ref(&self) -> &StaticScalarExpression {
+        match self {
+            ResolvedStaticScalarExpression::Reference(s) => s,
+            ResolvedStaticScalarExpression::Value(s) => s,
         }
     }
 }
@@ -176,6 +204,129 @@ impl Expression for VariableScalarExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum ConstantScalarExpression {
+    /// A constant which is retrieved via a lookup to the collection maintained
+    /// on [`PipelineExpression`].
+    Reference(ReferenceConstantScalarExpression),
+
+    /// A constant which has been copied from the collection maintained on
+    /// [`PipelineExpression`] into a local expression.
+    Copy(CopyConstantScalarExpression),
+}
+
+impl ConstantScalarExpression {
+    pub fn get_value_type(&self) -> ValueType {
+        match self {
+            ConstantScalarExpression::Reference(r) => r.get_value_type(),
+            ConstantScalarExpression::Copy(c) => c.get_value().get_value_type(),
+        }
+    }
+
+    pub fn resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> ResolvedStaticScalarExpression<'c>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        match self {
+            ConstantScalarExpression::Reference(r) => {
+                let constant_id = r.get_constant_id();
+
+                ResolvedStaticScalarExpression::Reference(
+                    pipeline.get_constant(constant_id).unwrap_or_else(|| {
+                        panic!("Constant for id '{constant_id}' was not found on pipeline")
+                    }),
+                )
+            }
+            ConstantScalarExpression::Copy(c) => {
+                ResolvedStaticScalarExpression::Reference(c.get_value())
+            }
+        }
+    }
+}
+
+impl Expression for ConstantScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            ConstantScalarExpression::Reference(r) => r.get_query_location(),
+            ConstantScalarExpression::Copy(c) => c.get_query_location(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceConstantScalarExpression {
+    query_location: QueryLocation,
+    value_type: ValueType,
+    constant_id: usize,
+}
+
+impl ReferenceConstantScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        value_type: ValueType,
+        constant_id: usize,
+    ) -> ReferenceConstantScalarExpression {
+        Self {
+            query_location,
+            value_type,
+            constant_id,
+        }
+    }
+
+    pub fn get_value_type(&self) -> ValueType {
+        self.value_type.clone()
+    }
+
+    pub fn get_constant_id(&self) -> usize {
+        self.constant_id
+    }
+}
+
+impl Expression for ReferenceConstantScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyConstantScalarExpression {
+    query_location: QueryLocation,
+    constant_id: usize,
+    value: StaticScalarExpression,
+}
+
+impl CopyConstantScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        constant_id: usize,
+        value: StaticScalarExpression,
+    ) -> CopyConstantScalarExpression {
+        Self {
+            query_location,
+            constant_id,
+            value,
+        }
+    }
+
+    pub fn get_constant_id(&self) -> usize {
+        self.constant_id
+    }
+
+    pub fn get_value(&self) -> &StaticScalarExpression {
+        &self.value
+    }
+}
+
+impl Expression for CopyConstantScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct NegateScalarExpression {
     query_location: QueryLocation,
     inner_expression: Box<ScalarExpression>,
@@ -196,26 +347,38 @@ impl NegateScalarExpression {
         &self.inner_expression
     }
 
-    pub fn try_resolve_value_type(&self) -> Result<Option<ValueType>, ExpressionError> {
-        let s = self.try_resolve_static()?;
+    pub fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        let s = self.try_resolve_static(pipeline)?;
         if let Some(s) = s {
-            Ok(Some(s.get_value_type()))
+            Ok(Some(s.as_ref().get_value_type()))
         } else {
             Ok(None)
         }
     }
 
-    pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
-        if let Some(s) = self.inner_expression.try_resolve_static()? {
-            match s {
+    pub fn try_resolve_static(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression>, ExpressionError> {
+        if let Some(s) = self.inner_expression.try_resolve_static(pipeline)? {
+            match s.as_ref() {
                 StaticScalarExpression::Integer(i) => {
-                    return Ok(Some(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(self.query_location.clone(), -i.get_value()),
+                    return Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            self.query_location.clone(),
+                            -i.get_value(),
+                        )),
                     )));
                 }
                 StaticScalarExpression::Double(i) => {
-                    return Ok(Some(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(self.query_location.clone(), -i.get_value()),
+                    return Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::Double(DoubleScalarExpression::new(
+                            self.query_location.clone(),
+                            -i.get_value(),
+                        )),
                     )));
                 }
                 _ => {
@@ -272,17 +435,20 @@ impl ConditionalScalarExpression {
         &self.false_expression
     }
 
-    pub fn try_resolve_value_type(&self) -> Result<Option<ValueType>, ExpressionError> {
-        if let Some(s) = self.try_resolve_static()? {
-            return Ok(Some(s.get_value_type()));
+    pub fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        if let Some(s) = self.try_resolve_static(pipeline)? {
+            return Ok(Some(s.as_ref().get_value_type()));
         }
 
-        let true_e = self.true_expression.try_resolve_static()?;
-        let false_e = self.false_expression.try_resolve_static()?;
+        let true_e = self.true_expression.try_resolve_static(pipeline)?;
+        let false_e = self.false_expression.try_resolve_static(pipeline)?;
 
         if true_e.is_some() && false_e.is_some() {
-            let true_type = true_e.unwrap().get_value_type();
-            let false_type = false_e.unwrap().get_value_type();
+            let true_type = true_e.unwrap().as_ref().get_value_type();
+            let false_type = false_e.unwrap().as_ref().get_value_type();
 
             if true_type == false_type {
                 return Ok(Some(true_type));
@@ -292,17 +458,24 @@ impl ConditionalScalarExpression {
         Ok(None)
     }
 
-    pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
-        let condition = self.condition.try_resolve_static()?;
+    pub fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        let condition = self.condition.try_resolve_static(pipeline)?;
 
         if condition.is_none() {
             return Ok(None);
         }
 
-        match condition.unwrap() {
+        match condition.unwrap().as_ref() {
             StaticScalarExpression::Boolean(b) => {
                 if b.get_value() {
-                    let true_e = self.true_expression.try_resolve_static()?;
+                    let true_e = self.true_expression.try_resolve_static(pipeline)?;
 
                     if true_e.is_none() {
                         return Ok(None);
@@ -311,7 +484,7 @@ impl ConditionalScalarExpression {
                     return Ok(Some(true_e.unwrap()));
                 }
 
-                let false_e = self.false_expression.try_resolve_static()?;
+                let false_e = self.false_expression.try_resolve_static(pipeline)?;
 
                 if false_e.is_none() {
                     return Ok(None);
@@ -339,7 +512,9 @@ mod tests {
     #[test]
     pub fn try_resolve_value_type() {
         let run_test_success = |expression: ScalarExpression, expected: Option<ValueType>| {
-            let actual = expression.try_resolve_value_type().unwrap();
+            let actual = expression
+                .try_resolve_value_type(&Default::default())
+                .unwrap();
 
             assert_eq!(expected, actual)
         };
@@ -419,13 +594,40 @@ mod tests {
             )),
             Some(ValueType::Integer),
         );
+
+        run_test_success(
+            ScalarExpression::Constant(ConstantScalarExpression::Reference(
+                ReferenceConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueType::String,
+                    0,
+                ),
+            )),
+            Some(ValueType::String),
+        );
+
+        run_test_success(
+            ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                CopyConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    0,
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                ),
+            )),
+            Some(ValueType::Integer),
+        );
     }
 
     #[test]
     pub fn test_conditional_try_resolve_value_type() {
         let run_test_success = |expression: ConditionalScalarExpression,
                                 expected: Option<ValueType>| {
-            let actual = expression.try_resolve_value_type().unwrap();
+            let actual = expression
+                .try_resolve_value_type(&Default::default())
+                .unwrap();
 
             assert_eq!(expected, actual)
         };
@@ -549,9 +751,15 @@ mod tests {
     pub fn test_try_resolve_static() {
         let run_test_success =
             |expression: ScalarExpression, expected: Option<StaticScalarExpression>| {
-                let actual = expression.try_resolve_static().unwrap();
+                let mut pipeline: PipelineExpression = Default::default();
 
-                assert_eq!(expected, actual)
+                pipeline.push_constant(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                ));
+
+                let actual = expression.try_resolve_static(&pipeline).unwrap();
+
+                assert_eq!(expected, actual.map(|v| v.as_ref().clone()))
             };
 
         run_test_success(
@@ -637,34 +845,72 @@ mod tests {
                 IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
             )),
         );
+
+        run_test_success(
+            ScalarExpression::Constant(ConstantScalarExpression::Reference(
+                ReferenceConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueType::String,
+                    0,
+                ),
+            )),
+            Some(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
+        );
+
+        run_test_success(
+            ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                CopyConstantScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    0,
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                ),
+            )),
+            Some(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
+        );
     }
 
     #[test]
     pub fn test_negate_try_resolve_static() {
         let run_test_success =
             |expression: NegateScalarExpression, expected: Option<StaticScalarExpression>| {
-                let actual_static = expression.try_resolve_static().unwrap();
+                let pipeline = Default::default();
+
+                let actual_static = expression
+                    .try_resolve_static(&pipeline)
+                    .unwrap()
+                    .map(|v| v.as_ref().clone());
 
                 assert_eq!(expected, actual_static);
                 if actual_static.is_none() {
-                    assert_eq!(None, expression.try_resolve_value_type().unwrap());
+                    assert_eq!(None, expression.try_resolve_value_type(&pipeline).unwrap());
                 } else {
                     assert_eq!(
                         ScalarExpression::Static(actual_static.unwrap())
-                            .try_resolve_value_type()
+                            .try_resolve_value_type(&pipeline)
                             .unwrap(),
-                        expression.try_resolve_value_type().unwrap()
+                        expression.try_resolve_value_type(&pipeline).unwrap()
                     );
                 }
             };
 
         let run_test_failure = |expression: NegateScalarExpression| {
+            let pipeline = Default::default();
+
             assert!(matches!(
-                expression.try_resolve_static().unwrap_err(),
+                expression.try_resolve_static(&pipeline).unwrap_err(),
                 ExpressionError::TypeMismatch(_, _)
             ));
             assert!(matches!(
-                expression.try_resolve_value_type().unwrap_err(),
+                expression.try_resolve_value_type(&pipeline).unwrap_err(),
                 ExpressionError::TypeMismatch(_, _)
             ));
         };
@@ -717,7 +963,12 @@ mod tests {
     pub fn test_conditional_try_resolve_static() {
         let run_test_success =
             |expression: ConditionalScalarExpression, expected: Option<StaticScalarExpression>| {
-                let actual = expression.try_resolve_static().unwrap();
+                let pipeline = Default::default();
+
+                let actual = expression
+                    .try_resolve_static(&pipeline)
+                    .unwrap()
+                    .map(|v| v.as_ref().clone());
 
                 assert_eq!(expected, actual)
             };
