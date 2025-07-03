@@ -1,5 +1,7 @@
 use std::hash::{Hash, Hasher};
 
+use crate::ExpressionError;
+
 pub trait Expression {
     fn get_query_location(&self) -> &QueryLocation;
 }
@@ -19,14 +21,27 @@ impl QueryLocation {
         end: usize,
         line_number: usize,
         column_number: usize,
-    ) -> QueryLocation {
-        Self {
+    ) -> Result<QueryLocation, ExpressionError> {
+        if line_number == 0 || column_number == 0 {
+            return Err(ExpressionError::ValidationFailure(
+                Self {
+                    start: 0,
+                    end: 0,
+                    line_number: 1,
+                    column_number: 1,
+                    fake: true,
+                },
+                "QueryLocation requires line_number and column_number values starting at 1".into(),
+            ));
+        }
+
+        Ok(Self {
             start,
             end,
             line_number,
             column_number,
             fake: false,
-        }
+        })
     }
 
     pub fn new_fake() -> QueryLocation {
