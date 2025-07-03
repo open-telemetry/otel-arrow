@@ -819,7 +819,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_identifier_or_pattern_literal_rule() {
-        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
             Rule::identifier_or_pattern_literal,
             &["*", "abc*", "a*b*c", "['something.*']"],
             &[],
