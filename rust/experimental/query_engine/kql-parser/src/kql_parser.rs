@@ -6,17 +6,17 @@ use crate::query_expression::parse_query;
 
 #[derive(Parser)]
 #[grammar = "kql.pest"]
-pub(crate) struct KqlParser;
+pub(crate) struct KqlPestParser;
 
-pub fn parse(query: &str) -> Result<PipelineExpression, Vec<ParserError>> {
-    parse_with_options(query, ParserOptions::new())
-}
+pub struct KqlParser {}
 
-pub fn parse_with_options(
-    query: &str,
-    options: ParserOptions,
-) -> Result<PipelineExpression, Vec<ParserError>> {
-    parse_query(query, options)
+impl Parser for KqlParser {
+    fn parse_with_options(
+        query: &str,
+        options: ParserOptions,
+    ) -> Result<PipelineExpression, Vec<ParserError>> {
+        parse_query(query, options)
+    }
 }
 
 #[cfg(test)]
@@ -25,8 +25,8 @@ mod tests {
 
     #[test]
     pub fn test_parse() {
-        assert!(parse("a").is_ok());
-        assert!(parse("let a = 1").is_err());
-        assert!(parse("i | extend a = 1 i | extend b = 2").is_err());
+        assert!(KqlParser::parse("a").is_ok());
+        assert!(KqlParser::parse("let a = 1").is_err());
+        assert!(KqlParser::parse("i | extend a = 1 i | extend b = 2").is_err());
     }
 }

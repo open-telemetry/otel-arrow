@@ -108,7 +108,7 @@ pub(crate) fn parse_let_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::KqlPestParser;
 
     use super::*;
 
@@ -122,7 +122,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::assignment_expression, input).unwrap();
 
             let expression = parse_assignment_expression(result.next().unwrap(), &state).unwrap();
 
@@ -137,7 +137,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::assignment_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::assignment_expression, input).unwrap();
 
             let error = parse_assignment_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -209,7 +209,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::let_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::let_expression, input).unwrap();
 
             let expression = parse_let_expression(result.next().unwrap(), &state).unwrap();
 
@@ -224,7 +224,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::let_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::let_expression, input).unwrap();
 
             let error = parse_let_expression(result.next().unwrap(), &state).unwrap_err();
 

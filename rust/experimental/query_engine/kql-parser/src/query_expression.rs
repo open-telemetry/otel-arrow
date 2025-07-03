@@ -3,7 +3,7 @@ use data_engine_parser_abstractions::*;
 use pest::Parser;
 
 use crate::{
-    KqlParser, Rule, shared_expressions::parse_let_expression,
+    KqlPestParser, Rule, shared_expressions::parse_let_expression,
     tabular_expressions::parse_tabular_expression,
 };
 
@@ -15,7 +15,7 @@ pub(crate) fn parse_query(
 
     let mut state = ParserState::new_with_options(query, options);
 
-    let parse_result = KqlParser::parse(Rule::query, query);
+    let parse_result = KqlPestParser::parse(Rule::query, query);
 
     if parse_result.is_err() {
         let pest_error = parse_result.unwrap_err();
