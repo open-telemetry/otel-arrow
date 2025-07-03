@@ -11,6 +11,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Upgrade to v0.129.0 / v1.35.0 of collector dependencies.
   [#669](https://github.com/open-telemetry/otel-arrow/pull/669)
+- Change module name to `github.com/open-telemetry/otel-arrow/go`.
+  [#574](https://github.com/open-telemetry/otel-arrow/pull/574)
 
 ## [0.38.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.38.0) - 2025-06-10
 
