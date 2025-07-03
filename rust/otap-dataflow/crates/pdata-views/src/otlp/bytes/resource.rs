@@ -48,6 +48,7 @@ impl FieldRanges for ResourceFieldOffsets {
         }
     }
 
+    #[inline]
     fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
         let range = match field_num {
             RESOURCE_ATTRIBUTES => self.first_attribute.get(),
@@ -58,6 +59,7 @@ impl FieldRanges for ResourceFieldOffsets {
         from_option_nonzero_range_to_primitive(range)
     }
 
+    #[inline]
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
         let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
@@ -92,6 +94,7 @@ impl ResourceView for RawResource<'_> {
     where
         Self: 'att;
 
+    #[inline]
     fn attributes(&self) -> Self::AttributesIter<'_> {
         KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
             &self.bytes_parser,
@@ -100,6 +103,7 @@ impl ResourceView for RawResource<'_> {
         ))
     }
 
+    #[inline]
     fn dropped_attributes_count(&self) -> u32 {
         if let Some(slice) = self
             .bytes_parser

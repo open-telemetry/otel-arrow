@@ -38,10 +38,12 @@ impl ResourceView for ObjResource<'_> {
     where
         Self: 'b;
 
+    #[inline]
     fn attributes(&self) -> Self::AttributesIter<'_> {
         KeyValueIter::new(self.inner.attributes.iter())
     }
 
+    #[inline]
     fn dropped_attributes_count(&self) -> u32 {
         self.inner.dropped_attributes_count
     }

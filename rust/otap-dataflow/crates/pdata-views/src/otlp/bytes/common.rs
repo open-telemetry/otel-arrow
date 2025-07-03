@@ -4,7 +4,6 @@
 //! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
 //! bytes for messages defined in common.proto
 
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
@@ -135,6 +134,7 @@ impl FieldRanges for InstrumentationScopeFieldOffsets {
         }
     }
 
+    #[inline]
     fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
         let range = match field_num {
             INSTRUMENTATION_SCOPE_NAME => self.name.get(),
@@ -147,6 +147,7 @@ impl FieldRanges for InstrumentationScopeFieldOffsets {
         from_option_nonzero_range_to_primitive(range)
     }
 
+    #[inline]
     fn set_field_range(&self, field_num: u64, wire_type: u64, start: usize, end: usize) {
         let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
@@ -248,6 +249,7 @@ impl AttributeView for RawKeyValue<'_> {
     where
         Self: 'val;
 
+    #[inline]
     fn key(&self) -> crate::views::common::Str<'_> {
         loop {
             if let Some(offset) = self.key_offset.get() {
@@ -258,7 +260,7 @@ impl AttributeView for RawKeyValue<'_> {
                 };
 
                 match std::str::from_utf8(slice).ok() {
-                    Some(str) => return Cow::Borrowed(str),
+                    Some(str) => return str,
                     // break for invalid strings
                     None => break,
                 }
@@ -270,9 +272,10 @@ impl AttributeView for RawKeyValue<'_> {
         }
 
         // return empty string when cannot read key
-        Cow::Borrowed("")
+        ""
     }
 
+    #[inline]
     fn value(&self) -> Option<Self::Val<'_>> {
         loop {
             if let Some(offset) = self.value_offset.get() {
@@ -343,6 +346,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
         }
     }
 
+    #[inline]
     fn as_string(&self) -> Option<crate::views::common::Str<'_>> {
         if self.value_type() == ValueType::String {
             // safety: this value should have been initialized in the call to self.value_type
@@ -351,12 +355,13 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
                 .get()
                 .expect("expect to have been initialized");
             let (slice, _) = read_len_delim(self.buf, value_offset)?;
-            std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+            std::str::from_utf8(slice).ok()
         } else {
             None
         }
     }
 
+    #[inline]
     fn as_bool(&self) -> Option<bool> {
         if self.value_type() == ValueType::Bool {
             // safety: this value should have been initialized in the call to self.value_type
@@ -373,6 +378,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
         }
     }
 
+    #[inline]
     fn as_bytes(&self) -> Option<&[u8]> {
         if self.value_type() == ValueType::Bytes {
             // safety: this value should have been initialized in the call to self.value_type
@@ -387,6 +393,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
         }
     }
 
+    #[inline]
     fn as_double(&self) -> Option<f64> {
         if self.value_type() == ValueType::Double {
             // safety: this value should have been initialized in the call to self.value_type
@@ -402,6 +409,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
         }
     }
 
+    #[inline]
     fn as_int64(&self) -> Option<i64> {
         if self.value_type() == ValueType::Int64 {
             // safety: this value should have been initialized in the call to self.value_type
@@ -416,6 +424,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
         }
     }
 
+    #[inline]
     fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
         if self.value_type() == ValueType::Array {
             // safety: this value should have been initialized in the call to self.value_type
@@ -430,6 +439,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
         }
     }
 
+    #[inline]
     fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
         if self.value_type() == ValueType::KeyValueList {
             // safety: this value should have been initialized in the call to self.value_type
@@ -463,12 +473,14 @@ impl FieldRanges for KeyValuesListFieldOffsets {
         }
     }
 
+    #[inline]
     fn get_field_range(&self, _field_tag: u64) -> Option<(usize, usize)> {
         self.first_offset
             .get()
             .map(|(start, end)| (start.get(), end.get()))
     }
 
+    #[inline]
     fn set_field_range(&self, field_tag: u64, wire_type: u64, start: usize, end: usize) {
         let range = match to_nonzero_range(start, end) {
             Some(range) => Some(range),
@@ -493,20 +505,23 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
     where
         Self: 'att;
 
+    #[inline]
     fn name(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME)?;
-        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+        std::str::from_utf8(slice).ok()
     }
 
+    #[inline]
     fn version(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION)?;
-        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+        std::str::from_utf8(slice).ok()
     }
 
+    #[inline]
     fn dropped_attributes_count(&self) -> u32 {
         if let Some(slice) = self
             .bytes_parser
@@ -521,6 +536,7 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
         0
     }
 
+    #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
         KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
             &self.bytes_parser,

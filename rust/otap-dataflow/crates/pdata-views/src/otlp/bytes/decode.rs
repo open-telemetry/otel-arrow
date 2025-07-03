@@ -52,6 +52,7 @@ pub trait FieldRanges {
 
 /// helper convert an Option of `NonZeroRange` into an `Option<(usize, usize)>` to adapt internal
 /// range to expected return type in `FieldOffset`
+#[inline]
 #[must_use]
 pub fn from_option_nonzero_range_to_primitive(
     range: Option<(NonZeroUsize, NonZeroUsize)>,
@@ -61,6 +62,7 @@ pub fn from_option_nonzero_range_to_primitive(
 
 /// helper to convert the arguments of in the `FieldOffset` function into the internal type used
 /// by many of it's impls.
+#[inline]
 #[must_use]
 pub fn to_nonzero_range(start: usize, end: usize) -> Option<(NonZeroUsize, NonZeroUsize)> {
     Some((NonZeroUsize::new(start)?, NonZeroUsize::new(end)?))
@@ -120,37 +122,36 @@ where
     #[inline]
     #[must_use]
     pub fn advance_to_find_field(&self, field_num: u64) -> Option<&'a [u8]> {
-        // this loop advances parsing by one field each iteration until either the field is found
+        // Check if the field offset is already cached before entering the parsing loop
+        if let Some((start, end)) = self.field_offsets.get_field_range(field_num) {
+            return Some(&self.buf[start..end]);
+        }
+
+        // Field offset is not yet known, so we need to parse the buffer
+        // This loop advances parsing by one field each iteration until either the field is found
         // or the end of the buffer is reached.
         loop {
-            // try to get the field offset if it is known
-            let range = self.field_offsets.get_field_range(field_num);
+            let pos = self.pos.get();
+            if pos >= self.buf.len() {
+                // end of buffer reached, field not found
+                break;
+            }
 
-            match range {
-                Some((start, end)) => {
-                    let slice = &self.buf[start..end];
-                    return Some(slice);
-                }
-                None => {
-                    // field offset is not yet known, so advance parsing the buffer by one field...
-                    let pos = self.pos.get();
-                    if pos >= self.buf.len() {
-                        // end of buffer reached, field not found
-                        break;
-                    }
+            // parse tag & advance
+            let (tag, next_pos) = read_varint(self.buf, pos)?;
+            let field = tag >> 3;
+            let wire_type = tag & 7;
 
-                    // parse tag & advance
-                    let (tag, next_pos) = read_varint(self.buf, pos)?;
-                    let field = tag >> 3;
-                    let wire_type = tag & 7;
+            let (start, end) = field_value_range(self.buf, wire_type, next_pos)?;
+            self.pos.set(end);
 
-                    let (start, end) = field_value_range(self.buf, wire_type, next_pos)?;
-                    self.pos.set(end);
+            // save the offset of the field we've encountered
+            self.field_offsets
+                .set_field_range(field, wire_type, start, end);
 
-                    // save the offset of the field we've encountered
-                    self.field_offsets
-                        .set_field_range(field, wire_type, start, end);
-                }
+            // Check if this is the field we're looking for
+            if field == field_num {
+                return Some(&self.buf[start..end]);
             }
         }
 
