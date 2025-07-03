@@ -252,7 +252,16 @@ pub(crate) fn parse_accessor_expression(
 
     let mut accessor_rules = accessor_expression_rule.into_inner();
 
-    let root_accessor_identity = accessor_rules.next().unwrap().as_str();
+    let root_accessor_identity_rule = accessor_rules.next().unwrap();
+
+    let root_accessor_identity: Box<str> = match root_accessor_identity_rule.as_rule() {
+        Rule::string_literal => match parse_string_literal(root_accessor_identity_rule) {
+            StaticScalarExpression::String(v) => v.get_value().into(),
+            _ => panic!("Unexpected type returned from parse_string_literal"),
+        },
+        Rule::identifier_literal => root_accessor_identity_rule.as_str().into(),
+        _ => panic!("Unexpected rule in accessor_expression: {root_accessor_identity_rule}"),
+    };
 
     let mut value_accessor = ValueAccessor::new();
 
@@ -349,21 +358,21 @@ pub(crate) fn parse_accessor_expression(
         }
     }
 
-    if root_accessor_identity == "source" {
+    if root_accessor_identity.as_ref() == "source" {
         Ok(ScalarExpression::Source(SourceScalarExpression::new(
             query_location,
             value_accessor,
         )))
-    } else if state.is_attached_data_defined(root_accessor_identity) {
+    } else if state.is_attached_data_defined(&root_accessor_identity) {
         return Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
             query_location,
-            root_accessor_identity,
+            &root_accessor_identity,
             value_accessor,
         )));
-    } else if state.is_variable_defined(root_accessor_identity) {
+    } else if state.is_variable_defined(&root_accessor_identity) {
         return Ok(ScalarExpression::Variable(VariableScalarExpression::new(
             query_location,
-            root_accessor_identity,
+            &root_accessor_identity,
             value_accessor,
         )));
     } else {
@@ -377,7 +386,7 @@ pub(crate) fn parse_accessor_expression(
         // * extend const_str = 1: This expression needs to execute as
         //   source['const_str'] = 1 so the const_str is not evaluated.
         if allow_root_scalar {
-            if let Some(constant) = state.try_get_constant(root_accessor_identity) {
+            if let Some(constant) = state.try_get_constant(&root_accessor_identity) {
                 if value_accessor.has_selectors() {
                     // Note: It is not currently supported to access into a constant.
                     // This is because statics are currently simple things like string,
@@ -394,7 +403,7 @@ pub(crate) fn parse_accessor_expression(
             0,
             ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
                 query_location.clone(),
-                root_accessor_identity,
+                &root_accessor_identity,
             ))),
         );
 
@@ -800,10 +809,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_identifier_literal_rule() {
+    fn test_pest_parse_identifier_literal_rule() {
         pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
             Rule::identifier_literal,
             &["Abc", "abc_123", "_abc"],
+            &[],
+        );
+    }
+
+    #[test]
+    fn test_pest_parse_identifier_or_pattern_literal_rule() {
+        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+            Rule::identifier_or_pattern_literal,
+            &["*", "abc*", "a*b*c", "['something.*']"],
             &[],
         );
     }
@@ -815,6 +833,14 @@ mod tests {
             &[
                 (Rule::accessor_expression, "Abc"),
                 (Rule::identifier_literal, "Abc"),
+            ],
+        );
+
+        pest_test_helpers::test_compound_pest_rule(
+            KqlParser::parse(Rule::accessor_expression, "['hello world']").unwrap(),
+            &[
+                (Rule::accessor_expression, "['hello world']"),
+                (Rule::string_literal, "'hello world'"),
             ],
         );
 
@@ -956,10 +982,13 @@ mod tests {
 
     #[test]
     fn test_parse_accessor_expression_implicit_source() {
-        let mut result =
-            KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]").unwrap();
+        let mut result = KqlParser::parse(
+            Rule::accessor_expression,
+            "['sub.key thing'][var][-neg_attr]",
+        )
+        .unwrap();
 
-        let mut state = ParserState::new("subkey[var][-neg_attr]");
+        let mut state = ParserState::new("['sub.key thing'][var][-neg_attr]");
 
         state.push_variable_name("var");
 
@@ -969,7 +998,7 @@ mod tests {
             assert_eq!(
                 &[
                     ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "subkey")
+                        StringScalarExpression::new(QueryLocation::new_fake(), "sub.key thing")
                     )),
                     ScalarExpression::Variable(VariableScalarExpression::new(
                         QueryLocation::new_fake(),
