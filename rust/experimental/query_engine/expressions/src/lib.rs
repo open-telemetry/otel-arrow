@@ -14,7 +14,7 @@ pub use expression::Expression;
 pub use expression::QueryLocation;
 pub use expression_error::ExpressionError;
 pub use pipeline_expression::PipelineExpression;
-
+pub use pipeline_expression::PipelineExpressionBuilder;
 pub use value_accessor::ValueAccessor;
 
 pub use data_expressions::*;

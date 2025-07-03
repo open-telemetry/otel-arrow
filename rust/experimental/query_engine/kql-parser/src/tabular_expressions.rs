@@ -565,7 +565,7 @@ fn parse_identifier_or_pattern_literal(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::KqlPestParser;
 
     use super::*;
 
@@ -586,7 +586,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::extend_expression, input).unwrap();
 
             let expression = parse_extend_expression(result.next().unwrap(), &state).unwrap();
 
@@ -601,7 +601,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::extend_expression, input).unwrap();
 
             let error = parse_extend_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -754,7 +754,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_expression, input).unwrap();
 
             let expression = parse_project_expression(result.next().unwrap(), &state).unwrap();
 
@@ -778,7 +778,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_expression, input).unwrap();
 
             let error = parse_project_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -1116,7 +1116,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
 
             let expression = parse_project_keep_expression(result.next().unwrap(), &state).unwrap();
 
@@ -1140,7 +1140,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
 
             let error = parse_project_keep_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -1310,7 +1310,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
 
             let expression = parse_project_away_expression(result.next().unwrap(), &state).unwrap();
 
@@ -1334,7 +1334,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
 
             let error = parse_project_away_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -1492,7 +1492,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::where_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::where_expression, input).unwrap();
 
             let expression = parse_where_expression(result.next().unwrap(), &state).unwrap();
 
@@ -1543,7 +1543,7 @@ mod tests {
         let run_test = |input: &str, expected: Vec<DataExpression>| {
             let state = ParserState::new(input);
 
-            let mut result = KqlParser::parse(Rule::tabular_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::tabular_expression, input).unwrap();
 
             let expression = parse_tabular_expression(result.next().unwrap(), &state).unwrap();
 

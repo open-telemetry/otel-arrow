@@ -34,7 +34,7 @@ pub(crate) fn parse_conditional_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::KqlPestParser;
 
     use super::*;
 
@@ -43,7 +43,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let state = ParserState::new(input);
 
-            let mut result = KqlParser::parse(Rule::conditional_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::conditional_expression, input).unwrap();
 
             let expression = parse_conditional_expression(result.next().unwrap(), &state).unwrap();
 
