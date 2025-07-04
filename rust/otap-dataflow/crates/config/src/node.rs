@@ -131,11 +131,8 @@ impl NodeUserConfig {
     }
 
     /// Creates a new `NodeUserConfig` with the specified kind, plugin URN, and user configuration.
-    pub fn with_user_config(
-        kind: NodeKind,
-        plugin_urn: Urn,
-        user_config: Value,
-    ) -> Self {
+    #[must_use]
+    pub fn with_user_config(kind: NodeKind, plugin_urn: Urn, user_config: Value) -> Self {
         Self {
             kind,
             plugin_urn,
@@ -144,9 +141,13 @@ impl NodeUserConfig {
             config: user_config,
         }
     }
-    
+
     /// Adds an out port to this node's configuration.
-    pub fn add_out_port(&mut self, port_name: PortName, edge_config: HyperEdgeConfig) -> Option<HyperEdgeConfig> {
+    pub fn add_out_port(
+        &mut self,
+        port_name: PortName,
+        edge_config: HyperEdgeConfig,
+    ) -> Option<HyperEdgeConfig> {
         self.out_ports.insert(port_name, edge_config)
     }
 }

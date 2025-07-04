@@ -33,10 +33,10 @@
 
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
+use crate::local::message::LocalSender;
 use crate::message::Message;
 use async_trait::async_trait;
 use std::borrow::Cow;
-use crate::local::message::LocalSender;
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]

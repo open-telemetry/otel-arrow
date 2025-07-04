@@ -8,15 +8,15 @@ use crate::grpc::OTAPData;
 use crate::proto::opentelemetry::experimental::arrow::v1::BatchArrowRecords;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::error::Error;
-use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::local::receiver as local;
+use otap_df_engine::receiver::ReceiverWrapper;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::rc::Rc;
-use serde::{Deserialize, Serialize};
-use otap_df_config::node::NodeUserConfig;
 
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
@@ -43,15 +43,18 @@ pub struct FakeGeneratorReceiver {
 pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OTAPData> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        ReceiverWrapper::local(FakeGeneratorReceiver::from_config(&node_config.config), node_config, receiver_config)
+        ReceiverWrapper::local(
+            FakeGeneratorReceiver::from_config(&node_config.config),
+            node_config,
+            receiver_config,
+        )
     },
 };
 
 impl FakeGeneratorReceiver {
     /// creates a new fake data generator
     #[must_use]
-    pub fn new(
-    ) -> Self {
+    pub fn new() -> Self {
         FakeGeneratorReceiver {
             config: Config {
                 batch_count: 10, // Default batch count
@@ -62,13 +65,10 @@ impl FakeGeneratorReceiver {
     /// Creates a new fake data generator from a configuration object
     #[must_use]
     pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone())
-            .unwrap_or_else(|_| Config {
-                batch_count: 10, // Default batch count if parsing fails
-            });
-        FakeGeneratorReceiver {
-            config,
-        }
+        let config: Config = serde_json::from_value(config.clone()).unwrap_or_else(|_| Config {
+            batch_count: 10, // Default batch count if parsing fails
+        });
+        FakeGeneratorReceiver { config }
     }
 }
 

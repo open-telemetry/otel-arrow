@@ -32,14 +32,14 @@ pub mod runtime_config;
 pub mod shared;
 pub mod testing;
 
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::Receiver;
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::shared::message::{SharedReceiver, SharedSender};
 pub use linkme::distributed_slice;
 use node::Node;
 use otap_df_config::node::{DispatchStrategy, NodeUserConfig};
 use otap_df_config::{NodeId, PortName};
-use crate::local::message::{LocalReceiver, LocalSender};
-use crate::shared::message::{SharedReceiver, SharedSender};
 
 /// Trait for factory types that expose a name.
 ///
@@ -55,7 +55,10 @@ pub struct ReceiverFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
     /// A function that creates a new receiver instance.
-    pub create: fn(node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig) -> ReceiverWrapper<PData>,
+    pub create: fn(
+        node_config: Rc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+    ) -> ReceiverWrapper<PData>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -103,7 +106,10 @@ pub struct ExporterFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
     /// A function that creates a new exporter instance.
-    pub create: fn(node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig) -> ExporterWrapper<PData>,
+    pub create: fn(
+        node_config: Rc<NodeUserConfig>,
+        exporter_config: &ExporterConfig,
+    ) -> ExporterWrapper<PData>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -267,7 +273,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
                 .ok_or_else(|| Error::UnknownNode {
                     node_id: hyper_edge.source.clone(),
                 })?;
-            
+
             // Get destination nodes
             let mut dest_nodes = Vec::with_capacity(hyper_edge.destinations.len());
             for id in &hyper_edge.destinations {
@@ -276,8 +282,8 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
                     .map(|p| p as &dyn Node)
                     .or_else(|| exporters.get(id).map(|e| e as &dyn Node))
                     .ok_or_else(|| Error::UnknownNode {
-                    node_id: id.clone(),
-                })?;
+                        node_id: id.clone(),
+                    })?;
                 dest_nodes.push(node);
             }
 
@@ -305,26 +311,40 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
 
         // Second pass: perform all assignments
         for assignment in assignments {
-            let src_node =
-                receivers.get_mut(&assignment.source_id)
-                    .map(|n| n as &mut dyn NodeWithPDataSender<PData>)
-                    .or_else(|| processors.get_mut(&assignment.source_id).map(|n| n as &mut dyn NodeWithPDataSender<PData>))
-                    .ok_or_else(|| Error::UnknownNode {
-                        node_id: assignment.source_id.clone(),
-                    })?;
-            src_node.set_pdata_sender(assignment.source_id.clone(), assignment.port.clone(), assignment.sender)?;
+            let src_node = receivers
+                .get_mut(&assignment.source_id)
+                .map(|n| n as &mut dyn NodeWithPDataSender<PData>)
+                .or_else(|| {
+                    processors
+                        .get_mut(&assignment.source_id)
+                        .map(|n| n as &mut dyn NodeWithPDataSender<PData>)
+                })
+                .ok_or_else(|| Error::UnknownNode {
+                    node_id: assignment.source_id.clone(),
+                })?;
+            src_node.set_pdata_sender(
+                assignment.source_id.clone(),
+                assignment.port.clone(),
+                assignment.sender,
+            )?;
             for (dest_id, receiver) in assignment.destinations {
-                let dest_node =
-                    processors.get_mut(&dest_id)
-                        .map(|n| n as &mut dyn NodeWithPDataReceiver<PData>)
-                        .or_else(|| exporters.get_mut(&dest_id).map(|n| n as &mut dyn NodeWithPDataReceiver<PData>))
-                        .ok_or_else(|| Error::UnknownNode {
-                            node_id: dest_id.clone(),
-                        })?;
+                let dest_node = processors
+                    .get_mut(&dest_id)
+                    .map(|n| n as &mut dyn NodeWithPDataReceiver<PData>)
+                    .or_else(|| {
+                        exporters
+                            .get_mut(&dest_id)
+                            .map(|n| n as &mut dyn NodeWithPDataReceiver<PData>)
+                    })
+                    .ok_or_else(|| Error::UnknownNode {
+                        node_id: dest_id.clone(),
+                    })?;
                 dest_node.set_pdata_receiver(dest_id, receiver)?;
             }
         }
-        Ok(RuntimePipeline::new(config, receivers, processors, exporters))
+        Ok(RuntimePipeline::new(
+            config, receivers, processors, exporters,
+        ))
     }
 
     /// Determines the best channel type from the following parameters:
@@ -353,13 +373,18 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
                 let pdata_receivers = (0..num_destinations)
                     .map(|_| Receiver::Shared(SharedReceiver::MpmcReceiver(pdata_receiver.clone())))
                     .collect::<Vec<_>>();
-                Ok((Sender::Shared(SharedSender::MpmcSender(pdata_sender)), pdata_receivers))
+                Ok((
+                    Sender::Shared(SharedSender::MpmcSender(pdata_sender)),
+                    pdata_receivers,
+                ))
             } else {
                 let (pdata_sender, pdata_receiver) =
                     tokio::sync::mpsc::channel::<PData>(buffer_size.get());
                 Ok((
                     Sender::Shared(SharedSender::MpscSender(pdata_sender)),
-                    vec![Receiver::Shared(SharedReceiver::MpscReceiver(pdata_receiver))],
+                    vec![Receiver::Shared(SharedReceiver::MpscReceiver(
+                        pdata_receiver,
+                    ))],
                 ))
             }
         } else {
@@ -371,7 +396,10 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
                 let pdata_receivers = (0..num_destinations)
                     .map(|_| Receiver::Local(LocalReceiver::MpmcReceiver(pdata_receiver.clone())))
                     .collect::<Vec<_>>();
-                Ok((Sender::Local(LocalSender::MpmcSender(pdata_sender)), pdata_receivers))
+                Ok((
+                    Sender::Local(LocalSender::MpmcSender(pdata_sender)),
+                    pdata_receivers,
+                ))
             } else {
                 // ToDo(LQ): Use a local SPSC channel when available.
                 let (pdata_sender, pdata_receiver) =
@@ -400,10 +428,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         let runtime_config = ReceiverConfig::new(receiver_id.clone());
         let create = factory.create;
 
-        let prev_node = receivers.insert(
-            receiver_id.clone(),
-            create(node_config, &runtime_config),
-        );
+        let prev_node = receivers.insert(receiver_id.clone(), create(node_config, &runtime_config));
         if prev_node.is_some() {
             return Err(Error::ReceiverAlreadyExists {
                 receiver: receiver_id,
@@ -454,10 +479,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
             })?;
         let exporter_config = ExporterConfig::new(exporter_id.clone());
         let create = factory.create;
-        let prev_node = nodes.insert(
-            exporter_id.clone(),
-            create(node_config, &exporter_config),
-        );
+        let prev_node = nodes.insert(exporter_id.clone(), create(node_config, &exporter_config));
         if prev_node.is_some() {
             return Err(Error::ExporterAlreadyExists {
                 exporter: exporter_id,

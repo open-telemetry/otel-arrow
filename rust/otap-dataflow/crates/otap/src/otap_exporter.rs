@@ -6,7 +6,6 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use std::rc::Rc;
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OTAPData;
 use crate::proto::opentelemetry::experimental::arrow::v1::{
@@ -17,6 +16,7 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::control::ControlMsg;
@@ -26,10 +26,10 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
 use serde_json::Value;
-use otap_df_config::node::NodeUserConfig;
+use std::rc::Rc;
 
 /// The URN for the OTAP exporter
-pub const OTAP_EXPORTER_URN : &str = "urn:otel:otap:exporter";
+pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
 
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
@@ -46,7 +46,11 @@ pub struct OTAPExporter {
 pub static OTAP_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
     create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(OTAPExporter::from_config(&node_config.config), node_config, exporter_config)
+        ExporterWrapper::local(
+            OTAPExporter::from_config(&node_config.config),
+            node_config,
+            exporter_config,
+        )
     },
 };
 
@@ -191,12 +195,13 @@ mod tests {
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
         create_batch_arrow_record,
     };
-    use crate::otap_exporter::{OTAPExporter, OTAP_EXPORTER_URN};
+    use crate::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
     use crate::proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
@@ -207,7 +212,6 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
-    use otap_df_config::node::NodeUserConfig;
 
     const METRIC_BATCH_ID: i64 = 0;
     const LOG_BATCH_ID: i64 = 1;

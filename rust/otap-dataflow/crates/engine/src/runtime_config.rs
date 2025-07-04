@@ -6,9 +6,9 @@ use crate::control::ControlMsg;
 use crate::error::Error;
 use crate::error::Error::EngineErrors;
 use crate::message::{Receiver, Sender};
-use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use crate::node::Node;
-use otap_df_config::{node::NodeUserConfig, pipeline::PipelineConfig, NodeId};
+use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
+use otap_df_config::{NodeId, node::NodeUserConfig, pipeline::PipelineConfig};
 use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::runtime::Builder;
@@ -94,7 +94,13 @@ impl<PData: 'static> RuntimePipeline<PData> {
         for id in exporters.keys() {
             _ = nodes.insert(id.clone(), NodeType::Exporter);
         }
-        Self { config, receivers, processors, exporters, nodes }
+        Self {
+            config,
+            receivers,
+            processors,
+            exporters,
+            nodes,
+        }
     }
 
     /// Returns the number of nodes in the pipeline.
@@ -118,41 +124,34 @@ impl<PData: 'static> RuntimePipeline<PData> {
         let local_tasks = LocalSet::new();
         let mut handlers = Vec::with_capacity(self.node_count());
 
-        for (_node_id, exporter) in self.exporters.into_iter() {
-            handlers.push(local_tasks.spawn_local(async move {
-                exporter.start().await
-            }));
+        for (_node_id, exporter) in self.exporters {
+            handlers.push(local_tasks.spawn_local(async move { exporter.start().await }));
         }
-        for (_node_id, processor) in self.processors.into_iter() {
-            handlers.push(local_tasks.spawn_local(async move { 
-                processor.start().await 
-            }));
+        for (_node_id, processor) in self.processors {
+            handlers.push(local_tasks.spawn_local(async move { processor.start().await }));
         }
-        for (_node_id, receiver) in self.receivers.into_iter() {
-            handlers.push(local_tasks.spawn_local(async move { 
-                receiver.start().await 
-            }));
+        for (_node_id, receiver) in self.receivers {
+            handlers.push(local_tasks.spawn_local(async move { receiver.start().await }));
         }
 
         // Wait for all tasks to complete, gathering any errors
         let results = rt.block_on(async {
             local_tasks
-                .run_until(async {
-                    futures::future::join_all(handlers).await
-                })
+                .run_until(async { futures::future::join_all(handlers).await })
                 .await
         });
-        
+
         let mut errors = Vec::new();
         for result in results {
             match result {
-                Ok(Ok(())) => continue,                                        // Task completed successfully
-                Ok(Err(e)) => errors.push(e),                   // Task completed with an error
-                Err(e) => errors.push(Error::TaskError {    // Task panicked
-                    is_cancelled: e.is_cancelled(), 
-                    is_panic: e.is_panic(), 
-                    error: e.to_string() 
-                }), 
+                Ok(Ok(())) => continue,       // Task completed successfully
+                Ok(Err(e)) => errors.push(e), // Task completed with an error
+                Err(e) => errors.push(Error::TaskError {
+                    // Task panicked
+                    is_cancelled: e.is_cancelled(),
+                    is_panic: e.is_panic(),
+                    error: e.to_string(),
+                }),
             }
         }
         if !errors.is_empty() {
@@ -162,6 +161,7 @@ impl<PData: 'static> RuntimePipeline<PData> {
     }
 
     /// Gets a reference to any node by its ID as a Node trait object
+    #[must_use]
     pub fn get_node(&self, node_id: &NodeId) -> Option<&dyn Node> {
         match self.nodes.get(node_id)? {
             NodeType::Receiver => self.receivers.get(node_id).map(|r| r as &dyn Node),

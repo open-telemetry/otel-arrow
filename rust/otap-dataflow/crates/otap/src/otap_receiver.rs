@@ -19,6 +19,7 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::ControlMsg;
@@ -31,7 +32,6 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use otap_df_config::node::NodeUserConfig;
 
 const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 
@@ -51,7 +51,11 @@ pub struct OTAPReceiver {
 pub static OTAP_RECEIVER: ReceiverFactory<OTAPData> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        ReceiverWrapper::shared(OTAPReceiver::from_config(&node_config.config), node_config, receiver_config)
+        ReceiverWrapper::shared(
+            OTAPReceiver::from_config(&node_config.config),
+            node_config,
+            receiver_config,
+        )
     },
 };
 
@@ -163,13 +167,14 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
 mod tests {
     use crate::grpc::OTAPData;
     use crate::mock::create_batch_arrow_record;
-    use crate::otap_receiver::{OTAPReceiver, OTAP_RECEIVER_URN};
+    use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
     use async_stream::stream;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
@@ -177,7 +182,6 @@ mod tests {
     use std::pin::Pin;
     use std::rc::Rc;
     use tokio::time::{Duration, timeout};
-    use otap_df_config::node::NodeUserConfig;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(

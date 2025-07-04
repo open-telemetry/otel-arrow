@@ -34,12 +34,12 @@
 use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
+use crate::local::message::LocalSender;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, UdpSocket};
-use crate::local::message::LocalSender;
 
 /// A trait for ingress receivers (!Send definition).
 ///

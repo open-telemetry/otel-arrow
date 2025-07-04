@@ -58,4 +58,3 @@ impl<T> LocalReceiver<T> {
         }
     }
 }
-

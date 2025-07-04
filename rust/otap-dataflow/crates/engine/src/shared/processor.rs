@@ -33,10 +33,10 @@
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
 use crate::message::Message;
+use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use std::borrow::Cow;
-use crate::shared::message::SharedSender;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -111,9 +111,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
+        self.msg_sender.send(data).await
     }
 
     // More methods will be added in the future as needed.

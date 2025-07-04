@@ -35,6 +35,7 @@ use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
 use crate::message::Message;
+use crate::shared::message::SharedReceiver;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
@@ -42,7 +43,6 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
-use crate::shared::message::SharedReceiver;
 
 /// A trait for egress exporters (Send definition).
 #[async_trait]
@@ -76,10 +76,7 @@ pub struct MessageChannel<PData> {
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(
-        control_rx: SharedReceiver<ControlMsg>,
-        pdata_rx: SharedReceiver<PData>,
-    ) -> Self {
+    pub fn new(control_rx: SharedReceiver<ControlMsg>, pdata_rx: SharedReceiver<PData>) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
@@ -137,7 +134,7 @@ impl<PData> MessageChannel<PData> {
                     // 1) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
                         Ok(pdata) => return Ok(Message::PData(pdata)),
-                        Err(e) => {
+                        Err(_) => {
                             // pdata channel closed → emit Shutdown
                             let shutdown = self.pending_shutdown
                                 .take()

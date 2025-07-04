@@ -6,7 +6,6 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use std::rc::Rc;
 use crate::OTLP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::grpc::OTLPData;
@@ -18,6 +17,7 @@ use crate::proto::opentelemetry::collector::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::control::ControlMsg;
@@ -25,11 +25,11 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
-use serde_json::Value;
-use otap_df_config::node::NodeUserConfig;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::rc::Rc;
 
-const OTLP_EXPORTER_URN: &'static str = "urn:otel:otlp:exporter";
+const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
 
 /// Configuration for the OTLP exporter
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +55,11 @@ pub struct OTLPExporter {
 pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
     create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(OTLPExporter::from_config(&node_config.config), node_config, exporter_config)
+        ExporterWrapper::local(
+            OTLPExporter::from_config(&node_config.config),
+            node_config,
+            exporter_config,
+        )
     },
 };
 
@@ -73,12 +77,10 @@ impl OTLPExporter {
     /// Creates a new OTLPExporter from a configuration object
     #[must_use]
     pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone())
-            .unwrap_or_else(|_| Config {
-                grpc_endpoint: "127.0.0.1:4317".to_owned(),
-                compression_method: None,
-            });
-        dbg!(&config);
+        let config: Config = serde_json::from_value(config.clone()).unwrap_or_else(|_| Config {
+            grpc_endpoint: "127.0.0.1:4317".to_owned(),
+            compression_method: None,
+        });
         OTLPExporter {
             grpc_endpoint: config.grpc_endpoint,
             compression_method: config.compression_method,
@@ -205,7 +207,7 @@ mod tests {
 
     use crate::grpc::OTLPData;
     use crate::mock::{LogsServiceMock, MetricsServiceMock, ProfilesServiceMock, TraceServiceMock};
-    use crate::otlp_exporter::{OTLPExporter, OTLP_EXPORTER_URN};
+    use crate::otlp_exporter::{OTLP_EXPORTER_URN, OTLPExporter};
     use crate::proto::opentelemetry::collector::{
         logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
@@ -214,6 +216,7 @@ mod tests {
         },
         trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
@@ -224,7 +227,6 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
-    use otap_df_config::node::NodeUserConfig;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.

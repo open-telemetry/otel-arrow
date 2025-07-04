@@ -6,21 +6,21 @@
 //! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
 //! See [`shared::Exporter`] for the Send implementation.
 
-use std::rc::Rc;
 use crate::config::ExporterConfig;
 use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::local::exporter as local;
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
 use crate::message::{Receiver, Sender};
+use crate::node::{Node, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
-use otap_df_config::node::NodeUserConfig;
 use otap_df_config::NodeId;
-use crate::local::message::{LocalReceiver, LocalSender};
-use crate::node::{Node, NodeWithPDataReceiver};
-use crate::shared::message::{SharedReceiver, SharedSender};
+use otap_df_config::node::NodeUserConfig;
+use std::rc::Rc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -69,9 +69,7 @@ impl<PData> Controllable for ExporterWrapper<PData> {
     /// Returns the control message sender for the exporter.
     fn control_sender(&self) -> Sender<ControlMsg> {
         match self {
-            ExporterWrapper::Local { control_sender, .. } => {
-                Sender::Local(control_sender.clone())
-            }
+            ExporterWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ExporterWrapper::Shared { control_sender, .. } => {
                 Sender::Shared(control_sender.clone())
             }
@@ -129,12 +127,12 @@ impl<PData> ExporterWrapper<PData> {
                 ..
             } => {
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
-                    exporter: effect_handler.exporter_name(), 
-                    error: "Control receiver not initialized".to_owned() 
+                    exporter: effect_handler.exporter_name(),
+                    error: "Control receiver not initialized".to_owned(),
                 })?;
-                let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError { 
-                    exporter: effect_handler.exporter_name(), 
-                    error: "PData receiver not initialized".to_owned() 
+                let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_name(),
+                    error: "PData receiver not initialized".to_owned(),
                 })?;
                 let message_channel =
                     message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
@@ -149,11 +147,11 @@ impl<PData> ExporterWrapper<PData> {
             } => {
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_name(),
-                    error: "Control receiver not initialized".to_owned()
+                    error: "Control receiver not initialized".to_owned(),
                 })?;
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_name(),
-                    error: "PData receiver not initialized".to_owned()
+                    error: "PData receiver not initialized".to_owned(),
                 })?;
                 let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
@@ -173,26 +171,32 @@ impl<PData> Node for ExporterWrapper<PData> {
 
     fn user_config(&self) -> Rc<NodeUserConfig> {
         match self {
-            ExporterWrapper::Local { user_config: config, .. } => config.clone(),
-            ExporterWrapper::Shared { user_config: config, .. } => config.clone(),
+            ExporterWrapper::Local {
+                user_config: config,
+                ..
+            } => config.clone(),
+            ExporterWrapper::Shared {
+                user_config: config,
+                ..
+            } => config.clone(),
         }
     }
 
     /// Sends a control message to the node.
     async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
         match self {
-            ExporterWrapper::Local { control_sender, .. } => {
-                control_sender.send(msg).await
-            }
-            ExporterWrapper::Shared { control_sender, .. } => {
-                control_sender.send(msg).await
-            }
+            ExporterWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
+            ExporterWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
         }
     }
 }
 
 impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
-    fn set_pdata_receiver(&mut self, node_id: NodeId, receiver: Receiver<PData>) -> Result<(), Error<PData>> {
+    fn set_pdata_receiver(
+        &mut self,
+        node_id: NodeId,
+        receiver: Receiver<PData>,
+    ) -> Result<(), Error<PData>> {
         match (self, receiver) {
             (ExporterWrapper::Local { pdata_receiver, .. }, receiver) => {
                 *pdata_receiver = Some(receiver);
@@ -202,22 +206,20 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
                 *pdata_receiver = Some(receiver);
                 Ok(())
             }
-            (ExporterWrapper::Shared { .. }, _) => {
-                Err(Error::ExporterError {
-                    exporter: node_id,
-                    error: "Expected a shared sender for PData".to_owned(),
-                })
-            }
+            (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
+                exporter: node_id,
+                error: "Expected a shared sender for PData".to_owned(),
+            }),
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use crate::control::ControlMsg;
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
+    use crate::local::message::LocalReceiver;
     use crate::message;
     use crate::message::Message;
     use crate::shared::exporter as shared;
@@ -227,13 +229,12 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
+    use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
     use std::rc::Rc;
     use std::time::Duration;
     use tokio::time::sleep;
-    use otap_df_config::node::NodeUserConfig;
-    use crate::local::message::LocalReceiver;
 
     /// A test exporter that counts message events.
     /// Works with any type of exporter !Send or Send.

@@ -39,7 +39,8 @@ mod object_store;
 mod partition;
 mod writer;
 
-const OTAP_PARQUET_EXPORTER_URN : &str = "urn:otel:otap:parquet:exporter";
+#[allow(dead_code)]
+const OTAP_PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
@@ -172,6 +173,7 @@ mod test {
     use std::time::Duration;
 
     use datagen::SimpleDataGenOptions;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
     use otel_arrow_rust::Consumer;
@@ -179,7 +181,6 @@ mod test {
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::{otap::OtapBatch, proto::opentelemetry::arrow::v1::BatchArrowRecords};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-    use otap_df_config::node::NodeUserConfig;
 
     pub mod datagen;
 
@@ -275,7 +276,9 @@ mod test {
             )]),
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_PARQUET_EXPORTER_URN));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -353,7 +356,9 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_PARQUET_EXPORTER_URN));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -389,7 +394,9 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_PARQUET_EXPORTER_URN));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -428,7 +435,9 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_PARQUET_EXPORTER_URN));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -487,7 +496,9 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_PARQUET_EXPORTER_URN));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
             node_config,

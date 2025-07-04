@@ -34,12 +34,12 @@
 use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use crate::shared::message::{SharedReceiver, SharedSender};
 
 /// A trait for ingress receivers (Send definition).
 ///
@@ -96,10 +96,7 @@ impl<PData> EffectHandler<PData> {
     /// Use this constructor when your receiver do need to be sent across threads or
     /// when it uses components that are `Send`.
     #[must_use]
-    pub fn new(
-        receiver_name: Cow<'static, str>,
-        msg_sender: SharedSender<PData>,
-    ) -> Self {
+    pub fn new(receiver_name: Cow<'static, str>, msg_sender: SharedSender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore {
                 node_name: receiver_name,
@@ -120,9 +117,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
+        self.msg_sender.send(data).await
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

@@ -7,12 +7,12 @@
 
 use crate::config::ProcessorConfig;
 use crate::error::Error;
-use crate::message::{Message, Receiver, Sender};
-use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
-use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use crate::local::message::{LocalReceiver, LocalSender};
-use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::message::{Message, Receiver, Sender};
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
+use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -35,7 +35,7 @@ impl<PData> TestContext<PData> {
     /// Creates a new TestContext from a ProcessorWrapperRuntime.
     #[must_use]
     pub fn new(runtime: ProcessorWrapperRuntime<PData>) -> Self {
-        Self { 
+        Self {
             runtime,
             output_receiver: None,
         }
@@ -44,12 +44,16 @@ impl<PData> TestContext<PData> {
     /// Processes a new message.
     pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
         match &mut self.runtime {
-            ProcessorWrapperRuntime::Local { processor, effect_handler, .. } => {
-                processor.process(msg, effect_handler).await
-            }
-            ProcessorWrapperRuntime::Shared { processor, effect_handler, .. } => {
-                processor.process(msg, effect_handler).await
-            }
+            ProcessorWrapperRuntime::Local {
+                processor,
+                effect_handler,
+                ..
+            } => processor.process(msg, effect_handler).await,
+            ProcessorWrapperRuntime::Shared {
+                processor,
+                effect_handler,
+                ..
+            } => processor.process(msg, effect_handler).await,
         }
     }
 
@@ -211,7 +215,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     {
         // The entire scenario is run to completion before the validation phase
         self.rt.block_on(async move {
-            let runtime = self.processor.prepare_runtime().await.expect("Failed to prepare runtime");
+            let runtime = self
+                .processor
+                .prepare_runtime()
+                .await
+                .expect("Failed to prepare runtime");
             let mut context = TestContext::new(runtime);
             context.output_receiver = self.output_receiver;
             f(context).await;

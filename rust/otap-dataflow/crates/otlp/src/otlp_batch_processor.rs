@@ -6,15 +6,15 @@ use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use async_trait::async_trait;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
 use prost::Message as ProstMessage;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
-use otap_df_engine::control::ControlMsg;
 
-const OTLP_BATCH_PROCESSOR_URN: &'static str = "urn:otel:otlp:batch::processor";
+const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
 
 /// Trait for a batch type (e.g., ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServiceRequest)
 pub trait Batch: Sized {
@@ -660,8 +660,6 @@ impl Processor<OTLPData> for GenericBatcher {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
-    use otap_df_config::node::NodeUserConfig;
     use super::*;
     use crate::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue, any_value,
@@ -670,17 +668,21 @@ mod tests {
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::Span;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::control::ControlMsg;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
+    use std::rc::Rc;
 
     /// Wraps a processor in a local test wrapper.
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
-        let node_config = Rc::new(NodeUserConfig::new_processor_config(OTLP_BATCH_PROCESSOR_URN));
+        let node_config = Rc::new(NodeUserConfig::new_processor_config(
+            _OTLP_BATCH_PROCESSOR_URN,
+        ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
         ProcessorWrapper::local(processor, node_config, &config)
     }
@@ -1782,21 +1784,23 @@ mod integration_tests {
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::trace::v1::Span;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::control::ControlMsg;
     use otap_df_engine::local::processor::Processor;
     use otap_df_engine::processor::ProcessorWrapper;
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::rc::Rc;
     use std::time::Duration;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::control::ControlMsg;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
-        let node_config = Rc::new(NodeUserConfig::new_processor_config(OTLP_BATCH_PROCESSOR_URN));
+        let node_config = Rc::new(NodeUserConfig::new_processor_config(
+            _OTLP_BATCH_PROCESSOR_URN,
+        ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
         ProcessorWrapper::local(processor, node_config, &config)
     }

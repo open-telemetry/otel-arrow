@@ -29,7 +29,9 @@ impl<T> SharedSender<T> {
             SharedSender::MpscSender(sender) => {
                 sender.send(msg).await.map_err(|e| SendError::Closed(e.0))
             }
-            SharedSender::MpmcSender(sender) => sender.send(msg).map_err(|e| SendError::Closed(e.0)),
+            SharedSender::MpmcSender(sender) => {
+                sender.send(msg).map_err(|e| SendError::Closed(e.0))
+            }
         }
     }
 }
@@ -46,16 +48,24 @@ impl<T> SharedReceiver<T> {
     /// Receives a message from the channel.
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         match self {
-            SharedReceiver::MpscReceiver(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
-            SharedReceiver::MpmcReceiver(receiver) => receiver.recv().map_err(|_| RecvError::Closed),
+            SharedReceiver::MpscReceiver(receiver) => {
+                receiver.recv().await.ok_or(RecvError::Closed)
+            }
+            SharedReceiver::MpmcReceiver(receiver) => {
+                receiver.recv().map_err(|_| RecvError::Closed)
+            }
         }
     }
 
     /// Tries to receive a message from the channel.
     pub fn try_recv(&mut self) -> Result<T, RecvError> {
         match self {
-            SharedReceiver::MpscReceiver(receiver) => receiver.try_recv().map_err(|_| RecvError::Closed),
-            SharedReceiver::MpmcReceiver(receiver) => receiver.try_recv().map_err(|_| RecvError::Closed),
+            SharedReceiver::MpscReceiver(receiver) => {
+                receiver.try_recv().map_err(|_| RecvError::Closed)
+            }
+            SharedReceiver::MpmcReceiver(receiver) => {
+                receiver.try_recv().map_err(|_| RecvError::Closed)
+            }
         }
     }
 }

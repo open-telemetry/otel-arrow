@@ -2,13 +2,13 @@
 
 //! Trait defining the common properties between all types of nodes in the pipeline engine.
 
-use std::rc::Rc;
-use otap_df_channel::error::SendError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{NodeId, PortName};
 use crate::control::ControlMsg;
 use crate::error::Error;
 use crate::message::{Receiver, Sender};
+use otap_df_channel::error::SendError;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_config::{NodeId, PortName};
+use std::rc::Rc;
 
 /// Common trait for nodes in the pipeline.
 #[async_trait::async_trait(?Send)]
@@ -20,17 +20,26 @@ pub trait Node {
     /// Returns a reference to the node's user configuration.
     #[must_use]
     fn user_config(&self) -> Rc<NodeUserConfig>;
-    
+
     /// Sends a control message to the node.
     async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>>;
 }
 
 /// Trait for nodes that can send pdata to a specific port.
 pub trait NodeWithPDataSender<PData>: Node {
-    fn set_pdata_sender(&mut self, node_id: NodeId, _port: PortName, sender: Sender<PData>) -> Result<(), Error<PData>>;
+    fn set_pdata_sender(
+        &mut self,
+        node_id: NodeId,
+        _port: PortName,
+        sender: Sender<PData>,
+    ) -> Result<(), Error<PData>>;
 }
 
 /// Trait for nodes that can receive pdata.
 pub trait NodeWithPDataReceiver<PData>: Node {
-    fn set_pdata_receiver(&mut self, node_id: NodeId, receiver: Receiver<PData>) -> Result<(), Error<PData>>;
+    fn set_pdata_receiver(
+        &mut self,
+        node_id: NodeId,
+        receiver: Receiver<PData>,
+    ) -> Result<(), Error<PData>>;
 }

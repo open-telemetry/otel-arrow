@@ -51,9 +51,9 @@ static OTLP_PIPELINE_FACTORY: PipelineFactory<OTLPData> = build_factory();
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
     use crate::OTLP_PIPELINE_FACTORY;
     use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
+    use serde_json::json;
 
     #[test]
     fn test_build_runtime_pipeline() {
@@ -87,14 +87,14 @@ mod tests {
     fn test2() {
         let config = PipelineConfigBuilder::new()
             .add_receiver("otlp_receiver", "urn:otel:otlp:receiver", None)
-            .add_exporter("otlp_exporter", "urn:otel:otlp:exporter", Some(json!({
-                "grpc_endpoint": "127.0.0.1:4318"
-            })))
-            .broadcast(
-                "otlp_receiver",
-                "out_port",
-                ["otlp_exporter"],
+            .add_exporter(
+                "otlp_exporter",
+                "urn:otel:otlp:exporter",
+                Some(json!({
+                    "grpc_endpoint": "127.0.0.1:4318"
+                })),
             )
+            .broadcast("otlp_receiver", "out_port", ["otlp_exporter"])
             .build(PipelineType::OTLP, "namespace", "pipeline")
             .expect("Failed to build pipeline config");
         let result = OTLP_PIPELINE_FACTORY.build(config);
@@ -103,7 +103,7 @@ mod tests {
             "Failed to create runtime pipeline: {:?}",
             result.err()
         );
-        let runtime_pipeline = result.unwrap();
+        let _runtime_pipeline = result.unwrap();
         //runtime_pipeline.start().expect("Failed to start pipeline");
     }
 }

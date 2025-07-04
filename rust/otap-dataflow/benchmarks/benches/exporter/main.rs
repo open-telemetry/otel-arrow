@@ -55,9 +55,11 @@ use tonic::transport::Server;
 
 use tonic::{Request, Response, Status};
 
+use otap_df_engine::local::message::{LocalReceiver, LocalSender};
 use std::pin::Pin;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -552,10 +554,10 @@ fn bench_exporter(c: &mut Criterion) {
                     // create necessary senders and receivers to communicate with the exporter
                     let (control_tx, control_rx) = mpsc::Channel::new(100);
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = Sender::Local(control_tx);
-                    let control_receiver = Receiver::Local(control_rx);
-                    let pdata_sender = Sender::Local(pdata_tx);
-                    let pdata_receiver = Receiver::Local(pdata_rx);
+                    let control_sender = Sender::Local(LocalSender::MpscSender(control_tx));
+                    let control_receiver = Receiver::Local(LocalReceiver::MpscReceiver(control_rx));
+                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
+                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
 
                     // start the exporter
                     let local = LocalSet::new();

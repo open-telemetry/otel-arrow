@@ -21,21 +21,21 @@ use crate::proto::opentelemetry::collector::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use serde::{Deserialize, Serialize};
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use otap_df_config::node::NodeUserConfig;
 
-const OTLP_RECEIVER_URN: &'static str = "urn:otel:otlp:receiver";
+const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 
 /// Configuration for the OTLP receiver
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +61,11 @@ pub struct OTLPReceiver {
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        ReceiverWrapper::shared(OTLPReceiver::from_config(&node_config.config), node_config, receiver_config)
+        ReceiverWrapper::shared(
+            OTLPReceiver::from_config(&node_config.config),
+            node_config,
+            receiver_config,
+        )
     },
 };
 
@@ -78,11 +82,10 @@ impl OTLPReceiver {
     /// Creates a new OTLPReceiver from a configuration object
     #[must_use]
     pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone())
-            .unwrap_or_else(|_| Config {
-                listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-                compression_method: None,
-            });
+        let config: Config = serde_json::from_value(config.clone()).unwrap_or_else(|_| Config {
+            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
+            compression_method: None,
+        });
         OTLPReceiver {
             listening_addr: config.listening_addr,
             compression_method: config.compression_method,
@@ -174,7 +177,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
 #[cfg(test)]
 mod tests {
     use crate::grpc::OTLPData;
-    use crate::otlp_receiver::{OTLPReceiver, OTLP_RECEIVER_URN};
+    use crate::otlp_receiver::{OTLP_RECEIVER_URN, OTLPReceiver};
     use crate::proto::opentelemetry::collector::{
         logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
@@ -183,6 +186,7 @@ mod tests {
         },
         trace::v1::{ExportTraceServiceRequest, trace_service_client::TraceServiceClient},
     };
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
@@ -190,7 +194,6 @@ mod tests {
     use std::pin::Pin;
     use std::rc::Rc;
     use tokio::time::{Duration, timeout};
-    use otap_df_config::node::NodeUserConfig;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
@@ -301,8 +304,11 @@ mod tests {
 
         let node_config = Rc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
         // create our receiver
-        let receiver =
-            ReceiverWrapper::shared(OTLPReceiver::new(addr, None), node_config, test_runtime.config());
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver::new(addr, None),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime

@@ -7,7 +7,11 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ItemStatic, Type, Ident, Token, parse_macro_input, parse::{Parse, ParseStream}};
+use syn::{
+    Ident, ItemStatic, Token, Type,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+};
 
 /// Arguments for the pipeline_factory macro
 struct PipelineFactoryArgs {
@@ -70,9 +74,18 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
     let receiver_factories_name = quote::format_ident!("{}_RECEIVER_FACTORIES", prefix);
     let processor_factories_name = quote::format_ident!("{}_PROCESSOR_FACTORIES", prefix);
     let exporter_factories_name = quote::format_ident!("{}_EXPORTER_FACTORIES", prefix);
-    let get_receiver_factory_map_name = quote::format_ident!("get_{}_receiver_factory_map", prefix.to_string().to_lowercase());
-    let get_processor_factory_map_name = quote::format_ident!("get_{}_processor_factory_map", prefix.to_string().to_lowercase());
-    let get_exporter_factory_map_name = quote::format_ident!("get_{}_exporter_factory_map", prefix.to_string().to_lowercase());
+    let get_receiver_factory_map_name = quote::format_ident!(
+        "get_{}_receiver_factory_map",
+        prefix.to_string().to_lowercase()
+    );
+    let get_processor_factory_map_name = quote::format_ident!(
+        "get_{}_processor_factory_map",
+        prefix.to_string().to_lowercase()
+    );
+    let get_exporter_factory_map_name = quote::format_ident!(
+        "get_{}_exporter_factory_map",
+        prefix.to_string().to_lowercase()
+    );
 
     let output = quote! {
         /// A slice of receiver factories.
@@ -116,4 +129,3 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 
     output.into()
 }
-

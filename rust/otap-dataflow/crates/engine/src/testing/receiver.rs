@@ -8,8 +8,11 @@
 use crate::config::ReceiverConfig;
 use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
+use crate::node::NodeWithPDataSender;
 use crate::receiver::ReceiverWrapper;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
 use serde_json::Value;
@@ -18,9 +21,6 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
-use crate::local::message::{LocalReceiver, LocalSender};
-use crate::node::NodeWithPDataSender;
-use crate::shared::message::{SharedReceiver, SharedSender};
 
 /// Context used during the test phase of a test.
 pub struct TestContext {
@@ -222,16 +222,29 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     {
         let (node_id, pdata_sender, pdata_receiver) = match &self.receiver {
             ReceiverWrapper::Local { runtime_config, .. } => {
-                let (sender, receiver) = otap_df_channel::mpsc::Channel::new(runtime_config.output_pdata_channel.capacity);
-                (runtime_config.name.clone(), Sender::Local(LocalSender::MpscSender(sender)), Receiver::Local(LocalReceiver::MpscReceiver(receiver)))
+                let (sender, receiver) = otap_df_channel::mpsc::Channel::new(
+                    runtime_config.output_pdata_channel.capacity,
+                );
+                (
+                    runtime_config.name.clone(),
+                    Sender::Local(LocalSender::MpscSender(sender)),
+                    Receiver::Local(LocalReceiver::MpscReceiver(receiver)),
+                )
             }
-            ReceiverWrapper::Shared { runtime_config,.. } => {
-                let (sender, receiver) = tokio::sync::mpsc::channel(runtime_config.output_pdata_channel.capacity);
-                (runtime_config.name.clone(), Sender::Shared(SharedSender::MpscSender(sender)), Receiver::Shared(SharedReceiver::MpscReceiver(receiver)))
+            ReceiverWrapper::Shared { runtime_config, .. } => {
+                let (sender, receiver) =
+                    tokio::sync::mpsc::channel(runtime_config.output_pdata_channel.capacity);
+                (
+                    runtime_config.name.clone(),
+                    Sender::Shared(SharedSender::MpscSender(sender)),
+                    Receiver::Shared(SharedReceiver::MpscReceiver(receiver)),
+                )
             }
         };
-        self.receiver.set_pdata_sender(node_id, "".into(), pdata_sender).expect("Failed to set pdata sender");
-        
+        self.receiver
+            .set_pdata_sender(node_id, "".into(), pdata_sender)
+            .expect("Failed to set pdata sender");
+
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
                 .start()

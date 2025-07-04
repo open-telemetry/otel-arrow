@@ -3,12 +3,12 @@
 //! Message definitions for the pipeline engine.
 
 use crate::control::ControlMsg;
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::{RecvError, SendError};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
-use crate::local::message::{LocalReceiver, LocalSender};
-use crate::shared::message::{SharedReceiver, SharedSender};
 
 /// Represents messages sent to nodes (receivers, processors, exporters, or connectors) within the
 /// pipeline.

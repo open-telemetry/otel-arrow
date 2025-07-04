@@ -3,7 +3,7 @@
 //! Pipeline configuration specification.
 
 use crate::error::{Context, Error};
-use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeUserConfig, NodeKind};
+use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::{Description, NamespaceId, NodeId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
