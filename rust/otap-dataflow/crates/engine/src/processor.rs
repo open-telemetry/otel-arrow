@@ -65,6 +65,27 @@ pub enum ProcessorWrapper<PData> {
     },
 }
 
+pub enum ProcessorWrapperTestMode<PData> {
+    /// A processor with a `!Send` implementation.
+    Local {
+        /// The processor instance.
+        processor: Box<dyn local::Processor<PData>>,
+        /// The message channel
+        message_channel: MessageChannel<PData>,
+        // The local effect handler
+        effect_handler: local::EffectHandler<PData>,
+    },
+    /// A processor with a `Send` implementation.
+    Shared {
+        /// The processor instance.
+        processor: Box<dyn shared::Processor<PData>>,
+        /// Message channel
+        message_channel: MessageChannel<PData>,
+        /// The shared effect handler
+        effect_handler: shared::EffectHandler<PData>,
+    },
+}
+
 impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn local<P>(processor: P, user_config: Rc<NodeUserConfig>, config: &ProcessorConfig) -> Self
@@ -106,6 +127,58 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
+    /// Start the processor in test mode.
+    pub async fn start_test_mode(self) -> Result<ProcessorWrapperTestMode<PData>, Error<PData>> {
+        match self {
+            ProcessorWrapper::Local { mut processor, runtime_config, control_receiver, pdata_sender, pdata_receiver, .. } => {
+                let mut message_channel = MessageChannel::new(
+                    Receiver::Local(control_receiver),
+                    Receiver::Local(pdata_receiver.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata receiver must be defined at this stage".to_owned() }
+                    })?),
+                );
+                let mut effect_handler = local::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata sender must be defined at this stage".to_owned() }
+                    })?,
+                );
+                Ok(ProcessorWrapperTestMode::Local {
+                    processor,
+                    effect_handler,
+                    message_channel
+                })
+            }
+            ProcessorWrapper::Shared { mut processor, runtime_config, control_receiver, pdata_sender, pdata_receiver, .. } => {
+                let mut message_channel = MessageChannel::new(
+                    Receiver::Shared(control_receiver),
+                    Receiver::Shared(pdata_receiver.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata receiver must be defined at this stage".to_owned() }
+                    })?),
+                );
+                let mut effect_handler = shared::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender.ok_or_else(|| {
+                        Error::ProcessorError {
+                            processor: runtime_config.name.clone(),
+                            error: "The pdata sender must be defined at this stage".to_owned() }
+                    })?,
+                );
+                Ok(ProcessorWrapperTestMode::Shared {
+                    processor,
+                    effect_handler,
+                    message_channel,
+                })
+            }
+        }
+    }
+    
     /// Start the processor.
     pub async fn start(self) -> Result<(), Error<PData>> {
         match self {
