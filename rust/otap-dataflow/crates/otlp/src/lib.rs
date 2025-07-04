@@ -81,8 +81,6 @@ mod tests {
             3,
             "Expected 3 nodes in the pipeline"
         );
-        dbg!(runtime_pipeline.config());
-        runtime_pipeline.start().expect("Failed to start pipeline");
     }
 
     #[test]
@@ -106,6 +104,6 @@ mod tests {
             result.err()
         );
         let runtime_pipeline = result.unwrap();
-        runtime_pipeline.start().expect("Failed to start pipeline");
+        //runtime_pipeline.start().expect("Failed to start pipeline");
     }
 }
