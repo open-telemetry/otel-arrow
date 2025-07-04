@@ -1,8 +1,6 @@
-use std::collections::HashSet;
-
 use crate::{
-    Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation,
-    StringScalarExpression,
+    Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation, ScalarExpression,
+    ValueAccessor, ValueType,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,17 +11,25 @@ pub enum TransformExpression {
     /// Remove data transformation.
     Remove(RemoveTransformExpression),
 
-    /// Remove keys transformation.
-    ///
-    /// Note: Remove keys is a specialized form of the remove transformation
-    /// which takes a target map and a list of keys to be removed.
-    RemoveKeys(RemoveKeysTransformExpression),
+    /// Remove data from a target map.
+    ReduceMap(ReduceMapTransformExpression),
 
-    /// Clear keys transformation.
+    /// Remove top-level keys from a target map.
     ///
-    /// Note: Clear keys is used to remove all keys from a target map with an
-    /// optional list of keys to retain.
-    ClearKeys(ClearKeysTransformExpression),
+    /// Note: Remove map keys is a specialized form of the reduce map
+    /// transformation which only operates on top-level keys.
+    RemoveMapKeys(RemoveMapKeysTransformExpression),
+}
+
+impl Expression for TransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            TransformExpression::Set(s) => s.get_query_location(),
+            TransformExpression::Remove(r) => r.get_query_location(),
+            TransformExpression::ReduceMap(r) => r.get_query_location(),
+            TransformExpression::RemoveMapKeys(r) => r.get_query_location(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,22 +96,40 @@ impl Expression for RemoveTransformExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RemoveKeysTransformExpression {
-    query_location: QueryLocation,
-    target: MutableValueExpression,
-    keys_to_remove: HashSet<SourceKey>,
+pub enum RemoveMapKeysTransformExpression {
+    /// A map key transformation providing the top-level keys to remove. All other data is retained.
+    Remove(MapKeyListExpression),
+
+    /// A map key transformation providing the top-level keys to retain. All other data is removed.
+    Retain(MapKeyListExpression),
 }
 
-impl RemoveKeysTransformExpression {
+impl Expression for RemoveMapKeysTransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            RemoveMapKeysTransformExpression::Remove(m) => m.get_query_location(),
+            RemoveMapKeysTransformExpression::Retain(m) => m.get_query_location(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapKeyListExpression {
+    query_location: QueryLocation,
+    target: MutableValueExpression,
+    keys: Vec<ScalarExpression>,
+}
+
+impl MapKeyListExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-        keys_to_remove: HashSet<SourceKey>,
-    ) -> RemoveKeysTransformExpression {
+        keys: Vec<ScalarExpression>,
+    ) -> MapKeyListExpression {
         Self {
             query_location,
             target,
-            keys_to_remove,
+            keys,
         }
     }
 
@@ -113,34 +137,75 @@ impl RemoveKeysTransformExpression {
         &self.target
     }
 
-    pub fn get_keys_to_remove(&self) -> &HashSet<SourceKey> {
-        &self.keys_to_remove
+    pub fn get_keys(&self) -> &Vec<ScalarExpression> {
+        &self.keys
     }
 }
 
-impl Expression for RemoveKeysTransformExpression {
+impl Expression for MapKeyListExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClearKeysTransformExpression {
-    query_location: QueryLocation,
-    target: MutableValueExpression,
-    keys_to_keep: HashSet<SourceKey>,
+pub enum ReduceMapTransformExpression {
+    /// A map reduction providing the data to remove. All other data is retained.
+    Remove(MapSelectionExpression),
+
+    /// A map reduction providing the data to retain. All other data is removed.
+    Retain(MapSelectionExpression),
 }
 
-impl ClearKeysTransformExpression {
+impl Expression for ReduceMapTransformExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        match self {
+            ReduceMapTransformExpression::Remove(m) => m.get_query_location(),
+            ReduceMapTransformExpression::Retain(m) => m.get_query_location(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapSelector {
+    /// A top-level key or key pattern.
+    KeyOrKeyPattern(ScalarExpression),
+
+    /// A [`ValueAccessor`] representing a path to data on the map.
+    ///
+    /// Note: The [`ValueAccessor`] could refer to top-level keys or nested
+    /// elements.
+    ValueAccessor(ValueAccessor),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapSelectionExpression {
+    query_location: QueryLocation,
+    target: MutableValueExpression,
+    selectors: Vec<MapSelector>,
+}
+
+impl MapSelectionExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-        keys_to_keep: HashSet<SourceKey>,
-    ) -> ClearKeysTransformExpression {
+    ) -> MapSelectionExpression {
         Self {
             query_location,
             target,
-            keys_to_keep,
+            selectors: Vec::new(),
+        }
+    }
+
+    pub fn new_with_selectors(
+        query_location: QueryLocation,
+        target: MutableValueExpression,
+        selectors: Vec<MapSelector>,
+    ) -> MapSelectionExpression {
+        Self {
+            query_location,
+            target,
+            selectors,
         }
     }
 
@@ -148,19 +213,42 @@ impl ClearKeysTransformExpression {
         &self.target
     }
 
-    pub fn get_keys_to_keep(&self) -> &HashSet<SourceKey> {
-        &self.keys_to_keep
+    pub fn get_selectors(&self) -> &Vec<MapSelector> {
+        &self.selectors
+    }
+
+    pub fn push_key_or_key_pattern(&mut self, key_or_key_pattern: ScalarExpression) -> bool {
+        if let ScalarExpression::Static(s) = &key_or_key_pattern {
+            let value_type = s.get_value_type();
+            if value_type != ValueType::String && value_type != ValueType::Regex {
+                return false;
+            }
+        }
+
+        self.selectors
+            .push(MapSelector::KeyOrKeyPattern(key_or_key_pattern));
+
+        true
+    }
+
+    pub fn push_value_accessor(&mut self, value_accessor: ValueAccessor) -> bool {
+        assert!(value_accessor.has_selectors());
+
+        if let ScalarExpression::Static(s) = value_accessor.get_selectors().first().unwrap()
+            && s.get_value_type() != ValueType::String
+        {
+            return false;
+        }
+
+        self.selectors
+            .push(MapSelector::ValueAccessor(value_accessor));
+
+        true
     }
 }
 
-impl Expression for ClearKeysTransformExpression {
+impl Expression for MapSelectionExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
-}
-
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub enum SourceKey {
-    Identifier(StringScalarExpression),
-    Pattern(StringScalarExpression),
 }

@@ -157,7 +157,7 @@ impl DataEngine {
                 .pipeline
                 .write_debug(&execution_context, "pipeline: ", 0, &mut output);
 
-            println!("{}", output);
+            println!("{output}");
 
             state.dropped_record_count += 1;
             if !item.on_dropped() {
@@ -187,7 +187,7 @@ impl DataEngine {
                 .pipeline
                 .write_debug(&execution_context, "pipeline: ", 0, &mut output);
 
-            println!("{}", output);
+            println!("{output}");
 
             state.included_record_count += 1;
             state.items.push(DataRecordState {
@@ -242,10 +242,7 @@ impl<TRecord: DataRecord, TItem: DataEngineItem<TRecord>> DataEngineBatch<'_, '_
                 data_record_state.result = DataRecordProcessResult::Drop;
                 state.dropped_record_count += 1;
                 state.included_record_count -= 1;
-                println!(
-                    "Dropped record replaced in summary reservoir: {:?}",
-                    data_record
-                );
+                println!("Dropped record replaced in summary reservoir: {data_record:?}");
                 if consumed {
                     data_record_state.item = None;
                 }
@@ -422,7 +419,7 @@ impl<T> DataEngineState for _DataEngineState<'_, '_, T> {
 
         let summary_info = self.summaries.register_summary(summary);
 
-        println!("Summary '{}' registered: {:?}", summary_id, summary_info);
+        println!("Summary '{summary_id}' registered: {summary_info:?}");
     }
 }
 

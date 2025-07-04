@@ -7,6 +7,8 @@ use crate::grpc::OTAPData;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
+/// Code for encoding OTAP batch from pdata view
+pub mod encoder;
 /// gRPC service implementation
 pub mod grpc;
 /// Implementation of OTAP Exporter that implements the exporter trait

@@ -526,10 +526,10 @@ mod tests {
                 assert_eq!(errors.len(), 1);
                 match &errors[0] {
                     Error::DuplicateNode { node_id, .. } if node_id == "A" => {}
-                    other => panic!("expected DuplicateNode(\"A\"), got {:?}", other),
+                    other => panic!("expected DuplicateNode(\"A\"), got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
@@ -550,10 +550,10 @@ mod tests {
                     Error::DuplicateOutPort {
                         source_node, port, ..
                     } if source_node == "A" && port == "p" => {}
-                    other => panic!("expected DuplicateOutPort(A, p), got {:?}", other),
+                    other => panic!("expected DuplicateOutPort(A, p), got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
@@ -574,10 +574,10 @@ mod tests {
                         missing_targets,
                         ..
                     } if source_node == "X" && *missing_source && missing_targets.is_empty() => {}
-                    other => panic!("expected InvalidHyperEdge missing_source, got {:?}", other),
+                    other => panic!("expected InvalidHyperEdge missing_source, got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
@@ -602,10 +602,10 @@ mod tests {
                         && !*missing_source
                         && missing_targets.as_slice() == ["Y"]
                         && target_nodes.as_slice() == ["Y"] => {}
-                    other => panic!("expected InvalidHyperEdge missing_targets, got {:?}", other),
+                    other => panic!("expected InvalidHyperEdge missing_targets, got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
@@ -632,7 +632,7 @@ mod tests {
                 }
                 assert!(found, "expected a CycleDetected error");
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
@@ -653,7 +653,7 @@ mod tests {
                 let edge = &start.out_ports["out"];
                 assert!(edge.destinations.contains("End"));
             }
-            Err(e) => panic!("expected successful build, got {:?}", e),
+            Err(e) => panic!("expected successful build, got {e:?}"),
         }
     }
 

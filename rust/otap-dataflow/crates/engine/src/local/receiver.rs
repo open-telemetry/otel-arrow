@@ -38,7 +38,7 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UdpSocket};
 use crate::local::message::LocalSender;
 
 /// A trait for ingress receivers (!Send definition).
@@ -159,6 +159,17 @@ impl<PData> EffectHandler<PData> {
     /// Returns an [`Error::IoError`] if any step in the process fails.
     pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
         self.core.tcp_listener(addr, self.receiver_name())
+    }
+
+    /// Creates a non-blocking UDP socket on the given address with socket options defined by the
+    /// pipeline engine implementation. It's important for receiver implementer to create UDP
+    /// sockets via this method to ensure the scalability and the serviceability of the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::IoError`] if any step in the process fails.
+    pub fn udp_socket(&self, addr: SocketAddr) -> Result<UdpSocket, Error<PData>> {
+        self.core.udp_socket(addr, self.receiver_name())
     }
 
     // More methods will be added in the future as needed.

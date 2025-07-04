@@ -24,7 +24,7 @@ from opentelemetry.trace import Status, StatusCode
 from ..errors.error_handler import handle_with_policy
 from ..runtime.runtime import Runtime
 from ..context.base import ExecutionStatus, BaseContext
-from ..context.test_contexts import TestStepContext, TestExecutionContext
+from ..context.framework_element_contexts import StepContext, ScenarioContext
 from ..strategies.hook_strategy import HookStrategy
 from ..context.component_hook_context import (
     HookableComponentPhase,
@@ -138,23 +138,26 @@ class Component(ABC):
         """
         self._hooks[phase].append(hook)
 
-    def _maybe_trace(
-        self, ctx: TestStepContext, name: str, phase: HookableComponentPhase
-    ):
+    def _maybe_trace(self, ctx: StepContext, name: str, phase: HookableComponentPhase):
         """
         Optionally creates a tracing context for a specific component lifecycle phase.
 
         Args:
-            ctx (TestStepContext): The context object containing tracing and span information.
+            ctx (StepContext): The context object containing tracing and span information.
             name (str): The base name for the tracing span (e.g., component name or operation).
             phase (HookableComponentPhase): The lifecycle phase to include in the span name.
 
         Returns:
             ContextManager: A tracing context manager if tracing is active, otherwise a no-op context.
         """
-        tracer = ctx.get_tracer("component")
-        if tracer and ctx.span:
-            return tracer.start_as_current_span(f"{name}: {phase.value}")
+        try:
+            tracer = ctx.get_tracer("component")
+            if tracer and ctx.span:
+                return tracer.start_as_current_span(f"{name}: {phase.value}")
+        except RuntimeError as e:
+            ctx.get_logger(__name__).warning(
+                "Unable to fetch tracer from runtime: %s", e
+            )
         return nullcontext()
 
     def _with_span(self, ctx: "BaseContext", name: str, callable_fn, *args, **kwargs):
@@ -199,7 +202,7 @@ class Component(ABC):
         else:
             return callable_fn(*args, **kwargs)
 
-    def _run_hooks(self, phase: HookableComponentPhase, ctx: TestStepContext):
+    def _run_hooks(self, phase: HookableComponentPhase, ctx: StepContext):
         """
         Executes all hooks that are registered for a specified lifecycle phase.
 
@@ -241,80 +244,82 @@ class Component(ABC):
                         hook_context.status = ExecutionStatus.ERROR
                         hook_context.error = e
                         hook_logger.error(f"Hook failed: {e}")
-                        span.set_status(
-                            Status(StatusCode.ERROR, "Fatal Child Hook Failure")
-                        )
+                        if span:
+                            span.set_status(
+                                Status(StatusCode.ERROR, "Fatal Child Hook Failure")
+                            )
                         raise
-            span.set_status(StatusCode.OK)
+            if span:
+                span.set_status(StatusCode.OK)
 
     @abstractmethod
-    def _configure(self, ctx: TestStepContext):
+    def _configure(self, ctx: StepContext):
         """Abstract method for configuring the component."""
 
-    def configure(self, ctx: TestStepContext):
+    def configure(self, ctx: StepContext):
         return self._with_span(
             ctx, f"Configure Component ({self.name})", self._configure, ctx
         )
 
     @abstractmethod
-    def _deploy(self, ctx: TestStepContext):
+    def _deploy(self, ctx: StepContext):
         """Abstract method for deploying the component (spawn a process or start a container/deployment)."""
 
-    def deploy(self, ctx: TestStepContext):
+    def deploy(self, ctx: StepContext):
         return self._with_span(
             ctx, f"Deploy Component ({self.name})", self._deploy, ctx
         )
 
     @abstractmethod
-    def _start(self, ctx: TestStepContext):
+    def _start(self, ctx: StepContext):
         """Abstract method for starting the component's execution behavior."""
 
-    def start(self, ctx: TestStepContext):
+    def start(self, ctx: StepContext):
         return self._with_span(ctx, f"Start Component ({self.name})", self._start, ctx)
 
     @abstractmethod
-    def _stop(self, ctx: TestStepContext):
+    def _stop(self, ctx: StepContext):
         """Abstract method for stopping the component's execution behavior."""
 
-    def stop(self, ctx: TestStepContext):
+    def stop(self, ctx: StepContext):
         return self._with_span(ctx, f"Stop Component ({self.name})", self._stop, ctx)
 
     @abstractmethod
-    def _destroy(self, ctx: TestStepContext):
+    def _destroy(self, ctx: StepContext):
         """Abstract method for destroying the component (e.g. kill process, stop/remove container).
 
         The specific signals (term/kill) and container cleanup (stop vs rm) will be dictated and
         configured by the strategy implementation and lifecycle hooks.
         """
 
-    def destroy(self, ctx: TestStepContext):
+    def destroy(self, ctx: StepContext):
         return self._with_span(
             ctx, f"Destroy Component ({self.name})", self._destroy, ctx
         )
 
     @abstractmethod
-    def _start_monitoring(self, ctx: TestStepContext):
+    def _start_monitoring(self, ctx: StepContext):
         """Abstract method to start monitoring the component."""
 
-    def start_monitoring(self, ctx: TestStepContext):
+    def start_monitoring(self, ctx: StepContext):
         return self._with_span(
             ctx, f"Start Monitoring ({self.name})", self._start_monitoring, ctx
         )
 
     @abstractmethod
-    def _stop_monitoring(self, ctx: TestStepContext):
+    def _stop_monitoring(self, ctx: StepContext):
         """Abstract method to stop monitoring the component."""
 
-    def stop_monitoring(self, ctx: TestStepContext):
+    def stop_monitoring(self, ctx: StepContext):
         return self._with_span(
             ctx, f"Stop Monitoring ({self.name})", self._stop_monitoring, ctx
         )
 
     @abstractmethod
-    def _collect_monitoring_data(self, ctx: TestExecutionContext):
+    def _collect_monitoring_data(self, ctx: ScenarioContext):
         """Abstract method to collect monitoring data for the component."""
 
-    def collect_monitoring_data(self, ctx: TestExecutionContext):
+    def collect_monitoring_data(self, ctx: ScenarioContext):
         return self._with_span(
             ctx,
             f"Collect Monitoring Data ({self.name})",

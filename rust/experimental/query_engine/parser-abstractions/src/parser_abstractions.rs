@@ -9,6 +9,7 @@ pub fn to_query_location<R: RuleType>(rule: &Pair<R>) -> QueryLocation {
     let s = rule.as_span();
     let (line_number, column_number) = rule.line_col();
     QueryLocation::new(s.start(), s.end(), line_number, column_number)
+        .expect("QueryLocation could not be constructed")
 }
 
 /// Parses a boolean literal from a Pest rule pair and returns a `StaticScalarExpression` wrapping a `BooleanScalarExpression`.
@@ -22,10 +23,9 @@ pub fn parse_standard_bool_literal<R: RuleType>(
     let value = match rule_name.as_str() {
         "true_literal" => true,
         "false_literal" => false,
-        _ => panic!(
-            "Unexpected rule in bool_literal_rule: {} (rule: {})",
-            bool_literal_rule, rule_name
-        ),
+        _ => {
+            panic!("Unexpected rule in bool_literal_rule: {bool_literal_rule} (rule: {rule_name})")
+        }
     };
 
     StaticScalarExpression::Boolean(BooleanScalarExpression::new(query_location, value))

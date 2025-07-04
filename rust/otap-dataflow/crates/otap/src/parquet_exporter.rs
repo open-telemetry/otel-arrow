@@ -67,7 +67,7 @@ where
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
                 exporter: effect_handler.exporter_name(),
-                error: format!("error initializing object store {}", e),
+                error: format!("error initializing object store {e}"),
             })?;
 
         let mut writer =
@@ -117,7 +117,7 @@ where
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
                             exporter: effect_handler.exporter_name(),
-                            error: format!("ID Generation failed: {}", e),
+                            error: format!("ID Generation failed: {e}"),
                         });
                     }
 
@@ -149,7 +149,7 @@ where
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
                             exporter: effect_handler.exporter_name(),
-                            error: format!("Parquet write failed: {}", e),
+                            error: format!("Parquet write failed: {e}"),
                         });
                     };
                 }
@@ -213,10 +213,7 @@ mod test {
                     OtapBatch::Metrics(from_record_messages(record_messages)),
                 )),
                 payload_type => {
-                    panic!(
-                        "unexpected payload type in TestPDataInput.try_into: {:?}",
-                        payload_type
-                    )
+                    panic!("unexpected payload type in TestPDataInput.try_into: {payload_type:?}")
                 }
             }
         }
@@ -250,14 +247,11 @@ mod test {
         num_rows: usize,
     ) {
         let table_name = payload_type.as_str_name().to_lowercase();
-        let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-            .unwrap_or_else(|_| panic!("expect to have found table for {:?}", payload_type))
+        let file_path = std::fs::read_dir(format!("{base_dir}/{table_name}"))
+            .unwrap_or_else(|_| panic!("expect to have found table for {payload_type:?}"))
             .next()
             .unwrap_or_else(|| {
-                panic!(
-                    "expect at least one parquet file file for type {:?}",
-                    payload_type
-                )
+                panic!("expect at least one parquet file file for type {payload_type:?}")
             })
             .unwrap()
             .path();
@@ -307,15 +301,14 @@ mod test {
                         // ensure we have files partitioned and that the partition starts
                         // with the expected key
                         let partition_path =
-                            std::fs::read_dir(format!("{}/{}", base_dir, table_name))
+                            std::fs::read_dir(format!("{base_dir}/{table_name}"))
                                 .unwrap_or_else(|_| {
-                                    panic!("expect to have found table for {:?}", payload_type)
+                                    panic!("expect to have found table for {payload_type:?}")
                                 })
                                 .next()
                                 .unwrap_or_else(|| {
                                     panic!(
-                                        "expect at least one partition directory for type {:?}",
-                                        payload_type
+                                        "expect at least one partition directory for type {payload_type:?}"
                                     )
                                 })
                                 .unwrap()
@@ -333,8 +326,7 @@ mod test {
                             .next()
                             .unwrap_or_else(|| {
                                 panic!(
-                                    "expect at least one parquet file for type {:?}",
-                                    payload_type
+                                    "expect at least one parquet file for type {payload_type:?}"
                                 )
                             })
                             .unwrap()
@@ -418,7 +410,7 @@ mod test {
                         ArrowPayloadType::ScopeAttrs,
                     ] {
                         let table_name = payload_type.as_str_name().to_lowercase();
-                        let result = std::fs::read_dir(format!("{}/{}", base_dir, table_name));
+                        let result = std::fs::read_dir(format!("{base_dir}/{table_name}"));
                         let error = result.unwrap_err();
                         assert_eq!(error.kind(), ErrorKind::NotFound);
                     }

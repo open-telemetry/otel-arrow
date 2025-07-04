@@ -92,7 +92,7 @@ impl local::Exporter<OTAPData> for PerfExporter {
         let mut last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
             exporter: effect_handler.exporter_name(),
-            error: format!("Failed to get process pid: {}", e),
+            error: format!("Failed to get process pid: {e}"),
         })?;
         let mut system = System::new();
 
@@ -385,13 +385,11 @@ fn display_cpu_usage(process: &Process, system: &System, writer: &mut impl Write
     let global_cpu_usage = system.global_cpu_usage(); // as %
     _ = writeln!(
         writer,
-        "\t- global cpu usage                  : {}% (100% is all cores)",
-        process_cpu_usage
+        "\t- global cpu usage                  : {process_cpu_usage}% (100% is all cores)"
     );
     _ = writeln!(
         writer,
-        "\t- process cpu usage                 : {}% (100% is a single core)",
-        global_cpu_usage
+        "\t- process cpu usage                 : {global_cpu_usage}% (100% is a single core)"
     );
 }
 
@@ -466,7 +464,7 @@ fn display_io_usage(
 
     let errors_on_transmitted = network_data.errors_on_transmitted();
     let total_errors_on_transmitted = network_data.total_errors_on_transmitted();
-    _ = writeln!(writer, "Network Interface: {}", network_name);
+    _ = writeln!(writer, "Network Interface: {network_name}");
     _ = writeln!(
         writer,
         "\t- bytes read                        : {}/s",
@@ -560,8 +558,7 @@ fn display_report_pipeline(
 
     _ = writeln!(
         writer,
-        "\t- total arrow records received      : {}",
-        total_received_arrow_records_count
+        "\t- total arrow records received      : {total_received_arrow_records_count}"
     );
     _ = writeln!(
         writer,
@@ -570,8 +567,7 @@ fn display_report_pipeline(
     );
     _ = writeln!(
         writer,
-        "\t- total otlp signal received        : {}",
-        total_received_otlp_signal_count
+        "\t- total otlp signal received        : {total_received_otlp_signal_count}"
     );
     _ = writeln!(
         writer,
@@ -581,8 +577,7 @@ fn display_report_pipeline(
 
     _ = writeln!(
         writer,
-        "\t- total pdata batch received        : {}",
-        total_received_pdata_batch_count
+        "\t- total pdata batch received        : {total_received_pdata_batch_count}"
     );
 }
 
@@ -640,7 +635,7 @@ mod tests {
         let nanos = timestamp.subsec_nanos().to_string();
 
         // string formatted with timestamp secs : timestamp subsec_nanos
-        let timestamp_string = format!("{}:{}", secs, nanos);
+        let timestamp_string = format!("{secs}:{nanos}");
         let timestamp_bytes = timestamp_string.as_bytes();
 
         // convert time to

@@ -16,6 +16,7 @@ workspace = true
 arrow.workspace = true
 arrow-ipc.workspace = true
 async-trait.workspace = true
+ciborium.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 object_store.workspace = true
@@ -25,6 +26,7 @@ otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-otlp = { path = "../otlp" }
+otap-df-pdata-views = { path = "../pdata-views" }
 parquet.workspace = true
 tonic = { version = "0.13.1", default-features = false, features = [
     "server",

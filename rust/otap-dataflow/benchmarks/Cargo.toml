@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 tokio.workspace = true
 serde_json.workspace = true
+mimalloc = "0.1.47"
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -20,6 +21,8 @@ otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
 otap-df-otap = { path="../crates/otap"}
 otap-df-otlp = { path="../crates/otlp"}
+otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
+otel-arrow-rust = { path = "../../otel-arrow-rust"}
 fluke-hpack = "0.3.1"
 futures-channel = "0.3"
 futures = "0.3.31"
@@ -30,6 +33,7 @@ async-unsync = "0.3.0"
 unsync = "0.1.2"
 tonic = "0.13.1"
 portpicker = "0.1.1"
+prost = "0.13"
 tokio-stream = "0.1.17"
 [lints]
 workspace = true
@@ -44,6 +48,14 @@ harness = false
 
 [[bench]]
 name = "exporter"
+harness = false
+
+[[bench]]
+name = "otap_encoder"
+harness = false
+
+[[bench]]
+name = "pdata_views"
 harness = false
 
 [profile.bench]
