@@ -13,6 +13,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+otap-dataflow = { path = "../.." }
+otap-df-traits = { path = "../traits" }
 otap-df-engine = { path = "../engine", features = ["testing"] }
 otap-df-channel = { path = "../channel" }
 
