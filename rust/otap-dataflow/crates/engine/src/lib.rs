@@ -58,7 +58,7 @@ pub struct ReceiverFactory<PData> {
     pub create: fn(
         node_config: Rc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
-    ) -> ReceiverWrapper<PData>,
+    ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -82,7 +82,10 @@ pub struct ProcessorFactory<PData> {
     /// The name of the processor.
     pub name: &'static str,
     /// A function that creates a new processor instance.
-    pub create: fn(config: &Value, processor_config: &ProcessorConfig) -> ProcessorWrapper<PData>,
+    pub create: fn(
+        config: &Value,
+        processor_config: &ProcessorConfig,
+    ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -428,7 +431,10 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         let runtime_config = ReceiverConfig::new(receiver_id.clone());
         let create = factory.create;
 
-        let prev_node = receivers.insert(receiver_id.clone(), create(node_config, &runtime_config));
+        let prev_node = receivers.insert(
+            receiver_id.clone(),
+            create(node_config, &runtime_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+        );
         if prev_node.is_some() {
             return Err(Error::ReceiverAlreadyExists {
                 receiver: receiver_id,
@@ -454,7 +460,8 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         let create = factory.create;
         let prev_node = nodes.insert(
             processor_id.clone(),
-            create(&node_config.config, &processor_config),
+            create(&node_config.config, &processor_config)
+                .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ProcessorAlreadyExists {

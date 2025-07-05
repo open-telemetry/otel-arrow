@@ -43,11 +43,11 @@ pub struct FakeGeneratorReceiver {
 pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OTAPData> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        ReceiverWrapper::local(
-            FakeGeneratorReceiver::from_config(&node_config.config),
+        Ok(ReceiverWrapper::local(
+            FakeGeneratorReceiver::from_config(&node_config.config)?,
             node_config,
             receiver_config,
-        )
+        ))
     },
 };
 
@@ -64,11 +64,13 @@ impl FakeGeneratorReceiver {
 
     /// Creates a new fake data generator from a configuration object
     #[must_use]
-    pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone()).unwrap_or_else(|_| Config {
-            batch_count: 10, // Default batch count if parsing fails
-        });
-        FakeGeneratorReceiver { config }
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(FakeGeneratorReceiver { config })
     }
 }
 

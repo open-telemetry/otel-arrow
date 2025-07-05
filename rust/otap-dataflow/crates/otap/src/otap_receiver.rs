@@ -27,6 +27,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
+use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -35,11 +36,17 @@ use tonic::transport::Server;
 
 const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 
-/// A Receiver that listens for OTAP messages
-pub struct OTAPReceiver {
+/// Configuration for the OTAP Receiver
+#[derive(Debug, Deserialize)]
+pub struct Config {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
     message_size: usize,
+}
+
+/// A Receiver that listens for OTAP messages
+pub struct OTAPReceiver {
+    config: Config,
 }
 
 /// Declares the OTAP exporter as a local exporter factory
@@ -51,11 +58,11 @@ pub struct OTAPReceiver {
 pub static OTAP_RECEIVER: ReceiverFactory<OTAPData> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        ReceiverWrapper::shared(
-            OTAPReceiver::from_config(&node_config.config),
+        Ok(ReceiverWrapper::shared(
+            OTAPReceiver::from_config(&node_config.config)?,
             node_config,
             receiver_config,
-        )
+        ))
     },
 };
 
@@ -68,21 +75,23 @@ impl OTAPReceiver {
         message_size: usize,
     ) -> Self {
         OTAPReceiver {
-            listening_addr,
-            compression_method,
-            message_size,
+            config: Config {
+                listening_addr,
+                compression_method,
+                message_size,
+            },
         }
     }
 
     /// Creates a new OTAPReceiver from a configuration object
     #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
-        OTAPReceiver {
-            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-            compression_method: None,
-            message_size: 100, // default message size
-        }
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(OTAPReceiver { config })
     }
 }
 
@@ -97,24 +106,25 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
         effect_handler: shared::EffectHandler<OTAPData>,
     ) -> Result<(), Error<OTAPData>> {
         // create listener on addr provided from config
-        let listener = effect_handler.tcp_listener(self.listening_addr)?;
+        let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
 
         //start event loop
         loop {
             //create services for the grpc server and clone the effect handler to pass message
-            let logs_service = ArrowLogsServiceImpl::new(effect_handler.clone(), self.message_size);
+            let logs_service =
+                ArrowLogsServiceImpl::new(effect_handler.clone(), self.config.message_size);
             let metrics_service =
-                ArrowMetricsServiceImpl::new(effect_handler.clone(), self.message_size);
+                ArrowMetricsServiceImpl::new(effect_handler.clone(), self.config.message_size);
             let trace_service =
-                ArrowTracesServiceImpl::new(effect_handler.clone(), self.message_size);
+                ArrowTracesServiceImpl::new(effect_handler.clone(), self.config.message_size);
 
             let mut logs_service_server = ArrowLogsServiceServer::new(logs_service);
             let mut metrics_service_server = ArrowMetricsServiceServer::new(metrics_service);
             let mut trace_service_server = ArrowTracesServiceServer::new(trace_service);
 
             // apply the tonic compression if it is set
-            if let Some(ref compression) = self.compression_method {
+            if let Some(ref compression) = self.config.compression_method {
                 let encoding = compression.map_to_compression_encoding();
 
                 logs_service_server = logs_service_server

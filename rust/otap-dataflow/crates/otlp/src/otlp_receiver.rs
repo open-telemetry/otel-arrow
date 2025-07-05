@@ -61,11 +61,11 @@ pub struct OTLPReceiver {
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        ReceiverWrapper::shared(
-            OTLPReceiver::from_config(&node_config.config),
+        Ok(ReceiverWrapper::shared(
+            OTLPReceiver::from_config(&node_config.config)?,
             node_config,
             receiver_config,
-        )
+        ))
     },
 };
 
@@ -80,16 +80,16 @@ impl OTLPReceiver {
     }
 
     /// Creates a new OTLPReceiver from a configuration object
-    #[must_use]
-    pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone()).unwrap_or_else(|_| Config {
-            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-            compression_method: None,
-        });
-        OTLPReceiver {
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(OTLPReceiver {
             listening_addr: config.listening_addr,
             compression_method: config.compression_method,
-        }
+        })
     }
 }
 
