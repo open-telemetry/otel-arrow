@@ -29,18 +29,22 @@ const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;
 const DEFAULT_PDATA_CHANNEL_CAPACITY: usize = 256;
 
 /// Generic configuration for a control channel.
+#[derive(Clone, Debug)]
 pub struct ControlChannelConfig {
     /// Max capacity of the channel.
     pub capacity: usize,
 }
 
 /// Generic configuration for a pdata channel.
+#[derive(Clone, Debug)]
 pub struct PdataChannelConfig {
     /// Max capacity of the channel.
     pub capacity: usize,
 }
 
-/// Generic configuration for a receiver.
+/// Runtime configuration for a receiver.
+///
+#[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     /// Name of the receiver.
     pub name: NodeId,
@@ -51,6 +55,7 @@ pub struct ReceiverConfig {
 }
 
 /// Generic configuration for a processor.
+#[derive(Clone, Debug)]
 pub struct ProcessorConfig {
     /// Name of the processor.
     pub name: NodeId,
@@ -63,6 +68,7 @@ pub struct ProcessorConfig {
 }
 
 /// Generic configuration for an exporter.
+#[derive(Clone, Debug)]
 pub struct ExporterConfig {
     /// Name of the exporter.
     pub name: NodeId,

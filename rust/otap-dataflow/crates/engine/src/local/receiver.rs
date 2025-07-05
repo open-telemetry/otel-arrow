@@ -31,9 +31,10 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
+use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::{ControlMsg, Sender};
+use crate::local::message::LocalSender;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
@@ -117,14 +118,14 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: Sender<PData>,
+    msg_sender: LocalSender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
     #[must_use]
-    pub fn new(receiver_name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
+    pub fn new(receiver_name: Cow<'static, str>, msg_sender: LocalSender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore {
                 node_name: receiver_name,
