@@ -58,9 +58,21 @@ mod tests {
     #[test]
     fn test_build_runtime_pipeline() {
         let config = PipelineConfigBuilder::new()
-            .add_receiver("otlp_receiver", "urn:otel:otlp:receiver", None)
-            .add_exporter("otlp_exporter1", "urn:otel:otlp:exporter", None)
-            .add_exporter("otlp_exporter2", "urn:otel:otlp:exporter", None)
+            .add_receiver("otlp_receiver", "urn:otel:otlp:receiver", Some(json!({})))
+            .add_exporter(
+                "otlp_exporter1",
+                "urn:otel:otlp:exporter",
+                Some(json!({
+                    "grpc_endpoint": "http://127.0.0.1:1234"
+                })),
+            )
+            .add_exporter(
+                "otlp_exporter2",
+                "urn:otel:otlp:exporter",
+                Some(json!({
+                    "grpc_endpoint": "http://127.0.0.1:1235"
+                })),
+            )
             // ToDo(LQ): Check the validity of the outport.
             .broadcast(
                 "otlp_receiver",

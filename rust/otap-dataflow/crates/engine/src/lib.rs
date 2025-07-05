@@ -109,7 +109,7 @@ pub struct ExporterFactory<PData> {
     pub create: fn(
         node_config: Rc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
-    ) -> ExporterWrapper<PData>,
+    ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -479,7 +479,10 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
             })?;
         let exporter_config = ExporterConfig::new(exporter_id.clone());
         let create = factory.create;
-        let prev_node = nodes.insert(exporter_id.clone(), create(node_config, &exporter_config));
+        let prev_node = nodes.insert(
+            exporter_id.clone(),
+            create(node_config, &exporter_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+        );
         if prev_node.is_some() {
             return Err(Error::ExporterAlreadyExists {
                 exporter: exporter_id,

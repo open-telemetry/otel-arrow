@@ -55,11 +55,11 @@ pub struct OTLPExporter {
 pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
     create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(
-            OTLPExporter::from_config(&node_config.config),
+        Ok(ExporterWrapper::local(
+            OTLPExporter::from_config(&node_config.config)?,
             node_config,
             exporter_config,
-        )
+        ))
     },
 };
 
@@ -75,16 +75,17 @@ impl OTLPExporter {
     }
 
     /// Creates a new OTLPExporter from a configuration object
-    #[must_use]
-    pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone()).unwrap_or_else(|_| Config {
-            grpc_endpoint: "127.0.0.1:4317".to_owned(),
-            compression_method: None,
-        });
-        OTLPExporter {
+    #[allow(clippy::result_large_err)]
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(OTLPExporter {
             grpc_endpoint: config.grpc_endpoint,
             compression_method: config.compression_method,
-        }
+        })
     }
 }
 

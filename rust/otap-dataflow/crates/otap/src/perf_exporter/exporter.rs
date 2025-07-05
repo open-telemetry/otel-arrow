@@ -52,11 +52,11 @@ pub struct PerfExporter {
 pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
     create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(
-            PerfExporter::from_config(&node_config.config),
+        Ok(ExporterWrapper::local(
+            PerfExporter::from_config(&node_config.config)?,
             node_config,
             exporter_config,
-        )
+        ))
     },
 };
 
@@ -69,12 +69,15 @@ impl PerfExporter {
 
     /// Creates a new PerfExporter from a configuration object
     #[must_use]
-    pub fn from_config(config: &Value) -> Self {
-        PerfExporter {
-            // ToDo (LQ) : Handle config errors
-            config: serde_json::from_value(config.clone()).unwrap(),
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        Ok(PerfExporter {
+            config: serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
             output: None,
-        }
+        })
     }
 }
 

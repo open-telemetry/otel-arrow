@@ -13,6 +13,10 @@ use std::borrow::Cow;
 /// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
 pub enum Error<T> {
+    /// A wrapper for the config errors.
+    #[error("A config error occurred: {0}")]
+    ConfigError(#[from] Box<otap_df_config::error::Error>),
+
     /// A wrapper for the channel errors.
     #[error("A channel error occurred: {0}")]
     ChannelRecvError(#[from] otap_df_channel::error::RecvError),

@@ -98,6 +98,13 @@ pub enum Error {
         /// The target nodes that are missing in the pipeline.
         missing_targets: Vec<NodeId>,
     },
+
+    /// An invalid user configuration occurred.
+    #[error("An invalid user configuration occurred: {error}")]
+    InvalidUserConfig {
+        /// An error message.
+        error: String,
+    },
 }
 
 /// Information that all errors provide to help identify

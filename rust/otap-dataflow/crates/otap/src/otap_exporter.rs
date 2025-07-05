@@ -46,11 +46,11 @@ pub struct OTAPExporter {
 pub static OTAP_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
     create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
-        ExporterWrapper::local(
-            OTAPExporter::from_config(&node_config.config),
+        Ok(ExporterWrapper::local(
+            OTAPExporter::from_config(&node_config.config)?,
             node_config,
             exporter_config,
-        )
+        ))
     },
 };
 
@@ -66,13 +66,12 @@ impl OTAPExporter {
     }
 
     /// Creates a new OTAPExporter from a configuration object
-    #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
+    pub fn from_config(_config: &Value) -> Result<Self, otap_df_config::error::Error> {
         // ToDo: implement config parsing
-        OTAPExporter {
+        Ok(OTAPExporter {
             grpc_endpoint: "127.0.0.1:4317".to_owned(),
             compression_method: None,
-        }
+        })
     }
 }
 
