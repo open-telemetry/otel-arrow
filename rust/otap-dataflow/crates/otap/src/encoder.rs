@@ -75,32 +75,68 @@ where
 
             let scope_schema_url = scope_logs.schema_url();
 
-            for log_record in scope_logs.log_records() {
-                // set the resource
+            let log_records = scope_logs.log_records().collect::<Vec<_>>();
+            let logs_count = log_records.len();
+
+            // Set the resource fields for all logs in this scope
+            for _ in 0..logs_count {
                 logs.resource.append_id(Some(curr_resource_id));
+            }
+            for _ in 0..logs_count {
                 logs.resource.append_schema_url(resource_schema_url);
+            }
+            for _ in 0..logs_count {
                 logs.resource
                     .append_dropped_attributes_count(resource_dropped_attrs_count);
+            }
 
-                // set the scope
+            // Set the scope fields for all logs in this scope
+            for _ in 0..logs_count {
                 logs.scope.append_id(Some(curr_scope_id));
+            }
+            for _ in 0..logs_count {
                 logs.scope.append_name(scope_name);
+            }
+            for _ in 0..logs_count {
                 logs.scope.append_version(scope_version);
+            }
+            for _ in 0..logs_count {
                 logs.scope
                     .append_dropped_attributes_count(scope_dropped_attributes_count);
+            }
 
+            // Set the log record fields for all logs in this scope
+            for log_record in &log_records {
                 logs.append_time_unix_nano(log_record.time_unix_nano().map(|v| v as i64));
+            }
+            for log_record in &log_records {
                 logs.append_observed_time_unix_nano(
                     log_record.observed_time_unix_nano().map(|v| v as i64),
                 );
+            }
+            for _ in 0..logs_count {
                 logs.append_schema_url(scope_schema_url);
+            }
+            for log_record in &log_records {
                 logs.append_severity_number(log_record.severity_number());
+            }
+            for log_record in &log_records {
                 logs.append_severity_text(log_record.severity_text());
+            }
+            for log_record in &log_records {
                 logs.append_dropped_attributes_count(log_record.dropped_attributes_count());
-                logs.append_flags(log_record.flags());
+            }
+            for log_record in &log_records {
+                logs.append_flags(log_record.flags());                
+            }
+            for log_record in &log_records {
                 logs.append_trace_id(log_record.trace_id())?;
+            }
+            for log_record in &log_records {
                 logs.append_span_id(log_record.span_id())?;
+            }
 
+            for log_record in &log_records {
                 if let Some(body) = log_record.body() {
                     match body.value_type() {
                         ValueType::String => {
@@ -147,7 +183,9 @@ where
                 } else {
                     logs.body.append_null();
                 }
+            }
 
+            for log_record in &log_records {
                 let mut log_attrs_count = 0;
                 for kv in log_record.attributes() {
                     log_attrs.append_parent_id(&curr_log_id);
@@ -162,6 +200,7 @@ where
                     logs.append_id(None);
                 }
             }
+
             curr_scope_id += 1;
         }
     }
