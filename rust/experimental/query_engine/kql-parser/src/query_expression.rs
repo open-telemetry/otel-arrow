@@ -83,18 +83,7 @@ pub(crate) fn parse_query(
         return Err(errors);
     }
 
-    match state.build() {
-        Ok(p) => Ok(p),
-        Err(e) => {
-            for err in e {
-                errors.push(ParserError::SyntaxError(
-                    err.get_query_location().clone(),
-                    err.to_string(),
-                ));
-            }
-            Err(errors)
-        }
-    }
+    state.build()
 }
 
 #[cfg(test)]
@@ -132,15 +121,18 @@ mod tests {
         run_test_success(
             "let var1 = 1;",
             PipelineExpressionBuilder::new("let var1 = 1;")
+                .with_constants(vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )])
                 .build()
                 .unwrap(),
         );
 
         run_test_success(
             "i | extend a = 1",
-            PipelineExpressionBuilder::new_with_expressions(
-                "i | extend a = 1",
-                vec![DataExpression::Transform(TransformExpression::Set(
+            PipelineExpressionBuilder::new("i | extend a = 1")
+                .with_constants(vec![])
+                .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
                     SetTransformExpression::new(
                         QueryLocation::new_fake(),
                         ImmutableValueExpression::Scalar(ScalarExpression::Static(
@@ -159,78 +151,86 @@ mod tests {
                             )]),
                         )),
                     ),
-                ))],
-            )
-            .build()
-            .unwrap(),
+                ))])
+                .build()
+                .unwrap(),
         );
 
         // Note: This test folds the constants and ends up as if it was written:
         // "source | extend a = 1, attributes['attr'] = 1".
         run_test_success(
             "let var1 = 1; let var2 = 'attr'; source | extend a = var1, attributes[var2] = 1;",
-            PipelineExpressionBuilder::new_with_expressions(
+            PipelineExpressionBuilder::new(
                 "let var1 = 1; let var2 = 'attr'; source | extend a = var1, attributes[var2] = 1;",
-                vec![
-                    DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    1,
-                                )),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                    StaticScalarExpression::String(StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "a",
-                                    )),
-                                )]),
-                            )),
-                        ),
-                    )),
-                    DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    1,
-                                )),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "attributes",
-                                        ),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "attr",
-                                        ),
-                                    )),
-                                ]),
-                            )),
-                        ),
-                    )),
-                ],
             )
+            .with_constants(vec![
+                StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    1,
+                )),
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "attr",
+                )),
+            ])
+            .with_expressions(vec![
+                DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Constant(
+                        ConstantScalarExpression::Reference(
+                            ReferenceConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueType::Integer,
+                                0,
+                            ),
+                        ),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "a",
+                            )),
+                        )]),
+                    )),
+                ))),
+                DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Constant(ConstantScalarExpression::Reference(
+                                ReferenceConstantScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueType::String,
+                                    1,
+                                ),
+                            )),
+                        ]),
+                    )),
+                ))),
+            ])
             .build()
             .unwrap(),
         );
 
         run_test_success(
             "i | extend a = 1; i_other | extend b = 2;",
-            PipelineExpressionBuilder::new_with_expressions(
-                "i | extend a = 1; i_other | extend b = 2;",
-                vec![
+            PipelineExpressionBuilder::new("i | extend a = 1; i_other | extend b = 2;")
+                .with_expressions(vec![
                     DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
                             QueryLocation::new_fake(),
@@ -271,10 +271,9 @@ mod tests {
                             )),
                         ),
                     )),
-                ],
-            )
-            .build()
-            .unwrap(),
+                ])
+                .build()
+                .unwrap(),
         );
 
         run_test_failure(

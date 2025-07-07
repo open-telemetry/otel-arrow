@@ -1,9 +1,10 @@
-use crate::{DataExpression, Expression, ExpressionError, QueryLocation};
+use crate::{DataExpression, Expression, ExpressionError, QueryLocation, StaticScalarExpression};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineExpression {
     query: Box<str>,
     query_location: QueryLocation,
+    constants: Vec<StaticScalarExpression>,
     expressions: Vec<DataExpression>,
 }
 
@@ -12,6 +13,7 @@ impl PipelineExpression {
         Self {
             query: query.into(),
             query_location: QueryLocation::new(0, query.len(), 1, 1).unwrap(),
+            constants: Vec::new(),
             expressions: Vec::new(),
         }
     }
@@ -24,6 +26,19 @@ impl PipelineExpression {
         let (start, end) = query_location.get_start_and_end_positions();
 
         &self.query[start..end]
+    }
+
+    pub fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
+        self.constants.push(value);
+        self.constants.len() - 1
+    }
+
+    pub fn get_constants(&self) -> &Vec<StaticScalarExpression> {
+        &self.constants
+    }
+
+    pub fn get_constant(&self, constant_id: usize) -> Option<&StaticScalarExpression> {
+        self.constants.get(constant_id)
     }
 
     pub fn get_expressions(&self) -> &[DataExpression] {
@@ -40,6 +55,12 @@ impl PipelineExpression {
     }
 }
 
+impl Default for PipelineExpression {
+    fn default() -> Self {
+        PipelineExpression::new("")
+    }
+}
+
 impl Expression for PipelineExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
@@ -52,26 +73,39 @@ pub struct PipelineExpressionBuilder {
 
 impl PipelineExpressionBuilder {
     pub fn new(query: &str) -> PipelineExpressionBuilder {
-        PipelineExpressionBuilder::new_with_expressions(query, Vec::new())
+        Self {
+            pipeline: PipelineExpression::new(query),
+        }
     }
 
-    pub fn new_with_expressions(
-        query: &str,
-        expressions: Vec<DataExpression>,
+    pub fn with_constants(
+        mut self,
+        constants: Vec<StaticScalarExpression>,
     ) -> PipelineExpressionBuilder {
-        let mut s = Self {
-            pipeline: PipelineExpression::new(query),
-        };
-
-        for expression in expressions {
-            s.push_expression(expression);
+        for c in constants {
+            self.push_constant(c);
         }
 
-        s
+        self
+    }
+
+    pub fn with_expressions(
+        mut self,
+        expressions: Vec<DataExpression>,
+    ) -> PipelineExpressionBuilder {
+        for expression in expressions {
+            self.push_expression(expression);
+        }
+
+        self
     }
 
     pub fn push_expression(&mut self, expression: DataExpression) {
         self.pipeline.push_expression(expression);
+    }
+
+    pub fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
+        self.pipeline.push_constant(value)
     }
 
     pub fn build(self) -> Result<PipelineExpression, Vec<ExpressionError>> {

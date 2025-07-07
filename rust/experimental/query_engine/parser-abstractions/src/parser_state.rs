@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use data_engine_expressions::*;
 
-use crate::ParserOptions;
+use crate::{ParserError, ParserOptions};
 
 pub struct ParserState {
     default_source_map_key: Option<Box<str>>,
     attached_data_names: HashSet<Box<str>>,
     variable_names: HashSet<Box<str>>,
-    constants: HashMap<Box<str>, StaticScalarExpression>,
+    constants: HashMap<Box<str>, (usize, ValueType)>,
     pipeline_builder: PipelineExpressionBuilder,
 }
 
@@ -47,7 +47,7 @@ impl ParserState {
         name == "source"
             || self.is_attached_data_defined(name)
             || self.is_variable_defined(name)
-            || self.try_get_constant(name).is_some()
+            || self.get_constant(name).is_some()
     }
 
     pub fn is_attached_data_defined(&self, name: &str) -> bool {
@@ -58,8 +58,8 @@ impl ParserState {
         self.variable_names.contains(name)
     }
 
-    pub fn try_get_constant(&self, name: &str) -> Option<&StaticScalarExpression> {
-        self.constants.get(name)
+    pub fn get_constant(&self, name: &str) -> Option<(usize, ValueType)> {
+        self.constants.get(name).cloned()
     }
 
     pub fn push_variable_name(&mut self, name: &str) {
@@ -67,14 +67,20 @@ impl ParserState {
     }
 
     pub fn push_constant(&mut self, name: &str, value: StaticScalarExpression) {
-        self.constants.insert(name.into(), value);
+        let value_type = value.get_value_type();
+        let constant_id = self.pipeline_builder.push_constant(value);
+
+        self.constants
+            .insert(name.into(), (constant_id, value_type));
     }
 
     pub fn push_expression(&mut self, expression: DataExpression) {
         self.pipeline_builder.push_expression(expression)
     }
 
-    pub fn build(self) -> Result<PipelineExpression, Vec<ExpressionError>> {
-        self.pipeline_builder.build()
+    pub fn build(self) -> Result<PipelineExpression, Vec<ParserError>> {
+        self.pipeline_builder
+            .build()
+            .map_err(|e| e.iter().map(ParserError::from).collect())
     }
 }
