@@ -45,6 +45,11 @@ pub trait DictionaryArrayAppend: ArrayAppendNulls {
     // If the underlying call can fail due to some invalid value of type `Native`, then the
     // underlying builder should implemented `CheckedDictionaryAppend instead`
     fn append_value(&mut self, value: &Self::Native) -> Result<usize>;
+
+    /// Append the value to the dictionary `n` times.
+    ///
+    /// The return value/error handling semantics are the same as `append_value`
+    fn append_values(&mut self, value: &Self::Native, n: usize) -> Result<usize>;
 }
 
 // This is the base trait for array builder implementations that are used to construct dictionary
@@ -63,6 +68,9 @@ pub trait CheckedDictionaryArrayAppend: ArrayAppendNulls {
 pub trait DictionaryArrayAppendStr {
     /// Append a value of type str to the builder
     fn append_str(&mut self, value: &str) -> Result<usize>;
+
+    /// Append the value to the builder `n` times
+    fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize>;
 }
 
 /// this trait can be implemented by types that can receive a value to append as a type of &[T].
@@ -75,6 +83,9 @@ pub trait DictionaryArrayAppendSlice {
     /// append a slice of T to the builder. Note that this does not append an individual
     /// element for each value in the slice, it appends the slice as a single row
     fn append_slice(&mut self, val: &[Self::Native]) -> Result<usize>;
+
+    /// append the slice to the builder `n` times.
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize) -> Result<usize>;
 }
 
 /// checked variant of DictionaryArrayAppendSlice for values that can return an error
@@ -371,6 +382,29 @@ where
             }
         }
     }
+
+    pub fn append_values(&mut self, value: &T, n: usize) -> Result<usize> {
+        loop {
+            let append_result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_values(value, n),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_values(value, n),
+            };
+
+            match append_result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
+                }
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    // retry in the next loop iteration
+                }
+            }
+        }
+    }
 }
 
 impl<T8, TD16> AdaptiveDictionaryBuilder<T8, TD16>
@@ -400,6 +434,29 @@ where
             }
         }
     }
+
+    pub fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize> {
+        loop {
+            let result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_str_n(value, n),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_str_n(value, n),
+            };
+
+            match result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
+                }
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    continue;
+                }
+            }
+        }
+    }
 }
 
 impl<T, T8, TD16> AdaptiveDictionaryBuilder<T8, TD16>
@@ -412,6 +469,30 @@ where
             let append_result = match &mut self.variant {
                 DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice(value),
                 DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice(value),
+            };
+
+            match append_result {
+                Ok(index) => {
+                    if index + 1 > self.max_cardinality as usize {
+                        // overflow occurred after a successful insert
+                        self.overflow_index = Some(index);
+                        return Err(DictionaryBuilderError::DictOverflow {});
+                    }
+                    return Ok(index);
+                }
+                Err(DictionaryBuilderError::DictOverflow {}) => {
+                    self.upgrade_key()?;
+                    // retry after upgrading
+                }
+            }
+        }
+    }
+
+    pub fn append_slice_n(&mut self, value: &[T], n: usize) -> Result<usize> {
+        loop {
+            let append_result = match &mut self.variant {
+                DictIndexVariant::UInt8(dict_builder) => dict_builder.append_slice_n(value, n),
+                DictIndexVariant::UInt16(dict_builder) => dict_builder.append_slice_n(value, n),
             };
 
             match append_result {

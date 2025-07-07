@@ -27,6 +27,10 @@ where
     fn append_value(&mut self, value: &<Self as ArrayAppend>::Native) {
         self.append_value(*value);
     }
+
+    fn append_values(&mut self, value: &Self::Native, n: usize) {
+        self.append_value_n(*value, n);
+    }
 }
 
 impl<T> ArrayAppendNulls for PrimitiveBuilder<T>
@@ -93,6 +97,19 @@ where
 
     fn append_value(&mut self, value: &Self::Native) -> dictionary::Result<usize> {
         match self.append(*value) {
+            Ok(index) => Ok(index.into()),
+            Err(ArrowError::DictionaryKeyOverflowError) => {
+                Err(dictionary::DictionaryBuilderError::DictOverflow {})
+            }
+
+            // safety: shouldn't happen. The only error type append should
+            // return should be for dictionary overflows
+            Err(e) => panic!("unexpected error type appending to dictionary {e}"),
+        }
+    }
+
+    fn append_values(&mut self, value: &Self::Native, n: usize) -> dictionary::Result<usize> {
+        match self.append_n(*value, n) {
             Ok(index) => Ok(index.into()),
             Err(ArrowError::DictionaryKeyOverflowError) => {
                 Err(dictionary::DictionaryBuilderError::DictOverflow {})

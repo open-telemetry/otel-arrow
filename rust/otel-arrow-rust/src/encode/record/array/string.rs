@@ -34,11 +34,23 @@ impl ArrayAppend for StringBuilder {
     fn append_value(&mut self, value: &Self::Native) {
         self.append_value(value);
     }
+
+    fn append_values(&mut self, value: &Self::Native, n: usize) {
+        for _ in 0..n {
+            self.append_value(value);
+        }
+    }
 }
 
 impl ArrayAppendStr for StringBuilder {
     fn append_str(&mut self, value: &str) {
         self.append_value(value);
+    }
+
+    fn append_str_n(&mut self, value: &str, n: usize) {
+        for _ in 0..n {
+            self.append_value(value);
+        }
     }
 }
 
@@ -48,12 +60,7 @@ impl ArrayAppendNulls for StringBuilder {
     }
 
     fn append_nulls(&mut self, n: usize) {
-        // TODO - after the next release of arrow-rs we should revisit this and call append_nulls
-        // on the base builder. Waiting on these changes to be released:
-        // https://github.com/apache/arrow-rs/pull/7606
-        for _ in 0..n {
-            self.append_null();
-        }
+        self.append_nulls(n);
     }
 }
 
@@ -90,6 +97,10 @@ where
     fn append_value(&mut self, value: &Self::Native) -> Result<usize> {
         self.append_str(value.as_str())
     }
+
+    fn append_values(&mut self, value: &Self::Native, n: usize) -> Result<usize> {
+        self.append_str_n(value, n)
+    }
 }
 
 impl<T> ArrayAppendNulls for StringDictionaryBuilder<T>
@@ -112,6 +123,17 @@ where
 {
     fn append_str(&mut self, value: &str) -> Result<usize> {
         match self.append(value) {
+            Ok(index) => Ok(index.into()),
+            Err(ArrowError::DictionaryKeyOverflowError) => Err(Error::DictOverflow {}),
+
+            // safety: shouldn't happen. The only error type append should
+            // return should be for dictionary overflows
+            Err(e) => panic!("unexpected error type appending to dictionary {e}"),
+        }
+    }
+
+    fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize> {
+        match self.append_n(value, n) {
             Ok(index) => Ok(index.into()),
             Err(ArrowError::DictionaryKeyOverflowError) => Err(Error::DictOverflow {}),
 

@@ -52,6 +52,8 @@ where
 
         let resource_schema_url = resource_logs.schema_url();
 
+        let mut resource_log_count = 0;
+
         for scope_logs in resource_logs.scopes() {
             let scope = scope_logs.scope();
 
@@ -77,6 +79,8 @@ where
 
             let mut logs_record_iter = scope_logs.log_records();
 
+            let mut scope_log_count = 0;
+
             const CHUNK_SIZE: usize = 64;
             loop {
                 let mut logs_count = 0;
@@ -93,33 +97,7 @@ where
                 if logs_count == 0 {
                     break;
                 }
-
-                // Set the resource fields for all logs in this scope
-                for _ in 0..logs_count {
-                    logs.resource.append_id(Some(curr_resource_id));
-                }
-                for _ in 0..logs_count {
-                    logs.resource.append_schema_url(resource_schema_url);
-                }
-                for _ in 0..logs_count {
-                    logs.resource
-                        .append_dropped_attributes_count(resource_dropped_attrs_count);
-                }
-
-                // Set the scope fields for all logs in this scope
-                for _ in 0..logs_count {
-                    logs.scope.append_id(Some(curr_scope_id));
-                }
-                for _ in 0..logs_count {
-                    logs.scope.append_name(scope_name);
-                }
-                for _ in 0..logs_count {
-                    logs.scope.append_version(scope_version);
-                }
-                for _ in 0..logs_count {
-                    logs.scope
-                        .append_dropped_attributes_count(scope_dropped_attributes_count);
-                }
+                scope_log_count += logs_count;
 
                 let log_records_slice = &log_records_chunk[..logs_count];
 
@@ -142,9 +120,7 @@ where
                             .map(|v| v as i64),
                     );
                 }
-                for _ in 0..logs_count {
-                    logs.append_schema_url(scope_schema_url);
-                }
+                logs.append_schema_url_n(scope_schema_url, logs_count);
                 for log_record in log_records_slice {
                     logs.append_severity_number(
                         log_record
@@ -272,8 +248,25 @@ where
                     break;
                 }
             }
+
+            logs.scope.append_id_n(Some(curr_scope_id), scope_log_count);
+            logs.scope.append_name_n(scope_name, scope_log_count);
+            logs.scope.append_version_n(scope_version, scope_log_count);
+            logs.scope
+                .append_dropped_attributes_count_n(scope_dropped_attributes_count, scope_log_count);
+
+            resource_log_count += scope_log_count;
             curr_scope_id += 1;
         }
+
+        logs.resource
+            .append_id_n(Some(curr_resource_id), resource_log_count);
+
+        logs.resource
+            .append_schema_url_n(resource_schema_url, resource_log_count);
+
+        logs.resource
+            .append_dropped_attributes_count_n(resource_dropped_attrs_count, resource_log_count);
     }
 
     let mut otap_batch = OtapBatch::Logs(Logs::default());
@@ -369,9 +362,10 @@ mod test {
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type, UInt16Type};
     use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
+    use otel_arrow_rust::otlp::attributes::cbor::decode_pcommon_val;
     use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
-        AnyValue, InstrumentationScope, KeyValue,
+        AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
     };
     use otel_arrow_rust::proto::opentelemetry::logs::v1::{
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -1364,22 +1358,10 @@ mod test {
             .downcast_ref::<StructArray>()
             .unwrap();
 
-        let mut expected_serialized_array = vec![];
-        ciborium::into_writer(
-            &ciborium::Value::Array(vec![ciborium::Value::Bool(true)]),
-            &mut expected_serialized_array,
-        )
-        .unwrap();
-
-        let mut expected_serialized_kvs = vec![];
-        ciborium::into_writer(
-            &ciborium::Value::Map(vec![(
-                ciborium::Value::Text("key1".to_string()),
-                ciborium::Value::Bool(true),
-            )]),
-            &mut expected_serialized_kvs,
-        )
-        .unwrap();
+        // if the generated test data changes, the values can be found by rerunning the test
+        // and inspecting the test failures
+        let expected_serialized_array = vec![159, 245, 255];
+        let expected_serialized_kvs = vec![191, 100, 107, 101, 121, 49, 245, 255];
 
         let expected_body = StructArray::try_new(
             vec![
@@ -1513,6 +1495,23 @@ mod test {
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
+
+        // check the serialized values are what is expected
+        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        assert_eq!(
+            deserialized_array,
+            Some(any_value::Value::ArrayValue(ArrayValue {
+                values: vec![AnyValue::new_bool(true)]
+            }))
+        );
+
+        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        assert_eq!(
+            deserialized_kvs,
+            Some(any_value::Value::KvlistValue(KeyValueList {
+                values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
+            }))
+        );
     }
 
     #[test]
@@ -1580,22 +1579,10 @@ mod test {
         let otap_batch = result.unwrap();
         let logs_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
 
-        let mut expected_serialized_array = vec![];
-        ciborium::into_writer(
-            &ciborium::Value::Array(vec![ciborium::Value::Bool(true)]),
-            &mut expected_serialized_array,
-        )
-        .unwrap();
-
-        let mut expected_serialized_kvs = vec![];
-        ciborium::into_writer(
-            &ciborium::Value::Map(vec![(
-                ciborium::Value::Text("key1".to_string()),
-                ciborium::Value::Bool(true),
-            )]),
-            &mut expected_serialized_kvs,
-        )
-        .unwrap();
+        // if the generated test data changes, the values can be found by rerunning the test
+        // and inspecting the test failures
+        let expected_serialized_array = vec![159, 245, 255];
+        let expected_serialized_kvs = vec![191, 100, 107, 101, 121, 49, 245, 255];
 
         let expected_attrs = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
@@ -1744,6 +1731,23 @@ mod test {
         .unwrap();
 
         assert_eq!(logs_attrs, &expected_attrs);
+
+        // check the serialized values are what is expected
+        let deserialized_array = decode_pcommon_val(&expected_serialized_array).unwrap();
+        assert_eq!(
+            deserialized_array,
+            Some(any_value::Value::ArrayValue(ArrayValue {
+                values: vec![AnyValue::new_bool(true)]
+            }))
+        );
+
+        let deserialized_kvs = decode_pcommon_val(&expected_serialized_kvs).unwrap();
+        assert_eq!(
+            deserialized_kvs,
+            Some(any_value::Value::KvlistValue(KeyValueList {
+                values: vec![KeyValue::new("key1", AnyValue::new_bool(true))]
+            }))
+        );
     }
 
     #[test]
