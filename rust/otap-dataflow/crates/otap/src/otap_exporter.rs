@@ -283,6 +283,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
@@ -293,6 +294,8 @@ mod tests {
         // run a gRPC concurrently to receive data from the exporter
         _ = tokio_rt.spawn(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            // Signal that the server is ready to accept connections
+            let _ = ready_sender.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
             let mock_logs_service =
                 ArrowLogsServiceServer::new(ArrowLogsServiceMock::new(sender.clone()));
@@ -311,6 +314,9 @@ mod tests {
                 .await
                 .expect("Test gRPC server has failed");
         });
+
+        // Wait for the server to be ready before creating the exporter
+        tokio_rt.block_on(ready_receiver).expect("Server failed to start");
 
         let exporter = ExporterWrapper::local(
             OTAPExporter::new(grpc_endpoint, None),
