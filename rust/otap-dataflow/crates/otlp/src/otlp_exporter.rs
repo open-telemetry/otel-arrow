@@ -315,7 +315,9 @@ mod tests {
         });
 
         // Wait for the server to be ready before creating the exporter
-        tokio_rt.block_on(ready_receiver).expect("Server failed to start");
+        tokio_rt
+            .block_on(ready_receiver)
+            .expect("Server failed to start");
 
         let exporter = ExporterWrapper::local(
             OTLPExporter::new(grpc_endpoint, None),
