@@ -34,7 +34,7 @@ jobs:
           go-version: "1.24.4"
       - name: Run tests with coverage
         run: go test -cover -coverprofile=coverage.txt -covermode=atomic -coverpkg=./... ./...
-        working-directory: ./${{ matrix.folder }}
+        working-directory: ./go/${{ matrix.folder }}
       - name: Upload to codecov.io
         uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24 # v5.4.3
         env:
