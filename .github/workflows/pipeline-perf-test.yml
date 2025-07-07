@@ -5,6 +5,8 @@ permissions:
 on:
     push:
         branches: [ main ]
+    pull_request:
+        types: [labeled]
     workflow_dispatch:
 
 # Cancel in-progress runs on new commits to same PR
@@ -15,6 +17,7 @@ concurrency:
 jobs:
     pipeline-perf-test:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.label.name, 'performance'))
         steps:
         - name: Harden the runner (Audit all outbound calls)
           uses: step-security/harden-runner@6c439dc8bdf85cadbbce9ed30d1c7b959517bc49 # v2.12.2
