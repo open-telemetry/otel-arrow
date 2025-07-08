@@ -2,9 +2,11 @@ use std::fmt::Debug;
 
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use regex::Regex;
+use serde_json::json;
 
 use crate::{
-    ArrayValue, ExpressionError, MapValue, QueryLocation, ValueType, array_value, map_value,
+    ArrayValue, ExpressionError, IndexValueClosureCallback, KeyValueClosureCallback, MapValue,
+    QueryLocation, ValueType, array_value, map_value,
 };
 
 #[derive(Debug, Clone)]
@@ -86,15 +88,47 @@ impl Value<'_> {
         F: FnMut(&str),
     {
         match self {
-            Value::Array(_) => todo!(),
+            Value::Array(a) => a.to_string(action),
             Value::Boolean(b) => b.to_string(action),
             Value::DateTime(d) => d.to_string(action),
             Value::Double(d) => d.to_string(action),
             Value::Integer(i) => i.to_string(action),
-            Value::Map(_) => todo!(),
+            Value::Map(m) => m.to_string(action),
             Value::Null => (action)("null"),
             Value::Regex(r) => r.to_string(action),
             Value::String(s) => (action)(s.get_value()),
+        }
+    }
+
+    pub(crate) fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            Value::Array(a) => {
+                let mut values = Vec::new();
+
+                a.get_items(&mut IndexValueClosureCallback::new(|_, value| {
+                    values.push(value.to_json_value());
+                    true
+                }));
+
+                serde_json::Value::Array(values)
+            }
+            Value::Boolean(b) => json!(b.get_value()),
+            Value::DateTime(_) => json!(self.to_string()),
+            Value::Double(d) => json!(d.get_value()),
+            Value::Integer(o) => json!(o.get_value()),
+            Value::Map(m) => {
+                let mut values = serde_json::Map::new();
+
+                m.get_items(&mut KeyValueClosureCallback::new(|key, value| {
+                    values.insert(key.into(), value.to_json_value());
+                    true
+                }));
+
+                serde_json::Value::Object(values)
+            }
+            Value::Null => json!(null),
+            Value::Regex(_) => json!(self.to_string()),
+            Value::String(s) => json!(s.get_value()),
         }
     }
 
@@ -680,6 +714,46 @@ mod tests {
                 Regex::new(".*").unwrap(),
             )),
             ".*",
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            )),
+            "{}",
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                )]),
+            )),
+            "{\"key1\":1}",
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                Vec::new(),
+            )),
+            "[]",
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )],
+            )),
+            "[1]",
         );
     }
 
