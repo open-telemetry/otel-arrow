@@ -75,132 +75,156 @@ where
 
             let scope_schema_url = scope_logs.schema_url();
 
-            let log_records = scope_logs.log_records().collect::<Vec<_>>();
-            let logs_count = log_records.len();
+            let mut logs_record_iter = scope_logs.log_records();
 
-            // Set the resource fields for all logs in this scope
-            for _ in 0..logs_count {
-                logs.resource.append_id(Some(curr_resource_id));
-            }
-            for _ in 0..logs_count {
-                logs.resource.append_schema_url(resource_schema_url);
-            }
-            for _ in 0..logs_count {
-                logs.resource
-                    .append_dropped_attributes_count(resource_dropped_attrs_count);
-            }
-
-            // Set the scope fields for all logs in this scope
-            for _ in 0..logs_count {
-                logs.scope.append_id(Some(curr_scope_id));
-            }
-            for _ in 0..logs_count {
-                logs.scope.append_name(scope_name);
-            }
-            for _ in 0..logs_count {
-                logs.scope.append_version(scope_version);
-            }
-            for _ in 0..logs_count {
-                logs.scope
-                    .append_dropped_attributes_count(scope_dropped_attributes_count);
-            }
-
-            // Set the log record fields for all logs in this scope
-            for log_record in &log_records {
-                logs.append_time_unix_nano(log_record.time_unix_nano().map(|v| v as i64));
-            }
-            for log_record in &log_records {
-                logs.append_observed_time_unix_nano(
-                    log_record.observed_time_unix_nano().map(|v| v as i64),
-                );
-            }
-            for _ in 0..logs_count {
-                logs.append_schema_url(scope_schema_url);
-            }
-            for log_record in &log_records {
-                logs.append_severity_number(log_record.severity_number());
-            }
-            for log_record in &log_records {
-                logs.append_severity_text(log_record.severity_text());
-            }
-            for log_record in &log_records {
-                logs.append_dropped_attributes_count(log_record.dropped_attributes_count());
-            }
-            for log_record in &log_records {
-                logs.append_flags(log_record.flags());                
-            }
-            for log_record in &log_records {
-                logs.append_trace_id(log_record.trace_id())?;
-            }
-            for log_record in &log_records {
-                logs.append_span_id(log_record.span_id())?;
-            }
-
-            for log_record in &log_records {
-                if let Some(body) = log_record.body() {
-                    match body.value_type() {
-                        ValueType::String => {
-                            logs.body
-                                .append_str(body.as_string().expect("body to be string"));
-                        }
-                        ValueType::Double => {
-                            logs.body
-                                .append_double(body.as_double().expect("body to be double"));
-                        }
-                        ValueType::Int64 => {
-                            logs.body
-                                .append_int(body.as_int64().expect("body to be int64"));
-                        }
-                        ValueType::Bool => {
-                            logs.body
-                                .append_bool(body.as_bool().expect("body to be bool"));
-                        }
-                        ValueType::Bytes => {
-                            logs.body
-                                .append_bytes(body.as_bytes().expect("body to be bytes"));
-                        }
-                        ValueType::Array => {
-                            let mut serialized_value = vec![];
-                            cbor::serialize_any_values(
-                                body.as_array().expect("body to be array"),
-                                &mut serialized_value,
-                            )?;
-                            logs.body.append_slice(&serialized_value);
-                        }
-
-                        ValueType::KeyValueList => {
-                            let mut serialized_value = vec![];
-                            cbor::serialize_kv_list(
-                                body.as_kvlist().expect("body to be kvlist"),
-                                &mut serialized_value,
-                            )?;
-                            logs.body.append_map(&serialized_value);
-                        }
-                        ValueType::Empty => {
-                            logs.body.append_null();
-                        }
+            const CHUNK_SIZE: usize = 64;
+            loop {
+                let mut logs_count = 0;
+                let log_records_chunk: [_; CHUNK_SIZE] = std::array::from_fn(|_| {
+                    if let Some(log_record) = logs_record_iter.next() {
+                        logs_count += 1;
+                        Some(log_record)
+                    } else {
+                        // if there are no more log records, return a default value
+                        None
                     }
-                } else {
-                    logs.body.append_null();
+                });
+
+                if logs_count == 0 {
+                    break;
+                }
+
+                // Set the resource fields for all logs in this scope
+                for _ in 0..logs_count {
+                    logs.resource.append_id(Some(curr_resource_id));
+                }
+                for _ in 0..logs_count {
+                    logs.resource.append_schema_url(resource_schema_url);
+                }
+                for _ in 0..logs_count {
+                    logs.resource
+                        .append_dropped_attributes_count(resource_dropped_attrs_count);
+                }
+
+                // Set the scope fields for all logs in this scope
+                for _ in 0..logs_count {
+                    logs.scope.append_id(Some(curr_scope_id));
+                }
+                for _ in 0..logs_count {
+                    logs.scope.append_name(scope_name);
+                }
+                for _ in 0..logs_count {
+                    logs.scope.append_version(scope_version);
+                }
+                for _ in 0..logs_count {
+                    logs.scope
+                        .append_dropped_attributes_count(scope_dropped_attributes_count);
+                }
+
+                let log_records_slice = &log_records_chunk[..logs_count];
+
+
+                // Set the log record fields for all logs in this scope
+                for log_record in log_records_slice {
+                    logs.append_time_unix_nano(log_record.as_ref().unwrap().time_unix_nano().map(|v| v as i64));
+                }
+                for log_record in log_records_slice {
+                    logs.append_observed_time_unix_nano(
+                        log_record.as_ref().unwrap().observed_time_unix_nano().map(|v| v as i64),
+                    );
+                }
+                for _ in 0..logs_count {
+                    logs.append_schema_url(scope_schema_url);
+                }
+                for log_record in log_records_slice {
+                    logs.append_severity_number(log_record.as_ref().unwrap().severity_number());
+                }
+                for log_record in log_records_slice {
+                    logs.append_severity_text(log_record.as_ref().unwrap().severity_text());
+                }
+                for log_record in log_records_slice {
+                    logs.append_dropped_attributes_count(log_record.as_ref().unwrap().dropped_attributes_count());
+                }
+                for log_record in log_records_slice {
+                    logs.append_flags(log_record.as_ref().unwrap().flags());
+                }
+                for log_record in log_records_slice {
+                    logs.append_trace_id(log_record.as_ref().unwrap().trace_id())?;
+                }
+                for log_record in log_records_slice {
+                    logs.append_span_id(log_record.as_ref().unwrap().span_id())?;
+                }
+
+                for log_record in log_records_slice {
+                    if let Some(body) = log_record.as_ref().unwrap().body() {
+                        match body.value_type() {
+                            ValueType::String => {
+                                logs.body
+                                    .append_str(body.as_string().expect("body to be string"));
+                            }
+                            ValueType::Double => {
+                                logs.body
+                                    .append_double(body.as_double().expect("body to be double"));
+                            }
+                            ValueType::Int64 => {
+                                logs.body
+                                    .append_int(body.as_int64().expect("body to be int64"));
+                            }
+                            ValueType::Bool => {
+                                logs.body
+                                    .append_bool(body.as_bool().expect("body to be bool"));
+                            }
+                            ValueType::Bytes => {
+                                logs.body
+                                    .append_bytes(body.as_bytes().expect("body to be bytes"));
+                            }
+                            ValueType::Array => {
+                                let mut serialized_value = vec![];
+                                cbor::serialize_any_values(
+                                    body.as_array().expect("body to be array"),
+                                    &mut serialized_value,
+                                )?;
+                                logs.body.append_slice(&serialized_value);
+                            }
+
+                            ValueType::KeyValueList => {
+                                let mut serialized_value = vec![];
+                                cbor::serialize_kv_list(
+                                    body.as_kvlist().expect("body to be kvlist"),
+                                    &mut serialized_value,
+                                )?;
+                                logs.body.append_map(&serialized_value);
+                            }
+                            ValueType::Empty => {
+                                logs.body.append_null();
+                            }
+                        }
+                    } else {
+                        logs.body.append_null();
+                    }
+                }
+
+                for log_record in log_records_slice {
+                    let mut log_attrs_count = 0;
+                    for kv in log_record.as_ref().unwrap().attributes() {
+                        log_attrs.append_parent_id(&curr_log_id);
+                        log_attrs_count += 1;
+                        append_attribute_value(&mut log_attrs, &kv)?;
+                    }
+
+                    if log_attrs_count > 0 {
+                        logs.append_id(Some(curr_log_id));
+                        curr_log_id += 1;
+                    } else {
+                        logs.append_id(None);
+                    }
+                }
+
+                // If we didn't fill the entire array, this was the last chunk
+                if logs_count < CHUNK_SIZE {
+                    break;
                 }
             }
-
-            for log_record in &log_records {
-                let mut log_attrs_count = 0;
-                for kv in log_record.attributes() {
-                    log_attrs.append_parent_id(&curr_log_id);
-                    log_attrs_count += 1;
-                    append_attribute_value(&mut log_attrs, &kv)?;
-                }
-
-                if log_attrs_count > 0 {
-                    logs.append_id(Some(curr_log_id));
-                    curr_log_id += 1;
-                } else {
-                    logs.append_id(None);
-                }
-            }
-
             curr_scope_id += 1;
         }
     }
