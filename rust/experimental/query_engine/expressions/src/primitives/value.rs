@@ -1,37 +1,33 @@
+use std::fmt::Debug;
+
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use regex::Regex;
 
-use crate::{Expression, ExpressionError, QueryLocation, ValueType};
+use crate::{
+    ArrayValue, ExpressionError, MapValue, QueryLocation, ValueType, array_value, map_value,
+};
 
+#[derive(Debug, Clone)]
 pub enum Value<'a> {
+    Array(&'a dyn ArrayValue),
     Boolean(&'a dyn BooleanValue),
     Integer(&'a dyn IntegerValue),
     DateTime(&'a dyn DateTimeValue),
     Double(&'a dyn DoubleValue),
+    Map(&'a dyn MapValue),
     Regex(&'a dyn RegexValue),
     String(&'a dyn StringValue),
-}
-
-impl Expression for Value<'_> {
-    fn get_query_location(&self) -> &QueryLocation {
-        match self {
-            Value::Boolean(b) => b.get_query_location(),
-            Value::Integer(i) => i.get_query_location(),
-            Value::DateTime(d) => d.get_query_location(),
-            Value::Double(d) => d.get_query_location(),
-            Value::Regex(r) => r.get_query_location(),
-            Value::String(s) => s.get_query_location(),
-        }
-    }
 }
 
 impl Value<'_> {
     pub fn get_value_type(&self) -> ValueType {
         match self {
+            Value::Array(_) => ValueType::Array,
             Value::Boolean(_) => ValueType::Boolean,
             Value::Integer(_) => ValueType::Integer,
             Value::DateTime(_) => ValueType::DateTime,
             Value::Double(_) => ValueType::Double,
+            Value::Map(_) => ValueType::Map,
             Value::Regex(_) => ValueType::Regex,
             Value::String(_) => ValueType::String,
         }
@@ -88,25 +84,43 @@ impl Value<'_> {
         F: FnMut(&str),
     {
         match self {
+            Value::Array(_) => todo!(),
             Value::Boolean(b) => b.to_string(action),
             Value::Integer(i) => i.to_string(action),
             Value::DateTime(d) => d.to_string(action),
             Value::Double(d) => d.to_string(action),
+            Value::Map(_) => todo!(),
             Value::Regex(r) => r.to_string(action),
             Value::String(s) => (action)(s.get_value()),
         }
     }
 
     pub fn are_values_equal(
+        query_location: &QueryLocation,
         left: &Value,
         right: &Value,
         case_insensitive: bool,
     ) -> Result<bool, ExpressionError> {
         match left {
+            Value::Array(left_array) => {
+                if let Value::Array(right_array) = right {
+                    array_value::equal_to(
+                        query_location,
+                        *left_array,
+                        *right_array,
+                        case_insensitive,
+                    )
+                } else {
+                    // todo: If right is string parsable as a JSON array we
+                    // should treat this as equal to match the reverse case
+                    // where we are comparing a string to array.
+                    todo!()
+                }
+            }
             Value::Boolean(b) => match right.convert_to_bool() {
                 Some(o) => Ok(b.get_value() == o),
                 None => Err(ExpressionError::TypeMismatch(
-                    right.get_query_location().clone(),
+                    query_location.clone(),
                     format!(
                         "{:?} value '{}' on right side of equality operation could not be converted to bool",
                         right.get_value_type(),
@@ -117,7 +131,7 @@ impl Value<'_> {
             Value::Integer(i) => match right.convert_to_integer() {
                 Some(o) => Ok(i.get_value() == o),
                 None => Err(ExpressionError::TypeMismatch(
-                    right.get_query_location().clone(),
+                    query_location.clone(),
                     format!(
                         "{:?} value '{}' on right side of equality operation could not be converted to int",
                         right.get_value_type(),
@@ -128,7 +142,7 @@ impl Value<'_> {
             Value::DateTime(d) => match right.convert_to_datetime() {
                 Some(o) => Ok(d.get_value() == o),
                 None => Err(ExpressionError::TypeMismatch(
-                    right.get_query_location().clone(),
+                    query_location.clone(),
                     format!(
                         "{:?} value '{}' on right side of equality operation could not be converted to DateTime",
                         right.get_value_type(),
@@ -139,7 +153,7 @@ impl Value<'_> {
             Value::Double(d) => match right.convert_to_double() {
                 Some(o) => Ok(d.get_value() == o),
                 None => Err(ExpressionError::TypeMismatch(
-                    right.get_query_location().clone(),
+                    query_location.clone(),
                     format!(
                         "{:?} value '{}' on right side of equality operation could not be converted to double",
                         right.get_value_type(),
@@ -147,6 +161,16 @@ impl Value<'_> {
                     ),
                 )),
             },
+            Value::Map(left_map) => {
+                if let Value::Map(right_map) = right {
+                    map_value::equal_to(query_location, *left_map, *right_map, case_insensitive)
+                } else {
+                    // todo: If right is string parsable as a JSON map we should
+                    // treat this as equal to match the reverse case where we
+                    // are comparing a string to map.
+                    todo!()
+                }
+            }
             Value::Regex(r) => {
                 let mut c = None;
 
@@ -174,7 +198,11 @@ impl Value<'_> {
         }
     }
 
-    pub fn compare_values(left: &Value, right: &Value) -> Result<i64, ExpressionError> {
+    pub fn compare_values(
+        query_location: &QueryLocation,
+        left: &Value,
+        right: &Value,
+    ) -> Result<i64, ExpressionError> {
         let left_type = left.get_value_type();
         let right_type = right.get_value_type();
 
@@ -183,7 +211,7 @@ impl Value<'_> {
                 Some(i) => i,
                 None => {
                     return Err(ExpressionError::TypeMismatch(
-                        right.get_query_location().clone(),
+                        query_location.clone(),
                         format!(
                             "{:?} value '{}' on left side of comparison operation could not be converted to DateTime",
                             left.get_value_type(),
@@ -197,7 +225,7 @@ impl Value<'_> {
                 Some(i) => i,
                 None => {
                     return Err(ExpressionError::TypeMismatch(
-                        right.get_query_location().clone(),
+                        query_location.clone(),
                         format!(
                             "{:?} value '{}' on right side of comparison operation could not be converted to DateTime",
                             right.get_value_type(),
@@ -213,7 +241,7 @@ impl Value<'_> {
                 Some(i) => i,
                 None => {
                     return Err(ExpressionError::TypeMismatch(
-                        right.get_query_location().clone(),
+                        query_location.clone(),
                         format!(
                             "{:?} value '{}' on left side of comparison operation could not be converted to double",
                             left.get_value_type(),
@@ -227,7 +255,7 @@ impl Value<'_> {
                 Some(i) => i,
                 None => {
                     return Err(ExpressionError::TypeMismatch(
-                        right.get_query_location().clone(),
+                        query_location.clone(),
                         format!(
                             "{:?} value '{}' on right side of comparison operation could not be converted to double",
                             right.get_value_type(),
@@ -243,7 +271,7 @@ impl Value<'_> {
                 Some(i) => i,
                 None => {
                     return Err(ExpressionError::TypeMismatch(
-                        right.get_query_location().clone(),
+                        query_location.clone(),
                         format!(
                             "{:?} value '{}' on left side of comparison operation could not be converted to int",
                             left.get_value_type(),
@@ -257,7 +285,7 @@ impl Value<'_> {
                 Some(i) => i,
                 None => {
                     return Err(ExpressionError::TypeMismatch(
-                        right.get_query_location().clone(),
+                        query_location.clone(),
                         format!(
                             "{:?} value '{}' on right side of comparison operation could not be converted to int",
                             right.get_value_type(),
@@ -277,11 +305,11 @@ impl Value<'_> {
     fn to_string(&self) -> Box<str> {
         let mut value: Option<Box<str>> = None;
         self.convert_to_string(&mut |s: &str| value = Some(s.into()));
-        value.expect("msg")
+        value.expect("Encountered a type which does not correctly implement convert_to_string")
     }
 }
 
-pub trait BooleanValue: Expression {
+pub trait BooleanValue: Debug {
     fn get_value(&self) -> bool;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -289,7 +317,7 @@ pub trait BooleanValue: Expression {
     }
 }
 
-pub trait IntegerValue: Expression {
+pub trait IntegerValue: Debug {
     fn get_value(&self) -> i64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -297,7 +325,7 @@ pub trait IntegerValue: Expression {
     }
 }
 
-pub trait DateTimeValue: Expression {
+pub trait DateTimeValue: Debug {
     fn get_value(&self) -> DateTime<FixedOffset>;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -309,7 +337,7 @@ pub trait DateTimeValue: Expression {
     }
 }
 
-pub trait DoubleValue: Expression {
+pub trait DoubleValue: Debug {
     fn get_value(&self) -> f64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -317,7 +345,7 @@ pub trait DoubleValue: Expression {
     }
 }
 
-pub trait RegexValue: Expression {
+pub trait RegexValue: Debug {
     fn get_value(&self) -> &Regex;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -325,7 +353,7 @@ pub trait RegexValue: Expression {
     }
 }
 
-pub trait StringValue: Expression {
+pub trait StringValue: Debug {
     fn get_value(&self) -> &str;
 }
 
@@ -349,6 +377,8 @@ fn compare_double_values(left: f64, right: f64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::{TimeZone, Utc};
 
     use crate::*;
@@ -646,14 +676,26 @@ mod tests {
     pub fn test_are_values_equal() {
         let run_test_success =
             |left: Value, right: Value, case_insensitive: bool, expected: bool| {
-                let actual = Value::are_values_equal(&left, &right, case_insensitive).unwrap();
+                let actual = Value::are_values_equal(
+                    &QueryLocation::new_fake(),
+                    &left,
+                    &right,
+                    case_insensitive,
+                )
+                .unwrap();
 
                 assert_eq!(expected, actual)
             };
 
         let run_test_failure =
             |left: Value, right: Value, case_insensitive: bool, expected: &str| {
-                let actual = Value::are_values_equal(&left, &right, case_insensitive).unwrap_err();
+                let actual = Value::are_values_equal(
+                    &QueryLocation::new_fake(),
+                    &left,
+                    &right,
+                    case_insensitive,
+                )
+                .unwrap_err();
 
                 // todo: Remove this when another ExpressionError is defined
                 #[allow(irrefutable_let_patterns)]
@@ -851,18 +893,415 @@ mod tests {
             false,
             true,
         );
+
+        run_test_success(
+            Value::Regex(&RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").unwrap(),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                ".*",
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )],
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            false,
+            false,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )],
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )],
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                ],
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Double(DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1.0,
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "2",
+                    )),
+                ],
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                ],
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                ],
+            )),
+            false,
+            false,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "HELLO",
+                ))],
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello",
+                ))],
+            )),
+            false,
+            false,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "HELLO",
+                ))],
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello",
+                ))],
+            )),
+            true,
+            true,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                )]),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            )),
+            false,
+            false,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hello",
+                        )),
+                    ),
+                    (
+                        "key2".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "world",
+                        )),
+                    ),
+                ]),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "key2".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "world",
+                        )),
+                    ),
+                    (
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hello",
+                        )),
+                    ),
+                ]),
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hello",
+                        )),
+                    ),
+                    (
+                        "key2".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "world",
+                        )),
+                    ),
+                ]),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "key_other".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "other",
+                        )),
+                    ),
+                    (
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hello",
+                        )),
+                    ),
+                ]),
+            )),
+            false,
+            false,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "key1".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "1",
+                        )),
+                    ),
+                    (
+                        "key2".into(),
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "2",
+                        )),
+                    ),
+                ]),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "key2".into(),
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            2,
+                        )),
+                    ),
+                    (
+                        "key1".into(),
+                        StaticScalarExpression::Double(DoubleScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1.0,
+                        )),
+                    ),
+                ]),
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                )]),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "HELLO",
+                    )),
+                )]),
+            )),
+            false,
+            false,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                )]),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "HELLO",
+                    )),
+                )]),
+            )),
+            true,
+            true,
+        );
+
+        // Note: In this test the two maps are NOT equal because keys are
+        // currently never handled as case-insensitive.
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                )]),
+            )),
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "KEY1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "HELLO",
+                    )),
+                )]),
+            )),
+            true,
+            false,
+        );
     }
 
     #[test]
     pub fn test_compare_values() {
         let run_test_success = |left: Value, right: Value, expected: i64| {
-            let actual = Value::compare_values(&left, &right).unwrap();
+            let actual = Value::compare_values(&QueryLocation::new_fake(), &left, &right).unwrap();
 
             assert_eq!(expected, actual)
         };
 
         let run_test_failure = |left: Value, right: Value, expected: &str| {
-            let actual = Value::compare_values(&left, &right).unwrap_err();
+            let actual =
+                Value::compare_values(&QueryLocation::new_fake(), &left, &right).unwrap_err();
 
             // todo: Remove this when another ExpressionError is defined
             #[allow(irrefutable_let_patterns)]

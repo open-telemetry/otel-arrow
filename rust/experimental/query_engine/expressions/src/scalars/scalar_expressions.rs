@@ -99,6 +99,15 @@ pub enum ResolvedStaticScalarExpression<'a> {
     Value(StaticScalarExpression),
 }
 
+impl ResolvedStaticScalarExpression<'_> {
+    pub fn to_value(&self) -> Value {
+        match self {
+            ResolvedStaticScalarExpression::Reference(s) => s.to_value(),
+            ResolvedStaticScalarExpression::Value(s) => s.to_value(),
+        }
+    }
+}
+
 impl AsRef<StaticScalarExpression> for ResolvedStaticScalarExpression<'_> {
     fn as_ref(&self) -> &StaticScalarExpression {
         match self {
@@ -219,6 +228,26 @@ impl ConstantScalarExpression {
         match self {
             ConstantScalarExpression::Reference(r) => r.get_value_type(),
             ConstantScalarExpression::Copy(c) => c.get_value().get_value_type(),
+        }
+    }
+
+    pub fn to_value<'a, 'b, 'c>(&'a self, pipeline: &'b PipelineExpression) -> Value<'c>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        match self {
+            ConstantScalarExpression::Reference(r) => {
+                let constant_id = r.get_constant_id();
+
+                pipeline
+                    .get_constant(constant_id)
+                    .unwrap_or_else(|| {
+                        panic!("Constant for id '{constant_id}' was not found on pipeline")
+                    })
+                    .to_value()
+            }
+            ConstantScalarExpression::Copy(c) => c.value.to_value(),
         }
     }
 
@@ -373,11 +402,11 @@ impl NegateScalarExpression {
                         )),
                     )));
                 }
-                StaticScalarExpression::Double(i) => {
+                StaticScalarExpression::Double(d) => {
                     return Ok(Some(ResolvedStaticScalarExpression::Value(
                         StaticScalarExpression::Double(DoubleScalarExpression::new(
                             self.query_location.clone(),
-                            -i.get_value(),
+                            -d.get_value(),
                         )),
                     )));
                 }

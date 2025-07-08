@@ -1,8 +1,11 @@
-use std::hash::{Hash, Hasher};
+use std::{
+    fmt::Debug,
+    hash::{Hash, Hasher},
+};
 
 use crate::ExpressionError;
 
-pub trait Expression {
+pub trait Expression: Debug {
     fn get_query_location(&self) -> &QueryLocation;
 }
 
