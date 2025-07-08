@@ -11,10 +11,11 @@ use crate::{
 pub enum Value<'a> {
     Array(&'a dyn ArrayValue),
     Boolean(&'a dyn BooleanValue),
-    Integer(&'a dyn IntegerValue),
     DateTime(&'a dyn DateTimeValue),
     Double(&'a dyn DoubleValue),
+    Integer(&'a dyn IntegerValue),
     Map(&'a dyn MapValue),
+    Null,
     Regex(&'a dyn RegexValue),
     String(&'a dyn StringValue),
 }
@@ -24,10 +25,11 @@ impl Value<'_> {
         match self {
             Value::Array(_) => ValueType::Array,
             Value::Boolean(_) => ValueType::Boolean,
-            Value::Integer(_) => ValueType::Integer,
             Value::DateTime(_) => ValueType::DateTime,
             Value::Double(_) => ValueType::Double,
+            Value::Integer(_) => ValueType::Integer,
             Value::Map(_) => ValueType::Map,
+            Value::Null => ValueType::Null,
             Value::Regex(_) => ValueType::Regex,
             Value::String(_) => ValueType::String,
         }
@@ -86,10 +88,11 @@ impl Value<'_> {
         match self {
             Value::Array(_) => todo!(),
             Value::Boolean(b) => b.to_string(action),
-            Value::Integer(i) => i.to_string(action),
             Value::DateTime(d) => d.to_string(action),
             Value::Double(d) => d.to_string(action),
+            Value::Integer(i) => i.to_string(action),
             Value::Map(_) => todo!(),
+            Value::Null => (action)("null"),
             Value::Regex(r) => r.to_string(action),
             Value::String(s) => (action)(s.get_value()),
         }
@@ -101,6 +104,13 @@ impl Value<'_> {
         right: &Value,
         case_insensitive: bool,
     ) -> Result<bool, ExpressionError> {
+        let is_left_null = left.get_value_type() == ValueType::Null;
+        let is_right_null = right.get_value_type() == ValueType::Null;
+
+        if is_left_null || is_right_null {
+            return Ok(is_left_null == is_right_null);
+        }
+
         match left {
             Value::Array(left_array) => {
                 if let Value::Array(right_array) = right {
@@ -128,17 +138,6 @@ impl Value<'_> {
                     ),
                 )),
             },
-            Value::Integer(i) => match right.convert_to_integer() {
-                Some(o) => Ok(i.get_value() == o),
-                None => Err(ExpressionError::TypeMismatch(
-                    query_location.clone(),
-                    format!(
-                        "{:?} value '{}' on right side of equality operation could not be converted to int",
-                        right.get_value_type(),
-                        right.to_string()
-                    ),
-                )),
-            },
             Value::DateTime(d) => match right.convert_to_datetime() {
                 Some(o) => Ok(d.get_value() == o),
                 None => Err(ExpressionError::TypeMismatch(
@@ -161,6 +160,17 @@ impl Value<'_> {
                     ),
                 )),
             },
+            Value::Integer(i) => match right.convert_to_integer() {
+                Some(o) => Ok(i.get_value() == o),
+                None => Err(ExpressionError::TypeMismatch(
+                    query_location.clone(),
+                    format!(
+                        "{:?} value '{}' on right side of equality operation could not be converted to int",
+                        right.get_value_type(),
+                        right.to_string()
+                    ),
+                )),
+            },
             Value::Map(left_map) => {
                 if let Value::Map(right_map) = right {
                     map_value::equal_to(query_location, *left_map, *right_map, case_insensitive)
@@ -171,6 +181,7 @@ impl Value<'_> {
                     todo!()
                 }
             }
+            Value::Null => panic!("Null equality should be handled before match"),
             Value::Regex(r) => {
                 let mut c = None;
 
@@ -1287,6 +1298,22 @@ mod tests {
                 )]),
             )),
             true,
+            false,
+        );
+
+        run_test_success(Value::Null, Value::Null, false, true);
+
+        run_test_success(
+            Value::Null,
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            false,
+            false,
+        );
+
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            Value::Null,
+            false,
             false,
         );
     }

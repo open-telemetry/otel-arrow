@@ -2,10 +2,11 @@
 pub enum ValueType {
     Array,
     Boolean,
-    Integer,
     DateTime,
     Double,
+    Integer,
     Map,
+    Null,
     Regex,
     String,
 }
