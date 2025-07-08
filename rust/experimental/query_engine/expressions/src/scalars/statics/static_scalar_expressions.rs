@@ -23,6 +23,9 @@ pub enum StaticScalarExpression {
     /// Resolve a static map value provided directly in a query.
     Map(MapScalarExpression),
 
+    /// Resolve a static null value provided directly in a query.
+    Null(NullScalarExpression),
+
     /// Resolve a static regex value provided directly in a query.
     Regex(RegexScalarExpression),
 
@@ -39,6 +42,7 @@ impl StaticScalarExpression {
             StaticScalarExpression::Double(_) => ValueType::Double,
             StaticScalarExpression::Integer(_) => ValueType::Integer,
             StaticScalarExpression::Map(_) => ValueType::Map,
+            StaticScalarExpression::Null(_) => ValueType::Null,
             StaticScalarExpression::Regex(_) => ValueType::Regex,
             StaticScalarExpression::String(_) => ValueType::String,
         }
@@ -52,6 +56,7 @@ impl StaticScalarExpression {
             StaticScalarExpression::Double(d) => Value::Double(d),
             StaticScalarExpression::Integer(i) => Value::Integer(i),
             StaticScalarExpression::Map(m) => Value::Map(m),
+            StaticScalarExpression::Null(_) => Value::Null,
             StaticScalarExpression::Regex(r) => Value::Regex(r),
             StaticScalarExpression::String(s) => Value::String(s),
         }
@@ -67,6 +72,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::Double(d) => d.get_query_location(),
             StaticScalarExpression::Integer(i) => i.get_query_location(),
             StaticScalarExpression::Map(m) => m.get_query_location(),
+            StaticScalarExpression::Null(n) => n.get_query_location(),
             StaticScalarExpression::Regex(r) => r.get_query_location(),
             StaticScalarExpression::String(s) => s.get_query_location(),
         }
@@ -181,6 +187,23 @@ impl Expression for IntegerScalarExpression {
 impl IntegerValue for IntegerScalarExpression {
     fn get_value(&self) -> i64 {
         self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NullScalarExpression {
+    query_location: QueryLocation,
+}
+
+impl NullScalarExpression {
+    pub fn new(query_location: QueryLocation) -> NullScalarExpression {
+        Self { query_location }
+    }
+}
+
+impl Expression for NullScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
     }
 }
 
