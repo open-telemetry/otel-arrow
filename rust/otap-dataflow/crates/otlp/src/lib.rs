@@ -36,6 +36,7 @@ use otap_df_engine::shared::{
 
 /// compression formats
 pub mod compression;
+pub mod fake_signal_receiver;
 /// gRPC service implementation
 pub mod grpc;
 /// otlp exporter implementation
