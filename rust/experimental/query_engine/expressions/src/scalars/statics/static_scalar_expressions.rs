@@ -1,10 +1,13 @@
 use chrono::{DateTime, FixedOffset};
 use regex::Regex;
 
-use crate::{Expression, QueryLocation, primitives::*};
+use crate::{ArrayScalarExpression, Expression, MapScalarExpression, QueryLocation, primitives::*};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StaticScalarExpression {
+    /// Resolve a static array value provided directly in a query.
+    Array(ArrayScalarExpression),
+
     /// Resolve a static bool value provided directly in a query.
     Boolean(BooleanScalarExpression),
 
@@ -17,6 +20,9 @@ pub enum StaticScalarExpression {
     /// Resolve a static integer value provided directly in a query.
     Integer(IntegerScalarExpression),
 
+    /// Resolve a static map value provided directly in a query.
+    Map(MapScalarExpression),
+
     /// Resolve a static regex value provided directly in a query.
     Regex(RegexScalarExpression),
 
@@ -27,12 +33,27 @@ pub enum StaticScalarExpression {
 impl StaticScalarExpression {
     pub fn get_value_type(&self) -> ValueType {
         match self {
+            StaticScalarExpression::Array(_) => ValueType::Array,
             StaticScalarExpression::Boolean(_) => ValueType::Boolean,
             StaticScalarExpression::DateTime(_) => ValueType::DateTime,
             StaticScalarExpression::Double(_) => ValueType::Double,
             StaticScalarExpression::Integer(_) => ValueType::Integer,
+            StaticScalarExpression::Map(_) => ValueType::Map,
             StaticScalarExpression::Regex(_) => ValueType::Regex,
             StaticScalarExpression::String(_) => ValueType::String,
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            StaticScalarExpression::Array(a) => Value::Array(a),
+            StaticScalarExpression::Boolean(b) => Value::Boolean(b),
+            StaticScalarExpression::DateTime(d) => Value::DateTime(d),
+            StaticScalarExpression::Double(d) => Value::Double(d),
+            StaticScalarExpression::Integer(i) => Value::Integer(i),
+            StaticScalarExpression::Map(m) => Value::Map(m),
+            StaticScalarExpression::Regex(r) => Value::Regex(r),
+            StaticScalarExpression::String(s) => Value::String(s),
         }
     }
 }
@@ -40,10 +61,12 @@ impl StaticScalarExpression {
 impl Expression for StaticScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
+            StaticScalarExpression::Array(a) => a.get_query_location(),
             StaticScalarExpression::Boolean(b) => b.get_query_location(),
             StaticScalarExpression::DateTime(d) => d.get_query_location(),
             StaticScalarExpression::Double(d) => d.get_query_location(),
             StaticScalarExpression::Integer(i) => i.get_query_location(),
+            StaticScalarExpression::Map(m) => m.get_query_location(),
             StaticScalarExpression::Regex(r) => r.get_query_location(),
             StaticScalarExpression::String(s) => s.get_query_location(),
         }
