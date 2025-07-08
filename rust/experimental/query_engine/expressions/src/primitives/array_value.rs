@@ -10,6 +10,17 @@ pub trait ArrayValue: Debug {
     fn get(&self, index: usize) -> Option<Value>;
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool;
+
+    fn to_string(&self, action: &mut dyn FnMut(&str)) {
+        let mut values = Vec::new();
+
+        self.get_items(&mut IndexValueClosureCallback::new(|_, value| {
+            values.push(value.to_json_value());
+            true
+        }));
+
+        (action)(serde_json::Value::Array(values).to_string().as_str())
+    }
 }
 
 pub trait IndexValueCallback {
