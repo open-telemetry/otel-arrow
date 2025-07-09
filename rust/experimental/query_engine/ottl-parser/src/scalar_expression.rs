@@ -15,7 +15,9 @@ pub(crate) fn parse_scalar_expression(
         Rule::true_literal | Rule::false_literal => {
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
-        Rule::float_literal => ScalarExpression::Static(parse_standard_double_literal(scalar_rule, Some("float"))?),
+        Rule::float_literal => {
+            ScalarExpression::Static(parse_standard_double_literal(scalar_rule, Some("float"))?)
+        }
         Rule::integer_literal => {
             ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
         }

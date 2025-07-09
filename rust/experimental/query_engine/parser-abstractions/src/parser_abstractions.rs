@@ -45,7 +45,9 @@ pub fn parse_standard_integer_literal<R: RuleType>(
     if parsed_value.is_err() {
         return Err(ParserError::SyntaxError(
             to_query_location(&integer_literal_rule),
-            format!("'{raw_value}' could not be parsed as a literal of type 'signed 64 bit integer'"),
+            format!(
+                "'{raw_value}' could not be parsed as a literal of type 'signed 64 bit integer'"
+            ),
         ));
     }
 
