@@ -91,6 +91,19 @@ impl Expression for ScalarExpression {
             ScalarExpression::Conditional(c) => c.get_query_location(),
         }
     }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            ScalarExpression::Source(_) => "ScalarExpression(Source)",
+            ScalarExpression::Attached(_) => "ScalarExpression(Attached)",
+            ScalarExpression::Variable(_) => "ScalarExpression(Variable)",
+            ScalarExpression::Static(s) => s.get_name(),
+            ScalarExpression::Negate(_) => "ScalarExpression(Negate)",
+            ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
+            ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
+            ScalarExpression::Constant(c) => c.get_name(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -140,6 +153,10 @@ impl Expression for SourceScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "SourceScalarExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +192,10 @@ impl Expression for AttachedScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "AttachedScalarExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -209,6 +230,10 @@ impl VariableScalarExpression {
 impl Expression for VariableScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "VariableScalarExpression"
     }
 }
 
@@ -283,6 +308,13 @@ impl Expression for ConstantScalarExpression {
             ConstantScalarExpression::Copy(c) => c.get_query_location(),
         }
     }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            ConstantScalarExpression::Reference(_) => "ConstantScalar(Reference)",
+            ConstantScalarExpression::Copy(_) => "ConstantScalar(Copy)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +350,10 @@ impl Expression for ReferenceConstantScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "ReferenceConstantScalarExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -352,6 +388,10 @@ impl CopyConstantScalarExpression {
 impl Expression for CopyConstantScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "CopyConstantScalarExpression"
     }
 }
 
@@ -426,6 +466,10 @@ impl NegateScalarExpression {
 impl Expression for NegateScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "NegateScalarExpression"
     }
 }
 
@@ -529,6 +573,10 @@ impl ConditionalScalarExpression {
 impl Expression for ConditionalScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ConditionalScalarExpression"
     }
 }
 

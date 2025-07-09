@@ -65,6 +65,10 @@ impl Expression for PipelineExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "PipelineExpression"
+    }
 }
 
 pub struct PipelineExpressionBuilder {

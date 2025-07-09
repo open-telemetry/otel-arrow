@@ -65,6 +65,17 @@ impl Expression for LogicalExpression {
             LogicalExpression::Chain(c) => c.get_query_location(),
         }
     }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            LogicalExpression::Scalar(_) => "LogicalExpression(Scalar)",
+            LogicalExpression::EqualTo(_) => "LogicalExpression(EqualTo)",
+            LogicalExpression::GreaterThan(_) => "LogicalExpression(GreaterThan)",
+            LogicalExpression::GreaterThanOrEqualTo(_) => "LogicalExpression(GreaterThanOrEqualTo)",
+            LogicalExpression::Not(_) => "LogicalExpression(Not)",
+            LogicalExpression::Chain(_) => "LogicalExpression(Chain)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +115,10 @@ impl ChainLogicalExpression {
 impl Expression for ChainLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ChainLogicalExpression"
     }
 }
 
@@ -146,6 +161,10 @@ impl Expression for EqualToLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "EqualToLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -180,6 +199,10 @@ impl GreaterThanLogicalExpression {
 impl Expression for GreaterThanLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "GreaterThanLogicalExpression"
     }
 }
 
@@ -216,6 +239,10 @@ impl Expression for GreaterThanOrEqualToLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "GreaterThanOrEqualToLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,5 +270,9 @@ impl NotLogicalExpression {
 impl Expression for NotLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "NotLogicalExpression"
     }
 }
