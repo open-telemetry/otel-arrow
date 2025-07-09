@@ -2,14 +2,12 @@ use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
-use crate::{
-    Rule
-};
+use crate::Rule;
 
 #[allow(dead_code)]
 pub(crate) fn parse_scalar_expression(
     scalar_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    _state: &ParserState,
 ) -> Result<ScalarExpression, ParserError> {
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 
@@ -18,9 +16,13 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
         Rule::float_literal => ScalarExpression::Static(parse_standard_float_literal(scalar_rule)?),
-        Rule::integer_literal => ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?),
-        Rule::string_literal => ScalarExpression::Static(parse_standard_string_literal(scalar_rule)),
-        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
+        Rule::integer_literal => {
+            ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
+        }
+        Rule::string_literal => {
+            ScalarExpression::Static(parse_standard_string_literal(scalar_rule))
+        }
+        Rule::scalar_expression => parse_scalar_expression(scalar_rule, _state)?,
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 
