@@ -87,12 +87,9 @@ pub(crate) fn parse_logical_expression(
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        let value_type_result = scalar.try_resolve_value_type();
+                        let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
                         if let Err(e) = value_type_result {
-                            return Err(ParserError::SyntaxError(
-                                e.get_query_location().clone(),
-                                e.to_string(),
-                            ));
+                            return Err(ParserError::from(&e));
                         }
                         if let Some(t) = value_type_result.unwrap()
                             && t != ValueType::Boolean
@@ -158,13 +155,13 @@ pub(crate) fn parse_logical_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::KqlPestParser;
 
     use super::*;
 
     #[test]
     fn test_pest_parse_comparison_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
             Rule::comparison_expression,
             &[
                 "1 == 1",
@@ -188,7 +185,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::comparison_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::comparison_expression, input).unwrap();
 
             let expression = parse_comparison_expression(result.next().unwrap(), &state).unwrap();
 
@@ -320,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_logical_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
             Rule::logical_expression,
             &[
                 "true",
@@ -346,7 +343,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
 
             let expression = parse_logical_expression(result.next().unwrap(), &state).unwrap();
 
@@ -356,7 +353,7 @@ mod tests {
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
             let state = ParserState::new(input);
 
-            let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
 
             let error = parse_logical_expression(result.next().unwrap(), &state).unwrap_err();
 

@@ -11,6 +11,7 @@ pub fn to_query_location<R: RuleType>(rule: &Pair<R>) -> QueryLocation {
     let s = rule.as_span();
     let (line_number, column_number) = rule.line_col();
     QueryLocation::new(s.start(), s.end(), line_number, column_number)
+        .expect("QueryLocation could not be constructed")
 }
 
 /// Parses a boolean literal from a Pest rule pair and returns a `StaticScalarExpression` wrapping a `BooleanScalarExpression`.

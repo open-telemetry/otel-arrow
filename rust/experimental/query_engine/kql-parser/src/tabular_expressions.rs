@@ -4,8 +4,9 @@ use pest::iterators::Pair;
 use regex::Regex;
 
 use crate::{
-    Rule, logical_expressions::parse_logical_expression,
-    scalar_primitive_expressions::parse_accessor_expression,
+    Rule,
+    logical_expressions::parse_logical_expression,
+    scalar_primitive_expressions::{parse_accessor_expression, parse_string_literal},
     shared_expressions::parse_assignment_expression,
 };
 
@@ -80,7 +81,7 @@ pub(crate) fn parse_project_expression(
                     match s.get_destination() {
                         MutableValueExpression::Source(s) => {
                             if let Some(map_key) =
-                                get_root_map_key_from_source_scalar_expression(state, s)
+                                get_root_map_key_from_source_scalar_expression(state, s)?
                             {
                                 let result = map_selection.push_key_or_key_pattern(map_key);
                                 assert!(result);
@@ -124,7 +125,7 @@ pub(crate) fn parse_project_expression(
                 let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
-                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)
+                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)?
                     {
                         let result = map_selection.push_key_or_key_pattern(map_key);
                         assert!(result);
@@ -218,7 +219,7 @@ pub(crate) fn parse_project_keep_expression(
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
                 if let Some(scalar) =
-                    parse_identifier_or_pattern(state, rule_location.clone(), rule.as_str())?
+                    parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
                 {
                     let result =
                         map_selection.push_key_or_key_pattern(ScalarExpression::Static(scalar));
@@ -237,7 +238,7 @@ pub(crate) fn parse_project_keep_expression(
                 let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
-                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)
+                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)?
                     {
                         let result = map_selection.push_key_or_key_pattern(map_key);
                         assert!(result);
@@ -329,7 +330,7 @@ pub(crate) fn parse_project_away_expression(
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
                 if let Some(scalar) =
-                    parse_identifier_or_pattern(state, rule_location.clone(), rule.as_str())?
+                    parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
                 {
                     let result =
                         map_selection.push_key_or_key_pattern(ScalarExpression::Static(scalar));
@@ -348,7 +349,7 @@ pub(crate) fn parse_project_away_expression(
                 let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
-                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)
+                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)?
                     {
                         let result = map_selection.push_key_or_key_pattern(map_key);
                         assert!(result);
@@ -486,17 +487,21 @@ pub(crate) fn parse_tabular_expression(
 fn get_root_map_key_from_source_scalar_expression(
     state: &ParserState,
     source_scalar_expression: &SourceScalarExpression,
-) -> Option<ScalarExpression> {
+) -> Result<Option<ScalarExpression>, ParserError> {
     let selectors = source_scalar_expression
         .get_value_accessor()
         .get_selectors();
 
     if selectors.len() == 1 {
         let first = selectors.first().unwrap();
-        if let Ok(Some(StaticScalarExpression::String(_))) = first.try_resolve_static() {
-            return Some(first.clone());
+        if let Some(s) = first
+            .try_resolve_static(state.get_pipeline())
+            .map_err(|e| ParserError::from(&e))?
+            && let StaticScalarExpression::String(_) = s.as_ref()
+        {
+            return Ok(Some(first.clone()));
         } else {
-            return None;
+            return Ok(None);
         }
     } else if selectors.len() == 2 {
         // Note: If state has default_source_map_key we allow it
@@ -504,27 +509,44 @@ fn get_root_map_key_from_source_scalar_expression(
         // attributes['key2'], and source.attributes['key2'] may
         // all refer to the same thing when
         // default_source_map_key=attributes.
-        if let Ok(Some(StaticScalarExpression::String(k))) =
-            selectors.first().unwrap().try_resolve_static()
+        if let Some(s) = selectors
+            .first()
+            .unwrap()
+            .try_resolve_static(state.get_pipeline())
+            .map_err(|e| ParserError::from(&e))?
+            && let StaticScalarExpression::String(k) = s.as_ref()
         {
             let root_key = k.get_value();
 
             if Some(root_key) == state.get_default_source_map_key() {
-                return Some(selectors.get(1).unwrap().clone());
+                return Ok(Some(selectors.get(1).unwrap().clone()));
             }
         }
     }
 
-    None
+    Ok(None)
 }
 
-fn parse_identifier_or_pattern(
+fn parse_identifier_or_pattern_literal(
     state: &ParserState,
     location: QueryLocation,
-    value: &str,
+    identifier_or_pattern_literal: Pair<Rule>,
 ) -> Result<Option<StaticScalarExpression>, ParserError> {
+    let raw = identifier_or_pattern_literal.as_str();
+
+    let value: Box<str> = match identifier_or_pattern_literal.into_inner().next() {
+        Some(r) => match r.as_rule() {
+            Rule::string_literal => match parse_string_literal(r) {
+                StaticScalarExpression::String(v) => v.get_value().into(),
+                _ => panic!("Unexpected type returned from parse_string_literal"),
+            },
+            _ => panic!("Unexpected rule in identifier_or_pattern_literal: {r}"),
+        },
+        None => raw.into(),
+    };
+
     if value.contains("*") {
-        let pattern = regex::escape(value).replace("\\*", ".*");
+        let pattern = regex::escape(&value).replace("\\*", ".*");
         let regex = Regex::new(&pattern);
         if regex.is_err() {
             return Err(ParserError::SyntaxError(
@@ -538,11 +560,11 @@ fn parse_identifier_or_pattern(
         Ok(Some(StaticScalarExpression::Regex(
             RegexScalarExpression::new(location, regex.unwrap()),
         )))
-    } else if state.is_well_defined_identifier(value) {
+    } else if state.is_well_defined_identifier(&value) {
         Ok(None)
     } else {
         Ok(Some(StaticScalarExpression::String(
-            StringScalarExpression::new(location, value),
+            StringScalarExpression::new(location, &value),
         )))
     }
 }
@@ -551,7 +573,7 @@ fn parse_identifier_or_pattern(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::KqlPestParser;
 
     use super::*;
 
@@ -572,7 +594,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::extend_expression, input).unwrap();
 
             let expression = parse_extend_expression(result.next().unwrap(), &state).unwrap();
 
@@ -587,7 +609,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::extend_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::extend_expression, input).unwrap();
 
             let error = parse_extend_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -628,10 +650,11 @@ mod tests {
             "extend const_str = const_str",
             vec![TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
+                ImmutableValueExpression::Scalar(ScalarExpression::Constant(
+                    ConstantScalarExpression::Reference(ReferenceConstantScalarExpression::new(
                         QueryLocation::new_fake(),
-                        "hello world",
+                        ValueType::String,
+                        0,
                     )),
                 )),
                 MutableValueExpression::Source(SourceScalarExpression::new(
@@ -740,7 +763,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_expression, input).unwrap();
 
             let expression = parse_project_expression(result.next().unwrap(), &state).unwrap();
 
@@ -764,7 +787,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_expression, input).unwrap();
 
             let error = parse_project_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -858,11 +881,14 @@ mod tests {
             vec![
                 TransformExpression::Set(SetTransformExpression::new(
                     QueryLocation::new_fake(),
-                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "hello world",
-                        )),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Constant(
+                        ConstantScalarExpression::Reference(
+                            ReferenceConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueType::String,
+                                0,
+                            ),
+                        ),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1102,7 +1128,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
 
             let expression = parse_project_keep_expression(result.next().unwrap(), &state).unwrap();
 
@@ -1126,7 +1152,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_keep_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_keep_expression, input).unwrap();
 
             let error = parse_project_keep_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -1138,7 +1164,7 @@ mod tests {
         };
 
         run_test_success(
-            "project-keep key*",
+            "project-keep ['namespace.*']",
             TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
                 MapKeyListExpression::new(
                     QueryLocation::new_fake(),
@@ -1149,7 +1175,7 @@ mod tests {
                     vec![ScalarExpression::Static(StaticScalarExpression::Regex(
                         RegexScalarExpression::new(
                             QueryLocation::new_fake(),
-                            Regex::new("key.*").unwrap(),
+                            Regex::new("namespace\\..*").unwrap(),
                         ),
                     ))],
                 ),
@@ -1296,7 +1322,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
 
             let expression = parse_project_away_expression(result.next().unwrap(), &state).unwrap();
 
@@ -1320,7 +1346,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlParser::parse(Rule::project_away_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::project_away_expression, input).unwrap();
 
             let error = parse_project_away_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -1478,7 +1504,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::where_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::where_expression, input).unwrap();
 
             let expression = parse_where_expression(result.next().unwrap(), &state).unwrap();
 
@@ -1529,7 +1555,7 @@ mod tests {
         let run_test = |input: &str, expected: Vec<DataExpression>| {
             let state = ParserState::new(input);
 
-            let mut result = KqlParser::parse(Rule::tabular_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::tabular_expression, input).unwrap();
 
             let expression = parse_tabular_expression(result.next().unwrap(), &state).unwrap();
 
