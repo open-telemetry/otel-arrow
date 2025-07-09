@@ -5,6 +5,7 @@ Status: **WIP**
 This crate will contain the implementation of the fake signal receiver
 
 ## Example configuration
+
 ```json
 {
     "name": "config",

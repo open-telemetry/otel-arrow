@@ -15,16 +15,17 @@ use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
 use serde_json::Value;
+use tokio::time::{Duration, sleep};
 
 /// A Receiver that listens for OTLP messages
 pub struct FakeSignalReceiver {
     config: Config,
 }
 
-/// Declares the OTLP receiver as a shared receiver factory
-///
-/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
-/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+// /// Declares the OTLP receiver as a shared receiver factory
+// ///
+// /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+// /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 // #[allow(unsafe_code)]
 // #[distributed_slice(SHARED_RECEIVERS)]
 // pub static FAKE_SIGNAL_RECEIVER: SharedReceiverFactory<OTLPSignal> = SharedReceiverFactory {
@@ -50,7 +51,6 @@ impl FakeSignalReceiver {
 
 // Use the async_trait due to the need for thread safety because of tonic requiring Send and Sync traits
 // The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
-//
 #[async_trait]
 impl shared::Receiver<OTLPSignal> for FakeSignalReceiver {
     async fn start(
@@ -97,13 +97,19 @@ async fn run_scenario(
     // loop through each step
 
     for step in steps {
-        let signal = match step.get_config() {
-            SignalConfig::Metric(config) => OTLPSignal::Metric(config.get_signal()),
-            SignalConfig::Log(config) => OTLPSignal::Log(config.get_signal()),
-            SignalConfig::Span(config) => OTLPSignal::Span(config.get_signal()),
-            SignalConfig::Profile(config) => OTLPSignal::Profile(config.get_signal()),
-        };
-        _ = effect_handler.send_message(signal).await;
+        // create batches if specified
+        let batches = step.get_batches() as usize;
+        for _ in 0..batches {
+            let signal = match step.get_config() {
+                SignalConfig::Metric(config) => OTLPSignal::Metric(config.get_signal()),
+                SignalConfig::Log(config) => OTLPSignal::Log(config.get_signal()),
+                SignalConfig::Span(config) => OTLPSignal::Span(config.get_signal()),
+                SignalConfig::Profile(config) => OTLPSignal::Profile(config.get_signal()),
+            };
+            _ = effect_handler.send_message(signal).await;
+            // if there is a delay set between batches sleep for that amount before created the next signal in the batch
+            sleep(Duration::from_millis(step.get_delay_between_batch())).await;
+        }
     }
 }
 
@@ -122,13 +128,15 @@ mod tests {
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{Duration, sleep, timeout};
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario() -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // no scenario to run here as scenario is already defined in the configuration
+                // wait for the scenario to finish running
+                sleep(Duration::from_millis(1000)).await;
                 // send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
                     .await
@@ -146,6 +154,19 @@ mod tests {
 
                 // read from the effect handler
                 let metric_received = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for message")
+                    .expect("No message received");
+                let trace_received = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for message")
+                    .expect("No message received");
+                let log_received = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for message")
+                    .expect("No message received");
+
+                let profile_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received");
@@ -179,11 +200,6 @@ mod tests {
                     _ => assert!(false),
                 }
 
-                let trace_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-
                 match trace_received {
                     OTLPSignal::Span(span) => {
                         let mut resource_count = 0;
@@ -216,11 +232,6 @@ mod tests {
                     _ => assert!(false),
                 }
 
-                let log_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-
                 match log_received {
                     OTLPSignal::Log(log) => {
                         let mut resource_count = 0;
@@ -244,10 +255,6 @@ mod tests {
                     _ => assert!(false),
                 }
 
-                let profile_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
                 match profile_received {
                     OTLPSignal::Profile(profile) => {
                         let mut resource_count = 0;
@@ -286,11 +293,15 @@ mod tests {
 
         let profile_config = ProfileConfig::new(1, 1, 1);
 
-        steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config)));
+        steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
 
-        steps.push(ScenarioStep::new(SignalConfig::Span(trace_config)));
-        steps.push(ScenarioStep::new(SignalConfig::Log(log_config)));
-        steps.push(ScenarioStep::new(SignalConfig::Profile(profile_config)));
+        steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
+        steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
+        steps.push(ScenarioStep::new(
+            SignalConfig::Profile(profile_config),
+            1,
+            0,
+        ));
         let config = Config::new("config".to_string(), steps);
 
         // create our receiver

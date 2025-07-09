@@ -6,7 +6,7 @@ use crate::proto::opentelemetry::{
     trace::v1::TracesData,
 };
 use serde::{Deserialize, Serialize};
-/// Defines the settings of the perf exporter such as what to track
+// Defines the settings of the perf exporter such as what to track
 
 // name: <scenario_name>
 // steps:
@@ -51,22 +51,48 @@ impl Config {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ScenarioStep {
     // name: String,
-    // delay_between_batch: Duration,
-    // delay_between_signal: Duration,
-    // batches: Vec<ScenarioBatch>
+    /// delay in ms
+    #[serde(default = "default_delay_between_batches")]
+    delay_between_batch: u64,
+    #[serde(default = "default_batches")]
+    batches: u64,
     config: SignalConfig,
+}
+
+fn default_delay_between_batches() -> u64 {
+    0
+}
+
+fn default_batches() -> u64 {
+    1
 }
 
 impl ScenarioStep {
     /// create a new step
     #[must_use]
-    pub fn new(config: SignalConfig) -> Self {
-        Self { config }
+    pub fn new(config: SignalConfig, batches: u64, delay_between_batch: u64) -> Self {
+        Self {
+            config,
+            batches,
+            delay_between_batch,
+        }
     }
     /// return the configuration stored inside the scenario step
     #[must_use]
     pub fn get_config(&self) -> SignalConfig {
         self.config
+    }
+
+    /// return the number of batches to generate
+    #[must_use]
+    pub fn get_batches(&self) -> u64 {
+        self.batches
+    }
+
+    /// return the delay in ms
+    #[must_use]
+    pub fn get_delay_between_batch(&self) -> u64 {
+        self.delay_between_batch
     }
 }
 
@@ -126,7 +152,6 @@ pub struct MetricConfig {
     metric_count: usize,
     datapoint_count: usize,
     datapoint_type: MetricType,
-    // attributes_count: usize,
 }
 
 /// configuration settings for a fake log signal
@@ -135,7 +160,6 @@ pub struct LogConfig {
     resource_count: usize,
     scope_count: usize,
     log_count: usize,
-    // attributes_count: usize,
 }
 /// configuration settings for a fake trace signal
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -145,7 +169,6 @@ pub struct SpanConfig {
     span_count: usize,
     event_count: usize,
     link_count: usize,
-    // attributes_count: usize,
 }
 /// configuration settings for a fake profile signal
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -200,12 +223,7 @@ impl LogConfig {
     /// Take the log config and generate the corresponding log signal
     #[must_use]
     pub fn get_signal(&self) -> LogsData {
-        fake_otlp_logs(
-            self.resource_count,
-            self.scope_count,
-            self.log_count,
-            // self.attributes_count,
-        )
+        fake_otlp_logs(self.resource_count, self.scope_count, self.log_count)
     }
 }
 
@@ -236,7 +254,6 @@ impl SpanConfig {
             self.span_count,
             self.event_count,
             self.link_count,
-            // self.attributes_count,
         )
     }
 }
@@ -278,42 +295,22 @@ mod tests {
     #[test]
     fn test_config() {
         let mut steps = vec![];
-        let metric_config = MetricConfig {
-            resource_count: 1,
-            scope_count: 1,
-            metric_count: 1,
-            datapoint_count: 1,
-            datapoint_type: MetricType::Gauge,
-        };
-        let trace_config = SpanConfig {
-            resource_count: 1,
-            scope_count: 1,
-            span_count: 1,
-            event_count: 1,
-            link_count: 1,
-        };
-        let log_config = LogConfig {
-            resource_count: 1,
-            scope_count: 1,
-            log_count: 1,
-        };
-        let profile_config = ProfileConfig {
-            resource_count: 1,
-            scope_count: 1,
-            profile_count: 1,
-        };
-        steps.push(ScenarioStep {
-            config: SignalConfig::Metric(metric_config),
-        });
-        steps.push(ScenarioStep {
-            config: SignalConfig::Span(trace_config),
-        });
-        steps.push(ScenarioStep {
-            config: SignalConfig::Profile(profile_config),
-        });
-        steps.push(ScenarioStep {
-            config: SignalConfig::Log(log_config),
-        });
+        let metric_config = MetricConfig::new(1, 1, 1, 1, MetricType::Gauge);
+        let trace_config = SpanConfig::new(1, 1, 1, 1, 1);
+
+        let log_config = LogConfig::new(1, 1, 1);
+
+        let profile_config = ProfileConfig::new(1, 1, 1);
+
+        steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
+
+        steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
+        steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
+        steps.push(ScenarioStep::new(
+            SignalConfig::Profile(profile_config),
+            1,
+            0,
+        ));
         let config = Config::new("config".to_string(), steps);
         // Convert the Point to a JSON string.
         let serialized = serde_json::to_string(&config).unwrap();
