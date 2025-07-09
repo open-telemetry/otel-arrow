@@ -33,6 +33,7 @@ use otap_df_engine::shared::{
 
 /// compression formats
 pub mod compression;
+pub mod debug_exporter;
 /// gRPC service implementation
 pub mod grpc;
 /// OTLP Batch Processor implementation

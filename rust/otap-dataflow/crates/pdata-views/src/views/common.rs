@@ -8,11 +8,9 @@
 //! an analogous proto message, but are available as common return types for other View trait
 //! implementations
 
-use std::borrow::Cow;
-
-/// Switch this to `std::borrow::Cow<'src, str>` if/when you want lossy UTF-8.
-/// Note: String::from_utf8_lossy returns Cow<'src, str> which is not zero-cost.
-pub type Str<'src> = Cow<'src, str>;
+/// All current implementations only use borrowed strings from the underlying data.
+/// If lossy UTF-8 support is needed in the future, this can be reverted to `Cow<'src, str>`.
+pub type Str<'src> = &'src str;
 
 /// View for AnyValue
 pub trait AnyValueView<'val> {
@@ -41,9 +39,9 @@ pub trait AnyValueView<'val> {
     fn value_type(&self) -> ValueType;
 
     /* ---------- scalar ---------- */
-    /// Get the value as a boolean. returns None if the value_type is not `String`
+    /// Get the value as an &str. returns None if the value_type is not `String`
     fn as_string(&self) -> Option<Str<'_>>;
-    /// Get the value as a string. returns `None` if value_type is not `Bool`
+    /// Get the value as a boolean. returns `None` if value_type is not `Bool`
     fn as_bool(&self) -> Option<bool>;
     /// Get the value as int64. returns `None` if the value_type is not an `Int64`
     fn as_int64(&self) -> Option<i64>;

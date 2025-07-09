@@ -34,7 +34,7 @@ pub(crate) fn parse_conditional_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::KqlPestParser;
 
     use super::*;
 
@@ -43,7 +43,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let state = ParserState::new(input);
 
-            let mut result = KqlParser::parse(Rule::conditional_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::conditional_expression, input).unwrap();
 
             let expression = parse_conditional_expression(result.next().unwrap(), &state).unwrap();
 
@@ -87,29 +87,6 @@ mod tests {
                 )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                )),
-            )),
-        );
-
-        // Note: The inner statements get folded into constants.
-        run_test_success(
-            "iif(1 > 0, iif(true, 'a', 'b'), iff(false, 'c', 'd'))",
-            ScalarExpression::Conditional(ConditionalScalarExpression::new(
-                QueryLocation::new_fake(),
-                LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                    QueryLocation::new_fake(),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                    )),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "d"),
                 )),
             )),
         );

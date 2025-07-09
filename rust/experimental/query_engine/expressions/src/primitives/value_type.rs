@@ -1,8 +1,12 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ValueType {
+    Array,
     Boolean,
-    Integer,
     DateTime,
     Double,
+    Integer,
+    Map,
+    Null,
+    Regex,
     String,
 }
