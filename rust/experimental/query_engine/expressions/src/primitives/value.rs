@@ -155,14 +155,10 @@ impl Value<'_> {
                         case_insensitive,
                     )
                 } else if let Value::String(right_string) = right {
-                    let r = Self::are_string_values_equal(
+                    Ok(Self::are_string_values_equal(
                         right_string.get_value(),
                         left,
                         case_insensitive,
-                    );
-
-                    Ok(r.expect(
-                        "Encountered a type which does not correctly implement convert_to_string",
                     ))
                 } else {
                     Err(ExpressionError::TypeMismatch(
@@ -223,14 +219,10 @@ impl Value<'_> {
                 if let Value::Map(right_map) = right {
                     map_value::equal_to(query_location, *left_map, *right_map, case_insensitive)
                 } else if let Value::String(right_string) = right {
-                    let r = Self::are_string_values_equal(
+                    Ok(Self::are_string_values_equal(
                         right_string.get_value(),
                         left,
                         case_insensitive,
-                    );
-
-                    Ok(r.expect(
-                        "Encountered a type which does not correctly implement convert_to_string",
                     ))
                 } else {
                     Err(ExpressionError::TypeMismatch(
@@ -244,22 +236,16 @@ impl Value<'_> {
                 }
             }
             Value::Null => panic!("Null equality should be handled before match"),
-            Value::Regex(r) => {
-                let mut c = None;
-
-                right.convert_to_string(&mut |o| c = Some(r.get_value().as_str() == o));
-
-                Ok(c.expect(
-                    "Encountered a type which does not correctly implement convert_to_string",
-                ))
-            }
-            Value::String(s) => {
-                let r = Self::are_string_values_equal(s.get_value(), right, case_insensitive);
-
-                Ok(r.expect(
-                    "Encountered a type which does not correctly implement convert_to_string",
-                ))
-            }
+            Value::Regex(r) => Ok(Self::are_string_values_equal(
+                r.get_value().as_str(),
+                right,
+                case_insensitive,
+            )),
+            Value::String(s) => Ok(Self::are_string_values_equal(
+                s.get_value(),
+                right,
+                case_insensitive,
+            )),
         }
     }
 
@@ -364,7 +350,7 @@ impl Value<'_> {
         }
     }
 
-    fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> Option<bool> {
+    fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
         let mut r = None;
 
         right.convert_to_string(&mut |o| {
@@ -375,7 +361,7 @@ impl Value<'_> {
             }
         });
 
-        r
+        r.expect("Encountered a type which does not correctly implement convert_to_string")
     }
 
     /// Note: Only call this for tests and errors as it will copy the string to
