@@ -7,6 +7,8 @@ use crate::ExpressionError;
 
 pub trait Expression: Debug {
     fn get_query_location(&self) -> &QueryLocation;
+
+    fn get_name(&self) -> &'static str;
 }
 
 #[derive(Debug, Clone, Eq)]

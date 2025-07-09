@@ -77,6 +77,20 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::String(s) => s.get_query_location(),
         }
     }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            StaticScalarExpression::Array(_) => "StaticScalar(Array)",
+            StaticScalarExpression::Boolean(_) => "StaticScalar(Boolean)",
+            StaticScalarExpression::DateTime(_) => "StaticScalar(DateTime)",
+            StaticScalarExpression::Double(_) => "StaticScalar(Double)",
+            StaticScalarExpression::Integer(_) => "StaticScalar(Integer)",
+            StaticScalarExpression::Map(_) => "StaticScalar(Map)",
+            StaticScalarExpression::Null(_) => "StaticScalar(Null)",
+            StaticScalarExpression::String(_) => "StaticScalar(String)",
+            StaticScalarExpression::Regex(_) => "StaticScalar(Regex)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +111,10 @@ impl BooleanScalarExpression {
 impl Expression for BooleanScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "BooleanScalarExpression"
     }
 }
 
@@ -128,6 +146,10 @@ impl Expression for DateTimeScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "DateTimeScalarExpression"
+    }
 }
 
 impl DateTimeValue for DateTimeScalarExpression {
@@ -154,6 +176,10 @@ impl DoubleScalarExpression {
 impl Expression for DoubleScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "DoubleScalarExpression"
     }
 }
 
@@ -182,6 +208,10 @@ impl Expression for IntegerScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "IntegerScalarExpression"
+    }
 }
 
 impl IntegerValue for IntegerScalarExpression {
@@ -204,6 +234,10 @@ impl NullScalarExpression {
 impl Expression for NullScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "NullScalarExpression"
     }
 }
 
@@ -229,6 +263,10 @@ impl RegexScalarExpression {
 impl Expression for RegexScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "RegexScalarExpression"
     }
 }
 
@@ -262,6 +300,10 @@ impl StringScalarExpression {
 impl Expression for StringScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "StringScalarExpression"
     }
 }
 

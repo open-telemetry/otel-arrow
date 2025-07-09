@@ -24,6 +24,10 @@ impl Expression for ArrayScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "ArrayScalarExpression"
+    }
 }
 
 impl ArrayValue for ArrayScalarExpression {
