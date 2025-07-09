@@ -28,3 +28,14 @@ double_quote_string_char = _{
 string_literal = @{
     "\"" ~ double_quote_string_char* ~ "\""
 }
+
+// Expressions
+boolean_expression = _{ true_literal | false_literal }
+
+scalar_expression = {
+    boolean_expression
+    | float_literal
+    | integer_literal
+    | string_literal
+    | ("(" ~ scalar_expression ~ ")")
+}
