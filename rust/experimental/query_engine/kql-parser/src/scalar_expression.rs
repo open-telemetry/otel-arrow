@@ -21,8 +21,8 @@ pub(crate) fn parse_scalar_expression(
         Rule::true_literal | Rule::false_literal => {
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
-        Rule::double_literal => ScalarExpression::Static(parse_double_literal(scalar_rule)?),
-        Rule::integer_literal => ScalarExpression::Static(parse_integer_literal(scalar_rule)?),
+        Rule::double_literal => ScalarExpression::Static(parse_standard_float_literal(scalar_rule)?),
+        Rule::integer_literal => ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?),
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
