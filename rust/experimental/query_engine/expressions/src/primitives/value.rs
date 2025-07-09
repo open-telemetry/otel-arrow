@@ -154,11 +154,32 @@ impl Value<'_> {
                         *right_array,
                         case_insensitive,
                     )
+                } else if let Value::String(right_string) = right {
+                    let mut r = None;
+
+                    left.convert_to_string(&mut |o| {
+                        if case_insensitive {
+                            r = Some(caseless::default_caseless_match_str(
+                                right_string.get_value(),
+                                o,
+                            ))
+                        } else {
+                            r = Some(right_string.get_value() == o)
+                        }
+                    });
+
+                    Ok(r.expect(
+                        "Encountered a type which does not correctly implement convert_to_string",
+                    ))
                 } else {
-                    // todo: If right is string parsable as a JSON array we
-                    // should treat this as equal to match the reverse case
-                    // where we are comparing a string to array.
-                    todo!()
+                    Err(ExpressionError::TypeMismatch(
+                        query_location.clone(),
+                        format!(
+                            "{:?} value '{}' on right side of equality operation could not be converted to an array",
+                            right.get_value_type(),
+                            right.to_string()
+                        ),
+                    ))
                 }
             }
             Value::Boolean(b) => match right.convert_to_bool() {
@@ -208,11 +229,32 @@ impl Value<'_> {
             Value::Map(left_map) => {
                 if let Value::Map(right_map) = right {
                     map_value::equal_to(query_location, *left_map, *right_map, case_insensitive)
+                } else if let Value::String(right_string) = right {
+                    let mut r = None;
+
+                    left.convert_to_string(&mut |o| {
+                        if case_insensitive {
+                            r = Some(caseless::default_caseless_match_str(
+                                right_string.get_value(),
+                                o,
+                            ))
+                        } else {
+                            r = Some(right_string.get_value() == o)
+                        }
+                    });
+
+                    Ok(r.expect(
+                        "Encountered a type which does not correctly implement convert_to_string",
+                    ))
                 } else {
-                    // todo: If right is string parsable as a JSON map we should
-                    // treat this as equal to match the reverse case where we
-                    // are comparing a string to map.
-                    todo!()
+                    Err(ExpressionError::TypeMismatch(
+                        query_location.clone(),
+                        format!(
+                            "{:?} value '{}' on right side of equality operation could not be converted to a map",
+                            right.get_value_type(),
+                            right.to_string()
+                        ),
+                    ))
                 }
             }
             Value::Null => panic!("Null equality should be handled before match"),
@@ -1138,6 +1180,38 @@ mod tests {
         );
 
         run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello",
+                ))],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "[\"hello\"]",
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello",
+                ))],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "[\"HELLO\"]",
+            )),
+            true,
+            true,
+        );
+
+        run_test_success(
             Value::Map(&MapScalarExpression::new(
                 QueryLocation::new_fake(),
                 HashMap::new(),
@@ -1373,6 +1447,44 @@ mod tests {
             )),
             true,
             false,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                )]),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "{\"key1\":\"hello\"}",
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "key1".into(),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                )]),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "{\"KEY1\":\"HELLO\"}",
+            )),
+            true,
+            true,
         );
 
         run_test_success(Value::Null, Value::Null, false, true);
