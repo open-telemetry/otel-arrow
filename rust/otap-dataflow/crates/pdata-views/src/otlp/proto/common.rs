@@ -4,8 +4,6 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp common.proto.
 
-use std::borrow::Cow;
-
 use otel_arrow_rust::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value,
 };
@@ -112,6 +110,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
     where
         Self: 'att;
 
+    #[inline]
     fn value_type(&self) -> ValueType {
         match self.0.value.as_ref() {
             Some(val) => val.into(),
@@ -119,6 +118,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
         }
     }
 
+    #[inline]
     fn as_bool(&self) -> Option<bool> {
         self.0.value.as_ref().and_then(|v| match v {
             any_value::Value::BoolValue(b) => Some(*b),
@@ -126,6 +126,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
         })
     }
 
+    #[inline]
     fn as_bytes(&self) -> Option<&[u8]> {
         self.0.value.as_ref().and_then(|v| match v {
             any_value::Value::BytesValue(b) => Some(b.as_slice()),
@@ -133,6 +134,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
         })
     }
 
+    #[inline]
     fn as_double(&self) -> Option<f64> {
         self.0.value.as_ref().and_then(|v| match v {
             any_value::Value::DoubleValue(f) => Some(*f),
@@ -140,6 +142,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
         })
     }
 
+    #[inline]
     fn as_int64(&self) -> Option<i64> {
         self.0.value.as_ref().and_then(|v| match v {
             any_value::Value::IntValue(i) => Some(*i),
@@ -147,13 +150,15 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
         })
     }
 
+    #[inline]
     fn as_string(&self) -> Option<Str<'_>> {
         self.0.value.as_ref().and_then(|v| match v {
-            any_value::Value::StringValue(s) => Some(Cow::Borrowed(s.as_str())),
+            any_value::Value::StringValue(s) => Some(s.as_str()),
             _ => None,
         })
     }
 
+    #[inline]
     fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
         if let Some(any_value::Value::ArrayValue(ref vec)) = self.0.value {
             let values = &vec.values;
@@ -163,6 +168,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
         }
     }
 
+    #[inline]
     fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
         if let Some(any_value::Value::KvlistValue(ref vec)) = self.0.value {
             let vals = &vec.values;
@@ -193,12 +199,14 @@ impl AttributeView for ObjKeyValue<'_> {
     where
         Self: 'val;
 
+    #[inline]
     fn key(&self) -> Str<'_> {
-        Cow::Borrowed(self.key)
+        self.key
     }
 
-    fn value(&self) -> Option<&Self::Val<'_>> {
-        self.val.as_ref()
+    #[inline]
+    fn value(&self) -> Option<Self::Val<'_>> {
+        self.val
     }
 }
 
@@ -212,26 +220,30 @@ impl InstrumentationScopeView for ObjInstrumentationScope<'_> {
     where
         Self: 'b;
 
+    #[inline]
     fn name(&self) -> Option<Str<'_>> {
         if !self.inner.name.is_empty() {
-            Some(Cow::Borrowed(self.inner.name.as_str()))
+            Some(self.inner.name.as_str())
         } else {
             None
         }
     }
 
+    #[inline]
     fn version(&self) -> Option<Str<'_>> {
         if !self.inner.version.is_empty() {
-            Some(Cow::Borrowed(self.inner.version.as_str()))
+            Some(self.inner.version.as_str())
         } else {
             None
         }
     }
 
+    #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
         KeyValueIter::new(self.inner.attributes.iter())
     }
 
+    #[inline]
     fn dropped_attributes_count(&self) -> u32 {
         self.inner.dropped_attributes_count
     }

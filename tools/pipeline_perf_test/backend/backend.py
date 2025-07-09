@@ -1,11 +1,28 @@
-import time
+"""
+A log ingestion backend for use in pipeline performance testing.
+
+This module does the following:
+- Starts a gRPC server that listens for OTLP log export requests on port 5317.
+- Implements a basic LogsServiceServicer to count the number of received log records.
+- Starts a Flask server on port 5000 that exposes two endpoints:
+    - `/metrics`: Returns the count of received logs in JSON format.
+    - `/prom_metrics`: Returns the count in Prometheus-friendly plain text format.
+- Handles graceful shutdown on SIGINT and SIGTERM signals.
+
+Intended for testing or development purposes where a mock OTLP log collector is needed.
+"""
+
+import signal
+import sys
 from concurrent import futures
-import grpc
+import grpc  # type: ignore
 from flask import Flask, jsonify
 from threading import Thread
 
 from opentelemetry.proto.collector.logs.v1 import logs_service_pb2_grpc
-from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
+    ExportLogsServiceResponse,
+)
 
 # Constants for ports
 FLASK_PORT = 5000
@@ -13,15 +30,27 @@ GRPC_PORT = 5317
 
 app = Flask(__name__)
 received_logs = 0
+grpc_server = None
+
+
+def handle_signal(signal, frame):
+    print("Received signal to terminate, stopping gRPC server.")
+    if grpc_server:
+        grpc_server.stop(0)
+    sys.exit(0)
+
 
 class FakeLogsExporter(logs_service_pb2_grpc.LogsServiceServicer):
     def Export(self, request, context):
         global received_logs
-        count = sum(len(ss.log_records) for rs in request.resource_logs for ss in rs.scope_logs)
+        count = sum(
+            len(ss.log_records) for rs in request.resource_logs for ss in rs.scope_logs
+        )
         received_logs += count
         if received_logs % 10000 == 0:
             print(f"Total received logs: {received_logs}")
         return ExportLogsServiceResponse()
+
 
 @app.route("/metrics")
 def metrics():
@@ -29,22 +58,37 @@ def metrics():
     return jsonify({"received_logs": received_logs})
 
 
+@app.route("/prom_metrics")
+def prom_metrics():
+    print("Metrics endpoint called. Returning: {received_logs}")
+    return f"received_logs {received_logs}"
+
+
 def start_flask():
-    app.run(host="0.0.0.0", port=FLASK_PORT)
+    app.run(host="0.0.0.0", port=FLASK_PORT, use_reloader=False)
+
 
 def serve():
+    global grpc_server
     try:
-        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-        logs_service_pb2_grpc.add_LogsServiceServicer_to_server(FakeLogsExporter(), server)
-        server.add_insecure_port(f"[::]:{GRPC_PORT}")
-        server.start()
+        grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        logs_service_pb2_grpc.add_LogsServiceServicer_to_server(
+            FakeLogsExporter(), grpc_server
+        )
+        grpc_server.add_insecure_port(f"[::]:{GRPC_PORT}")
+        grpc_server.start()
         print(f"Fake OTLP gRPC server started on port {GRPC_PORT}")
-        server.wait_for_termination()
+        grpc_server.wait_for_termination()
     except Exception as e:
         print(f"Error starting gRPC server: {e}")
         raise
 
-if __name__ == '__main__':
-    Thread(target=start_flask).start()
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+    flask_thread = Thread(target=start_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
     print("About to start gRPC server")
     serve()

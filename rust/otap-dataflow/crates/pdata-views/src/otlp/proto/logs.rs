@@ -4,8 +4,6 @@
 //! This module contains the implementation of the pdata View traits for proto message structs
 //! from otlp logs.proto.
 
-use std::borrow::Cow;
-
 use otel_arrow_rust::proto::opentelemetry::logs::v1::{
     LogRecord, LogsData, ResourceLogs, ScopeLogs,
 };
@@ -129,22 +127,25 @@ impl ResourceLogsView for ObjResourceLogs<'_> {
     where
         Self: 'b;
 
+    #[inline]
     fn resource(&self) -> Option<Self::Resource<'_>> {
         self.inner.resource.as_ref().map(ObjResource::new)
     }
 
+    #[inline]
     fn scopes(&self) -> Self::ScopesIter<'_> {
         ScopeIter {
             it: self.inner.scope_logs.iter(),
         }
     }
 
+    #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
         let schema_url = self.inner.schema_url.as_str();
         if schema_url.is_empty() {
             None
         } else {
-            Some(Cow::Borrowed(schema_url))
+            Some(schema_url)
         }
     }
 }
@@ -165,22 +166,25 @@ impl ScopeLogsView for ObjScope<'_> {
     where
         Self: 'b;
 
+    #[inline]
     fn scope(&self) -> Option<Self::Scope<'_>> {
         self.inner.scope.as_ref().map(ObjInstrumentationScope::new)
     }
 
+    #[inline]
     fn log_records(&self) -> Self::LogRecordsIter<'_> {
         LogRecordIter {
             it: self.inner.log_records.iter(),
         }
     }
 
+    #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
         let schema_url = self.inner.schema_url.as_str();
         if schema_url.is_empty() {
             None
         } else {
-            Some(Cow::Borrowed(schema_url))
+            Some(schema_url)
         }
     }
 }
@@ -201,6 +205,7 @@ impl LogRecordView for ObjLogRecord<'_> {
     where
         Self: 'bod;
 
+    #[inline]
     fn time_unix_nano(&self) -> Option<u64> {
         if self.inner.time_unix_nano != 0 {
             Some(self.inner.time_unix_nano)
@@ -209,6 +214,7 @@ impl LogRecordView for ObjLogRecord<'_> {
         }
     }
 
+    #[inline]
     fn observed_time_unix_nano(&self) -> Option<u64> {
         if self.inner.observed_time_unix_nano != 0 {
             Some(self.inner.observed_time_unix_nano)
@@ -217,6 +223,7 @@ impl LogRecordView for ObjLogRecord<'_> {
         }
     }
 
+    #[inline]
     fn severity_number(&self) -> Option<i32> {
         if self.inner.severity_number != 0 {
             Some(self.inner.severity_number)
@@ -225,26 +232,31 @@ impl LogRecordView for ObjLogRecord<'_> {
         }
     }
 
+    #[inline]
     fn severity_text(&self) -> Option<Str<'_>> {
         if !self.inner.severity_text.is_empty() {
-            Some(Cow::Borrowed(self.inner.severity_text.as_str()))
+            Some(self.inner.severity_text.as_str())
         } else {
             None
         }
     }
 
+    #[inline]
     fn body(&self) -> Option<Self::Body<'_>> {
         self.inner.body.as_ref().map(ObjAny)
     }
 
+    #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
         KeyValueIter::new(self.inner.attributes.iter())
     }
 
+    #[inline]
     fn dropped_attributes_count(&self) -> u32 {
         self.inner.dropped_attributes_count
     }
 
+    #[inline]
     fn flags(&self) -> Option<u32> {
         if self.inner.flags != 0 {
             Some(self.inner.flags)
@@ -253,6 +265,7 @@ impl LogRecordView for ObjLogRecord<'_> {
         }
     }
 
+    #[inline]
     fn trace_id(&self) -> Option<&[u8]> {
         if is_valid_trace_id(&self.inner.trace_id) {
             Some(self.inner.trace_id.as_slice())
@@ -261,6 +274,7 @@ impl LogRecordView for ObjLogRecord<'_> {
         }
     }
 
+    #[inline]
     fn span_id(&self) -> Option<&[u8]> {
         if is_valid_span_id(&self.inner.span_id) {
             Some(self.inner.span_id.as_slice())

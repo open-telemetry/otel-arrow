@@ -1,132 +1,138 @@
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::Parser;
 
 use crate::{
-    Rule, shared_expressions::parse_let_expression, tabular_expressions::parse_tabular_expression,
+    KqlPestParser, Rule, shared_expressions::parse_let_expression,
+    tabular_expressions::parse_tabular_expression,
 };
 
 pub(crate) fn parse_query(
-    query_rule: Pair<Rule>,
-    state: &mut ParserState,
-) -> Result<PipelineExpression, ParserError> {
-    let query_location = to_query_location(&query_rule);
+    query: &str,
+    options: ParserOptions,
+) -> Result<PipelineExpression, Vec<ParserError>> {
+    let mut errors = Vec::new();
 
-    let query_rules = query_rule.into_inner();
+    let mut state = ParserState::new_with_options(query, options);
 
-    let mut pipeline = PipelineExpression::new(query_location);
+    let parse_result = KqlPestParser::parse(Rule::query, query);
+
+    if parse_result.is_err() {
+        let pest_error = parse_result.unwrap_err();
+
+        let (start, end) = match pest_error.location {
+            pest::error::InputLocation::Pos(p) => (0, p),
+            pest::error::InputLocation::Span(s) => s,
+        };
+
+        let (line, column) = match pest_error.line_col {
+            pest::error::LineColLocation::Pos(p) => p,
+            pest::error::LineColLocation::Span(l, _) => l,
+        };
+
+        errors.push(ParserError::SyntaxNotSupported(
+            QueryLocation::new(start, end, line, column)
+                .expect("QueryLocation could not be constructed"),
+            pest_error.variant.message().into(),
+        ));
+
+        return Err(errors);
+    }
+
+    let query_rules = parse_result.unwrap().next().unwrap().into_inner();
 
     for rule in query_rules {
         match rule.as_rule() {
-            Rule::let_expression => {
-                let let_expression = parse_let_expression(rule, state)?;
+            Rule::let_expression => match parse_let_expression(rule, &state) {
+                Ok(let_expression) => {
+                    let mut validated = false;
 
-                let mut validated = false;
+                    if let TransformExpression::Set(s) = &let_expression {
+                        if let MutableValueExpression::Variable(v) = s.get_destination() {
+                            let name = v.get_name();
 
-                if let TransformExpression::Set(s) = &let_expression {
-                    if let MutableValueExpression::Variable(v) = s.get_destination() {
-                        let name = v.get_name();
+                            if let ImmutableValueExpression::Scalar(ScalarExpression::Static(s)) =
+                                s.get_source()
+                            {
+                                state.push_constant(name, s.clone());
+                                validated = true;
+                            }
+                        }
+                    }
 
-                        state.push_variable_name(name);
-                        validated = true;
+                    if !validated {
+                        panic!("Unexpected let_expression encountered");
                     }
                 }
-
-                if !validated {
-                    panic!("Unexpected let_expression encountered");
+                Err(e) => errors.push(e),
+            },
+            Rule::tabular_expression => match parse_tabular_expression(rule, &state) {
+                Ok(expressions) => {
+                    for e in expressions {
+                        state.push_expression(e);
+                    }
                 }
-
-                pipeline.push_expression(DataExpression::Transform(let_expression));
-            }
-            Rule::tabular_expression => {
-                let expressions = parse_tabular_expression(rule, state)?;
-
-                for e in expressions {
-                    pipeline.push_expression(e);
-                }
-            }
+                Err(e) => errors.push(e),
+            },
             Rule::EOI => {}
-            _ => panic!("Unexpected rule in query: {}", rule),
+            _ => panic!("Unexpected rule in query: {rule}"),
         }
     }
 
-    Ok(pipeline)
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    state.build()
 }
 
 #[cfg(test)]
 mod tests {
-    use pest::Parser;
-
-    use crate::KqlParser;
-
     use super::*;
 
     #[test]
     pub fn test_parse_query() {
         let run_test_success = |input: &str, expected: PipelineExpression| {
-            let mut state = ParserState::new(input);
-
-            state.push_variable_name("variable");
-
-            let mut result = KqlParser::parse(Rule::query, input).unwrap();
-
-            let expression = parse_query(result.next().unwrap(), &mut state).unwrap();
+            let expression = parse_query(input, Default::default()).unwrap();
 
             assert_eq!(expected, expression);
         };
 
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
-            let mut state = ParserState::new(input);
-
-            state.push_variable_name("variable");
-
-            let mut result = KqlParser::parse(Rule::query, input).unwrap();
-
-            let error = parse_query(result.next().unwrap(), &mut state).unwrap_err();
+            let errors = parse_query(input, Default::default()).unwrap_err();
 
             if let ParserError::QueryLanguageDiagnostic {
                 location: _,
                 diagnostic_id: id,
                 message: msg,
-            } = error
+            } = &errors[0]
             {
-                assert_eq!(expected_id, id);
+                assert_eq!(expected_id, *id);
                 assert_eq!(expected_msg, msg);
             } else {
                 panic!("Expected QueryLanguageDiagnostic");
             }
         };
 
-        run_test_success("", PipelineExpression::new(QueryLocation::new_fake()));
+        run_test_success("", PipelineExpressionBuilder::new("").build().unwrap());
 
+        // Note: The let statement becomes an unreferenced constant so the whole
+        // expression essentially becomes a no-op.
         run_test_success(
             "let var1 = 1;",
-            PipelineExpression::new_with_expressions(
-                QueryLocation::new_fake(),
-                vec![DataExpression::Transform(TransformExpression::Set(
-                    SetTransformExpression::new(
-                        QueryLocation::new_fake(),
-                        ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                            StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                1,
-                            )),
-                        )),
-                        MutableValueExpression::Variable(VariableScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "var1",
-                            ValueAccessor::new(),
-                        )),
-                    ),
-                ))],
-            ),
+            PipelineExpressionBuilder::new("let var1 = 1;")
+                .with_constants(vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )])
+                .build()
+                .unwrap(),
         );
 
         run_test_success(
             "i | extend a = 1",
-            PipelineExpression::new_with_expressions(
-                QueryLocation::new_fake(),
-                vec![DataExpression::Transform(TransformExpression::Set(
+            PipelineExpressionBuilder::new("i | extend a = 1")
+                .with_constants(vec![])
+                .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
                     SetTransformExpression::new(
                         QueryLocation::new_fake(),
                         ImmutableValueExpression::Scalar(ScalarExpression::Static(
@@ -137,63 +143,94 @@ mod tests {
                         )),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "a",
+                                )),
                             )]),
                         )),
                     ),
-                ))],
-            ),
+                ))])
+                .build()
+                .unwrap(),
         );
 
+        // Note: This test folds the constants and ends up as if it was written:
+        // "source | extend a = 1, attributes['attr'] = 1".
         run_test_success(
-            "let var1 = 1; i | extend a = var1;",
-            PipelineExpression::new_with_expressions(
-                QueryLocation::new_fake(),
-                vec![
-                    DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    1,
-                                )),
-                            )),
-                            MutableValueExpression::Variable(VariableScalarExpression::new(
+            "let var1 = 1; let var2 = 'attr'; source | extend a = var1, attributes[var2] = 1;",
+            PipelineExpressionBuilder::new(
+                "let var1 = 1; let var2 = 'attr'; source | extend a = var1, attributes[var2] = 1;",
+            )
+            .with_constants(vec![
+                StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    1,
+                )),
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "attr",
+                )),
+            ])
+            .with_expressions(vec![
+                DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Constant(
+                        ConstantScalarExpression::Reference(
+                            ReferenceConstantScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                "var1",
-                                ValueAccessor::new(),
-                            )),
+                                ValueType::Integer,
+                                0,
+                            ),
                         ),
                     )),
-                    DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "a",
+                            )),
+                        )]),
+                    )),
+                ))),
+                DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                                VariableScalarExpression::new(
+                            1,
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    "var1",
-                                    ValueAccessor::new(),
+                                    "attributes",
                                 ),
                             )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                                )]),
+                            ScalarExpression::Constant(ConstantScalarExpression::Reference(
+                                ReferenceConstantScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueType::String,
+                                    1,
+                                ),
                             )),
-                        ),
+                        ]),
                     )),
-                ],
-            ),
+                ))),
+            ])
+            .build()
+            .unwrap(),
         );
 
         run_test_success(
             "i | extend a = 1; i_other | extend b = 2;",
-            PipelineExpression::new_with_expressions(
-                QueryLocation::new_fake(),
-                vec![
+            PipelineExpressionBuilder::new("i | extend a = 1; i_other | extend b = 2;")
+                .with_expressions(vec![
                     DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
                             QueryLocation::new_fake(),
@@ -205,8 +242,11 @@ mod tests {
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "a",
+                                    )),
                                 )]),
                             )),
                         ),
@@ -222,14 +262,18 @@ mod tests {
                             )),
                             MutableValueExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "b",
+                                    )),
                                 )]),
                             )),
                         ),
                     )),
-                ],
-            ),
+                ])
+                .build()
+                .unwrap(),
         );
 
         run_test_failure(

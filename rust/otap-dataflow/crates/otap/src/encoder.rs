@@ -37,53 +37,65 @@ where
 
     for (curr_resource_id, resource_logs) in logs_view.resources().enumerate() {
         let curr_resource_id = curr_resource_id as u16;
-        if let Some(resource) = resource_logs.resource() {
+
+        // keep reference to resource dropped attributes, which will be appended to log later
+        let resource_dropped_attrs_count = if let Some(resource) = resource_logs.resource() {
+            // append resource attributes
             for kv in resource.attributes() {
                 resource_attrs.append_parent_id(&curr_resource_id);
                 append_attribute_value(&mut resource_attrs, &kv)?;
             }
-        }
+            resource.dropped_attributes_count()
+        } else {
+            0
+        };
+
+        let resource_schema_url = resource_logs.schema_url();
 
         for scope_logs in resource_logs.scopes() {
-            if let Some(scope) = scope_logs.scope() {
-                for kv in scope.attributes() {
-                    scope_attrs.append_parent_id(&curr_scope_id);
-                    append_attribute_value(&mut scope_attrs, &kv)?;
-                }
-            }
+            let scope = scope_logs.scope();
+
+            let (scope_name, scope_version, scope_dropped_attributes_count) =
+                if let Some(scope) = scope.as_ref() {
+                    // since there is an instrumentations scope present, append the attributes
+                    for kv in scope.attributes() {
+                        scope_attrs.append_parent_id(&curr_scope_id);
+                        append_attribute_value(&mut scope_attrs, &kv)?;
+                    }
+
+                    // keep track of scope fields, which will be appended to log later on
+                    (
+                        scope.name(),
+                        scope.version(),
+                        scope.dropped_attributes_count(),
+                    )
+                } else {
+                    (None, None, 0)
+                };
+
+            let scope_schema_url = scope_logs.schema_url();
 
             for log_record in scope_logs.log_records() {
                 // set the resource
                 logs.resource.append_id(Some(curr_resource_id));
+                logs.resource.append_schema_url(resource_schema_url);
                 logs.resource
-                    .append_schema_url(resource_logs.schema_url().as_deref());
-                logs.resource.append_dropped_attributes_count(
-                    resource_logs
-                        .resource()
-                        .map(|r| r.dropped_attributes_count())
-                        .unwrap_or(0),
-                );
+                    .append_dropped_attributes_count(resource_dropped_attrs_count);
 
                 // set the scope
                 logs.scope.append_id(Some(curr_scope_id));
-                if let Some(scope) = scope_logs.scope() {
-                    logs.scope.append_name(scope.name().as_deref());
-                    logs.scope.append_version(scope.version().as_deref());
-                    logs.scope
-                        .append_dropped_attributes_count(scope.dropped_attributes_count());
-                } else {
-                    logs.scope.append_name(None);
-                    logs.scope.append_version(None);
-                    logs.scope.append_dropped_attributes_count(0);
-                }
+                logs.scope.append_name(scope_name);
+                logs.scope.append_version(scope_version);
+                logs.scope
+                    .append_dropped_attributes_count(scope_dropped_attributes_count);
 
                 logs.append_time_unix_nano(log_record.time_unix_nano().map(|v| v as i64));
                 logs.append_observed_time_unix_nano(
                     log_record.observed_time_unix_nano().map(|v| v as i64),
                 );
-                logs.append_schema_url(scope_logs.schema_url().as_deref());
+                logs.append_schema_url(scope_schema_url);
                 logs.append_severity_number(log_record.severity_number());
-                logs.append_severity_text(log_record.severity_text().as_deref());
+                logs.append_severity_text(log_record.severity_text());
                 logs.append_dropped_attributes_count(log_record.dropped_attributes_count());
                 logs.append_flags(log_record.flags());
                 logs.append_trace_id(log_record.trace_id())?;
@@ -93,7 +105,7 @@ where
                     match body.value_type() {
                         ValueType::String => {
                             logs.body
-                                .append_str(&body.as_string().expect("body to be string"));
+                                .append_str(body.as_string().expect("body to be string"));
                         }
                         ValueType::Double => {
                             logs.body
@@ -187,12 +199,12 @@ where
     KV: AttributeView,
 {
     let key = kv.key();
-    attribute_rb_builder.append_key(&key);
+    attribute_rb_builder.append_key(key);
 
     if let Some(val) = kv.value() {
         match val.value_type() {
             ValueType::String => {
-                attribute_rb_builder.append_str(&val.as_string().expect("value to be string"));
+                attribute_rb_builder.append_str(val.as_string().expect("value to be string"));
             }
             ValueType::Int64 => {
                 attribute_rb_builder.append_int(val.as_int64().expect("value to be int64"))
@@ -246,6 +258,7 @@ mod test {
     };
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type, UInt16Type};
+    use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
@@ -255,11 +268,10 @@ mod test {
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_rust::schema::consts;
+    use prost::Message;
 
-    #[test]
-    fn test_encode_logs_verify_all_columns() {
-        // verify that every column for each record batch gets encoded as the correct type
-        let logs_data = LogsData::new(vec![
+    fn _generate_logs_for_verify_all_columns() -> LogsData {
+        LogsData::new(vec![
             ResourceLogs::build(
                 Resource::build(vec![KeyValue::new(
                     "resource_attr1",
@@ -298,10 +310,15 @@ mod test {
                 .finish(),
             ])
             .finish(),
-        ]);
+        ])
+    }
 
+    fn _test_encode_logs_verify_all_columns_generic<T>(logs_data: T)
+    where
+        T: LogsDataView,
+    {
+        // verify that every column for each record batch gets encoded as the correct type
         let result = encode_logs_otap_batch(&logs_data);
-        assert!(result.is_ok());
         let otap_batch = result.unwrap();
 
         // check that the logs record batch is what we expect
@@ -683,15 +700,22 @@ mod test {
     }
 
     #[test]
-    fn test_encode_logs_verify_nullability() {
-        // check that every column handles nulls correctly through the correct strategy which for
-        // various columns consists of one of the following:
-        // - not being present in the record batch
-        // - having nulls in the columns
-        // - using default values
+    fn test_encode_logs_verify_all_columns_proto_struct() {
+        let logs_data = _generate_logs_for_verify_all_columns();
+        _test_encode_logs_verify_all_columns_generic(logs_data);
+    }
 
+    #[test]
+    fn test_encode_logs_verify_all_columns_proto_bytes() {
+        let logs_data = _generate_logs_for_verify_all_columns();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_encode_logs_verify_all_columns_generic(RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_logs_for_verify_nullability() -> LogsData {
         // logs data with all empty/default fields
-        let logs_data = LogsData::new(vec![ResourceLogs {
+        LogsData::new(vec![ResourceLogs {
             resource: None,
             schema_url: "".to_string(),
             scope_logs: vec![ScopeLogs {
@@ -711,9 +735,20 @@ mod test {
                     event_name: "".to_string(),
                 }],
             }],
-        }]);
-        let result = encode_logs_otap_batch(&logs_data);
-        assert!(result.is_ok());
+        }])
+    }
+
+    fn _test_encode_logs_verify_nullability_generic<T>(logs_data: &T)
+    where
+        T: LogsDataView,
+    {
+        // check that every column handles nulls correctly through the correct strategy which for
+        // various columns consists of one of the following:
+        // - not being present in the record batch
+        // - having nulls in the columns
+        // - using default values
+
+        let result = encode_logs_otap_batch(logs_data);
         let otap_batch = result.unwrap();
 
         let expected_logs_batch = RecordBatch::try_new(
@@ -761,8 +796,407 @@ mod test {
     }
 
     #[test]
-    fn test_encode_logs_body_all_field_types() {
-        // check that all the field types allowed for a body are able to be encoded
+    fn test_encode_logs_verify_nullability_proto_struct() {
+        let logs_data = _generate_logs_for_verify_nullability();
+        _test_encode_logs_verify_nullability_generic(&logs_data);
+    }
+
+    #[test]
+    fn test_encode_logs_verify_nullability_proto_bytes() {
+        let logs_data = _generate_logs_for_verify_nullability();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_encode_logs_verify_nullability_generic(&RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_logs_no_attributes() -> LogsData {
+        LogsData::new(vec![
+            ResourceLogs::build(Resource::new(vec![]))
+                .schema_url("https://schema.opentelemetry.io/resource_schema")
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("scope"))
+                        .log_records(vec![
+                            LogRecord::build(2_000_000_000u64, SeverityNumber::Debug, "event")
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+        ])
+    }
+
+    fn _test_logs_logs_no_attributes<T>(logs_view: &T)
+    where
+        T: LogsDataView,
+    {
+        let otap_batch = encode_logs_otap_batch(logs_view).unwrap();
+
+        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+
+        let expected_logs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(
+                        vec![
+                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(
+                                "schema_url",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "scope",
+                    DataType::Struct(
+                        vec![
+                            Field::new("id", DataType::UInt16, true),
+                            Field::new(
+                                "name",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "observed_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "severity_number",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // resource.id
+                        Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "schema_url",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // resource.schema_url
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from_iter_values(vec![
+                                "https://schema.opentelemetry.io/resource_schema",
+                            ])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // scope.id
+                        Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "name",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // scope.name
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from(vec!["scope"])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                // timestamps
+                Arc::new(TimestampNanosecondArray::from(vec![2_000_000_000])),
+                // observed_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![0i64])) as ArrayRef,
+                // severity_number
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(Int32Array::from(vec![5])),
+                )) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(logs_batch, &expected_logs_batch);
+
+        assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
+    }
+
+    #[test]
+    fn test_logs_no_attributes_proto_struct() {
+        let logs_data = _generate_logs_no_attributes();
+        _test_logs_logs_no_attributes(&logs_data);
+    }
+
+    #[test]
+    fn test_logs_no_attributes_proto_bytes() {
+        let logs_data = _generate_logs_no_attributes();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_logs_logs_no_attributes(&RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_logs_multiple_logs_and_attrs() -> LogsData {
+        LogsData::new(vec![
+            ResourceLogs::build(Resource::new(vec![]))
+                .schema_url("https://schema.opentelemetry.io/resource_schema")
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("scope"))
+                        .log_records(vec![
+                            LogRecord::build(0u64, SeverityNumber::Debug, "event")
+                                .attributes(vec![
+                                    KeyValue::new("key1", AnyValue::new_string("val1")),
+                                    KeyValue::new("key2", AnyValue::new_string("val2")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                    ScopeLogs::build(InstrumentationScope::new("scope2"))
+                        .log_records(vec![
+                            LogRecord::build(0u64, SeverityNumber::Info, "event").finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+            ResourceLogs::build(Resource::new(vec![]))
+                .schema_url("https://schema.opentelemetry.io/resource_schema")
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::new("scope"))
+                        .log_records(vec![
+                            LogRecord::build(0u64, SeverityNumber::Debug, "event")
+                                .attributes(vec![
+                                    KeyValue::new("key1", AnyValue::new_string("val1")),
+                                    KeyValue::new("key2", AnyValue::new_string("val2.b")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+        ])
+    }
+
+    fn _test_logs_multiple_logs_and_attrs_generic<T>(logs_view: &T)
+    where
+        T: LogsDataView,
+    {
+        let otap_batch = encode_logs_otap_batch(logs_view).unwrap();
+
+        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+
+        let expected_logs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(
+                        vec![
+                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(
+                                "schema_url",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "scope",
+                    DataType::Struct(
+                        vec![
+                            Field::new("id", DataType::UInt16, true),
+                            Field::new(
+                                "name",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "observed_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "severity_number",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                    true,
+                ),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt16Array::from_iter(vec![Some(0), None, Some(1)])),
+                // resource
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // resource.id
+                        Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "schema_url",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // resource.schema_url
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0, 0, 0]),
+                            Arc::new(StringArray::from_iter_values(vec![
+                                "https://schema.opentelemetry.io/resource_schema",
+                            ])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // scope.id
+                        Arc::new(UInt16Array::from(vec![0, 1, 2])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "name",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // scope.name
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0, 1, 0]),
+                            Arc::new(StringArray::from(vec!["scope", "scope2"])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                // timestamps
+                Arc::new(TimestampNanosecondArray::from(vec![0, 0, 0])),
+                // observed_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![0i64, 0, 0])) as ArrayRef,
+                // severity_number
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 1, 0]),
+                    Arc::new(Int32Array::from(vec![5, 9, 5])),
+                )) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(logs_batch, &expected_logs_batch);
+
+        let log_attrs_batch = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+
+        // check that the log_attrs record batch is what we expect
+        let expected_log_attrs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "key",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new("type", DataType::UInt8, false),
+                Field::new(
+                    "str",
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 0, 1, 1])),
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from_iter_values(vec![0, 1, 0, 1]),
+                    Arc::new(StringArray::from_iter_values(vec!["key1", "key2"])),
+                )),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::<UInt16Type>::new(
+                    UInt16Array::from_iter_values(vec![0, 1, 0, 2]),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "val1", "val2", "val2.b",
+                    ])),
+                )),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(log_attrs_batch, &expected_log_attrs_batch);
+
+        assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
+    }
+
+    #[test]
+    fn test_logs_multiple_logs_and_attrs_prost_structs() {
+        let logs_data = _generate_logs_multiple_logs_and_attrs();
+        _test_logs_multiple_logs_and_attrs_generic(&logs_data);
+    }
+
+    #[test]
+    fn test_logs_multiple_logs_and_attrs_proto_bytes() {
+        let logs_data = _generate_logs_multiple_logs_and_attrs();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_logs_multiple_logs_and_attrs_generic(&RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_log_body_all_field_types_data() -> LogsData {
         let log_bodies = vec![
             AnyValue::new_string("terry"),
             AnyValue::new_bool(true),
@@ -792,7 +1226,7 @@ mod test {
                 })
                 .collect::<Vec<_>>(),
         );
-        let logs_data = LogsData::new(vec![ResourceLogs {
+        LogsData::new(vec![ResourceLogs {
             resource: None,
             schema_url: "".to_string(),
             scope_logs: vec![ScopeLogs {
@@ -800,9 +1234,15 @@ mod test {
                 schema_url: "".to_string(),
                 log_records,
             }],
-        }]);
+        }])
+    }
 
-        let result = encode_logs_otap_batch(&logs_data);
+    fn _test_encode_logs_body_all_field_types_generic<T>(logs_data: &T)
+    where
+        T: LogsDataView,
+    {
+        // check that all the field types allowed for a body are able to be encoded
+        let result = encode_logs_otap_batch(logs_data);
         assert!(result.is_ok());
 
         let otap_batch = result.unwrap();
@@ -958,11 +1398,28 @@ mod test {
         )
         .unwrap();
 
-        assert_eq!(body_column, &expected_body)
+        assert_eq!(body_column, &expected_body);
+
+        assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
     }
 
     #[test]
-    fn test_attributes_all_field_types() {
+    fn test_encode_logs_body_all_field_types_proto_struct() {
+        let logs_data = _generate_log_body_all_field_types_data();
+        _test_encode_logs_body_all_field_types_generic(&logs_data);
+    }
+
+    #[test]
+    fn test_encode_logs_body_all_fields_proto_bytes() {
+        let logs_data = _generate_log_body_all_field_types_data();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_encode_logs_body_all_field_types_generic(&RawLogsData::new(&logs_data_bytes));
+    }
+
+    fn _generate_test_data_all_field_types() -> LogsData {
         let attr_values = vec![
             AnyValue::new_string("terry"),
             AnyValue::new_bool(true),
@@ -977,7 +1434,7 @@ mod test {
             .into_iter()
             .enumerate()
             .map(|(i, val)| KeyValue {
-                key: format!("{:?}", i),
+                key: format!("{i:?}"),
                 value: Some(val),
             })
             .collect::<Vec<_>>();
@@ -988,7 +1445,7 @@ mod test {
             value: None,
         });
 
-        let logs_data = LogsData::new(vec![ResourceLogs {
+        LogsData::new(vec![ResourceLogs {
             resource: None,
             schema_url: "".to_string(),
             scope_logs: vec![ScopeLogs {
@@ -1000,8 +1457,13 @@ mod test {
                         .finish(),
                 ],
             }],
-        }]);
+        }])
+    }
 
+    fn _test_attributes_all_field_types_generic<T>(logs_data: T)
+    where
+        T: LogsDataView,
+    {
         let result = encode_logs_otap_batch(&logs_data);
         assert!(result.is_ok());
 
@@ -1172,5 +1634,19 @@ mod test {
         .unwrap();
 
         assert_eq!(logs_attrs, &expected_attrs);
+    }
+
+    #[test]
+    fn test_attributes_all_field_types_proto_struct() {
+        let logs_data = _generate_test_data_all_field_types();
+        _test_attributes_all_field_types_generic(logs_data)
+    }
+
+    #[test]
+    fn test_attributes_all_field_types_proto_bytes() {
+        let logs_data = _generate_test_data_all_field_types();
+        let mut logs_data_bytes = vec![];
+        logs_data.encode(&mut logs_data_bytes).unwrap();
+        _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
     }
 }

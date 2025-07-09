@@ -16,7 +16,7 @@ pub(crate) fn parse_comparison_expression(
 
     let left = match left_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(left_rule, state)?,
-        _ => panic!("Unexpected rule in comparison_expression: {}", left_rule),
+        _ => panic!("Unexpected rule in comparison_expression: {left_rule}"),
     };
 
     let operation_rule = comparison_rules.next().unwrap();
@@ -25,7 +25,7 @@ pub(crate) fn parse_comparison_expression(
 
     let right = match right_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(right_rule, state)?,
-        _ => panic!("Unexpected rule in comparison_expression: {}", right_rule),
+        _ => panic!("Unexpected rule in comparison_expression: {right_rule}"),
     };
 
     match operation_rule.as_rule() {
@@ -63,7 +63,7 @@ pub(crate) fn parse_comparison_expression(
             )),
         ))),
 
-        _ => panic!("Unexpected rule in operation_rule: {}", operation_rule),
+        _ => panic!("Unexpected rule in operation_rule: {operation_rule}"),
     }
 }
 
@@ -87,8 +87,13 @@ pub(crate) fn parse_logical_expression(
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        let value = scalar.to_value();
-                        if value.is_some() && !matches!(value, Some(Value::Boolean(_))) {
+                        let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
+                        if let Err(e) = value_type_result {
+                            return Err(ParserError::from(&e));
+                        }
+                        if let Some(t) = value_type_result.unwrap()
+                            && t != ValueType::Boolean
+                        {
                             return Err(ParserError::QueryLanguageDiagnostic {
                                 location: scalar.get_query_location().clone(),
                                 diagnostic_id: "KS141",
@@ -99,10 +104,9 @@ pub(crate) fn parse_logical_expression(
                         Ok(LogicalExpression::Scalar(scalar))
                     }
                 }
-                _ => panic!(
-                    "Unexpected rule in logical_expression_rule: {}",
-                    logical_expression_rule
-                ),
+                _ => {
+                    panic!("Unexpected rule in logical_expression_rule: {logical_expression_rule}")
+                }
             }
         };
 
@@ -123,7 +127,7 @@ pub(crate) fn parse_logical_expression(
             Rule::or_token => chain_rules.push(ChainedLogicalExpression::Or(parse_rule(
                 logical_rules.next().unwrap(),
             )?)),
-            _ => panic!("Unexpected rule in chain_rule: {}", chain_rule),
+            _ => panic!("Unexpected rule in chain_rule: {chain_rule}"),
         }
     }
 
@@ -151,13 +155,13 @@ pub(crate) fn parse_logical_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlParser;
+    use crate::KqlPestParser;
 
     use super::*;
 
     #[test]
     fn test_pest_parse_comparison_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
             Rule::comparison_expression,
             &[
                 "1 == 1",
@@ -181,7 +185,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::comparison_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::comparison_expression, input).unwrap();
 
             let expression = parse_comparison_expression(result.next().unwrap(), &state).unwrap();
 
@@ -237,8 +241,11 @@ mod tests {
                 )),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "source_path"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "source_path",
+                        )),
                     )]),
                 )),
             )),
@@ -254,8 +261,11 @@ mod tests {
                 ScalarExpression::Attached(AttachedScalarExpression::new(
                     QueryLocation::new_fake(),
                     "resource",
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key",
+                        )),
                     )]),
                 )),
             )),
@@ -307,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_logical_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlParser, Rule>(
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
             Rule::logical_expression,
             &[
                 "true",
@@ -333,7 +343,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
 
             let expression = parse_logical_expression(result.next().unwrap(), &state).unwrap();
 
@@ -343,7 +353,7 @@ mod tests {
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
             let state = ParserState::new(input);
 
-            let mut result = KqlParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
 
             let error = parse_logical_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -378,8 +388,11 @@ mod tests {
             "source.name",
             LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "name"),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "name",
+                    )),
                 )]),
             ))),
         );
@@ -390,13 +403,11 @@ mod tests {
                 QueryLocation::new_fake(),
                 "resource",
                 ValueAccessor::new_with_selectors(vec![
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "attributes",
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
                     )),
-                    ValueSelector::MapKey(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "service.name",
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "service.name"),
                     )),
                 ]),
             ))),
@@ -447,8 +458,11 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "SeverityText"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "SeverityText",
+                        )),
                     )]),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -482,8 +496,11 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ValueSelector::MapKey(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "SeverityNumber"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "SeverityNumber",
+                        )),
                     )]),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
