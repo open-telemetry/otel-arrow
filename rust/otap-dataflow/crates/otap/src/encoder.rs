@@ -71,7 +71,7 @@ where
                 spans.resource.append_id(Some(curr_resource_id));
                 spans
                     .resource
-                    .append_schema_url(resource_spans.schema_url().as_deref());
+                    .append_schema_url(resource_spans.schema_url());
                 spans.resource.append_dropped_attributes_count(
                     resource_spans
                         .resource()
@@ -82,8 +82,8 @@ where
                 // set the scope
                 spans.scope.append_id(Some(curr_scope_id));
                 if let Some(scope) = scope_spans.scope() {
-                    spans.scope.append_name(scope.name().as_deref());
-                    spans.scope.append_version(scope.version().as_deref());
+                    spans.scope.append_name(scope.name());
+                    spans.scope.append_version(scope.version());
                     spans
                         .scope
                         .append_dropped_attributes_count(scope.dropped_attributes_count());
@@ -109,9 +109,9 @@ where
 
                 spans.append_trace_id(span.trace_id())?;
                 spans.append_span_id(span.span_id())?;
-                spans.append_trace_state(span.trace_state().as_deref());
+                spans.append_trace_state(span.trace_state());
                 spans.append_parent_span_id(span.parent_span_id())?;
-                spans.append_name(span.name().as_deref());
+                spans.append_name(span.name());
                 spans.append_kind(Some(span.kind()));
                 spans.append_dropped_attributes_count(span.dropped_attributes_count());
                 spans.append_dropped_events_count(span.dropped_events_count());
@@ -119,7 +119,7 @@ where
 
                 if let Some(status) = span.status() {
                     spans.append_status_code(Some(status.status_code()));
-                    spans.append_status_status_message(status.message().as_deref());
+                    spans.append_status_status_message(status.message());
                 } else {
                     spans.append_status_code(None);
                     spans.append_status_status_message(None);
@@ -129,7 +129,7 @@ where
                     events.append_id(Some(curr_event_id));
                     events.append_parent_id(Some(curr_span_id));
                     events.append_time_unix_nano(event.time_unix_nano().map(|v| v as i64));
-                    events.append_name(event.name().as_deref());
+                    events.append_name(event.name());
                     events.append_dropped_attributes_count(event.dropped_attributes_count());
 
                     for kv in event.attributes() {
@@ -147,7 +147,7 @@ where
                     links.append_parent_id(Some(curr_span_id));
                     links.append_trace_id(link.trace_id())?;
                     links.append_span_id(link.span_id())?;
-                    links.append_trace_state(link.trace_state().as_deref());
+                    links.append_trace_state(link.trace_state());
                     links.append_dropped_attributes_count(link.dropped_attributes_count());
 
                     for kv in link.attributes() {

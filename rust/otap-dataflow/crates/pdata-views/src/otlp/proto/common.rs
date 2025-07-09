@@ -251,9 +251,9 @@ impl InstrumentationScopeView for ObjInstrumentationScope<'_> {
     }
 }
 
-/// A helper function for converting &str into optional Cows while dropping empty strings.
-pub(crate) fn read_str<'a>(s: &'a str) -> Option<Str<'a>> {
-    (!s.is_empty()).then_some(Cow::Borrowed(s))
+/// A helper function for converting &str into options while dropping empty strings.
+pub(crate) fn read_str(s: &str) -> Option<&str> {
+    (!s.is_empty()).then_some(s)
 }
 
 // The theory behind these two functions comes from Lexi Lambda's "Parse, don't validate" article.
