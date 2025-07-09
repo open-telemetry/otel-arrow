@@ -123,40 +123,83 @@ where
 
                 let log_records_slice = &log_records_chunk[..logs_count];
 
-
                 // Set the log record fields for all logs in this scope
                 for log_record in log_records_slice {
-                    logs.append_time_unix_nano(log_record.as_ref().unwrap().time_unix_nano().map(|v| v as i64));
+                    logs.append_time_unix_nano(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .time_unix_nano()
+                            .map(|v| v as i64),
+                    );
                 }
                 for log_record in log_records_slice {
                     logs.append_observed_time_unix_nano(
-                        log_record.as_ref().unwrap().observed_time_unix_nano().map(|v| v as i64),
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .observed_time_unix_nano()
+                            .map(|v| v as i64),
                     );
                 }
                 for _ in 0..logs_count {
                     logs.append_schema_url(scope_schema_url);
                 }
                 for log_record in log_records_slice {
-                    logs.append_severity_number(log_record.as_ref().unwrap().severity_number());
+                    logs.append_severity_number(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .severity_number(),
+                    );
                 }
                 for log_record in log_records_slice {
-                    logs.append_severity_text(log_record.as_ref().unwrap().severity_text());
+                    logs.append_severity_text(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .severity_text(),
+                    );
                 }
                 for log_record in log_records_slice {
-                    logs.append_dropped_attributes_count(log_record.as_ref().unwrap().dropped_attributes_count());
+                    logs.append_dropped_attributes_count(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .dropped_attributes_count(),
+                    );
                 }
                 for log_record in log_records_slice {
-                    logs.append_flags(log_record.as_ref().unwrap().flags());
+                    logs.append_flags(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .flags(),
+                    );
                 }
                 for log_record in log_records_slice {
-                    logs.append_trace_id(log_record.as_ref().unwrap().trace_id())?;
+                    logs.append_trace_id(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .trace_id(),
+                    )?;
                 }
                 for log_record in log_records_slice {
-                    logs.append_span_id(log_record.as_ref().unwrap().span_id())?;
+                    logs.append_span_id(
+                        log_record
+                            .as_ref()
+                            .expect("LogRecord should not be None")
+                            .span_id(),
+                    )?;
                 }
 
                 for log_record in log_records_slice {
-                    if let Some(body) = log_record.as_ref().unwrap().body() {
+                    if let Some(body) = log_record
+                        .as_ref()
+                        .expect("LogRecord should not be None")
+                        .body()
+                    {
                         match body.value_type() {
                             ValueType::String => {
                                 logs.body
@@ -206,7 +249,11 @@ where
 
                 for log_record in log_records_slice {
                     let mut log_attrs_count = 0;
-                    for kv in log_record.as_ref().unwrap().attributes() {
+                    for kv in log_record
+                        .as_ref()
+                        .expect("LogRecord should not be None")
+                        .attributes()
+                    {
                         log_attrs.append_parent_id(&curr_log_id);
                         log_attrs_count += 1;
                         append_attribute_value(&mut log_attrs, &kv)?;
