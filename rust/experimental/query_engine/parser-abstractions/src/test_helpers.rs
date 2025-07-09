@@ -114,7 +114,7 @@ pub mod parse_test_helpers {
         }
     }
 
-    pub fn test_parse_float_literal<P, R>(parser_rule: R, inputs: &[(&str, f64)])
+    pub fn test_parse_double_literal<P, R>(parser_rule: R, inputs: &[(&str, f64)])
     where
         P: Parser<R>,
         R: RuleType + Copy,
@@ -122,11 +122,11 @@ pub mod parse_test_helpers {
         for (input, expected) in inputs {
             let mut result = P::parse(parser_rule, input).unwrap();
             let pair = result.next().unwrap();
-            let expr = parse_standard_float_literal(pair).unwrap();
+            let expr = parse_standard_double_literal(pair, None).unwrap();
 
             match expr {
                 StaticScalarExpression::Double(v) => assert_eq!(*expected, v.get_value()),
-                _ => panic!("Unexpected type returned from parse_float_literal"),
+                _ => panic!("Unexpected type returned from parse_double_literal"),
             }
         }
     }

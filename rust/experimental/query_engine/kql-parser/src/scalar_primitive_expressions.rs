@@ -168,7 +168,7 @@ pub(crate) fn parse_real_expression(
         Rule::negative_infinity_token => Ok(StaticScalarExpression::Double(
             DoubleScalarExpression::new(query_location, f64::NEG_INFINITY),
         )),
-        Rule::double_literal => parse_standard_float_literal(real_rule),
+        Rule::double_literal => parse_standard_double_literal(real_rule, None),
         Rule::integer_literal => match parse_standard_integer_literal(real_rule)? {
             StaticScalarExpression::Integer(v) => Ok(StaticScalarExpression::Double(
                 DoubleScalarExpression::new(query_location, v.get_value() as f64),
@@ -452,7 +452,7 @@ mod tests {
         let run_test = |input: &str, expected: f64| {
             let mut result = KqlPestParser::parse(Rule::double_literal, input).unwrap();
 
-            let f = parse_standard_float_literal(result.next().unwrap());
+            let f = parse_standard_double_literal(result.next().unwrap(), None);
 
             assert!(f.is_ok());
 

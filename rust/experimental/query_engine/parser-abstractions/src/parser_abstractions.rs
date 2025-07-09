@@ -45,7 +45,7 @@ pub fn parse_standard_integer_literal<R: RuleType>(
     if parsed_value.is_err() {
         return Err(ParserError::SyntaxError(
             to_query_location(&integer_literal_rule),
-            format!("'{raw_value}' could not be parsed as a literal of type 'integer'"),
+            format!("'{raw_value}' could not be parsed as a literal of type 'signed 64 bit integer'"),
         ));
     }
 
@@ -56,17 +56,21 @@ pub fn parse_standard_integer_literal<R: RuleType>(
 
 /// Parses a float literal from a Pest rule pair and returns a `StaticScalarExpression` wrapping a `DoubleScalarExpression`.
 /// Internally represents floats as f64.
-pub fn parse_standard_float_literal<R: RuleType>(
-    float_literal_rule: Pair<R>,
+pub fn parse_standard_double_literal<R: RuleType>(
+    double_literal_rule: Pair<R>,
+    type_override: Option<&str>,
 ) -> Result<StaticScalarExpression, ParserError> {
-    let query_location = to_query_location(&float_literal_rule);
+    let error_type = type_override.unwrap_or("double");
+    let query_location = to_query_location(&double_literal_rule);
 
-    let raw_value = float_literal_rule.as_str();
+    let raw_value = double_literal_rule.as_str();
     let parsed_value = raw_value.parse::<f64>();
     if parsed_value.is_err() {
         return Err(ParserError::SyntaxError(
-            to_query_location(&float_literal_rule),
-            format!("'{raw_value}' could not be parsed as a literal of type 'float'"),
+            to_query_location(&double_literal_rule),
+            // Some languages may use different terminology for 'doubles' ('float' being an example).
+            // Allow callers to specify the expected type name for error messages.
+            format!("'{raw_value}' could not be parsed as a literal of type '{error_type}'"),
         ));
     }
 

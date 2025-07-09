@@ -22,7 +22,7 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
         Rule::double_literal => {
-            ScalarExpression::Static(parse_standard_float_literal(scalar_rule)?)
+            ScalarExpression::Static(parse_standard_double_literal(scalar_rule, None)?)
         }
         Rule::integer_literal => {
             ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)

@@ -93,7 +93,7 @@ mod parse_tests {
 
     #[test]
     fn test_parse_float_literal() {
-        parse_test_helpers::test_parse_float_literal::<OttlPestParser, Rule>(
+        parse_test_helpers::test_parse_double_literal::<OttlPestParser, Rule>(
             Rule::float_literal,
             &[
                 ("1.0", 1.0),
