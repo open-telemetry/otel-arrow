@@ -58,6 +58,30 @@ where
             }
         }
 
+        // Hoist Resource id, schema_url and dropped_attributes_count handling out of the loop over
+        // scope_spans.
+        {
+            let span_count: usize = resource_spans
+                .scopes()
+                .map(|scope| scope.spans().count())
+                .sum();
+            let resource_schema_url = resource_spans.schema_url();
+            let resource_dropped_attributes_count = resource_spans
+                .resource()
+                .map(|r| r.dropped_attributes_count())
+                .unwrap_or(0);
+            let resource = &mut spans.resource;
+            // FIXME: Arrow's array builders support a `append_value_n` method that adds repeats, so
+            // consider adding that functionality to `encode::record::array`. At the very least we
+            // should dispatch to `append_value_n` or `append_nulls` after matching against an
+            // `Option` only once.
+            (0..span_count).for_each(|_| resource.append_id(Some(curr_resource_id)));
+            (0..span_count).for_each(|_| resource.append_schema_url(resource_schema_url));
+            (0..span_count).for_each(|_| {
+                resource.append_dropped_attributes_count(resource_dropped_attributes_count)
+            });
+        }
+
         for scope_spans in resource_spans.scopes() {
             if let Some(scope) = scope_spans.scope() {
                 for kv in scope.attributes() {
@@ -67,18 +91,6 @@ where
             }
 
             for span in scope_spans.spans() {
-                // set the resource
-                spans.resource.append_id(Some(curr_resource_id));
-                spans
-                    .resource
-                    .append_schema_url(resource_spans.schema_url());
-                spans.resource.append_dropped_attributes_count(
-                    resource_spans
-                        .resource()
-                        .map(|r| r.dropped_attributes_count())
-                        .unwrap_or(0),
-                );
-
                 // set the scope
                 spans.scope.append_id(Some(curr_scope_id));
                 if let Some(scope) = scope_spans.scope() {
