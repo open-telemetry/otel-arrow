@@ -172,22 +172,18 @@ impl SpansRecordBatchBuilder {
 
     /// append a value to the `trace_id` array
     pub fn append_trace_id(&mut self, val: Option<&TraceId>) -> Result<(), ArrowError> {
-        if let Some(val) = val {
-            self.trace_id.append_slice(val)
-        } else {
-            self.trace_id.append_null();
-            Ok(())
-        }
+        let id = val.unwrap_or(&[0; 16]);
+        self.trace_id.append_slice(id)
     }
 
     /// append a value to the `span_id` array
     pub fn append_span_id(&mut self, val: Option<&SpanId>) -> Result<(), ArrowError> {
-        if let Some(val) = val {
-            self.span_id.append_slice(val)
-        } else {
-            self.span_id.append_null();
-            Ok(())
-        }
+        // FIXME: dealing with Option for `span_id`, `trace_id`, and `name` is not great; the OTLP
+        // representation allows empty values ([0; 8], [0; 16], and "" respectively) but the OTAP
+        // representation doesn't. Since we can't append_null, we write the empty "invalid" value
+        // instead, but perhaps we should raise an error?
+        let id = val.unwrap_or(&[0; 8]);
+        self.span_id.append_slice(id)
     }
 
     /// append trace_state
@@ -211,12 +207,8 @@ impl SpansRecordBatchBuilder {
 
     /// append a span name
     pub fn append_name(&mut self, val: Option<&str>) {
-        // FIXME: do we need an Option here since name is not optional in the schema?
-        if let Some(val) = val {
-            self.name.append_str(val);
-        } else {
-            self.name.append_null();
-        }
+        let name = val.unwrap_or("");
+        self.name.append_str(name)
     }
 
     /// append a value to the `severity_number` array
@@ -305,13 +297,17 @@ impl SpansRecordBatchBuilder {
             fields.push(Field::new(
                 consts::TRACE_ID,
                 array.data_type().clone(),
-                true,
+                false,
             ));
             columns.push(array);
         }
 
         if let Some(array) = self.span_id.finish() {
-            fields.push(Field::new(consts::SPAN_ID, array.data_type().clone(), true));
+            fields.push(Field::new(
+                consts::SPAN_ID,
+                array.data_type().clone(),
+                false,
+            ));
             columns.push(array);
         }
 
@@ -333,7 +329,7 @@ impl SpansRecordBatchBuilder {
             columns.push(array);
         }
         if let Some(array) = self.name.finish() {
-            fields.push(Field::new(consts::NAME, array.data_type().clone(), true));
+            fields.push(Field::new(consts::NAME, array.data_type().clone(), false));
             columns.push(array);
         }
 
@@ -346,7 +342,7 @@ impl SpansRecordBatchBuilder {
             fields.push(Field::new(
                 consts::DROPPED_ATTRIBUTES_COUNT,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
@@ -355,7 +351,7 @@ impl SpansRecordBatchBuilder {
             fields.push(Field::new(
                 consts::DROPPED_EVENTS_COUNT,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
@@ -364,7 +360,7 @@ impl SpansRecordBatchBuilder {
             fields.push(Field::new(
                 consts::DROPPED_LINKS_COUNT,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
@@ -449,27 +445,24 @@ impl EventsBuilder {
     }
 
     /// append a value to the `parent_id` array
-    pub fn append_parent_id(&mut self, val: Option<u16>) {
-        if let Some(val) = val {
-            self.parent_id.append_value(&val);
-        } else {
-            self.parent_id.append_null();
-        }
+    pub fn append_parent_id(&mut self, val: u16) {
+        self.parent_id.append_value(&val);
     }
 
     /// append a value to the `time_unix_nano` array
     pub fn append_time_unix_nano(&mut self, val: Option<i64>) {
-        let val = val.unwrap_or(0);
-        self.time_unix_nano.append_value(&val);
+        if let Some(val) = val {
+            self.time_unix_nano.append_value(&val);
+        } else {
+            self.time_unix_nano.append_null();
+        }
     }
 
     /// append a value to the `name` array
     pub fn append_name(&mut self, val: Option<&str>) {
-        if let Some(val) = val {
-            self.name.append_str(val);
-        } else {
-            self.name.append_null();
-        }
+        // names are required in the event spec
+        let name = val.unwrap_or("");
+        self.name.append_str(name);
     }
 
     /// append a value to the `dropped_attributes_count` array
@@ -491,7 +484,7 @@ impl EventsBuilder {
             fields.push(Field::new(
                 consts::PARENT_ID,
                 array.data_type().clone(),
-                true,
+                false,
             ));
             columns.push(array);
         }
@@ -500,13 +493,13 @@ impl EventsBuilder {
             fields.push(Field::new(
                 consts::TIME_UNIX_NANO,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
 
         if let Some(array) = self.name.finish() {
-            fields.push(Field::new(consts::NAME, array.data_type().clone(), true));
+            fields.push(Field::new(consts::NAME, array.data_type().clone(), false));
             columns.push(array);
         }
 
@@ -514,7 +507,7 @@ impl EventsBuilder {
             fields.push(Field::new(
                 consts::DROPPED_ATTRIBUTES_COUNT,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }
@@ -594,12 +587,8 @@ impl LinksBuilder {
     }
 
     /// append a value to the `parent_id` array
-    pub fn append_parent_id(&mut self, val: Option<u16>) {
-        if let Some(val) = val {
-            self.parent_id.append_value(&val);
-        } else {
-            self.parent_id.append_null();
-        }
+    pub fn append_parent_id(&mut self, val: u16) {
+        self.parent_id.append_value(&val);
     }
 
     /// append a value to the `trace_id` array
@@ -650,7 +639,7 @@ impl LinksBuilder {
             fields.push(Field::new(
                 consts::PARENT_ID,
                 array.data_type().clone(),
-                true,
+                false,
             ));
             columns.push(array);
         }
@@ -682,7 +671,7 @@ impl LinksBuilder {
             fields.push(Field::new(
                 consts::DROPPED_ATTRIBUTES_COUNT,
                 array.data_type().clone(),
-                false,
+                true,
             ));
             columns.push(array);
         }

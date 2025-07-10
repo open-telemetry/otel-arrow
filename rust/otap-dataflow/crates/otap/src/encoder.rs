@@ -127,7 +127,7 @@ where
 
                 for event in span.events() {
                     events.append_id(Some(curr_event_id));
-                    events.append_parent_id(Some(curr_span_id));
+                    events.append_parent_id(curr_span_id);
                     events.append_time_unix_nano(event.time_unix_nano().map(|v| v as i64));
                     events.append_name(event.name());
                     events.append_dropped_attributes_count(event.dropped_attributes_count());
@@ -144,7 +144,7 @@ where
 
                 for link in span.links() {
                     links.append_id(Some(curr_link_id));
-                    links.append_parent_id(Some(curr_span_id));
+                    links.append_parent_id(curr_span_id);
                     links.append_trace_id(link.trace_id())?;
                     links.append_span_id(link.span_id())?;
                     links.append_trace_state(link.trace_state());
@@ -443,9 +443,9 @@ mod test {
     use super::*;
 
     use arrow::array::{
-        ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Float64Array,
-        Int32Array, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray,
-        UInt8Array, UInt16Array, UInt32Array,
+        ArrayRef, BinaryArray, BooleanArray, DictionaryArray, DurationNanosecondArray,
+        FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+        StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
     };
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type, UInt16Type};
@@ -1839,5 +1839,566 @@ mod test {
         let mut logs_data_bytes = vec![];
         logs_data.encode(&mut logs_data_bytes).unwrap();
         _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
+    }
+
+    #[test]
+    fn test_spans_proto_struct() {
+        use otel_arrow_rust::encode::record::spans::{SpanId, TraceId};
+        use otel_arrow_rust::proto::opentelemetry::trace::v1::*;
+
+        let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
+        let a_parent_span_id: SpanId = [27, 28, 19, 20, 21, 22, 23, 24];
+        let traces_data = TracesData::new(vec![
+            ResourceSpans::build(
+                Resource::build(vec![KeyValue::new(
+                    "attr1",
+                    AnyValue::new_string("some_value"),
+                )])
+                .dropped_attributes_count(123u32),
+            )
+            .schema_url("https://schema.opentelemetry.io/resource_schema")
+            .scope_spans(vec![
+                ScopeSpans::build(
+                    InstrumentationScope::build("library")
+                        .version("scopev1")
+                        .attributes(vec![KeyValue::new(
+                            "scope_attr1",
+                            AnyValue::new_string("scope_val1"),
+                        )])
+                        .dropped_attributes_count(17u32)
+                        .finish(),
+                )
+                .schema_url("https://schema.opentelemetry.io/scope_schema")
+                .spans(vec![
+                    Span::build(
+                        a_trace_id.to_vec(),
+                        a_span_id.to_vec(),
+                        "span_name_1",
+                        999u64,
+                    )
+                    .trace_state("some_state")
+                    .end_time_unix_nano(1999u64)
+                    .parent_span_id(a_parent_span_id.to_vec())
+                    .dropped_attributes_count(7u32)
+                    .dropped_events_count(11u32)
+                    .dropped_links_count(29u32)
+                    .kind(span::SpanKind::Consumer)
+                    .status(Status::new("something happened", status::StatusCode::Error))
+                    .events(vec![
+                        span::Event::build("an_event", 456u64)
+                            .attributes(vec![KeyValue::new(
+                                "event_attr1",
+                                AnyValue::new_string("hi"),
+                            )])
+                            .dropped_attributes_count(12345u32)
+                            .finish(),
+                    ])
+                    .links(vec![
+                        span::Link::build(a_trace_id.to_vec(), a_span_id.to_vec())
+                            .trace_state("some link state")
+                            .dropped_attributes_count(567u32)
+                            .flags(7u32)
+                            .attributes(vec![KeyValue::new(
+                                "link_attr1",
+                                AnyValue::new_string("hello"),
+                            )])
+                            .finish(),
+                    ])
+                    .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        let otap_batch = encode_spans_otap_batch(&traces_data).unwrap();
+
+        let expected_span_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::UInt16, true),
+                Field::new(
+                    "resource",
+                    DataType::Struct(
+                        vec![
+                            Field::new("id", DataType::UInt16, true),
+                            Field::new(
+                                "schema_url",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                            Field::new("dropped_attributes_count", DataType::UInt32, true),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "scope",
+                    DataType::Struct(
+                        vec![
+                            Field::new("id", DataType::UInt16, true),
+                            Field::new(
+                                "name",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                            Field::new(
+                                "version",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                            Field::new("dropped_attributes_count", DataType::UInt32, true),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "start_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "duration_time_unix_nano",
+                    DataType::Duration(TimeUnit::Nanosecond),
+                    false,
+                ),
+                Field::new(
+                    "trace_id",
+                    DataType::Dictionary(
+                        Box::new(DataType::UInt8),
+                        Box::new(DataType::FixedSizeBinary(16)),
+                    ),
+                    false,
+                ),
+                Field::new(
+                    "span_id",
+                    DataType::Dictionary(
+                        Box::new(DataType::UInt8),
+                        Box::new(DataType::FixedSizeBinary(8)),
+                    ),
+                    false,
+                ),
+                Field::new(
+                    "trace_state",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
+                Field::new(
+                    "parent_span_id",
+                    DataType::Dictionary(
+                        Box::new(DataType::UInt8),
+                        Box::new(DataType::FixedSizeBinary(8)),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new(
+                    "kind",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                    true,
+                ),
+                Field::new("dropped_attributes_count", DataType::UInt32, true),
+                Field::new("dropped_events_count", DataType::UInt32, true),
+                Field::new("dropped_links_count", DataType::UInt32, true),
+                Field::new(
+                    "code",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                    true,
+                ),
+                Field::new(
+                    "status_message",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt16Array::from_iter(vec![Some(0)])),
+                // resource
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // resource.id
+                        Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "schema_url",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // resource.schema_url
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from_iter_values(vec![
+                                "https://schema.opentelemetry.io/resource_schema",
+                            ])),
+                        )) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "dropped_attributes_count",
+                            DataType::UInt32,
+                            true,
+                        )),
+                        // resource.dropped_attributes.count
+                        Arc::new(UInt32Array::from(vec![123])) as ArrayRef,
+                    ),
+                ])),
+                // scope
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // scope.id
+                        Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "name",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // scope.name
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from(vec!["library"])),
+                        )) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "version",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // scope.version
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from(vec!["scopev1"])),
+                        )) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "dropped_attributes_count",
+                            DataType::UInt32,
+                            true,
+                        )),
+                        // scope.dropped_attributes.count
+                        Arc::new(UInt32Array::from(vec![17])) as ArrayRef,
+                    ),
+                ])) as ArrayRef,
+                // timestamps
+                Arc::new(TimestampNanosecondArray::from(vec![999])),
+                Arc::new(DurationNanosecondArray::from(vec![1000])),
+                // trace_id
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(
+                        FixedSizeBinaryArray::try_from_iter(vec![a_trace_id.to_vec()].into_iter())
+                            .unwrap(),
+                    ),
+                )) as ArrayRef,
+                // span_id
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(
+                        FixedSizeBinaryArray::try_from_iter(vec![a_span_id.to_vec()].into_iter())
+                            .unwrap(),
+                    ),
+                )) as ArrayRef,
+                // trace_state
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["some_state"])),
+                )) as ArrayRef,
+                // parent_span_id
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(
+                        FixedSizeBinaryArray::try_from_iter(
+                            vec![a_parent_span_id.to_vec()].into_iter(),
+                        )
+                        .unwrap(),
+                    ),
+                )) as ArrayRef,
+                // name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["span_name_1"])),
+                )) as ArrayRef,
+                // kind
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(Int32Array::from(vec![span::SpanKind::Consumer as i32])),
+                )),
+                // dropped_attributes_count
+                Arc::new(UInt32Array::from(vec![7])) as ArrayRef,
+                // dropped_events_count
+                Arc::new(UInt32Array::from(vec![11])) as ArrayRef,
+                // dropped_links_count
+                Arc::new(UInt32Array::from(vec![29])) as ArrayRef,
+                // status code
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(Int32Array::from(vec![status::StatusCode::Error as i32])),
+                )),
+                // status message
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["something happened"])),
+                )),
+            ],
+        )
+        .unwrap();
+        let spans_rb = otap_batch.get(ArrowPayloadType::Spans).unwrap();
+        compare_record_batches(spans_rb, &expected_span_batch);
+        assert_eq!(spans_rb, &expected_span_batch);
+
+        let expected_events_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::UInt32, true),
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    true,
+                ),
+                Field::new(
+                    "name",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new("dropped_attributes_count", DataType::UInt32, true),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt32Array::from_iter(vec![Some(0)])),
+                // parent_id
+                Arc::new(UInt16Array::from_iter(vec![0])),
+                // time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![456])),
+                // name
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["an_event"])),
+                )) as ArrayRef,
+                // dropped_attributes_count
+                Arc::new(UInt32Array::from(vec![12345])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let events_rb = otap_batch.get(ArrowPayloadType::SpanEvents).unwrap();
+        compare_record_batches(events_rb, &expected_events_batch);
+        assert_eq!(events_rb, &expected_events_batch);
+
+        let expected_links_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::UInt32, true),
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "trace_id",
+                    DataType::Dictionary(
+                        Box::new(DataType::UInt8),
+                        Box::new(DataType::FixedSizeBinary(16)),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "span_id",
+                    DataType::Dictionary(
+                        Box::new(DataType::UInt8),
+                        Box::new(DataType::FixedSizeBinary(8)),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "trace_state",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
+                Field::new("dropped_attributes_count", DataType::UInt32, true),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt32Array::from_iter(vec![Some(0)])),
+                // parent_id
+                Arc::new(UInt16Array::from_iter(vec![0])),
+                // trace_id
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(
+                        FixedSizeBinaryArray::try_from_iter(vec![a_trace_id.to_vec()].into_iter())
+                            .unwrap(),
+                    ),
+                )) as ArrayRef,
+                // span_id
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(
+                        FixedSizeBinaryArray::try_from_iter(vec![a_span_id.to_vec()].into_iter())
+                            .unwrap(),
+                    ),
+                )) as ArrayRef,
+                // trace_state
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from(vec!["some link state"])),
+                )) as ArrayRef,
+                // dropped_attributes_count
+                Arc::new(UInt32Array::from(vec![567])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let links_rb = otap_batch.get(ArrowPayloadType::SpanLinks).unwrap();
+        compare_record_batches(links_rb, &expected_links_batch);
+        assert_eq!(links_rb, &expected_links_batch);
+
+        let expected_event_attrs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    "parent_id",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                    false,
+                ),
+                Field::new(
+                    "key",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new("type", DataType::UInt8, false),
+                Field::new(
+                    "str",
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from_iter_values(vec![0]),
+                    Arc::new(UInt32Array::from_iter_values(vec![0])),
+                )),
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from_iter_values(vec![0]),
+                    Arc::new(StringArray::from_iter_values(vec!["event_attr1"])),
+                )),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::<UInt16Type>::new(
+                    UInt16Array::from_iter_values(vec![0]),
+                    Arc::new(StringArray::from_iter_values(vec!["hi"])),
+                )),
+            ],
+        )
+        .unwrap();
+        let event_attrs_rb = otap_batch.get(ArrowPayloadType::SpanEventAttrs).unwrap();
+        compare_record_batches(event_attrs_rb, &expected_event_attrs_batch);
+        assert_eq!(event_attrs_rb, &expected_event_attrs_batch);
+
+        let expected_link_attrs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    "parent_id",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                    false,
+                ),
+                Field::new(
+                    "key",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new("type", DataType::UInt8, false),
+                Field::new(
+                    "str",
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from_iter_values(vec![0]),
+                    Arc::new(UInt32Array::from_iter_values(vec![0])),
+                )),
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from_iter_values(vec![0]),
+                    Arc::new(StringArray::from_iter_values(vec!["link_attr1"])),
+                )),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::<UInt16Type>::new(
+                    UInt16Array::from_iter_values(vec![0]),
+                    Arc::new(StringArray::from_iter_values(vec!["hello"])),
+                )),
+            ],
+        )
+        .unwrap();
+        let link_attrs_rb = otap_batch.get(ArrowPayloadType::SpanLinkAttrs).unwrap();
+        compare_record_batches(link_attrs_rb, &expected_link_attrs_batch);
+        assert_eq!(link_attrs_rb, &expected_link_attrs_batch);
+    }
+
+    /// I'm a small helper function for examining differences between expected and under-test
+    /// `RecordBatch`es. For large `RecordBatch`es, I produce debug output that's much simpler to
+    /// understand than the results of an `assert_eq!` failure.
+    fn compare_record_batches(a: &RecordBatch, b: &RecordBatch) {
+        //  Ideally we could use something like
+        //  https://docs.rs/datafusion/48.0.1/datafusion/macro.assert_batches_eq.html but right now
+        //  it doesn't support the nested types we rely on, so this hack will have to suffice.
+        if a == b {
+            return;
+        }
+
+        let a_schema = a.schema();
+        let b_schema = b.schema();
+        let a_names: Vec<_> = a_schema
+            .fields()
+            .into_iter()
+            .map(|field| field.name())
+            .collect();
+        let b_names: Vec<_> = b_schema
+            .fields()
+            .into_iter()
+            .map(|field| field.name())
+            .collect();
+        assert_eq!(a_names, b_names);
+
+        for field in a.schema().fields() {
+            let col_name = field.name();
+            let a_field = a_schema.field_with_name(col_name).unwrap();
+            let b_field = b_schema.field_with_name(col_name).unwrap();
+            if a_field != b_field {
+                dbg!(col_name, a_field, b_field);
+            }
+
+            let a_col = format!("{:?}", a.column_by_name(col_name).unwrap());
+            let b_col = format!("{:?}", b.column_by_name(col_name).unwrap());
+            if a_col != b_col {
+                dbg!(col_name, a_col, b_col);
+            }
+        }
     }
 }
