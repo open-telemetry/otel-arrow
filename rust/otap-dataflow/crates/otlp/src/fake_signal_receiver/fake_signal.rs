@@ -289,8 +289,8 @@ fn fake_log_records(attribute_count: usize) -> LogRecord {
     LogRecord {
         time_unix_nano: get_time_unix_nano(),
         observed_time_unix_nano: get_observed_time_unix_nano(),
-        severity_text: severity_text,
-        severity_number: severity_number,
+        severity_text,
+        severity_number,
         event_name: get_event_name(),
         attributes: get_attributes(attribute_count),
         trace_id: get_trace_id(),
