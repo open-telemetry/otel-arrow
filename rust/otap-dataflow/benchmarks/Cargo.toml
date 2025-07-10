@@ -23,6 +23,7 @@ otap-df-otap = { path="../crates/otap"}
 otap-df-otlp = { path="../crates/otlp"}
 otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
 otel-arrow-rust = { path = "../../otel-arrow-rust"}
+otap-dataflow = { path = ".." }
 fluke-hpack = "0.3.1"
 futures-channel = "0.3"
 futures = "0.3.31"
@@ -37,6 +38,10 @@ prost = "0.13"
 tokio-stream = "0.1.17"
 [lints]
 workspace = true
+
+[[bench]]
+name = "retry_processor"
+harness = false
 
 [[bench]]
 name = "config"
