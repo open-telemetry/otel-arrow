@@ -1,43 +1,15 @@
-use crate::{IntegerScalarExpression, ScalarExpression, StringScalarExpression};
+use crate::ScalarExpression;
 
 /// Contains the rules used to resolve data from a target
 ///
 /// Notes:
 ///
-/// * Given a target such as `source` and selectors `MapKey('SubItem')`,
-///   `ArrayIndex(0)` evaluation would be equivalent to: `source.SubItem[0]`.
+/// * Given a target such as `source` and selectors `String('SubItem')`,
+///   `Integer(0)` evaluation would be equivalent to: `source.SubItem[0]`.
 /// * An empty set of selectors resolves the initial target.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueAccessor {
-    selectors: Vec<ValueSelector>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ValueSelector {
-    /// Resolve a value from an array using a static 32bit integer provided
-    /// directly in a query.
-    ///
-    /// Note: Negative values indicate access from the end of the array. For
-    /// example `-1` will select the last item.
-    ArrayIndex(IntegerScalarExpression),
-
-    /// Resolve a value from a map using a static string provided directly in a
-    /// query as the key.
-    ///
-    /// Note: Keys are case-sensitive.
-    MapKey(StringScalarExpression),
-
-    /// Resolve a value using a [`ScalarExpression`].
-    ///
-    /// Notes:
-    /// * If the [`ScalarExpression`] returns an integer an array index
-    ///   operation will be attempted. If the integer value is negative then the
-    ///   array index will be performed from the end of the array.
-    /// * If the [`ScalarExpression`] returns a string a map key operation will
-    ///   be attempted.
-    /// * If any other value type is returned by the [`ScalarExpression`] then
-    ///   no data will be resolved.
-    ScalarExpression(ScalarExpression),
+    selectors: Vec<ScalarExpression>,
 }
 
 impl ValueAccessor {
@@ -47,7 +19,7 @@ impl ValueAccessor {
         }
     }
 
-    pub fn new_with_selectors(selectors: Vec<ValueSelector>) -> ValueAccessor {
+    pub fn new_with_selectors(selectors: Vec<ScalarExpression>) -> ValueAccessor {
         let mut accessor = ValueAccessor::new();
 
         for selector in selectors {
@@ -61,15 +33,15 @@ impl ValueAccessor {
         !self.selectors.is_empty()
     }
 
-    pub fn get_selectors(&self) -> &Vec<ValueSelector> {
+    pub fn get_selectors(&self) -> &Vec<ScalarExpression> {
         &self.selectors
     }
 
-    pub fn insert_selector(&mut self, index: usize, selector: ValueSelector) {
+    pub fn insert_selector(&mut self, index: usize, selector: ScalarExpression) {
         self.selectors.insert(index, selector);
     }
 
-    pub fn push_selector(&mut self, selector: ValueSelector) {
+    pub fn push_selector(&mut self, selector: ScalarExpression) {
         self.selectors.push(selector)
     }
 }

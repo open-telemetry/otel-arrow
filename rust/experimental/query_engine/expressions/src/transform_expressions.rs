@@ -1,8 +1,6 @@
-use std::collections::HashSet;
-
 use crate::{
-    Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation,
-    StringScalarExpression, ValueAccessor, ValueSelector,
+    Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation, ScalarExpression,
+    ValueAccessor, ValueType,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +28,15 @@ impl Expression for TransformExpression {
             TransformExpression::Remove(r) => r.get_query_location(),
             TransformExpression::ReduceMap(r) => r.get_query_location(),
             TransformExpression::RemoveMapKeys(r) => r.get_query_location(),
+        }
+    }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            TransformExpression::Set(_) => "Transform(Set)",
+            TransformExpression::Remove(_) => "Transform(Set)",
+            TransformExpression::ReduceMap(r) => r.get_name(),
+            TransformExpression::RemoveMapKeys(r) => r.get_name(),
         }
     }
 }
@@ -67,6 +74,10 @@ impl Expression for SetTransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "SetTransformExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +106,10 @@ impl Expression for RemoveTransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "RemoveTransformExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,20 +128,27 @@ impl Expression for RemoveMapKeysTransformExpression {
             RemoveMapKeysTransformExpression::Retain(m) => m.get_query_location(),
         }
     }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            RemoveMapKeysTransformExpression::Remove(_) => "RemoveMapKeysTransform(Remove)",
+            RemoveMapKeysTransformExpression::Retain(_) => "RemoveMapKeysTransform(Retain)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapKeyListExpression {
     query_location: QueryLocation,
     target: MutableValueExpression,
-    keys: HashSet<MapKey>,
+    keys: Vec<ScalarExpression>,
 }
 
 impl MapKeyListExpression {
     pub fn new(
         query_location: QueryLocation,
         target: MutableValueExpression,
-        keys: HashSet<MapKey>,
+        keys: Vec<ScalarExpression>,
     ) -> MapKeyListExpression {
         Self {
             query_location,
@@ -139,7 +161,7 @@ impl MapKeyListExpression {
         &self.target
     }
 
-    pub fn get_keys(&self) -> &HashSet<MapKey> {
+    pub fn get_keys(&self) -> &Vec<ScalarExpression> {
         &self.keys
     }
 }
@@ -148,17 +170,10 @@ impl Expression for MapKeyListExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
-}
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub enum MapKey {
-    /// A pattern used to resolve keys.
-    ///
-    /// Examples: `name*`, `*`, `*_value`
-    Pattern(StringScalarExpression),
-
-    /// A static key value.
-    Value(StringScalarExpression),
+    fn get_name(&self) -> &'static str {
+        "MapKeyListExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -177,15 +192,19 @@ impl Expression for ReduceMapTransformExpression {
             ReduceMapTransformExpression::Retain(m) => m.get_query_location(),
         }
     }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            ReduceMapTransformExpression::Remove(_) => "ReduceTransform(Remove)",
+            ReduceMapTransformExpression::Retain(_) => "ReduceTransform(Retain)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MapSelector {
-    /// Top-level key pattern.
-    KeyPattern(StringScalarExpression),
-
-    /// Static top-level key.
-    Key(StringScalarExpression),
+    /// A top-level key or key pattern.
+    KeyOrKeyPattern(ScalarExpression),
 
     /// A [`ValueAccessor`] representing a path to data on the map.
     ///
@@ -233,27 +252,31 @@ impl MapSelectionExpression {
         &self.selectors
     }
 
-    pub fn push_selector(&mut self, selector: MapSelector) {
-        self.selectors.push(selector)
+    pub fn push_key_or_key_pattern(&mut self, key_or_key_pattern: ScalarExpression) -> bool {
+        if let ScalarExpression::Static(s) = &key_or_key_pattern {
+            let value_type = s.get_value_type();
+            if value_type != ValueType::String && value_type != ValueType::Regex {
+                return false;
+            }
+        }
+
+        self.selectors
+            .push(MapSelector::KeyOrKeyPattern(key_or_key_pattern));
+
+        true
     }
 
-    pub fn push_value_accessor(&mut self, value_accessor: &ValueAccessor) -> bool {
-        let selectors = value_accessor.get_selectors();
-        if selectors.is_empty() {
+    pub fn push_value_accessor(&mut self, value_accessor: ValueAccessor) -> bool {
+        assert!(value_accessor.has_selectors());
+
+        if let ScalarExpression::Static(s) = value_accessor.get_selectors().first().unwrap()
+            && s.get_value_type() != ValueType::String
+        {
             return false;
         }
 
-        if selectors.len() == 1 {
-            match selectors.first().unwrap() {
-                ValueSelector::ArrayIndex(_) => return false,
-                ValueSelector::MapKey(s) => self.push_selector(MapSelector::Key(s.clone())),
-                ValueSelector::ScalarExpression(_) => {
-                    self.push_selector(MapSelector::ValueAccessor(value_accessor.clone()))
-                }
-            }
-        } else {
-            self.push_selector(MapSelector::ValueAccessor(value_accessor.clone()));
-        }
+        self.selectors
+            .push(MapSelector::ValueAccessor(value_accessor));
 
         true
     }
@@ -262,5 +285,9 @@ impl MapSelectionExpression {
 impl Expression for MapSelectionExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "MapSelectionExpression"
     }
 }
