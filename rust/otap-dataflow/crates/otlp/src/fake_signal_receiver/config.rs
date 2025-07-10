@@ -152,6 +152,7 @@ pub struct MetricConfig {
     metric_count: usize,
     datapoint_count: usize,
     datapoint_type: MetricType,
+    attribute_count: usize,
 }
 
 /// configuration settings for a fake log signal
@@ -160,6 +161,7 @@ pub struct LogConfig {
     resource_count: usize,
     scope_count: usize,
     log_count: usize,
+    attribute_count: usize,
 }
 /// configuration settings for a fake trace signal
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -169,6 +171,7 @@ pub struct SpanConfig {
     span_count: usize,
     event_count: usize,
     link_count: usize,
+    attribute_count: usize,
 }
 /// configuration settings for a fake profile signal
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -176,6 +179,7 @@ pub struct ProfileConfig {
     resource_count: usize,
     scope_count: usize,
     profile_count: usize,
+    attribute_count: usize,
 }
 
 impl MetricConfig {
@@ -187,6 +191,7 @@ impl MetricConfig {
         metric_count: usize,
         datapoint_count: usize,
         datapoint_type: MetricType,
+        attribute_count: usize,
     ) -> Self {
         Self {
             resource_count,
@@ -194,6 +199,7 @@ impl MetricConfig {
             metric_count,
             datapoint_count,
             datapoint_type,
+            attribute_count,
         }
     }
     /// Take the metric config and generate the corresponding metric signal
@@ -206,6 +212,7 @@ impl MetricConfig {
             self.metric_count,
             self.datapoint_count,
             self.datapoint_type,
+            self.attribute_count,
         )
     }
 }
@@ -213,17 +220,28 @@ impl MetricConfig {
 impl LogConfig {
     /// create a new config
     #[must_use]
-    pub fn new(resource_count: usize, scope_count: usize, log_count: usize) -> Self {
+    pub fn new(
+        resource_count: usize,
+        scope_count: usize,
+        log_count: usize,
+        attribute_count: usize,
+    ) -> Self {
         Self {
             resource_count,
             scope_count,
             log_count,
+            attribute_count,
         }
     }
     /// Take the log config and generate the corresponding log signal
     #[must_use]
     pub fn get_signal(&self) -> LogsData {
-        fake_otlp_logs(self.resource_count, self.scope_count, self.log_count)
+        fake_otlp_logs(
+            self.resource_count,
+            self.scope_count,
+            self.log_count,
+            self.attribute_count,
+        )
     }
 }
 
@@ -236,6 +254,7 @@ impl SpanConfig {
         span_count: usize,
         event_count: usize,
         link_count: usize,
+        attribute_count: usize,
     ) -> Self {
         Self {
             resource_count,
@@ -243,6 +262,7 @@ impl SpanConfig {
             span_count,
             event_count,
             link_count,
+            attribute_count,
         }
     }
     /// Take the traces config and generate the corresponding traces signal
@@ -254,6 +274,7 @@ impl SpanConfig {
             self.span_count,
             self.event_count,
             self.link_count,
+            self.attribute_count,
         )
     }
 }
@@ -261,17 +282,28 @@ impl SpanConfig {
 impl ProfileConfig {
     /// create a new config
     #[must_use]
-    pub fn new(resource_count: usize, scope_count: usize, profile_count: usize) -> Self {
+    pub fn new(
+        resource_count: usize,
+        scope_count: usize,
+        profile_count: usize,
+        attribute_count: usize,
+    ) -> Self {
         Self {
             resource_count,
             scope_count,
             profile_count,
+            attribute_count,
         }
     }
     /// Take the profile config and generate the corresponding profile signal
     #[must_use]
     pub fn get_signal(&self) -> ProfilesData {
-        fake_otlp_profiles(self.resource_count, self.scope_count, self.profile_count)
+        fake_otlp_profiles(
+            self.resource_count,
+            self.scope_count,
+            self.profile_count,
+            self.attribute_count,
+        )
     }
 }
 
@@ -295,12 +327,12 @@ mod tests {
     #[test]
     fn test_config() {
         let mut steps = vec![];
-        let metric_config = MetricConfig::new(1, 1, 1, 1, MetricType::Gauge);
-        let trace_config = SpanConfig::new(1, 1, 1, 1, 1);
+        let metric_config = MetricConfig::new(1, 1, 1, 1, MetricType::Gauge, 1);
+        let trace_config = SpanConfig::new(1, 1, 1, 1, 1, 1);
 
-        let log_config = LogConfig::new(1, 1, 1);
+        let log_config = LogConfig::new(1, 1, 1, 1);
 
-        let profile_config = ProfileConfig::new(1, 1, 1);
+        let profile_config = ProfileConfig::new(1, 1, 1, 1);
 
         steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
 

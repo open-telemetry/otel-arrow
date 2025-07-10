@@ -126,7 +126,6 @@ mod tests {
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
-    use std::net::SocketAddr;
     use std::pin::Pin;
     use tokio::time::{Duration, sleep, timeout};
 
@@ -185,7 +184,7 @@ mod tests {
                                 scope_count += 1;
                                 for metric_data in scope.metrics.iter() {
                                     metric_count += 1;
-                                    for datapoint in metric_data.data.iter() {
+                                    for _ in metric_data.data.iter() {
                                         datapoint_count += 1;
                                     }
                                 }
@@ -207,16 +206,17 @@ mod tests {
                         let mut span_count = 0;
                         let mut link_count = 0;
                         let mut event_count = 0;
+                        let mut attribute_count = 0;
                         for resource in span.resource_spans.iter() {
                             resource_count += 1;
                             for scope in resource.scope_spans.iter() {
                                 scope_count += 1;
                                 for span_data in scope.spans.iter() {
                                     span_count += 1;
-                                    for event in span_data.events.iter() {
+                                    for _ in span_data.events.iter() {
                                         event_count += 1;
                                     }
-                                    for link in span_data.links.iter() {
+                                    for _ in span_data.links.iter() {
                                         link_count += 1;
                                     }
                                 }
@@ -237,12 +237,11 @@ mod tests {
                         let mut resource_count = 0;
                         let mut scope_count = 0;
                         let mut log_count = 0;
-
                         for resource in log.resource_logs.iter() {
                             resource_count += 1;
                             for scope in resource.scope_logs.iter() {
                                 scope_count += 1;
-                                for log_data in scope.log_records.iter() {
+                                for _ in scope.log_records.iter() {
                                     log_count += 1;
                                 }
                             }
@@ -260,12 +259,11 @@ mod tests {
                         let mut resource_count = 0;
                         let mut scope_count = 0;
                         let mut profile_count = 0;
-                        let mut datapoint_count = 0;
                         for resource in profile.resource_profiles.iter() {
                             resource_count += 1;
                             for scope in resource.scope_profiles.iter() {
                                 scope_count += 1;
-                                for profile_data in scope.profiles.iter() {
+                                for _ in scope.profiles.iter() {
                                     profile_count += 1;
                                 }
                             }
@@ -286,12 +284,12 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let mut steps = vec![];
-        let metric_config = MetricConfig::new(1, 1, 1, 1, MetricType::Gauge);
-        let trace_config = SpanConfig::new(1, 1, 1, 1, 1);
+        let metric_config = MetricConfig::new(1, 1, 1, 1, MetricType::Gauge, 1);
+        let trace_config = SpanConfig::new(1, 1, 1, 1, 1, 1);
 
-        let log_config = LogConfig::new(1, 1, 1);
+        let log_config = LogConfig::new(1, 1, 1, 1);
 
-        let profile_config = ProfileConfig::new(1, 1, 1);
+        let profile_config = ProfileConfig::new(1, 1, 1, 1);
 
         steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
 

@@ -7,109 +7,94 @@
 use crate::proto::opentelemetry::{
     common::v1::{AnyValue, KeyValue, any_value::Value},
     metrics::v1::{
-        Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-        Sum, Summary, SummaryDataPoint, exemplar::Value as ExemplarValue,
-        exponential_histogram_data_point::Buckets, number_data_point::Value as NumberValue,
-        summary_data_point::ValueAtQuantile,
+        exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets,
+        number_data_point::Value as NumberValue, summary_data_point::ValueAtQuantile,
     },
     trace::v1::Status,
 };
+use rand::Rng;
+use rand::distr::{Alphabetic, Alphanumeric};
 
-// everything
+// ToDo: metric name, metric unit, metric description
 
-// randomize the following values
-
-// randomize the following values
-/*
-
-resource_attributes
-
- */
-
-// LOGS
-
-// todo randomize the following values
-/*
-time_unix_nano
-observed_time_unix_nano
-serveirty_text
-severity_number
-event_name
-log_record attributes
-
-body value
-flags
-dropped_attribute_count
- */
-
-// Traces
-
-/*
-randomize the following
-Start time unix nano
-end time unix nano
-span name
-trace id
-span id
-span status
-span attributes
-parent span id
- */
-
-// Metrics
-/*
-metric name
-metric unit
-metric value
-metric description
-datapoint attributes
-
- */
-
-/*
-
-need to randomize for each datatype
- */
-
-// Profiles
-
+const SCHEMA_URL: &str = "http://schema.opentelemetry.io";
 /// default scope name to use for fake signals
 const SCOPE_NAME: &str = "fake_signal";
 /// default scope version to use for fake signals
 const SCOPE_VERSION: &str = "1.0.0";
-/// default trace id
-const TRACE_ID: &str = "379bb33d04b406432ab33f9f54176a99";
-/// default span id
-const SPAN_ID: &str = "0497da84b964f973";
+
+const TRACE_STATES: [&str; 3] = ["started", "ended", "unknown"];
+
+const SEVERITY_TEXT: [&str; 6] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
+
+// const SPAN_NAMES: [&str; 6] =
+
+// const SPAN_EVENT_NAMES: [&str; 6] =
 
 /// provide attributes for fake signals, attribute field
 #[must_use]
-pub fn get_attributes() -> Vec<KeyValue> {
-    vec![KeyValue {
-        key: "hostname".to_string(),
-        value: Some(AnyValue {
-            value: Some(Value::StringValue("host3.thedomain.edu".to_string())),
-        }),
-    }]
+pub fn get_attributes(attribute_count: usize) -> Vec<KeyValue> {
+    let mut attributes = vec![];
+    for attribute_index in 0..attribute_count {
+        let rng = rand::rng();
+        let attribute_value: String = rng
+            .sample_iter(&Alphanumeric)
+            .take(5)
+            .map(char::from)
+            .collect();
+        attributes.push(KeyValue {
+            key: format!("attribute.{attribute_index}"),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(attribute_value)),
+            }),
+        })
+    }
+    attributes
 }
-/// provide data for the serverity_text field
+/// provide data for the serverity_text field based on severity number
 #[must_use]
-pub fn get_severity_text() -> String {
-    // random number between 1 and 3
-    "INFO".to_string()
+pub fn get_severity_text(severity_number: i32) -> String {
+    match severity_number {
+        1..=4 => SEVERITY_TEXT[0].to_string(),
+        5..=8 => SEVERITY_TEXT[1].to_string(),
+        9..=12 => SEVERITY_TEXT[2].to_string(),
+        13..=16 => SEVERITY_TEXT[3].to_string(),
+        17..=20 => SEVERITY_TEXT[4].to_string(),
+        _ => SEVERITY_TEXT[5].to_string(),
+    }
 }
 
-/// generate a random trace_id or use an existing one from constants
+/// generate a random severity_number within [1, 25)
+#[must_use]
+pub fn get_severity_number() -> i32 {
+    let mut rng = rand::rng();
+    let severity_number: i32 = rng.random_range(1..25);
+    severity_number
+}
+
+/// generate a random trace_id
 #[must_use]
 pub fn get_trace_id() -> Vec<u8> {
-    Vec::from(TRACE_ID.as_bytes())
+    // size 32
+    let rng = rand::rng();
+    let trace_id: String = rng
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+    trace_id.into_bytes()
 }
 
-/// generate a random span_id or use an existing one from constants
+/// generate a random span_id
 #[must_use]
 pub fn get_span_id() -> Vec<u8> {
-    Vec::from(SPAN_ID.as_bytes())
+    let rng = rand::rng();
+    let span_id: String = rng
+        .sample_iter(&Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect();
+    span_id.into_bytes()
 }
 /// provide data for scope_name field
 #[must_use]
@@ -125,16 +110,24 @@ pub fn get_scope_version() -> String {
 /// provide data for the body field
 #[must_use]
 pub fn get_body_text() -> Option<AnyValue> {
+    let rng = rand::rng();
+
+    let body: String = rng
+        .sample_iter(&Alphabetic)
+        .take(32)
+        .map(char::from)
+        .collect();
+
     Some(AnyValue {
-        value: Some(Value::StringValue(
-            "Sint impedit non ut eligendi nisi neque harum maxime adipisci.".to_string(),
-        )),
+        value: Some(Value::StringValue(body)),
     })
 }
 /// provide data for the trace_state field
 #[must_use]
 pub fn get_trace_state() -> String {
-    "trace_state".to_string()
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..TRACE_STATES.len());
+    TRACE_STATES[option].to_string()
 }
 /// provide data for the span name field
 #[must_use]
@@ -152,25 +145,76 @@ pub fn get_status() -> Option<Status> {
 /// provide data for the event_name field for spans, can be an empty stream
 #[must_use]
 pub fn get_event_name() -> String {
-    "".to_string()
+    if rand::random() {
+        "".to_string()
+    } else {
+        "event_nmae".to_string()
+    }
 }
 /// provide data for the time_unix_nano field
 #[must_use]
 pub fn get_time_unix_nano() -> u64 {
-    1650499200000000000
+    let mut rng = rand::rng();
+    let unix_time: u64 = rng.random_range(165030000000000000..165050000000000000);
+    unix_time
 }
 /// provide data for the observed_time_unix_nano field
 #[must_use]
 pub fn get_observed_time_unix_nano() -> u64 {
-    1650499200000000000
+    let mut rng = rand::rng();
+    let unix_time: u64 = rng.random_range(165030000000000000..165050000000000000);
+    unix_time
 }
 /// provide data for the start_time_unix_nano field
 #[must_use]
 pub fn get_start_time_unix_nano() -> u64 {
-    1650499200000000000
+    let mut rng = rand::rng();
+    let unix_time: u64 = rng.random_range(165030000000000000..165040000000000000);
+    unix_time
 }
 /// provide data for the end_time_unix_nano field
 #[must_use]
 pub fn get_end_time_unix_nano() -> u64 {
-    1650499200000000000
+    let mut rng = rand::rng();
+    let unix_time: u64 = rng.random_range(165040000000000000..165050000000000000);
+    unix_time
+}
+
+/// provide value to use for datapoint
+#[must_use]
+pub fn get_datapoint_value() -> Option<NumberValue> {
+    let mut rng = rand::rng();
+    if rand::random() {
+        let int_value: i64 = rng.random_range(1..101);
+        Some(NumberValue::AsInt(int_value))
+    } else {
+        let double_value: f64 = rng.random_range(1.5..101.5);
+        Some(NumberValue::AsDouble(double_value))
+    }
+}
+
+/// provide value to use for exemplar
+#[must_use]
+pub fn get_exemplar_value() -> Option<ExemplarValue> {
+    let mut rng = rand::rng();
+    if rand::random() {
+        let int_value: i64 = rng.random_range(1..101);
+        Some(ExemplarValue::AsInt(int_value))
+    } else {
+        let double_value: f64 = rng.random_range(1.5..101.5);
+        Some(ExemplarValue::AsDouble(double_value))
+    }
+}
+
+/// returns if a SUM datapoint is monotonic or not
+#[must_use]
+pub fn get_monotonic() -> bool {
+    let is_monotonic: bool = rand::random();
+    is_monotonic
+}
+
+/// provides the schema_url string
+#[must_use]
+pub fn get_schema_url() -> String {
+    SCHEMA_URL.to_string()
 }
