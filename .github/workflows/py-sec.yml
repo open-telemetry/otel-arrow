@@ -1,0 +1,69 @@
+name: Python Security Audit
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['tools/**']
+  push:
+    branches: [main]
+    paths: ['tools/**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install security tools
+        run: pip install safety bandit
+
+      - name: Run security audit
+        run: |
+          # Check each Python project
+          for project in tools/*/; do
+            if [ -f "$project/requirements.txt" ]; then
+              echo "Auditing $project"
+              cd "$project"
+              
+              # Check for vulnerabilities in dependencies
+              safety check -r requirements.txt --json || exit 1
+              
+              # Scan Python code for security issues
+              bandit -r . -ll || exit 1
+              
+              cd - > /dev/null
+            fi
+          done
+
+          # Also check for standalone Python files in tools root
+          if find tools -maxdepth 1 -name "*.py" -type f | head -1 > /dev/null; then
+            echo "Auditing tools root directory"
+            bandit tools/*.py -ll || exit 1
+          fi
+
+      - name: Check OpenSSF Scorecard
+        uses: ossf/scorecard-action@v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: false
+
+      - name: Enforce minimum security score
+        run: |
+          # Fail if vulnerabilities score is too low
+          VULN_SCORE=$(jq -r '.runs[0].tool.driver.rules[] | select(.id == "Vulnerabilities") | .properties.score // 0' results.sarif)
+          if (( $(echo "$VULN_SCORE < 8" | bc -l) )); then
+            echo "::error::Vulnerabilities score ($VULN_SCORE) below minimum (8.0)"
+            exit 1
+          fi
