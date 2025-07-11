@@ -112,12 +112,12 @@ on Apache Arrow for more details.
 Apache Arrow offers a language agnostic way to represent data such that it can
 be shared between different systems without copying. Languages receive a byte
 array that contains data formatted according to some Schema and rather than
-deserializing to a language specific struct/object equivalent type, the data 
+deserializing to a language specific struct/object equivalent type, the data
 can be read and operated on in-place.
 
 Something different about the way that Arrow represents data compared to a
 typical struct or object is that the data is in a columnar format. This type
-of format groups all of the values for a particular column in memory next to 
+of format groups all of the values for a particular column in memory next to
 each other.
 [This article](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
 from F5 has a great diagram comparing row and columnar data.
@@ -145,8 +145,8 @@ it doesn't _have_ to be encoded that way. And furthermore there can be
 different dictionary encodings for the same data. You can imagine some data
 with lower cardinality can make use of 8-bit integer keys, while some data with
 higher cardinality might need 16-bit integer keys to avoid overflow. There are
-multiple valid encodings for the same data and which to use is highly dependent on the
-characteristics of the data being transported.
+multiple valid encodings for the same data and which to use is highly dependent
+on the characteristics of the data being transported.
 [This article](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
 from F5 has more details on considerations for picking an encoding.
 
@@ -164,7 +164,7 @@ transmitted. How these schemas are negotiated is defined via the
 
 This format is modeled as a one way stream of messages from Client to Server.
 The types of messages that Clients can send and the order in which they are
-allowed to send them ensure that the Server has the information it needs to 
+allowed to send them ensure that the Server has the information it needs to
 process the data. There are three kinds of so called
 [Encapsulated Messages](https://arrow.apache.org/docs/format/Columnar.html#encapsulated-message-format)
 that can appear in this stream:
@@ -172,7 +172,7 @@ that can appear in this stream:
 - Schema - Contains the schema of the messages that will follow
 - Dictionary Batch - Contains dictionaries that can be used to interpret data
 passed in the Record Batch
-- Record Batch - Contains a shard of data (e.g. 100 rows) that follow the 
+- Record Batch - Contains a shard of data (e.g. 100 rows) that follow the
 Schema
 
 These messages must come in a particular order, the rules are:
@@ -204,7 +204,7 @@ happen quite often. Instead we can communicate to the server that there are
 some new values for it to be aware of. These arrive in new Dictionary Batches
 that contain so called _Delta Dictionaries_ with just the new entries.
 
-### Summary
+### Arrow Summary
 
 Apache Arrow allows systems to communicate structured data without knowing
 schemas ahead of time. It allows for efficient encoding of that data via
@@ -223,7 +223,7 @@ client needs to do to create OTAP requests.
 For now, don't worry about the mechanics for constructing Arrow IPC messages.
 In practice we would use an existing library such as
 [arrow-go](https://github.com/apache/arrow-go).
-To understand the protocol, it's enough to know _what_ you want to create. To 
+To understand the protocol, it's enough to know _what_ you want to create. To
 see it in practice, you can take a look at the `Producer` reference
 implementation linked at the top of this document.
 
@@ -342,7 +342,7 @@ RecordBatch messages containing our data.
 So in the first `ArrowPayload` for the `LOGS` table, we will send two
 Encapsulated Arrow IPC messages within the `record` body as follows:
 
-```
+```text
 ------------------------
 | Schema | RecordBatch |
 ------------------------
@@ -362,7 +362,7 @@ document. Following the DictionaryBatch, we can include RecordBatch messages.
 So, in the first `ArrowPayload` for the `LOG_ATTRS` table, we will send three
 Encapsulated Arrow IPC messages within the `record` body as follows:
 
-```
+```text
 ------------------------------------------
 | Schema | DictionaryBatch | RecordBatch |
 ------------------------------------------
@@ -426,7 +426,7 @@ the Schema for the _arrow_ stream and there's been no change, so the
 `schema_id` remains `"0"`. The only message we need is a single RecordBatch
 message containing the new log. The `record` field then looks like this:
 
-```
+```text
 ---------------
 | RecordBatch |
 ---------------
@@ -443,7 +443,7 @@ With the new ArrowPayload all we have to do is include a Delta Dictionary
 message with the key/value for `user-2` prior to the RecordBatch message. So we
 will pack two messages as follows in the `record`:
 
-```
+```text
 ---------------------------------
 | DeltaDictionary | RecordBatch |
 ---------------------------------
@@ -478,7 +478,7 @@ nothing new happens here because the dictionary is for the `LOG_ATTRIBUTES`
 table. We keep our `schema_id` of `"0"` on this ArrowPayload and it's business
 as usual. The `record` field is a single RecordBatch message once again:
 
-```
+```text
 ---------------
 | RecordBatch |
 ---------------
@@ -495,13 +495,13 @@ with a Schema message and any DictionaryBatch messages prior to the RecordBatch
 messages. So our `record` field for this ArrowPayload is going to look the same
 as it did for batch `"0"`:
 
-```
+```text
 ------------------------------------------
 | Schema | DictionaryBatch | RecordBatch |
 ------------------------------------------
 ```
 
-### Summary
+### OTAP Client Summary
 
 OTAP consists of a gRPC stream which wraps multiple Apache Arrow IPC streams.
 Certain evolutions of the schema can be handled in the normal course of Arrow
