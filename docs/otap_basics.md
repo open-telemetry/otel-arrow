@@ -112,13 +112,14 @@ on Apache Arrow for more details.
 Apache Arrow offers a language agnostic way to represent data such that it can
 be shared between different systems without copying. Languages receive a byte
 array that contains data formatted according to some Schema and rather than
-deserializing to a language specific struct/object equivalent type, the data can
-be read and operated on in-place.
+deserializing to a language specific struct/object equivalent type, the data 
+can be read and operated on in-place.
 
 Something different about the way that Arrow represents data compared to a
 typical struct or object is that the data is in a columnar format. This type
-of format groups all of the values for a particular column in memory next to each
-other. [This article](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
+of format groups all of the values for a particular column in memory next to 
+each other.
+[This article](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
 from F5 has a great diagram comparing row and columnar data.
 
 Typically data laid out in this way is beneficial for compression and also for
@@ -126,28 +127,28 @@ operation with SIMD instruction sets.
 
 ### Schemas and Encodings
 
-In order for one machine to do anything interesting with those Arrow byte arrays
-coming from another machine, they need to know the Schema of that data. The Schema
-defines the fields of the data, their types, and the order in which they appear.
-This is strictly defined within Arrow such that there is enough information in
-a Schema to process any column within the byte array.
+In order for one machine to do anything interesting with those Arrow byte
+arrays coming from another machine, they need to know the Schema of that data.
+The Schema defines the fields of the data, their types, and the order in which
+they appear. This is strictly defined within Arrow such that there is enough
+information in a Schema to process any column within the byte array.
 
 One of the key features of Arrow is that the same data can be encoded in
 different ways to optimize its size. For example, a column can be _dictionary_
-encoded. In a dictionary encoding, instead of writing out every value we can write
-an integer key that is used to look up the value in a separate dictionary. This
-can be highly effective in data that has lots of repeated values e.g. a column
-whose values come from an enum.
+encoded. In a dictionary encoding, instead of writing out every value we can
+write an integer key that is used to look up the value in a separate
+dictionary. This can be highly effective in data that has lots of repeated
+values e.g. a column whose values come from an enum.
 
 The thing to highlight is such a column _could_ be encoded as a dictionary,
-it doesn't _have_ to be encoded that way. And furthermore there can be different
-dictionary encodings for the same data. You can imagine some data with lower
-cardinality can make use of 8-bit integer keys, while some data with higher
-cardinality might need 16-bit integer keys to avoid overflow. There are multiple
-valid encodings for the same data and which to use is highly dependent on the
+it doesn't _have_ to be encoded that way. And furthermore there can be
+different dictionary encodings for the same data. You can imagine some data
+with lower cardinality can make use of 8-bit integer keys, while some data with
+higher cardinality might need 16-bit integer keys to avoid overflow. There are
+multiple valid encodings for the same data and which to use is highly dependent on the
 characteristics of the data being transported.
 [This article](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
- from F5 has more details on considerations for picking an encoding.
+from F5 has more details on considerations for picking an encoding.
 
 Because Telemetry data varies wildly between domains, it's impossible to pick
 a single encoding that will be near optimal for the entire world. OTAP provides
@@ -163,15 +164,16 @@ transmitted. How these schemas are negotiated is defined via the
 
 This format is modeled as a one way stream of messages from Client to Server.
 The types of messages that Clients can send and the order in which they are
-allowed to send them ensure that the Server has the information it needs to process
-the data. There are three kinds of so called
+allowed to send them ensure that the Server has the information it needs to 
+process the data. There are three kinds of so called
 [Encapsulated Messages](https://arrow.apache.org/docs/format/Columnar.html#encapsulated-message-format)
 that can appear in this stream:
 
 - Schema - Contains the schema of the messages that will follow
 - Dictionary Batch - Contains dictionaries that can be used to interpret data
 passed in the Record Batch
-- Record Batch - Contains a shard of data (e.g. 100 rows) that follow the Schema
+- Record Batch - Contains a shard of data (e.g. 100 rows) that follow the 
+Schema
 
 These messages must come in a particular order, the rules are:
 
@@ -183,11 +185,11 @@ be transmitted before any Record Batches that need them are transmitted.
 Why are dictionaries not a part of the schema, and why can we interleave them
 with Record Batches? Efficiency.
 
-Once a dictionary encoding for some column is agreed upon, the server can simply
-remember that dictionary and the client never has to send it again. That means
-a string column containing what could be many bytes of data can be completely
-reduced to a column of (potentially very small) integers from that point on,
-yielding massive savings on network bandwidth.
+Once a dictionary encoding for some column is agreed upon, the server can
+simply remember that dictionary and the client never has to send it again. That
+means a string column containing what could be many bytes of data can be
+completely reduced to a column of (potentially very small) integers from that
+point on, yielding massive savings on network bandwidth.
 
 In some cases, a Client will not know the full set of values that a column can
 have at the outset. You can imagine a scraper that is collecting Kubernetes pod
@@ -196,17 +198,17 @@ dictionary encoding was chosen for these attributes because the cardinality of
 the pod names is relatively small.
 
 When new pods come online, we don't have entries for them in the dictionary. We
-could re-create our connection to the server and re-transmit the full schema and
-dictionary with the new set of values, but this is wasteful and could happen
-quite often. Instead we can communicate to the server that there are some new
-values for it to be aware of. These arrive in new Dictionary Batches that contain
-so called _Delta Dictionaries_ with just the new entries.
+could re-create our connection to the server and re-transmit the full schema
+and dictionary with the new set of values, but this is wasteful and could
+happen quite often. Instead we can communicate to the server that there are
+some new values for it to be aware of. These arrive in new Dictionary Batches
+that contain so called _Delta Dictionaries_ with just the new entries.
 
 ### Summary
 
-Apache Arrow allows systems to communicate structured data without knowing schemas
-ahead of time. It allows for efficient encoding of that data via dictionaries
-which can be updated on the fly as needed. The
+Apache Arrow allows systems to communicate structured data without knowing
+schemas ahead of time. It allows for efficient encoding of that data via
+dictionaries which can be updated on the fly as needed. The
 [Apache Arrow IPC Streaming format](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format)
 defines the mechanics of how this process works including the types of messages
 that can be sent and the order that they must appear. This is inherently a
@@ -218,12 +220,12 @@ of data between a client and server efficiently.
 This section is going to walk through from start to finish the major things a
 client needs to do to create OTAP requests.
 
-For now, don't worry about the mechanics for constructing Arrow IPC messages. In
-practice we would use an existing library such as
+For now, don't worry about the mechanics for constructing Arrow IPC messages.
+In practice we would use an existing library such as
 [arrow-go](https://github.com/apache/arrow-go).
-To understand the protocol, it's enough to know _what_ you want to create. To see
-it in practice, you can take a look at the `Producer` reference implementation
-linked at the top of this document.
+To understand the protocol, it's enough to know _what_ you want to create. To 
+see it in practice, you can take a look at the `Producer` reference
+implementation linked at the top of this document.
 
 For simplicity and readablility we'll take some liberties in this section like
 trimming down the required fields. You can refer back to the data model for a
@@ -275,15 +277,15 @@ These log records each have some attributes:
 ]
 ```
 
-Our sample application is not instrumented with any resource or scope information,
-so we omit that data.
+Our sample application is not instrumented with any resource or scope
+information, so we omit that data.
 
 ### Selecting a Schema
 
 The first thing that we have to do is determine the encoding we want to use for
 each column and translate that to a schema. To keep it simple we'll use a very
-direct schema for the Logs table and omit any dictionaries. Fields and types are
-as follows:
+direct schema for the Logs table and omit any dictionaries. Fields and types
+are as follows:
 
 - id: u16
 - time_unix_nano: timestamp
@@ -300,11 +302,11 @@ and types are as follows:
 - int: i64
 
 > Note that the attribute `key` and log `body_str` fields are also usually
-Dictionary encoded in practice and this is the default behavior of the reference
-implementation. The attributes produced by an application are often repeated and
-limited in cardinality. Log bodies are also often repeated with the variable
-parts of the message extracted out to attributes. This makes Dictionary encodings
-often a good choice for these fields.
+Dictionary encoded in practice and this is the default behavior of the
+reference implementation. The attributes produced by an application are often
+repeated and limited in cardinality. Log bodies are also often repeated with
+the variable parts of the message extracted out to attributes. This makes
+Dictionary encodings often a good choice for these fields.
 
 ### Constructing the protobuf envelope
 
@@ -337,8 +339,8 @@ don't have dictionary encodings for this logs table, so there's no need.
 Following Schema batches and any pre-requisite DictionaryBatch(s) we can add
 RecordBatch messages containing our data.
 
-So in the first `ArrowPayload` for the `LOGS` table, we will send two Encapsulated
-Arrow IPC messages within the `record` body as follows:
+So in the first `ArrowPayload` for the `LOGS` table, we will send two
+Encapsulated Arrow IPC messages within the `record` body as follows:
 
 ```
 ------------------------
@@ -351,11 +353,11 @@ Arrow IPC messages within the `record` body as follows:
 Next up is the Log Attributes table. The same ideas apply for the `schema_id`,
 and `type`. This time for the `type` we'll use `LOG_ATTRS`.
 
-For the `record` we need to start again with a Schema message, but since we also
-have dictionary encodings for the `str` column, we need to create a DictionaryBatch
-message. The mechanics of tracking the set of keys and values for a particular
-column are an implementation detail and out of scope for this document. Following
-the DictionaryBatch, we can include RecordBatch messages.
+For the `record` we need to start again with a Schema message, but since we
+also have dictionary encodings for the `str` column, we need to create a
+DictionaryBatch message. The mechanics of tracking the set of keys and values
+for a particular column are an implementation detail and out of scope for this
+document. Following the DictionaryBatch, we can include RecordBatch messages.
 
 So, in the first `ArrowPayload` for the `LOG_ATTRS` table, we will send three
 Encapsulated Arrow IPC messages within the `record` body as follows:
@@ -373,11 +375,12 @@ and we're ready to send them off to the server. This is a good time to discuss
 the relationship between gRPC and Arrow IPC streams in OTAP.
 
 At the gRPC level our communication is happening over a single _gRPC_ stream of
-`BatchArrowRecords`. However within that gRPC stream, we have multiple independent
-_Apache Arrow IPC_ streams, one for each `ArrowPayloadType`. The number of _Arrow_
-streams that we have to juggle per _gRPC_ stream is dependent on how many tables
-we need to represent the telemetry signal. For a Logs signal that's a maximum
-of four different Arrow streams, but for Metrics or Traces that could be more.
+`BatchArrowRecords`. However within that gRPC stream, we have multiple
+independent _Apache Arrow IPC_ streams, one for each `ArrowPayloadType`. The
+number of _Arrow_ streams that we have to juggle per _gRPC_ stream is
+dependent on how many tables we need to represent the telemetry signal. For a
+Logs signal that's a maximum of four different Arrow streams, but for Metrics
+or Traces that could be more.
 
 ### Updating the dictionaries
 
@@ -414,14 +417,14 @@ Attributes:
 
 How do we construct the Protobuf envelope this time?
 
-To start we need to bump the `batch_id` to `1` because this is a new batch. Once
-again we omit the `headers` as optional, but need two `arrow_payloads` for our
-`LOGS` and `LOG_ATTRS` tables.
+To start we need to bump the `batch_id` to `1` because this is a new batch.
+Once again we omit the `headers` as optional, but need two `arrow_payloads` for
+our `LOGS` and `LOG_ATTRS` tables.
 
-Handling ArrowPayload for the `LOGS` table is easy. We've already established the
-Schema for the _arrow_ stream and there's been no change, so the `schema_id`
-remains `"0"`. The only message we need is a single RecordBatch message
-containing the new log. The `record` field then looks like this:
+Handling ArrowPayload for the `LOGS` table is easy. We've already established
+the Schema for the _arrow_ stream and there's been no change, so the
+`schema_id` remains `"0"`. The only message we need is a single RecordBatch
+message containing the new log. The `record` field then looks like this:
 
 ```
 ---------------
@@ -436,9 +439,9 @@ dictionaries that we sent to the server are missing an entry for it.
 
 This can be handled on the _Arrow_ stream level via Delta Dictionaries.
 
-With the new ArrowPayload all we have to do is include a Delta Dictionary message
-with the key/value for `user-2` prior to the RecordBatch message. So we will
-pack two messages as follows in the `record`:
+With the new ArrowPayload all we have to do is include a Delta Dictionary
+message with the key/value for `user-2` prior to the RecordBatch message. So we
+will pack two messages as follows in the `record`:
 
 ```
 ---------------------------------
@@ -457,23 +460,23 @@ Updating our Arrow stream with delta dictionaries will work great for the first
 65 thousand or so users, but recall that we're using unsigned 16-bit integers
 for our dictionary keys.
 
-At some point we'll have too many users and experience dictionary overflow. Then
-the current Schema can no longer be used. When that happens we need to pick a new
-Schema, e.g swap the dictionary to use 32-bit integer keys, and signal that to
-the server.
+At some point we'll have too many users and experience dictionary overflow.
+Then the current Schema can no longer be used. When that happens we need to pick
+a new Schema, e.g swap the dictionary to use 32-bit integer keys, and signal
+that to the server.
 
 However there is no mechanism within _Arrow_ streams to do this. Remember that
-Schemas must be sent only a single time at the start of an Arrow stream. Instead
-this is handled by OTAP within the gRPC stream via a _Schema Reset_.
+Schemas must be sent only a single time at the start of an Arrow stream.
+Instead this is handled by OTAP within the gRPC stream via a _Schema Reset_.
 
 For the sake of the example, let's assume our app had a big traffic spike and
 this happens after we send batch `9`.
 
 At this point we're familiar with the mechanics of bumping the `batch_id`
 (now `10`) and starting a couple of `arrow_payloads`. For our `LOGS` table,
-nothing new happens here because the dictionary is for the `LOG_ATTRIBUTES` table.
-We keep our `schema_id` of `"0"` on this ArrowPayload and it's business as usual.
-The `record` field is a single RecordBatch message once again:
+nothing new happens here because the dictionary is for the `LOG_ATTRIBUTES`
+table. We keep our `schema_id` of `"0"` on this ArrowPayload and it's business
+as usual. The `record` field is a single RecordBatch message once again:
 
 ```
 ---------------
@@ -481,10 +484,10 @@ The `record` field is a single RecordBatch message once again:
 ---------------
 ```
 
-For the `LOG_ATTRIBUTES` table we're first going to pick a new schema - This time
-we'll update the `str` column to use 32-bit keys instead of 16. Because of this
-we now bump the `schema_id` to `"1"` for this ArrowPayload. This tells the server
-that we're going to reset the inner _Arrow_ stream completely for the
+For the `LOG_ATTRIBUTES` table we're first going to pick a new schema - This
+time we'll update the `str` column to use 32-bit keys instead of 16. Because of
+this we now bump the `schema_id` to `"1"` for this ArrowPayload. This tells the
+server that we're going to reset the inner _Arrow_ stream completely for the
 `LOG_ATTRIBUTES` table and start from scratch.
 
 Because we're re-creating the Arrow stream from scratch, we need to start again
@@ -501,12 +504,12 @@ as it did for batch `"0"`:
 ### Summary
 
 OTAP consists of a gRPC stream which wraps multiple Apache Arrow IPC streams.
-Certain evolutions of the schema can be handled in the normal course of Arrow IPC
-by using Delta Dictionary messages. Whenever we have a need to change Arrow Schemas
-completely, however, there is no mechanism within Arrow IPC to do that. Instead
-we signal to the server that we need to reset the underlying Arrow IPC stream
-for some table by bumping the `schema_id` on the ArrowPayload and starting over
-with a Schema message.
+Certain evolutions of the schema can be handled in the normal course of Arrow
+IPC by using Delta Dictionary messages. Whenever we have a need to change Arrow
+Schemas completely, however, there is no mechanism within Arrow IPC to do that.
+Instead we signal to the server that we need to reset the underlying Arrow IPC
+stream for some table by bumping the `schema_id` on the ArrowPayload and
+starting over with a Schema message.
 
 ## OTAP Servers
 
