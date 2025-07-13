@@ -31,9 +31,11 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::{ControlMsg, Message};
+use crate::message::Message;
+use crate::shared::message::SharedReceiver;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
@@ -62,8 +64,8 @@ pub trait Exporter<PData> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<tokio::sync::mpsc::Receiver<ControlMsg>>,
-    pdata_rx: Option<tokio::sync::mpsc::Receiver<PData>>,
+    control_rx: Option<SharedReceiver<ControlMsg>>,
+    pdata_rx: Option<SharedReceiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
@@ -74,10 +76,7 @@ pub struct MessageChannel<PData> {
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(
-        control_rx: tokio::sync::mpsc::Receiver<ControlMsg>,
-        pdata_rx: tokio::sync::mpsc::Receiver<PData>,
-    ) -> Self {
+    pub fn new(control_rx: SharedReceiver<ControlMsg>, pdata_rx: SharedReceiver<PData>) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
@@ -134,8 +133,8 @@ impl<PData> MessageChannel<PData> {
 
                     // 1) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
-                        Some(pdata) => return Ok(Message::PData(pdata)),
-                        None => {
+                        Ok(pdata) => return Ok(Message::PData(pdata)),
+                        Err(_) => {
                             // pdata channel closed → emit Shutdown
                             let shutdown = self.pending_shutdown
                                 .take()
@@ -162,7 +161,7 @@ impl<PData> MessageChannel<PData> {
 
                 // A) Control first
                 ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
-                    Some(ControlMsg::Shutdown { deadline, reason }) => {
+                    Ok(ControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
                             self.shutdown();
@@ -174,18 +173,18 @@ impl<PData> MessageChannel<PData> {
                         self.pending_shutdown = Some(ControlMsg::Shutdown { deadline: Duration::ZERO, reason });
                         continue; // re-enter the loop into draining mode
                     }
-                    Some(msg) => return Ok(Message::Control(msg)),
-                    None  => return Err(RecvError::Closed),
+                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Err(e)  => return Err(e),
                 },
 
                 // B) Then pdata
                 pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                     match pdata {
-                        Some(pdata) => {
+                        Ok(pdata) => {
                             return Ok(Message::PData(pdata));
                         }
-                        None => {
-                            return Err(RecvError::Closed);
+                        Err(e) => {
+                            return Err(e);
                         }
                     }
                 }

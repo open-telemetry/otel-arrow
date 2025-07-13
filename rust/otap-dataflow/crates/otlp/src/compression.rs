@@ -4,10 +4,11 @@
 //! Defines a compression enum to abstract from tonic and allows the exporter and receiver to get the respective tonic equivalent
 //!
 
+use serde::{Deserialize, Serialize};
 use tonic::codec::CompressionEncoding;
 
 /// Enum to represent various compression methods
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompressionMethod {
     /// Fastest compression
     Zstd,

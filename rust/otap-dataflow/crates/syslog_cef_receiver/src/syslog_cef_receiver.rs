@@ -1,8 +1,12 @@
 use async_trait::async_trait;
-use otap_df_engine::{error::Error, local::receiver as local, message::ControlMsg};
+use otap_df_engine::control::ControlMsg;
+use otap_df_engine::{error::Error, local::receiver as local};
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+#[allow(dead_code)]
+const SYLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
 /// Protocol type for the receiver
 #[derive(Debug, Clone)]
@@ -172,11 +176,13 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
+    use std::rc::Rc;
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
@@ -432,8 +438,10 @@ mod tests {
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         // create our UDP receiver
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(listening_addr),
+            node_config,
             test_runtime.config(),
         );
 
@@ -456,7 +464,8 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let receiver_wrapper = ReceiverWrapper::local(receiver, test_runtime.config());
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
 
         // run the test
         test_runtime
@@ -477,7 +486,8 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let receiver_wrapper = ReceiverWrapper::local(receiver, test_runtime.config());
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
 
         // run the test
         test_runtime
