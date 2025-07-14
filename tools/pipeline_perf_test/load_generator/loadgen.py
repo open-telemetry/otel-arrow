@@ -1,92 +1,326 @@
+"""
+OTLP Logs Load Generator
+
+This module implements a configurable load generator for OpenTelemetry
+Protocol (OTLP) logs. It supports generating batches of randomized log records
+with customizable sizes and attributes, and sending them concurrently to an
+OTLP collector endpoint over gRPC.
+
+Features:
+- Generates OTLP log records with random content for testing or benchmarking.
+- Runs multiple worker threads to simulate concurrent load.
+- Provides a Flask-based HTTP API to start, stop, and monitor the load
+    generator.
+- Can run either as a one-off command line tool or as a long-running server.
+- Handles graceful shutdown on system signals.
+
+Usage:
+- As a command-line tool: run with desired parameters for batch size, threads,
+    duration, etc.
+- As a server: start with --serve flag and control load generation via HTTP
+    endpoints (/start, /stop, /metrics).
+
+Endpoints:
+- POST /start: Start load generation with specified parameters in JSON.
+- POST /stop: Stop the load generation.
+- GET /metrics: Retrieve current load generation metrics (logs sent, failed,
+    bytes sent).
+
+Environment Variables:
+- OTLP_ENDPOINT: Target OTLP gRPC endpoint (default: localhost:4317).
+"""
+
 import os
-import grpc
+import grpc  # type: ignore
 import time
 import argparse
 import random
+import signal
 import string
+import sys
 import threading
+from flask import Flask, jsonify, request
 import concurrent.futures
-from opentelemetry.proto.collector.logs.v1 import logs_service_pb2_grpc, logs_service_pb2
+from opentelemetry.proto.collector.logs.v1 import (
+    logs_service_pb2_grpc,
+    logs_service_pb2,
+)
 from opentelemetry.proto.logs.v1 import logs_pb2
 from opentelemetry.proto.common.v1 import common_pb2
+from pydantic import BaseModel, Field, field_validator, ValidationError
 
-def generate_random_string(length):
-    """Generate a random string of given length."""
-    return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
 
-def create_log_record(body_size=25, num_attributes=2, attribute_value_size=15):
-    log_message = generate_random_string(body_size)
+FLASK_PORT = 5001
+LOG_SEVERITY_NUMBER = logs_pb2.SeverityNumber.SEVERITY_NUMBER_INFO
+LOG_SEVERITY_TEXT = "INFO"
 
-    attributes = []
-    for i in range(num_attributes):
-        attr_key = f"attribute.{i+1}"
-        attr_value = generate_random_string(attribute_value_size)
-        attributes.append(
-            common_pb2.KeyValue(
-                key=attr_key,
-                value=common_pb2.AnyValue(string_value=attr_value)
-            )
+
+app = Flask(__name__)
+
+
+class LoadGenConfig(BaseModel):
+    body_size: int = Field(
+        25, gt=0, description="Size of log message body in characters"
+    )
+    num_attributes: int = Field(2, gt=0, description="Number of attributes per log")
+    attribute_value_size: int = Field(
+        15, gt=0, description="Size of attribute values in characters"
+    )
+    batch_size: int = Field(5000, gt=0, description="Number of logs per batch")
+    threads: int = Field(4, gt=0, description="Number of worker threads to run")
+
+    @field_validator(
+        "body_size", "num_attributes", "attribute_value_size", "batch_size", "threads"
+    )
+    def must_be_positive(cls, v):
+        """Ensure positive values for key config attributes."""
+        if v <= 0:
+            raise ValueError("must be a positive integer")
+        return v
+
+
+class LoadGenerator:
+    def __init__(self):
+        self.controller_thread = None
+        self.stop_event = threading.Event()
+        self.current_config = {}
+        self.lock = threading.Lock()
+        self.metrics = {"sent": 0, "failed": 0, "bytes_sent": 0}
+
+    def generate_random_string(self, length: int) -> str:
+        """
+        Generate a random alphanumeric string of the specified length.
+        """
+        return "".join(
+            random.choice(string.ascii_letters + string.digits) for _ in range(length)
         )
 
-    return logs_pb2.LogRecord(
-        time_unix_nano=int(time.time_ns()),
-        severity_text="INFO",
-        severity_number=9,
-        body=common_pb2.AnyValue(string_value=log_message),
-        attributes=attributes,
-    )
+    def create_log_record(
+        self,
+        body_size: int = 25,
+        num_attributes: int = 2,
+        attribute_value_size: int = 15,
+    ):
+        """
+        Create a single OTLP log record with random content.
+        """
+        log_message = self.generate_random_string(body_size)
+        attributes = [
+            common_pb2.KeyValue(
+                key=f"attribute.{i+1}",
+                value=common_pb2.AnyValue(
+                    string_value=self.generate_random_string(attribute_value_size)
+                ),
+            )
+            for i in range(num_attributes)
+        ]
+        return logs_pb2.LogRecord(
+            time_unix_nano=int(time.time_ns()),
+            severity_text=LOG_SEVERITY_TEXT,
+            severity_number=LOG_SEVERITY_NUMBER,
+            body=common_pb2.AnyValue(string_value=log_message),
+            attributes=attributes,
+        )
 
-def worker_thread(thread_id, args, end_time):
-    """Worker thread function that sends logs to the collector."""
-    endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
-    channel = grpc.insecure_channel(endpoint)
-    stub = logs_service_pb2_grpc.LogsServiceStub(channel)
+    def update_metrics(self, key: str, amount: int = 1) -> None:
+        with self.lock:
+            self.metrics[key] += amount
 
-    # Pre-create the batch once and reuse it
-    log_batch = [create_log_record(
-        body_size=args.body_size,
-        num_attributes=args.num_attributes,
-        attribute_value_size=args.attribute_value_size
-    ) for _ in range(args.batch_size)]
+    def worker_thread(self, thread_id: int, args: dict) -> None:
+        """
+        Worker thread that sends batches of log records to an OTLP endpoint.
+        """
+        endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
+        channel = grpc.insecure_channel(endpoint)
+        stub = logs_service_pb2_grpc.LogsServiceStub(channel)
 
-    scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
-    resource_logs = logs_pb2.ResourceLogs(
-        scope_logs=[scope_logs]
-    )
-    request = logs_service_pb2.ExportLogsServiceRequest(
-        resource_logs=[resource_logs]
-    )
+        log_batch = [
+            self.create_log_record(
+                body_size=args["body_size"],
+                num_attributes=args["num_attributes"],
+                attribute_value_size=args["attribute_value_size"],
+            )
+            for _ in range(args["batch_size"])
+        ]
 
-    bytes_sent = 0
-    sent = 0
-    failed = 0
+        scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
+        resource_logs = logs_pb2.ResourceLogs(scope_logs=[scope_logs])
+        logs_request = logs_service_pb2.ExportLogsServiceRequest(
+            resource_logs=[resource_logs]
+        )
 
-    print(f"Thread {thread_id} started, sending logs to {endpoint}")
-    while time.time() < end_time:
-        try:
-            stub.Export(request)
-            sent += args.batch_size
-            bytes_sent += request.ByteSize()
-        except Exception as e:
-            failed += args.batch_size
-            print(f"Thread {thread_id}: Failed to send log batch: {e}")
+        print(f"Thread {thread_id} started, sending logs to {endpoint}")
+        while not self.stop_event.is_set():
+            try:
+                stub.Export(logs_request)
+                self.update_metrics("sent", args["batch_size"])
+                self.update_metrics("bytes_sent", logs_request.ByteSize())
+            except Exception as e:
+                print(f"Thread {thread_id}: Failed to send log batch: {e}")
+                self.update_metrics("failed", args["batch_size"])
 
-    return sent, failed, bytes_sent
+    def run_loadgen(self, args_dict):
+        """
+        Start the load generation process by launching multiple worker threads.
+        """
+        with self.lock:
+            self.metrics.update({"sent": 0, "failed": 0, "bytes_sent": 0})
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=args_dict.get("threads", 4)
+        ) as executor:
+            futures = [
+                executor.submit(self.worker_thread, i, args_dict)
+                for i in range(args_dict.get("threads", 4))
+            ]
+            concurrent.futures.wait(futures)
+
+        with self.lock:
+            self.current_config["metrics"] = self.metrics.copy()
+
+    def start(self, config: LoadGenConfig):
+        """
+        Start the load generator with the specified configuration.
+        Returns a tuple of (response_dict, status_code).
+        """
+
+        if self.controller_thread and self.controller_thread.is_alive():
+            return {"error": "Load generation already running"}, 400
+
+        self.stop_event.clear()
+        with self.lock:
+            self.current_config.update(config)
+            self.current_config["running"] = True
+            self.current_config["metrics"] = {}
+
+        self.controller_thread = threading.Thread(
+            target=self.run_loadgen, args=(config.model_dump(),)
+        )
+        self.controller_thread.start()
+
+        return {"status": "started"}, 200
+
+    def stop(self):
+        """
+        Stop the currently running load generator.
+        Returns a tuple of (response_dict, status_code).
+        """
+        self.stop_event.set()
+        if self.controller_thread:
+            self.controller_thread.join(timeout=10)
+            self.controller_thread = None
+        with self.lock:
+            self.current_config["running"] = False
+        return {"status": "stopped"}, 200
+
+    def get_metrics(self):
+        """
+        Get a copy of the current metrics.
+        """
+        with self.lock:
+            return self.metrics.copy()
+
+
+# Create a global LoadGenerator instance for the Flask app to use
+loadgen = LoadGenerator()
+
+
+@app.route("/start", methods=["POST"])
+def start():
+    try:
+        config_data = request.get_json()
+        config = LoadGenConfig(**config_data)
+    except ValidationError as e:
+        return jsonify({"error": e.errors()}), 400
+    except Exception:
+        return jsonify({"error": "Invalid JSON or missing data"}), 400
+
+    resp, code = loadgen.start(config)
+    return jsonify(resp), code
+
+
+@app.route("/stop", methods=["POST"])
+def stop():
+    resp, code = loadgen.stop()
+    return jsonify(resp), code
+
+
+@app.route("/metrics", methods=["GET"])
+def metrics_endpoint():
+    metrics = loadgen.get_metrics()
+    lines = [f"{k} {v}" for k, v in metrics.items()]
+    return "\n".join(lines), 200
+
+
+def handle_signal(sig, frame):
+    print(f"\nReceived signal {sig}, shutting down gracefully...")
+    loadgen.stop()
+    sys.exit(0)
+
 
 def main():
+    def get_default_value(field_name: str):
+        return LoadGenConfig.model_fields[field_name].default
+
     parser = argparse.ArgumentParser(description="Loadgen for OTLP logs")
-    parser.add_argument("--duration", type=int, default=15, help="Duration in seconds (default: 15)")
-    parser.add_argument("--batch-size", type=int, default=5000, help="Number of logs per batch (default: 10000)")
-    parser.add_argument("--threads", type=int, default=4, help="Number of worker threads (default: 8)")
-    parser.add_argument("--body-size", type=int, default=25,
-                        help="Size of log message body in characters (default: 25)")
-    parser.add_argument("--num-attributes", type=int, default=2,
-                        help="Number of attributes per log (default: 2)")
-    parser.add_argument("--attribute-value-size", type=int, default=15,
-                        help="Size of attribute values in characters (default: 15)")
+    parser.add_argument(
+        "--serve", action="store_true", help="Start the server (default: False)"
+    )
+    parser.add_argument(
+        "--serve-port",
+        type=int,
+        default=FLASK_PORT,
+        help=f"Server port to listen on (default {FLASK_PORT})",
+    )
+    parser.add_argument(
+        "--duration", type=int, default=15, help="Duration in seconds (default: 15)"
+    )
+    parser.add_argument(
+        "--body-size",
+        type=int,
+        default=get_default_value("body_size"),
+        help=(
+            "Size of log message body in characters "
+            f"(default {get_default_value('body_size')})"
+        ),
+    )
+    parser.add_argument(
+        "--num-attributes",
+        type=int,
+        default=get_default_value("num_attributes"),
+        help=(
+            "Number of attributes per log "
+            f"(default {get_default_value('num_attributes')})"
+        ),
+    )
+    parser.add_argument(
+        "--attribute-value-size",
+        type=int,
+        default=get_default_value("attribute_value_size"),
+        help=(
+            "Size of attribute values in characters "
+            f"(default {get_default_value('attribute_value_size')})"
+        ),
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=get_default_value("batch_size"),
+        help=f"Number of logs per batch (default {get_default_value('batch_size')})",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=get_default_value("threads"),
+        help=f"Number of worker threads (default {get_default_value('threads')})",
+    )
     args = parser.parse_args()
 
-    print(f"Starting load generator with configuration:")
+    if args.serve:
+        app.run(host="0.0.0.0", port=args.serve_port)
+        return
+
+    print("Starting load generator with configuration:")
     print(f"- Duration: {args.duration} seconds")
     print(f"- Batch size: {args.batch_size} logs")
     print(f"- Threads: {args.threads}")
@@ -94,25 +328,29 @@ def main():
     print(f"- Attributes per log: {args.num_attributes}")
     print(f"- Attribute value size: {args.attribute_value_size} characters")
 
-    end_time = time.time() + args.duration
+    config = LoadGenConfig(
+        body_size=args.body_size,
+        num_attributes=args.num_attributes,
+        attribute_value_size=args.attribute_value_size,
+        batch_size=args.batch_size,
+        threads=args.threads,
+    )
 
-    # Create and start worker threads
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [executor.submit(worker_thread, i, args, end_time) for i in range(args.threads)]
+    loadgen.start(config=config)
 
-        # Wait for all threads to complete
-        total_sent = 0
-        total_failed = 0
-        total_bytes_sent = 0
-        for future in concurrent.futures.as_completed(futures):
-            sent, failed, bytes_sent = future.result()
-            total_sent += sent
-            total_failed += failed
-            total_bytes_sent += bytes_sent
+    try:
+        time.sleep(args.duration)
+    except KeyboardInterrupt:
+        print("Interrupted by user, stopping early...")
 
-    print(f"LOADGEN_LOGS_SENT: {total_sent}")
-    print(f"LOADGEN_LOGS_FAILED: {total_failed}")
-    print(f"LOADGEN_BYTES_SENT: {total_bytes_sent} bytes")
+    loadgen.stop()
+
+    print(f'LOADGEN_LOGS_SENT: {loadgen.metrics.get("sent", 0)}')
+    print(f'LOADGEN_LOGS_FAILED: {loadgen.metrics.get("failed", 0)}')
+    print(f'LOADGEN_BYTES_SENT: {loadgen.metrics.get("bytes_sent", 0)} bytes')
+
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
     main()

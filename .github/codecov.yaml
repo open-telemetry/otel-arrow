@@ -34,4 +34,3 @@ component_management:
       name: "otel-arrow-go"
       paths:
         - "go/"
-        - "pkg/"

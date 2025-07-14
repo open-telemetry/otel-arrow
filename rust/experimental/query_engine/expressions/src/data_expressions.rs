@@ -16,6 +16,13 @@ impl Expression for DataExpression {
             DataExpression::Transform(t) => t.get_query_location(),
         }
     }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            DataExpression::Discard(_) => "DataExpression(Discard)",
+            DataExpression::Transform(_) => "DataExpression(Transform)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,5 +53,9 @@ impl DiscardDataExpression {
 impl Expression for DiscardDataExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "DiscardDataExpression"
     }
 }

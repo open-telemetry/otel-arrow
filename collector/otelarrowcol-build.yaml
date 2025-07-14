@@ -17,7 +17,7 @@ dist:
 
   # Note: this version number is replaced to match the current release using `sed`
   # during the release process, see ../../../RELEASING.md.
-  version: 0.38.0
+  version: 0.39.0
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
@@ -48,5 +48,7 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.129.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.129.0
 
-replaces:
-  - github.com/open-telemetry/otel-arrow => ../../../
+# Commented out while module name changes are being made.
+# This means the collector build will use the pinned version of otel-arrow pkg from Collector-Contrib, not the local code.
+#replaces:
+#  - github.com/open-telemetry/otel-arrow => ../../../

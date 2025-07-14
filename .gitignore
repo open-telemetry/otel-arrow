@@ -47,6 +47,11 @@ coverage.html
 
 # Python
 __pycache__/
+.tox/
+.venv
+.mypy_cache
+.pytest_cache
+*.egg-info
 
 # Benchmarks output
 /output/

@@ -3,7 +3,7 @@
 //! Implementation of the OTLP exporter node
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
-//! ToDo: Handle configuratin changes
+//! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::LOCAL_EXPORTERS;

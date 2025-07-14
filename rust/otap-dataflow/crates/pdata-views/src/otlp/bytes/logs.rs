@@ -4,7 +4,6 @@
 //! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
 //! bytes for messages defined in logs.proto
 
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
@@ -196,6 +195,7 @@ impl FieldRanges for LogFieldOffsets {
         }
     }
 
+    #[inline]
     fn get_field_range(&self, field_num: u64) -> Option<(usize, usize)> {
         let range = if field_num == LOG_RECORD_ATTRIBUTES {
             self.first_attribute.get()
@@ -290,6 +290,7 @@ impl LogsDataView for RawLogsData<'_> {
     where
         Self: 'a;
 
+    #[inline]
     fn resources(&self) -> Self::ResourcesIter<'_> {
         ResourceLogsIter {
             buf: self.buf,
@@ -312,6 +313,7 @@ impl ResourceLogsView for RawResourceLogs<'_> {
     where
         Self: 'scp;
 
+    #[inline]
     fn resource(&self) -> Option<Self::Resource<'_>> {
         let slice = self
             .byte_parser
@@ -320,13 +322,15 @@ impl ResourceLogsView for RawResourceLogs<'_> {
         Some(RawResource::new(ProtoBytesParser::new(slice)))
     }
 
+    #[inline]
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .byte_parser
             .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL)?;
-        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+        std::str::from_utf8(slice).ok()
     }
 
+    #[inline]
     fn scopes(&self) -> Self::ScopesIter<'_> {
         ScopeLogsIter {
             // field_index: 0,
@@ -354,6 +358,7 @@ impl ScopeLogsView for RawScopeLogs<'_> {
     where
         Self: 'scp;
 
+    #[inline]
     fn log_records(&self) -> Self::LogRecordsIter<'_> {
         LogRecordsIter {
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
@@ -364,13 +369,15 @@ impl ScopeLogsView for RawScopeLogs<'_> {
         }
     }
 
+    #[inline]
     fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .byte_parser
             .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL)?;
-        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+        std::str::from_utf8(slice).ok()
     }
 
+    #[inline]
     fn scope(&self) -> Option<Self::Scope<'_>> {
         let slice = self.byte_parser.advance_to_find_field(SCOPE_LOG_SCOPE)?;
         Some(RawInstrumentationScope::new(ProtoBytesParser::new(slice)))
@@ -393,6 +400,7 @@ impl LogRecordView for RawLogRecord<'_> {
     where
         Self: 'bod;
 
+    #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
         KeyValueIter::new(RepeatedFieldProtoBytesParser::from_byte_parser(
             &self.bytes_parser,
@@ -401,12 +409,14 @@ impl LogRecordView for RawLogRecord<'_> {
         ))
     }
 
+    #[inline]
     fn body(&self) -> Option<Self::Body<'_>> {
         self.bytes_parser
             .advance_to_find_field(LOG_RECORD_BODY)
             .map(RawAnyValue::new)
     }
 
+    #[inline]
     fn dropped_attributes_count(&self) -> u32 {
         match self
             .bytes_parser
@@ -420,12 +430,14 @@ impl LogRecordView for RawLogRecord<'_> {
         }
     }
 
+    #[inline]
     fn flags(&self) -> Option<u32> {
         let slice = self.bytes_parser.advance_to_find_field(LOG_RECORD_FLAGS)?;
         let byte_arr: [u8; 4] = slice.try_into().ok()?;
         Some(u32::from_le_bytes(byte_arr))
     }
 
+    #[inline]
     fn observed_time_unix_nano(&self) -> Option<u64> {
         let slice = self
             .bytes_parser
@@ -434,6 +446,7 @@ impl LogRecordView for RawLogRecord<'_> {
         Some(u64::from_le_bytes(byte_arr))
     }
 
+    #[inline]
     fn severity_number(&self) -> Option<i32> {
         let slice = self
             .bytes_parser
@@ -442,17 +455,20 @@ impl LogRecordView for RawLogRecord<'_> {
         Some(val as i32)
     }
 
+    #[inline]
     fn severity_text(&self) -> Option<crate::views::common::Str<'_>> {
         let slice = self
             .bytes_parser
             .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT)?;
-        std::str::from_utf8(slice).ok().map(Cow::Borrowed)
+        std::str::from_utf8(slice).ok()
     }
 
+    #[inline]
     fn span_id(&self) -> Option<&[u8]> {
         self.bytes_parser.advance_to_find_field(LOG_RECORD_SPAN_ID)
     }
 
+    #[inline]
     fn time_unix_nano(&self) -> Option<u64> {
         let slice = self
             .bytes_parser
@@ -461,6 +477,7 @@ impl LogRecordView for RawLogRecord<'_> {
         Some(u64::from_le_bytes(byte_arr))
     }
 
+    #[inline]
     fn trace_id(&self) -> Option<&[u8]> {
         self.bytes_parser.advance_to_find_field(LOG_RECORD_TRACE_ID)
     }

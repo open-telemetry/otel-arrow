@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 chrono = "0.4.40"
-syslog_loose = "0.21.0"
+syslog_loose = "0.22.0"
