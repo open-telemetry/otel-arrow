@@ -1,6 +1,7 @@
 # This test suite illustrates a basic setup for testing the openelemetry
 # go collector in 2 different configs - one with batching enabled and one
-# without. Both tests are run for 30 seconds after a short warm-up.
+# without. Both tests use randomly generated log messages sent from the load-generator instance.
+# Both tests are run for 30 seconds after a short warm-up.
 name: Test Go Collector With and Without Batch Processor
 # Components are the individual systems, services, or tools that are involved in your test environment
 components:
