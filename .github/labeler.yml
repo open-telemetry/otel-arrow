@@ -4,7 +4,6 @@ rust:
 go:
 - changed-files:
   - any-glob-to-any-file: 'go/**/*'
-
 ci/cd:
 - changed-files:
   - any-glob-to-any-file: '.github/**/*'
