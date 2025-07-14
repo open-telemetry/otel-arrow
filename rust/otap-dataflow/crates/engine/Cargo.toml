@@ -26,4 +26,4 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 log = { workspace = true }
 
-socket2 = "0.5.9"
+socket2 = { version = "0.6.0", features = ["all"] }
