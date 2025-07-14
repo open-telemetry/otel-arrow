@@ -13,9 +13,8 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
-use otap_dataflow::Retryable;
-use otap_dataflow::retry_processor::{RetryConfig, RetryProcessor};
 use otap_df_channel::mpsc;
+use otap_df_engine::retry_processor::{RetryConfig, RetryProcessor};
 use otap_df_engine::{
     local::processor::{EffectHandler, Processor},
     message::{ControlMsg, Message, Sender},
@@ -131,7 +130,7 @@ fn bench_message_throughput(c: &mut Criterion) {
                         // Send messages and process them with ACK/NACK patterns
                         for i in 0..LARGE_MSG_COUNT {
                             let otlp_data = create_otlp_logs_data();
-                            let msg_id = otlp_data.id();
+                            let msg_id = i as u64; // Use simple sequential IDs for benchmarking
                             processor
                                 .process(Message::PData(otlp_data), &mut effect_handler)
                                 .await
@@ -212,9 +211,9 @@ fn bench_pending_message_operations(c: &mut Criterion) {
                             EffectHandler::new("bench_processor".into(), Sender::Local(sender));
 
                         // Fill up the pending messages HashMap
-                        for _i in 0..pending_count {
+                        for i in 0..pending_count {
                             let otlp_data = create_otlp_logs_data();
-                            let msg_id = otlp_data.id();
+                            let msg_id = i as u64; // Use simple sequential IDs for benchmarking
                             processor
                                 .process(Message::PData(otlp_data), &mut effect_handler)
                                 .await

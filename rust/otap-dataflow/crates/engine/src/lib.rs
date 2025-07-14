@@ -7,6 +7,8 @@ pub mod exporter;
 pub mod message;
 pub mod processor;
 pub mod receiver;
+/// Retry processor for handling message retries with exponential backoff
+pub mod retry_processor;
 
 pub mod config;
 mod effect_handler;
