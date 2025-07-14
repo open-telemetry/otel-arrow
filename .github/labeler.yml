@@ -8,4 +8,3 @@ go:
 ci/cd:
 - changed-files:
   - any-glob-to-any-file: '.github/**/*'
-- changed-files:
