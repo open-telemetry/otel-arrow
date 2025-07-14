@@ -48,7 +48,5 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.129.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.129.0
 
-# Commented out while module name changes are being made.
-# This means the collector build will use the pinned version of otel-arrow pkg from Collector-Contrib, not the local code.
-#replaces:
-#  - github.com/open-telemetry/otel-arrow => ../../../
+replaces:
+  - github.com/open-telemetry/otel-arrow/go => ../../../go
