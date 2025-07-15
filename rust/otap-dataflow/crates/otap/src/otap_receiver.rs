@@ -166,9 +166,11 @@ mod tests {
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
+    use otap_df_otlp::proto::opentelemetry::collector::logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient};
     use async_stream::stream;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_otlp::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -230,6 +232,38 @@ mod tests {
                     .arrow_traces(traces_stream)
                     .await
                     .expect("Failed to receive response after sending Trace Request");
+
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect to server from Logs Service Client");
+                let logs_response = logs_client
+                    .export(ExportLogsServiceRequest {
+                        resource_logs: vec![
+                            ResourceLogs {
+                                scope_logs: vec![
+                                    ScopeLogs {
+                                        log_records: vec![
+                                            LogRecord {
+                                                ..Default::default()
+                                            },
+                                        ],
+                                        ..Default::default()
+                                    }
+                                ],
+                                ..Default::default()
+                            }
+                        ]
+                    })
+                    .await;
+                match logs_response {
+                    Ok(bod) => {
+                        println!("ok {:?}", bod)
+                    },
+                    Err(e) => {
+                        println!("err {:?}", e)
+                    }
+                }
+                    // .expect("Failed to receive response after sending Logs Request");
 
                 // Finally, send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
