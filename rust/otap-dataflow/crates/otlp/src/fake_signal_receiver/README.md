@@ -4,7 +4,9 @@ Status: **WIP**
 
 This crate will contain the implementation of the fake signal receiver
 
-The fake signal receiver will allow users to test their pipelines by defining a scenario to run, this scenario will be made up of various steps where each step will describe a batch of signals to send
+The fake signal receiver will allow users to test their pipelines by defining 
+a scenario to run, this scenario will be made up of various steps where each 
+step will describe a batch of signals to send
 
 ## Example configuration
 
@@ -49,17 +51,6 @@ The fake signal receiver will allow users to test their pipelines by defining a 
                 "attribute_count": 1
             }
         },
-        {
-            "delay_between_batch": 0,
-            "batches": 1,
-            "config": {
-                "signal_type": "Profile",
-                "resource_count": 1,
-                "scope_count": 1,
-                "profile_count": 1,
-                "attribute_count": 1
-            }
-        }
     ]
 }
 ```

@@ -7,8 +7,11 @@
 use otel_arrow_rust::proto::opentelemetry::{
     common::v1::{AnyValue, KeyValue},
     logs::v1::LogRecordFlags,
-    metrics::v1::{exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets},
-    trace::v1::{SpanFlags, Status, span::SpanKind},
+    metrics::v1::{
+        AggregationTemporality, exponential_histogram_data_point::Buckets,
+        summary_data_point::ValueAtQuantile,
+    },
+    trace::v1::{SpanFlags, Status, span::SpanKind, status::StatusCode},
 };
 use rand::Rng;
 use rand::distr::{Alphabetic, Alphanumeric};
@@ -38,8 +41,16 @@ const SPAN_FLAGS: [SpanFlags; 4] = [
     SpanFlags::ContextIsRemoteMask,
 ];
 
+const STATUS_CODES: [StatusCode; 3] = [StatusCode::Unset, StatusCode::Error, StatusCode::Ok];
+
 const LOG_RECORD_FLAGS: [LogRecordFlags; 2] =
     [LogRecordFlags::DoNotUse, LogRecordFlags::TraceFlagsMask];
+
+const AGGREGATION_TEMPORALITY: [AggregationTemporality; 3] = [
+    AggregationTemporality::Unspecified,
+    AggregationTemporality::Delta,
+    AggregationTemporality::Cumulative,
+];
 
 // const SPAN_NAMES: [&str; 6] =
 
@@ -147,9 +158,10 @@ pub fn get_span_name() -> String {
 /// provide data for the status field
 #[must_use]
 pub fn get_status() -> Status {
-
-
-    Status::new("Ok", 1)
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..STATUS_CODES.len());
+    let status = STATUS_CODES[option];
+    Status::new(status.as_str_name(), status)
 }
 /// provide data for the event_name field for spans, can be an empty stream
 #[must_use]
@@ -185,9 +197,7 @@ pub fn get_end_time_unix_nano() -> u64 {
 /// provide double value
 #[must_use]
 pub fn get_double_value() -> f64 {
-    let mut rng = rand::rng();
-    let double_value: f64 = rng.random_range(1.5..101.5);
-    double_value
+    rand::random()
 }
 
 /// returns if a SUM datapoint is monotonic or not
@@ -216,4 +226,42 @@ pub fn get_span_kind() -> SpanKind {
     let mut rng = rand::rng();
     let option: usize = rng.random_range(0..SPAN_KIND.len());
     SPAN_KIND[option]
+}
+
+/// provide data for the span kind field
+#[must_use]
+pub fn get_aggregation() -> AggregationTemporality {
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..AGGREGATION_TEMPORALITY.len());
+    AGGREGATION_TEMPORALITY[option]
+}
+
+/// provides a vector of quantiles
+#[must_use]
+pub fn get_quantiles() -> Vec<ValueAtQuantile> {
+    let mut rng = rand::rng();
+    let count: usize = rng.random_range(0..4);
+    let mut qunatiles = vec![];
+    for _ in 0..count {
+        qunatiles.push(ValueAtQuantile::new(
+            rng.random_range(1.5..10.5),
+            rng.random_range(1.5..10.5),
+        ));
+    }
+    qunatiles
+}
+
+/// provides buckets for metric datapoint
+#[must_use]
+pub fn get_buckets() -> Buckets {
+    let mut rng = rand::rng();
+    let count: usize = rng.random_range(0..4);
+    let buckets: Vec<u64> = rand::random_iter().take(count).collect();
+    Buckets::new(rng.random_range(0..4), buckets)
+}
+
+/// provides random u64 value for various fields
+#[must_use]
+pub fn get_int_value() -> u64 {
+    rand::random()
 }

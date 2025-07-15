@@ -116,8 +116,8 @@ async fn run_scenario(
 mod tests {
     use crate::fake_signal_receiver::{
         config::{
-            Config, LogConfig, MetricConfig, MetricType, OTLPSignal, ProfileConfig, ScenarioStep,
-            SignalConfig, SpanConfig,
+            Config, LogConfig, MetricConfig, MetricType, OTLPSignal, ScenarioStep, SignalConfig,
+            SpanConfig,
         },
         receiver::FakeSignalReceiver,
     };

@@ -10,10 +10,9 @@ use otel_arrow_rust::proto::opentelemetry::{
     common::v1::InstrumentationScope,
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
     metrics::v1::{
-        Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-        Sum, Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets,
-        summary_data_point::ValueAtQuantile,
+        ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint,
+        Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary,
+        SummaryDataPoint,
     },
     resource::v1::Resource,
     trace::v1::{
@@ -191,17 +190,20 @@ fn fake_metric(
         }
         MetricType::Sum => {
             let datapoints = fake_number_datapoints(datapoint_count, attribute_count);
-            Metric::new_sum("metric_sum", Sum::new(2, true, datapoints))
+            Metric::new_sum("metric_sum", Sum::new(get_aggregation(), true, datapoints))
         }
         MetricType::Histogram => {
             let datapoints = fake_histogram_datapoints(datapoint_count, attribute_count);
-            Metric::new_histogram("metric_histogram", Histogram::new(1, datapoints))
+            Metric::new_histogram(
+                "metric_histogram",
+                Histogram::new(get_aggregation(), datapoints),
+            )
         }
         MetricType::ExponentialHistogram => {
             let datapoints = fake_exp_histogram_datapoints(datapoint_count, attribute_count);
             Metric::new_exponential_histogram(
                 "metric_exponential_histogram",
-                ExponentialHistogram::new(1, datapoints),
+                ExponentialHistogram::new(get_aggregation(), datapoints),
             )
         }
         MetricType::Summary => {
@@ -271,17 +273,13 @@ fn fake_exp_histogram_datapoints(
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
         datapoints.push(
-            ExponentialHistogramDataPoint::build(
-                get_time_unix_nano(),
-                7,
-                Buckets::new(1, vec![3, 4, 5]),
-            )
-            .start_time_unix_nano(get_start_time_unix_nano())
-            .attributes(get_attributes(attribute_count))
-            .count(17u64)
-            .zero_count(2u64)
-            .negative(Buckets::new(0, vec![1, 2]))
-            .finish(),
+            ExponentialHistogramDataPoint::build(get_time_unix_nano(), 7, get_buckets())
+                .start_time_unix_nano(get_start_time_unix_nano())
+                .attributes(get_attributes(attribute_count))
+                .count(get_int_value())
+                .zero_count(get_int_value())
+                .negative(get_buckets())
+                .finish(),
         );
     }
 
@@ -297,19 +295,12 @@ fn fake_summary_datapoints(
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
         datapoints.push(
-            SummaryDataPoint::build(
-                get_time_unix_nano(),
-                vec![
-                    ValueAtQuantile::new(0.1, 0.1),
-                    ValueAtQuantile::new(0.5, 2.1),
-                    ValueAtQuantile::new(1.0, 10.1),
-                ],
-            )
-            .start_time_unix_nano(get_start_time_unix_nano())
-            .attributes(get_attributes(attribute_count))
-            .count(100u64)
-            .sum(get_double_value())
-            .finish(),
+            SummaryDataPoint::build(get_time_unix_nano(), get_quantiles())
+                .start_time_unix_nano(get_start_time_unix_nano())
+                .attributes(get_attributes(attribute_count))
+                .count(get_int_value())
+                .sum(get_double_value())
+                .finish(),
         );
     }
     datapoints
