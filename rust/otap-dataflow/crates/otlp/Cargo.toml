@@ -21,8 +21,8 @@ tonic = { version = "0.13.1", default-features = false, features = [
     "server", "channel", "router", "transport", "codegen", 
     "prost", "zstd", "gzip", "deflate"
 ] }
-prost = "0.13.5"
-prost-types = "0.13.5"
+prost = "0.14.0"
+prost-types = "0.14.0"
 hex = "0.4.3"
 linkme = "0.3.33"
 serde = {version="1", features=["derive"]}
