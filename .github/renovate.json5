@@ -62,7 +62,7 @@
       // to properly update collector/cmd/otelarrowcol
       // grouping them together reduces pain of this manual work
       "groupName": "golang module dependencies",
-      "matchFileNames": ["go.mod"],
+      "matchFileNames": ["go/go.mod"],
       "schedule": [
         "before 8am on Monday"
       ]
