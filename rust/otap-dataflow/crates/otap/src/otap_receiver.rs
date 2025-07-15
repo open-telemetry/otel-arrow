@@ -11,6 +11,7 @@
 use crate::SHARED_RECEIVERS;
 use crate::grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
+    otlp
 };
 use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_logs_service_server::ArrowLogsServiceServer,
@@ -25,6 +26,7 @@ use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
 use otap_df_otlp::compression::CompressionMethod;
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -115,6 +117,9 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
                     .accept_compressed(encoding);
             }
 
+            // TODO add the innter and use a constructor
+            let otlp_logs_to_otap_server = otlp::LogsServiceServer{ inner: Arc::new(()) };
+
             tokio::select! {
                 biased; //prioritize ctrl_msg over all other blocks
                 // Process internal event
@@ -137,6 +142,7 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
                 .add_service(logs_service_server)
                 .add_service(metrics_service_server)
                 .add_service(trace_service_server)
+                .add_service(otlp_logs_to_otap_server)
                 .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(error) = result {
                         // Report receiver error
