@@ -4,20 +4,15 @@
 //! provides fake data to use for various fields in a OTLP signal
 //!
 
-use crate::proto::opentelemetry::{
-    common::v1::{AnyValue, KeyValue, any_value::Value},
-    metrics::v1::{
-        exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets,
-        number_data_point::Value as NumberValue, summary_data_point::ValueAtQuantile,
-    },
-    trace::v1::Status,
+use otel_arrow_rust::proto::opentelemetry::{
+    common::v1::{AnyValue, KeyValue},
+    logs::v1::LogRecordFlags,
+    metrics::v1::{exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets},
+    trace::v1::{SpanFlags, Status, span::SpanKind},
 };
 use rand::Rng;
 use rand::distr::{Alphabetic, Alphanumeric};
 
-// ToDo: metric name, metric unit, metric description
-
-const SCHEMA_URL: &str = "http://schema.opentelemetry.io";
 /// default scope name to use for fake signals
 const SCOPE_NAME: &str = "fake_signal";
 /// default scope version to use for fake signals
@@ -26,6 +21,25 @@ const SCOPE_VERSION: &str = "1.0.0";
 const TRACE_STATES: [&str; 3] = ["started", "ended", "unknown"];
 
 const SEVERITY_TEXT: [&str; 6] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
+
+const SPAN_KIND: [SpanKind; 6] = [
+    SpanKind::Unspecified,
+    SpanKind::Internal,
+    SpanKind::Server,
+    SpanKind::Client,
+    SpanKind::Producer,
+    SpanKind::Consumer,
+];
+
+const SPAN_FLAGS: [SpanFlags; 4] = [
+    SpanFlags::DoNotUse,
+    SpanFlags::TraceFlagsMask,
+    SpanFlags::ContextHasIsRemoteMask,
+    SpanFlags::ContextIsRemoteMask,
+];
+
+const LOG_RECORD_FLAGS: [LogRecordFlags; 2] =
+    [LogRecordFlags::DoNotUse, LogRecordFlags::TraceFlagsMask];
 
 // const SPAN_NAMES: [&str; 6] =
 
@@ -42,12 +56,10 @@ pub fn get_attributes(attribute_count: usize) -> Vec<KeyValue> {
             .take(5)
             .map(char::from)
             .collect();
-        attributes.push(KeyValue {
-            key: format!("attribute.{attribute_index}"),
-            value: Some(AnyValue {
-                value: Some(Value::StringValue(attribute_value)),
-            }),
-        })
+        attributes.push(KeyValue::new(
+            format!("attribute.{attribute_index}"),
+            AnyValue::new_string(attribute_value),
+        ));
     }
     attributes
 }
@@ -109,7 +121,7 @@ pub fn get_scope_version() -> String {
 }
 /// provide data for the body field
 #[must_use]
-pub fn get_body_text() -> Option<AnyValue> {
+pub fn get_body_text() -> AnyValue {
     let rng = rand::rng();
 
     let body: String = rng
@@ -118,9 +130,7 @@ pub fn get_body_text() -> Option<AnyValue> {
         .map(char::from)
         .collect();
 
-    Some(AnyValue {
-        value: Some(Value::StringValue(body)),
-    })
+    AnyValue::new_string(body)
 }
 /// provide data for the trace_state field
 #[must_use]
@@ -136,11 +146,10 @@ pub fn get_span_name() -> String {
 }
 /// provide data for the status field
 #[must_use]
-pub fn get_status() -> Option<Status> {
-    Some(Status {
-        message: "Ok".to_string(),
-        code: 1,
-    })
+pub fn get_status() -> Status {
+
+
+    Status::new("Ok", 1)
 }
 /// provide data for the event_name field for spans, can be an empty stream
 #[must_use]
@@ -148,19 +157,12 @@ pub fn get_event_name() -> String {
     if rand::random() {
         "".to_string()
     } else {
-        "event_nmae".to_string()
+        "event_name".to_string()
     }
 }
 /// provide data for the time_unix_nano field
 #[must_use]
 pub fn get_time_unix_nano() -> u64 {
-    let mut rng = rand::rng();
-    let unix_time: u64 = rng.random_range(165030000000000000..165050000000000000);
-    unix_time
-}
-/// provide data for the observed_time_unix_nano field
-#[must_use]
-pub fn get_observed_time_unix_nano() -> u64 {
     let mut rng = rand::rng();
     let unix_time: u64 = rng.random_range(165030000000000000..165050000000000000);
     unix_time
@@ -180,30 +182,12 @@ pub fn get_end_time_unix_nano() -> u64 {
     unix_time
 }
 
-/// provide value to use for datapoint
+/// provide double value
 #[must_use]
-pub fn get_datapoint_value() -> Option<NumberValue> {
+pub fn get_double_value() -> f64 {
     let mut rng = rand::rng();
-    if rand::random() {
-        let int_value: i64 = rng.random_range(1..101);
-        Some(NumberValue::AsInt(int_value))
-    } else {
-        let double_value: f64 = rng.random_range(1.5..101.5);
-        Some(NumberValue::AsDouble(double_value))
-    }
-}
-
-/// provide value to use for exemplar
-#[must_use]
-pub fn get_exemplar_value() -> Option<ExemplarValue> {
-    let mut rng = rand::rng();
-    if rand::random() {
-        let int_value: i64 = rng.random_range(1..101);
-        Some(ExemplarValue::AsInt(int_value))
-    } else {
-        let double_value: f64 = rng.random_range(1.5..101.5);
-        Some(ExemplarValue::AsDouble(double_value))
-    }
+    let double_value: f64 = rng.random_range(1.5..101.5);
+    double_value
 }
 
 /// returns if a SUM datapoint is monotonic or not
@@ -212,9 +196,24 @@ pub fn get_monotonic() -> bool {
     let is_monotonic: bool = rand::random();
     is_monotonic
 }
-
-/// provides the schema_url string
+/// provide data for the log flag field
 #[must_use]
-pub fn get_schema_url() -> String {
-    SCHEMA_URL.to_string()
+pub fn get_log_record_flag() -> LogRecordFlags {
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..LOG_RECORD_FLAGS.len());
+    LOG_RECORD_FLAGS[option]
+}
+/// provide data for the span flag field
+#[must_use]
+pub fn get_span_flag() -> SpanFlags {
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..SPAN_FLAGS.len());
+    SPAN_FLAGS[option]
+}
+/// provide data for the span kind field
+#[must_use]
+pub fn get_span_kind() -> SpanKind {
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..SPAN_KIND.len());
+    SPAN_KIND[option]
 }

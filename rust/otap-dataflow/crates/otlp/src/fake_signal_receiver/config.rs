@@ -1,8 +1,11 @@
 use crate::fake_signal_receiver::fake_signal::{
-    fake_otlp_logs, fake_otlp_metrics, fake_otlp_profiles, fake_otlp_traces,
+    fake_otlp_logs,
+    fake_otlp_metrics,
+    fake_otlp_traces, // fake_otlp_profiles,
 };
-use crate::proto::opentelemetry::{
-    logs::v1::LogsData, metrics::v1::MetricsData, profiles::v1development::ProfilesData,
+use otel_arrow_rust::proto::opentelemetry::{
+    logs::v1::LogsData,
+    metrics::v1::MetricsData, // profiles::v1development::ProfilesData,
     trace::v1::TracesData,
 };
 use serde::{Deserialize, Serialize};
@@ -125,8 +128,6 @@ pub enum SignalConfig {
     Log(LogConfig),
     /// span config
     Span(SpanConfig),
-    /// profile config
-    Profile(ProfileConfig),
 }
 /// Specify the datapoint type for a metric
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -171,14 +172,6 @@ pub struct SpanConfig {
     span_count: usize,
     event_count: usize,
     link_count: usize,
-    attribute_count: usize,
-}
-/// configuration settings for a fake profile signal
-#[derive(Clone, Copy, Deserialize, Serialize)]
-pub struct ProfileConfig {
-    resource_count: usize,
-    scope_count: usize,
-    profile_count: usize,
     attribute_count: usize,
 }
 
@@ -279,34 +272,6 @@ impl SpanConfig {
     }
 }
 
-impl ProfileConfig {
-    /// create a new config
-    #[must_use]
-    pub fn new(
-        resource_count: usize,
-        scope_count: usize,
-        profile_count: usize,
-        attribute_count: usize,
-    ) -> Self {
-        Self {
-            resource_count,
-            scope_count,
-            profile_count,
-            attribute_count,
-        }
-    }
-    /// Take the profile config and generate the corresponding profile signal
-    #[must_use]
-    pub fn get_signal(&self) -> ProfilesData {
-        fake_otlp_profiles(
-            self.resource_count,
-            self.scope_count,
-            self.profile_count,
-            self.attribute_count,
-        )
-    }
-}
-
 /// Enum to represent the OTLP data being sent through the pipeline
 #[derive(Debug, Clone)]
 pub enum OTLPSignal {
@@ -316,8 +281,6 @@ pub enum OTLPSignal {
     Metric(MetricsData),
     /// Traces signal
     Span(TracesData),
-    /// Profiles signal
-    Profile(ProfilesData),
 }
 
 #[cfg(test)]
@@ -332,17 +295,10 @@ mod tests {
 
         let log_config = LogConfig::new(1, 1, 1, 1);
 
-        let profile_config = ProfileConfig::new(1, 1, 1, 1);
-
         steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
-
         steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
         steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
-        steps.push(ScenarioStep::new(
-            SignalConfig::Profile(profile_config),
-            1,
-            0,
-        ));
+
         let config = Config::new("config".to_string(), steps);
         // Convert the Point to a JSON string.
         let serialized = serde_json::to_string(&config).unwrap();

@@ -6,16 +6,15 @@
 
 use crate::fake_signal_receiver::config::MetricType;
 use crate::fake_signal_receiver::fake_data::*;
-use crate::proto::opentelemetry::{
+use otel_arrow_rust::proto::opentelemetry::{
     common::v1::InstrumentationScope,
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
     metrics::v1::{
         Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
         HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-        Sum, Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets, metric::Data,
+        Sum, Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets,
         summary_data_point::ValueAtQuantile,
     },
-    profiles::v1development::{Profile, ProfilesData, ResourceProfiles, ScopeProfiles},
     resource::v1::Resource,
     trace::v1::{
         ResourceSpans, ScopeSpans, Span, TracesData,
@@ -47,32 +46,26 @@ pub fn fake_otlp_metrics(
                     attribute_count,
                 ));
             }
-            scope_metrics.push(ScopeMetrics {
-                schema_url: get_schema_url(),
-                scope: Some(InstrumentationScope {
-                    name: get_scope_name(),
-                    version: get_scope_version(),
-                    attributes: get_attributes(attribute_count),
-                    dropped_attributes_count: 0,
-                }),
-                metrics: metrics.clone(),
-            });
+            scope_metrics.push(
+                ScopeMetrics::build(
+                    InstrumentationScope::build(get_scope_name())
+                        .version(get_scope_version())
+                        .attributes(get_attributes(attribute_count))
+                        .finish(),
+                )
+                .metrics(metrics)
+                .finish(),
+            );
         }
 
-        resource_metrics.push(ResourceMetrics {
-            schema_url: get_schema_url(),
-            resource: Some(Resource {
-                attributes: get_attributes(attribute_count),
-                dropped_attributes_count: 0,
-                entity_refs: vec![],
-            }),
-            scope_metrics: scope_metrics.clone(),
-        });
+        resource_metrics.push(
+            ResourceMetrics::build(Resource::default())
+                .scope_metrics(scope_metrics)
+                .finish(),
+        );
     }
 
-    MetricsData {
-        resource_metrics: resource_metrics.clone(),
-    }
+    MetricsData::new(resource_metrics)
 }
 
 /// Genererates TracesData based on the provided count for resource, scope, span, event, link count
@@ -94,32 +87,26 @@ pub fn fake_otlp_traces(
             for _ in 0..span_count {
                 spans.push(fake_span(event_count, link_count, attribute_count));
             }
-            scope_spans.push(ScopeSpans {
-                schema_url: get_schema_url(),
-                scope: Some(InstrumentationScope {
-                    name: get_scope_name(),
-                    version: get_scope_version(),
-                    attributes: get_attributes(attribute_count),
-                    dropped_attributes_count: 0,
-                }),
-                spans: spans.clone(),
-            });
+            scope_spans.push(
+                ScopeSpans::build(
+                    InstrumentationScope::build(get_scope_name())
+                        .version(get_scope_version())
+                        .attributes(get_attributes(attribute_count))
+                        .finish(),
+                )
+                .spans(spans)
+                .finish(),
+            );
         }
 
-        resource_spans.push(ResourceSpans {
-            schema_url: get_schema_url(),
-            resource: Some(Resource {
-                attributes: get_attributes(attribute_count),
-                dropped_attributes_count: 0,
-                entity_refs: vec![],
-            }),
-            scope_spans: scope_spans.clone(),
-        });
+        resource_spans.push(
+            ResourceSpans::build(Resource::default())
+                .scope_spans(scope_spans)
+                .finish(),
+        );
     }
 
-    TracesData {
-        resource_spans: resource_spans.clone(),
-    }
+    TracesData::new(resource_spans)
 }
 
 /// Genererates LogsData based on the provided count for resource logs, scope logs and log records
@@ -139,125 +126,57 @@ pub fn fake_otlp_logs(
             for _ in 0..log_records_count {
                 log_records.push(fake_log_records(attribute_count));
             }
-            scope_logs.push(ScopeLogs {
-                schema_url: get_schema_url(),
-                scope: Some(InstrumentationScope {
-                    name: get_scope_name(),
-                    version: get_scope_version(),
-                    attributes: get_attributes(attribute_count),
-                    dropped_attributes_count: 0,
-                }),
-                log_records: log_records.clone(),
-            });
-        }
-        resource_logs.push(ResourceLogs {
-            schema_url: get_schema_url(),
-            resource: Some(Resource {
-                attributes: get_attributes(attribute_count),
-                dropped_attributes_count: 0,
-                entity_refs: vec![],
-            }),
-            scope_logs: scope_logs.clone(),
-        });
-    }
-
-    LogsData {
-        resource_logs: resource_logs.clone(),
-    }
-}
-
-/// Genererates LogsData based on the provided count for resource, scope, profile count
-#[must_use]
-pub fn fake_otlp_profiles(
-    resource_profiles_count: usize,
-    scope_profiles_count: usize,
-    profile_count: usize,
-    attribute_count: usize,
-) -> ProfilesData {
-    let mut resource_profiles: Vec<ResourceProfiles> = vec![];
-    for _ in 0..resource_profiles_count {
-        let mut scope_profiles: Vec<ScopeProfiles> = vec![];
-        for _ in 0..scope_profiles_count {
-            let mut profiles: Vec<Profile> = vec![];
-            for _ in 0..profile_count {
-                profiles.push(fake_profile());
-            }
-
-            scope_profiles.push(ScopeProfiles {
-                schema_url: get_schema_url(),
-                scope: Some(InstrumentationScope {
-                    name: get_scope_name(),
-                    version: get_scope_version(),
-                    attributes: get_attributes(attribute_count),
-                    dropped_attributes_count: 0,
-                }),
-                profiles: profiles.clone(),
-            });
+            scope_logs.push(
+                ScopeLogs::build(
+                    InstrumentationScope::build(get_scope_name())
+                        .version(get_scope_version())
+                        .attributes(get_attributes(attribute_count))
+                        .finish(),
+                )
+                .log_records(log_records)
+                .finish(),
+            );
         }
 
-        resource_profiles.push(ResourceProfiles {
-            schema_url: get_schema_url(),
-            resource: Some(Resource {
-                attributes: get_attributes(attribute_count),
-                dropped_attributes_count: 0,
-                entity_refs: vec![],
-            }),
-            scope_profiles: scope_profiles.clone(),
-        });
+        resource_logs.push(
+            ResourceLogs::build(Resource::default())
+                .scope_logs(scope_logs)
+                .finish(),
+        );
     }
 
-    ProfilesData {
-        resource_profiles: resource_profiles.clone(),
-        attribute_table: vec![],
-        attribute_units: vec![],
-        function_table: vec![],
-        link_table: vec![],
-        location_table: vec![],
-        mapping_table: vec![],
-        string_table: vec![],
-    }
+    LogsData::new(resource_logs)
 }
 
 #[must_use]
 fn fake_span(event_count: usize, link_count: usize, attribute_count: usize) -> Span {
     let mut links: Vec<Link> = vec![];
     for _ in 0..link_count {
-        links.push(Link {
-            trace_id: get_trace_id(),
-            span_id: get_span_id(),
-            attributes: get_attributes(attribute_count),
-            trace_state: get_trace_state(),
-            dropped_attributes_count: 0,
-            flags: 4,
-        });
+        links.push(Link::new(get_trace_id(), get_span_id()));
     }
     let mut events: Vec<Event> = vec![];
     for _ in 0..event_count {
-        events.push(Event {
-            time_unix_nano: get_time_unix_nano(),
-            name: get_event_name(),
-            attributes: get_attributes(attribute_count),
-            dropped_attributes_count: 0,
-        });
+        events.push(Event::new(get_event_name(), get_time_unix_nano()));
     }
-    Span {
-        end_time_unix_nano: get_end_time_unix_nano(),
-        start_time_unix_nano: get_start_time_unix_nano(),
-        name: get_span_name(),
-        kind: 4,
-        trace_state: get_trace_state(),
-        status: get_status(),
-        links: links.clone(),
-        events: events.clone(),
-        attributes: get_attributes(attribute_count),
-        trace_id: get_trace_id(),
-        span_id: get_span_id(),
-        parent_span_id: vec![],
-        dropped_attributes_count: 0,
-        flags: 4,
-        dropped_events_count: 0,
-        dropped_links_count: 0,
-    }
+
+    Span::build(
+        get_trace_id(),
+        get_span_id(),
+        get_span_name(),
+        get_start_time_unix_nano(),
+    )
+    .attributes(get_attributes(attribute_count))
+    .flags(get_span_flag())
+    .kind(get_span_kind())
+    .trace_state(get_trace_state())
+    .links(links)
+    .events(events)
+    .end_time_unix_nano(get_end_time_unix_nano())
+    .status(get_status())
+    .dropped_attributes_count(0u32)
+    .dropped_events_count(0u32)
+    .dropped_links_count(0u32)
+    .finish()
 }
 #[must_use]
 fn fake_metric(
@@ -265,20 +184,30 @@ fn fake_metric(
     datapoint_count: usize,
     attribute_count: usize,
 ) -> Metric {
-    let metric_data = match datapoint_type {
-        MetricType::Gauge => fake_gauge(datapoint_count, attribute_count),
-        MetricType::Sum => fake_sum(datapoint_count, attribute_count),
-        MetricType::Histogram => fake_histogram(datapoint_count, attribute_count),
-        MetricType::ExponentialHistogram => fake_exp_histogram(datapoint_count, attribute_count),
-        MetricType::Summary => fake_summary(datapoint_count, attribute_count),
-    };
-
-    Metric {
-        name: "system.cpu.time".to_string(),
-        description: "time cpu has ran".to_string(),
-        unit: "s".to_string(),
-        metadata: vec![],
-        data: Some(metric_data),
+    match datapoint_type {
+        MetricType::Gauge => {
+            let datapoints = fake_number_datapoints(datapoint_count, attribute_count);
+            Metric::new_gauge("metric_gauge", Gauge::new(datapoints))
+        }
+        MetricType::Sum => {
+            let datapoints = fake_number_datapoints(datapoint_count, attribute_count);
+            Metric::new_sum("metric_sum", Sum::new(2, true, datapoints))
+        }
+        MetricType::Histogram => {
+            let datapoints = fake_histogram_datapoints(datapoint_count, attribute_count);
+            Metric::new_histogram("metric_histogram", Histogram::new(1, datapoints))
+        }
+        MetricType::ExponentialHistogram => {
+            let datapoints = fake_exp_histogram_datapoints(datapoint_count, attribute_count);
+            Metric::new_exponential_histogram(
+                "metric_exponential_histogram",
+                ExponentialHistogram::new(1, datapoints),
+            )
+        }
+        MetricType::Summary => {
+            let datapoints = fake_summary_datapoints(datapoint_count, attribute_count);
+            Metric::new_summary("metric_summary", Summary::new(datapoints))
+        }
     }
 }
 
@@ -286,181 +215,102 @@ fn fake_metric(
 fn fake_log_records(attribute_count: usize) -> LogRecord {
     let severity_number = get_severity_number();
     let severity_text = get_severity_text(severity_number);
-    LogRecord {
-        time_unix_nano: get_time_unix_nano(),
-        observed_time_unix_nano: get_observed_time_unix_nano(),
-        severity_text,
-        severity_number,
-        event_name: get_event_name(),
-        attributes: get_attributes(attribute_count),
-        trace_id: get_trace_id(),
-        span_id: get_span_id(),
-        body: get_body_text(),
-        flags: 8,
-        dropped_attributes_count: 0,
-    }
+    LogRecord::build(get_time_unix_nano(), severity_number, get_event_name())
+        .observed_time_unix_nano(get_time_unix_nano())
+        .trace_id(get_trace_id())
+        .span_id(get_span_id())
+        .severity_text(severity_text)
+        .attributes(get_attributes(attribute_count))
+        .dropped_attributes_count(0u32)
+        .flags(get_log_record_flag())
+        .body(get_body_text())
+        .finish()
 }
-
-#[must_use]
-fn fake_profile() -> Profile {
-    Profile {
-        sample_type: vec![],
-        sample: vec![],
-        location_indices: vec![],
-        time_nanos: 0,
-        duration_nanos: 0,
-        period_type: None,
-        period: 0,
-        comment_strindices: vec![],
-        default_sample_type_index: 0,
-        profile_id: vec![],
-        dropped_attributes_count: 0,
-        original_payload: vec![],
-        original_payload_format: "".to_string(),
-        attribute_indices: vec![],
-    }
-}
-// Helper functions for generating datapoints for metrics
 
 /// generate gauge datapoints
 #[must_use]
-fn fake_gauge(datapoint_count: usize, attribute_count: usize) -> Data {
+fn fake_number_datapoints(datapoint_count: usize, attribute_count: usize) -> Vec<NumberDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
-        datapoints.push(NumberDataPoint {
-            start_time_unix_nano: get_start_time_unix_nano(),
-            time_unix_nano: get_time_unix_nano(),
-            attributes: get_attributes(attribute_count),
-            value: get_datapoint_value(),
-            flags: 0,
-            exemplars: vec![],
-        });
+        datapoints.push(
+            NumberDataPoint::build_double(get_time_unix_nano(), get_double_value())
+                .start_time_unix_nano(get_start_time_unix_nano())
+                .attributes(get_attributes(attribute_count))
+                .finish(),
+        );
     }
-    Data::Gauge(Gauge {
-        data_points: datapoints.clone(),
-    })
+
+    datapoints
 }
 
 /// generate histogram datapoints
 #[must_use]
-fn fake_histogram(datapoint_count: usize, attribute_count: usize) -> Data {
+fn fake_histogram_datapoints(
+    datapoint_count: usize,
+    attribute_count: usize,
+) -> Vec<HistogramDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
-        datapoints.push(HistogramDataPoint {
-            attributes: get_attributes(attribute_count),
-            start_time_unix_nano: get_start_time_unix_nano(),
-            time_unix_nano: get_time_unix_nano(),
-            explicit_bounds: vec![94.17542094619048, 65.66722851519177],
-            bucket_counts: vec![0],
-            sum: Some(56.0),
-            count: 0,
-            flags: 0,
-            min: Some(12.0),
-            max: Some(100.1),
-            exemplars: vec![Exemplar {
-                time_unix_nano: get_time_unix_nano(),
-                span_id: get_span_id(),
-                trace_id: get_trace_id(),
-                value: get_exemplar_value(),
-                filtered_attributes: get_attributes(attribute_count),
-            }],
-        });
+        datapoints.push(
+            HistogramDataPoint::build(get_time_unix_nano(), [1u64, 2u64, 3u64], [1.0, 10.0])
+                .start_time_unix_nano(get_start_time_unix_nano())
+                .attributes(get_attributes(attribute_count))
+                .finish(),
+        )
     }
 
-    Data::Histogram(Histogram {
-        data_points: datapoints.clone(),
-        aggregation_temporality: 2,
-    })
+    datapoints
 }
 
 /// generate exponential histogram datapoints
 #[must_use]
-fn fake_exp_histogram(datapoint_count: usize, attribute_count: usize) -> Data {
+fn fake_exp_histogram_datapoints(
+    datapoint_count: usize,
+    attribute_count: usize,
+) -> Vec<ExponentialHistogramDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
-        datapoints.push(ExponentialHistogramDataPoint {
-            attributes: get_attributes(attribute_count),
-            start_time_unix_nano: get_start_time_unix_nano(),
-            time_unix_nano: get_time_unix_nano(),
-            sum: Some(56.0),
-            count: 0,
-            flags: 0,
-            min: Some(12.0),
-            max: Some(100.1),
-            exemplars: vec![Exemplar {
-                time_unix_nano: get_time_unix_nano(),
-                span_id: get_span_id(),
-                trace_id: get_trace_id(),
-                value: get_exemplar_value(),
-                filtered_attributes: get_attributes(attribute_count),
-            }],
-            scale: 1,
-            positive: Some(Buckets {
-                offset: 0,
-                bucket_counts: vec![0],
-            }),
-            negative: Some(Buckets {
-                offset: 0,
-                bucket_counts: vec![0],
-            }),
-            zero_threshold: 0.0,
-            zero_count: 0,
-        });
+        datapoints.push(
+            ExponentialHistogramDataPoint::build(
+                get_time_unix_nano(),
+                7,
+                Buckets::new(1, vec![3, 4, 5]),
+            )
+            .start_time_unix_nano(get_start_time_unix_nano())
+            .attributes(get_attributes(attribute_count))
+            .count(17u64)
+            .zero_count(2u64)
+            .negative(Buckets::new(0, vec![1, 2]))
+            .finish(),
+        );
     }
 
-    Data::ExponentialHistogram(ExponentialHistogram {
-        data_points: datapoints.clone(),
-        aggregation_temporality: 2,
-    })
+    datapoints
 }
 
 /// generate summary datapoints
 #[must_use]
-fn fake_summary(datapoint_count: usize, attribute_count: usize) -> Data {
+fn fake_summary_datapoints(
+    datapoint_count: usize,
+    attribute_count: usize,
+) -> Vec<SummaryDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
-        datapoints.push(SummaryDataPoint {
-            start_time_unix_nano: get_start_time_unix_nano(),
-            time_unix_nano: get_time_unix_nano(),
-            attributes: get_attributes(attribute_count),
-            sum: 56.0,
-            count: 0,
-            flags: 0,
-            quantile_values: vec![ValueAtQuantile {
-                quantile: 0.0,
-                value: 0.0,
-            }],
-        });
+        datapoints.push(
+            SummaryDataPoint::build(
+                get_time_unix_nano(),
+                vec![
+                    ValueAtQuantile::new(0.1, 0.1),
+                    ValueAtQuantile::new(0.5, 2.1),
+                    ValueAtQuantile::new(1.0, 10.1),
+                ],
+            )
+            .start_time_unix_nano(get_start_time_unix_nano())
+            .attributes(get_attributes(attribute_count))
+            .count(100u64)
+            .sum(get_double_value())
+            .finish(),
+        );
     }
-    Data::Summary(Summary {
-        data_points: datapoints.clone(),
-    })
-}
-
-/// generate sum datapoints
-#[must_use]
-fn fake_sum(datapoint_count: usize, attribute_count: usize) -> Data {
-    let mut datapoints = vec![];
-    for _ in 0..datapoint_count {
-        datapoints.push(NumberDataPoint {
-            start_time_unix_nano: get_start_time_unix_nano(),
-            time_unix_nano: get_time_unix_nano(),
-            attributes: get_attributes(attribute_count),
-            value: get_datapoint_value(),
-            flags: 0,
-            exemplars: vec![Exemplar {
-                time_unix_nano: get_time_unix_nano(),
-                span_id: get_span_id(),
-                trace_id: get_trace_id(),
-                value: get_exemplar_value(),
-                filtered_attributes: get_attributes(attribute_count),
-            }],
-        });
-    }
-
-    Data::Sum(Sum {
-        data_points: datapoints.clone(),
-        aggregation_temporality: 2,
-        is_monotonic: get_monotonic(),
-    })
+    datapoints
 }

@@ -104,7 +104,6 @@ async fn run_scenario(
                 SignalConfig::Metric(config) => OTLPSignal::Metric(config.get_signal()),
                 SignalConfig::Log(config) => OTLPSignal::Log(config.get_signal()),
                 SignalConfig::Span(config) => OTLPSignal::Span(config.get_signal()),
-                SignalConfig::Profile(config) => OTLPSignal::Profile(config.get_signal()),
             };
             _ = effect_handler.send_message(signal).await;
             // if there is a delay set between batches sleep for that amount before created the next signal in the batch
@@ -161,11 +160,6 @@ mod tests {
                     .expect("Timed out waiting for message")
                     .expect("No message received");
                 let log_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-
-                let profile_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received");
@@ -253,28 +247,6 @@ mod tests {
                     }
                     _ => assert!(false),
                 }
-
-                match profile_received {
-                    OTLPSignal::Profile(profile) => {
-                        let mut resource_count = 0;
-                        let mut scope_count = 0;
-                        let mut profile_count = 0;
-                        for resource in profile.resource_profiles.iter() {
-                            resource_count += 1;
-                            for scope in resource.scope_profiles.iter() {
-                                scope_count += 1;
-                                for _ in scope.profiles.iter() {
-                                    profile_count += 1;
-                                }
-                            }
-                        }
-
-                        assert!(resource_count == 1);
-                        assert!(scope_count == 1);
-                        assert!(profile_count == 1);
-                    }
-                    _ => assert!(false),
-                }
             })
         }
     }
@@ -289,17 +261,10 @@ mod tests {
 
         let log_config = LogConfig::new(1, 1, 1, 1);
 
-        let profile_config = ProfileConfig::new(1, 1, 1, 1);
-
         steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
 
         steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
         steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
-        steps.push(ScenarioStep::new(
-            SignalConfig::Profile(profile_config),
-            1,
-            0,
-        ));
         let config = Config::new("config".to_string(), steps);
 
         // create our receiver
