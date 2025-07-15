@@ -563,14 +563,12 @@ where
     /// Try to append a value to the underlying builder. This method may return an error if
     /// the value is not valid.
     fn append_value(&mut self, value: &T) -> Result<(), ArrowError> {
-        let result = handle_append_checked!(
+        handle_append_checked!(
             self,
             append_value(value),
             default_check = Self::is_default_value(&self.default_value, value),
             retry = { self.append_value(value) }
-        );
-
-        result
+        )
     }
 }
 
@@ -604,14 +602,12 @@ where
     /// Try to append a value to the underlying builder. This method may return an error if
     /// the value is not valid
     fn append_slice(&mut self, value: &[Self::Native]) -> Result<(), ArrowError> {
-        let result = handle_append_checked!(
+        handle_append_checked!(
             self,
             append_slice(value),
             default_check = Self::is_default_value(&self.default_value, &value),
             retry = { self.append_slice(value) }
-        );
-
-        result
+        )
     }
 }
 
