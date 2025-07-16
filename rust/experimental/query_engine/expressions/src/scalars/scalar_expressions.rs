@@ -1,4 +1,4 @@
-use crate::{primitives::*, *};
+use crate::{primitives::*, resolved_static_scalar_expression::ResolvedStaticScalarExpression, *};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
@@ -102,30 +102,6 @@ impl Expression for ScalarExpression {
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
             ScalarExpression::Constant(c) => c.get_name(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum ResolvedStaticScalarExpression<'a> {
-    Reference(&'a StaticScalarExpression),
-    Value(StaticScalarExpression),
-}
-
-impl ResolvedStaticScalarExpression<'_> {
-    pub fn to_value(&self) -> Value {
-        match self {
-            ResolvedStaticScalarExpression::Reference(s) => s.to_value(),
-            ResolvedStaticScalarExpression::Value(s) => s.to_value(),
-        }
-    }
-}
-
-impl AsRef<StaticScalarExpression> for ResolvedStaticScalarExpression<'_> {
-    fn as_ref(&self) -> &StaticScalarExpression {
-        match self {
-            ResolvedStaticScalarExpression::Reference(s) => s,
-            ResolvedStaticScalarExpression::Value(s) => s,
         }
     }
 }
@@ -249,7 +225,7 @@ pub enum ConstantScalarExpression {
 }
 
 impl ConstantScalarExpression {
-    pub fn get_value_type(&self) -> ValueType {
+    pub(crate) fn get_value_type(&self) -> ValueType {
         match self {
             ConstantScalarExpression::Reference(r) => r.get_value_type(),
             ConstantScalarExpression::Copy(c) => c.get_value().get_value_type(),
@@ -276,7 +252,7 @@ impl ConstantScalarExpression {
         }
     }
 
-    pub fn resolve_static<'a, 'b, 'c>(
+    pub(crate) fn resolve_static<'a, 'b, 'c>(
         &'a self,
         pipeline: &'b PipelineExpression,
     ) -> ResolvedStaticScalarExpression<'c>
@@ -416,25 +392,25 @@ impl NegateScalarExpression {
         &self.inner_expression
     }
 
-    pub fn try_resolve_value_type(
+    pub(crate) fn try_resolve_value_type(
         &self,
         pipeline: &PipelineExpression,
     ) -> Result<Option<ValueType>, ExpressionError> {
         let s = self.try_resolve_static(pipeline)?;
         if let Some(s) = s {
-            Ok(Some(s.as_ref().get_value_type()))
+            Ok(Some(s.get_value_type()))
         } else {
             Ok(None)
         }
     }
 
-    pub fn try_resolve_static(
+    pub(crate) fn try_resolve_static(
         &self,
         pipeline: &PipelineExpression,
     ) -> Result<Option<ResolvedStaticScalarExpression>, ExpressionError> {
         if let Some(s) = self.inner_expression.try_resolve_static(pipeline)? {
-            match s.as_ref() {
-                StaticScalarExpression::Integer(i) => {
+            match s.to_value() {
+                Value::Integer(i) => {
                     return Ok(Some(ResolvedStaticScalarExpression::Value(
                         StaticScalarExpression::Integer(IntegerScalarExpression::new(
                             self.query_location.clone(),
@@ -442,7 +418,7 @@ impl NegateScalarExpression {
                         )),
                     )));
                 }
-                StaticScalarExpression::Double(d) => {
+                Value::Double(d) => {
                     return Ok(Some(ResolvedStaticScalarExpression::Value(
                         StaticScalarExpression::Double(DoubleScalarExpression::new(
                             self.query_location.clone(),
@@ -508,20 +484,20 @@ impl ConditionalScalarExpression {
         &self.false_expression
     }
 
-    pub fn try_resolve_value_type(
+    pub(crate) fn try_resolve_value_type(
         &self,
         pipeline: &PipelineExpression,
     ) -> Result<Option<ValueType>, ExpressionError> {
         if let Some(s) = self.try_resolve_static(pipeline)? {
-            return Ok(Some(s.as_ref().get_value_type()));
+            return Ok(Some(s.get_value_type()));
         }
 
         let true_e = self.true_expression.try_resolve_static(pipeline)?;
         let false_e = self.false_expression.try_resolve_static(pipeline)?;
 
         if true_e.is_some() && false_e.is_some() {
-            let true_type = true_e.unwrap().as_ref().get_value_type();
-            let false_type = false_e.unwrap().as_ref().get_value_type();
+            let true_type = true_e.unwrap().get_value_type();
+            let false_type = false_e.unwrap().get_value_type();
 
             if true_type == false_type {
                 return Ok(Some(true_type));
@@ -531,7 +507,7 @@ impl ConditionalScalarExpression {
         Ok(None)
     }
 
-    pub fn try_resolve_static<'a, 'b, 'c>(
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
         &'a self,
         pipeline: &'b PipelineExpression,
     ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
@@ -545,8 +521,8 @@ impl ConditionalScalarExpression {
             return Ok(None);
         }
 
-        match condition.unwrap().as_ref() {
-            StaticScalarExpression::Boolean(b) => {
+        match condition.unwrap().to_value() {
+            Value::Boolean(b) => {
                 if b.get_value() {
                     let true_e = self.true_expression.try_resolve_static(pipeline)?;
 

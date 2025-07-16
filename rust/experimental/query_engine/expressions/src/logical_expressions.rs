@@ -1,6 +1,6 @@
 use crate::{
-    Expression, ExpressionError, PipelineExpression, QueryLocation, ResolvedStaticScalarExpression,
-    ScalarExpression,
+    Expression, ExpressionError, PipelineExpression, QueryLocation, ScalarExpression,
+    resolved_static_scalar_expression::ResolvedStaticScalarExpression,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +34,7 @@ pub enum LogicalExpression {
 }
 
 impl LogicalExpression {
-    pub fn try_resolve_static<'a, 'b, 'c>(
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
         &'a self,
         pipeline: &'b PipelineExpression,
     ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
