@@ -1,0 +1,21 @@
+[
+{%- set metrics_of_interest = [
+  "mean(container.cpu.usage)",
+  "max(container.cpu.usage)",
+  "max(container.memory.usage)",
+  "mean(container.memory.usage)"
+] %}
+{%- for item in report["results"]["component_summary"]
+   if item.metric_name in metrics_of_interest %}
+  {
+    "name": "{{ report['report_name'] }} - {{ item.metric_attributes.component_name }} - {{ item.metric_name | replace('(', '-') | replace(')', '') | replace('.', '-') | replace('/', '-') }}",
+    "unit": "{%- if item.metric_name == 'mean(container.cpu.usage)' %}cores/sec
+             {%- elif item.metric_name == 'max(container.cpu.usage)' %}cores/sec
+             {%- elif item.metric_name == 'mean(container.memory.usage)' %}MiB
+             {%- elif item.metric_name == 'max(container.memory.usage)' %}MiB{% endif %}",
+    "value": {%- if item.metric_name == 'mean(container.memory.usage)' %} {{ item.value /1024 / 1024 }}
+             {%- elif item.metric_name == 'max(container.memory.usage)' %} {{ item.value /1024 / 1024 }}
+             {%- else %} {{ item.value }}{% endif %}
+  }{% if not loop.last %},{% endif %}
+{%- endfor %}
+]

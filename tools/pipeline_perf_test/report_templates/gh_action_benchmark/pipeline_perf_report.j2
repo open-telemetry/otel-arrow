@@ -1,0 +1,21 @@
+[
+{%- set filtered_items = report["results"]["summary"] %}
+{%- for item in filtered_items %}
+  {%- if item.metric_name in [
+      "Total logs attempted",
+      "Logs received by backend",
+      "Percentage of logs lost",
+      "Logs receive rate (avg)"] %}
+  {
+    "name": "{{ report['report_name'] }} - 
+      {%- if item.metric_name == 'Total logs attempted' %} logs-sent
+      {%- elif item.metric_name == 'Logs received by backend' %} logs-received
+      {%- elif item.metric_name == 'Percentage of logs lost' %} loss-percentage
+      {%- elif item.metric_name == 'Logs receive rate (avg)' %} throughput
+      {%- endif %}",
+    "unit": "{% if item.metric_name == 'Percentage of logs lost' %}percent{% elif item.metric_name == 'Logs receive rate (avg)' %}logs/sec{% else %}count{% endif %}",
+    "value": {{ item.value }}
+  }{% if not loop.last %},{% endif %}
+  {%- endif %}
+{%- endfor %}
+]

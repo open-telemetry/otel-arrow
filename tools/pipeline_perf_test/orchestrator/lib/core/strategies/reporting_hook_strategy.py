@@ -9,7 +9,7 @@ Classes:
     ReportFormatter (abstract): Interface for formatting raw test reports into a desired output format.
     DestinationWriter (abstract): Interface for writing formatted report data to a specific destination.
     ReportOutputPipeline: Orchestrates the formatting and writing of test reports using pluggable components.
-    ReportingHookStrategy (abstract): Interface for injecting reporting logic into application or testing lifecycles.
+    ReportingHookStrategy (HookStrategy): Interface for injecting reporting logic into application or testing lifecycles.
 
 These components are designed to be modular and easily extensible, enabling customized reporting workflows
 that can adapt to different output formats (e.g., JSON, HTML, XML) and destinations (e.g., file system, APIs, databases).
@@ -101,7 +101,7 @@ class DestinationWriter:
     def __init__(self, config: DestinationWriterConfig) -> None:
         """Initialize with a config object."""
 
-    def write(self, formatted_data: Any, ctx: BaseContext):
+    def write(self, formatted_data: Any, ctx: BaseContext, report: Report):
         """
         Write the formatted report data to a target destination.
 
@@ -156,7 +156,7 @@ class ReportOutputPipeline:
         """
         formatted_data = self.formatter.format(report, ctx)
         if formatted_data is not None:
-            self.writer.write(formatted_data, ctx)
+            self.writer.write(formatted_data, ctx, report)
 
 
 class ReportingHookStrategy(HookStrategy):

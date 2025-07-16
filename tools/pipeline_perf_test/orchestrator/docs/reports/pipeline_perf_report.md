@@ -69,7 +69,7 @@ hooks:
 | metric_name                       |   PerfReprort - OTLP |   PerfReprort - OTAP |
 |:----------------------------------|---------------------:|---------------------:|
 | Duration                          |          45.8919     |          55.851      |
-| Logs attempt rate (avg)           |      855638          |      943012          |
+| Logs receive rate (avg)           |      855638          |      943012          |
 | Logs failed at loadgen            |           0          |           0          |
 | Logs lost in transit              |           0          |           0          |
 | Logs received by backend          |           2.2475e+07 |           2.5535e+07 |

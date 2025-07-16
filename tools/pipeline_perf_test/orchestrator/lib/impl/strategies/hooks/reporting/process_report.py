@@ -406,6 +406,8 @@ test.suite: Test OTLP Vs OTAP
 
         results = {}
         for component_name, _component in components.items():
+            if self.config.components and component_name not in self.config.components:
+                continue
             process_counter_metrics = tc.metrics.query_metrics(
                 metric_name=["container.network.rx", "container.network.tx"],
                 metric_attrs={"component_name": component_name},

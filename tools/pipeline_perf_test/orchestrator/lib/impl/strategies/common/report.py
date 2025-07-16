@@ -1,5 +1,8 @@
 import json
+import math
 import os
+
+from io import BytesIO
 from typing import Literal, Optional, Any, List
 
 from jinja2 import Template, Environment, FileSystemLoader
@@ -110,8 +113,24 @@ hooks:
         self.config = config
 
     def format(self, report: Report, _ctx: BaseContext) -> str:
-        """Convert the report to a JSON string with indentation."""
-        return json.dumps(report.to_dict(), indent=self.config.indent)
+        """Convert the report to a standards-compliant JSON string with indentation."""
+        data = report.to_dict()
+        clean_data = self._replace_nans(data)
+
+        return json.dumps(clean_data, indent=self.config.indent, allow_nan=False)
+
+    def _replace_nans(self, obj):
+        """Recursively replace NaN, Infinity, -Infinity with None."""
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        elif isinstance(obj, dict):
+            return {k: self._replace_nans(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._replace_nans(v) for v in obj]
+        else:
+            return obj
 
 
 @report_formatter_registry.register_config("template")
@@ -251,8 +270,112 @@ hooks:
     def __init__(self, config: NoopDestinationConfig):
         self.config = config
 
-    def write(self, formatted_data: Any, ctx: BaseContext):
+    def write(self, formatted_data: Any, ctx: BaseContext, report: Report):
         pass  # Intentionally do nothing
+
+
+@report_writer_registry.register_config("file")
+class FileDestinationConfig(DestinationWriterConfig):
+    """
+    Configuration for the FileDestination writer.
+
+    Attributes:
+        path (Optional): Full path to the report output destination.
+            overrides directory / name / extension if provided.
+        directory (Optional): Output directory to write to.
+        name (Optional): Base name of the output file (without extension)
+        extension (Optional): Suffix to append to the filename.
+    """
+
+    path: Optional[str] = None
+    directory: Optional[str] = "./results"
+    name: Optional[str] = None
+    extension: Optional[str] = None
+
+
+@report_writer_registry.register_class("file")
+class FileDestination(DestinationWriter):
+    """
+    A destination writer that outputs to a local file.
+
+    This writer will attempt to write the formatted report to a file locally.
+
+    Args:
+        config (FileDestinationConfig): Configuration for the writer.
+
+    Methods:
+        write(formatted_data, ctx):
+            Write the provided data to the file specified in the config.
+    """
+
+    PLUGIN_META = PluginMeta(
+        installs_hooks=[],
+        supported_contexts=[],
+        yaml_example="""
+hooks:
+  run:
+    post:
+      - pipeline_perf_report:
+          name: PerfReprort - Max Rate
+          output:
+            - format:
+                template: {}
+              destination:
+                file:
+                    directory: ./reports
+                    name: my_report
+                    extension: .json
+""",
+    )
+
+    def __init__(self, config: FileDestinationConfig):
+        self.config = config
+
+    def _resolve_path(self, report: Report) -> str:
+        """
+        Resolve the full file path from the configuration.
+        """
+        if self.config.path:
+            return self.config.path
+
+        # Extension handling
+        ext = self.config.extension
+        if ext:
+            ext = ext.lstrip(".")  # Remove leading dot if present
+        else:
+            ext = "json"  # Default fallback
+
+        # Directory handling
+        directory = self.config.directory or "."
+        os.makedirs(directory, exist_ok=True)
+
+        # Filename handling
+        if self.config.name:
+            filename = f"{self.config.name}.{ext}"
+            return os.path.join(directory, filename)
+        else:
+            return report.default_filename(ext=ext, directory=directory)
+
+    def write(self, formatted_data: Any, ctx: BaseContext, report: Report):
+        """
+        Write the formatted report data to a local file.
+        """
+        path = self._resolve_path(report)
+        logger = ctx.get_logger(__name__)
+        if isinstance(formatted_data, (bytes, BytesIO)):
+            mode = "wb"
+            with open(path, mode) as f:
+                if isinstance(formatted_data, BytesIO):
+                    f.write(formatted_data.getvalue())
+                else:
+                    f.write(formatted_data)
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(formatted_data)
+        except Exception as e:
+            logger.error(f"Failed to write report to file: {e}")
+            raise
 
 
 @report_writer_registry.register_config("console")
@@ -311,7 +434,7 @@ hooks:
     def __init__(self, config: ConsoleDestinationConfig):
         self.config = config
 
-    def write(self, formatted_data: Any, ctx: BaseContext):
+    def write(self, formatted_data: Any, ctx: BaseContext, report: Report):
         """
         Write the formatted report data.
 

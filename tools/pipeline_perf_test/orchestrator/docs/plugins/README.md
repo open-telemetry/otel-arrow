@@ -69,4 +69,5 @@ This directory contains auto-generated documentation for all plugin registries.
 | Type | Plugin Name | Module | Class | Config Class | Description |
 |------|-------------|--------|-------|--------------|-------------|
 | `noop` | `noop` | `lib.impl.strategies.common.report` | `NoopDestination` | `NoopDestinationConfig` | A destination writer that performs no action |
+| `file` | `file` | `lib.impl.strategies.common.report` | `FileDestination` | `FileDestinationConfig` | A destination writer that outputs to a local file |
 | `console` | `console` | `lib.impl.strategies.common.report` | `ConsoleDestination` | `ConsoleDestinationConfig` | Writes report data to the console (stdout) or via a logger |

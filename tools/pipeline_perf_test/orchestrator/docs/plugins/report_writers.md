@@ -5,6 +5,7 @@
 | Type Name | Module | Class | Config Class | Description Summary |
 |-----------|--------|-------|--------------|----------------------|
 | `noop` | `lib.impl.strategies.common.report` | `NoopDestination` | `NoopDestinationConfig` | A destination writer that performs no action |
+| `file` | `lib.impl.strategies.common.report` | `FileDestination` | `FileDestinationConfig` | A destination writer that outputs to a local file |
 | `console` | `lib.impl.strategies.common.report` | `ConsoleDestination` | `ConsoleDestinationConfig` | Writes report data to the console (stdout) or via a logger |
 
 ---
@@ -46,6 +47,47 @@ hooks:
                 template: {}
               destination:
                 noop: {}
+```
+
+## `file`
+
+**Class**: `lib.impl.strategies.common.report.FileDestination`
+
+**Config Class**: `lib.impl.strategies.common.report.FileDestinationConfig`
+
+**Description:**
+
+```python
+"""
+A destination writer that outputs to a local file.
+
+This writer will attempt to write the formatted report to a file locally.
+
+Args:
+    config (FileDestinationConfig): Configuration for the writer.
+
+Methods:
+    write(formatted_data, ctx):
+        Write the provided data to the file specified in the config.
+"""
+```
+
+**Example YAML:**
+
+```yaml
+hooks:
+  run:
+    post:
+      - pipeline_perf_report:
+          name: PerfReprort - Max Rate
+          output:
+            - format:
+                template: {}
+              destination:
+                file:
+                    directory: ./reports
+                    name: my_report
+                    extension: .json
 ```
 
 ## `console`

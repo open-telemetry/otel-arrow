@@ -518,7 +518,7 @@ hooks:
 | Logs received by backend          |      2.2475e+07 |
 | Logs lost in transit              |      0          |
 | Duration                          |     45.8919     |
-| Logs attempt rate (avg)           | 855638          |
+| Logs receive rate (avg)           | 855638          |
 | Total logs lost                   |      0          |
 | Percentage of logs lost           |      0          |
 """,
@@ -533,7 +533,7 @@ hooks:
 | metric_name                       |   PerfReprort - OTLP |   PerfReprort - OTAP |
 |:----------------------------------|---------------------:|---------------------:|
 | Duration                          |          45.8919     |          55.851      |
-| Logs attempt rate (avg)           |      855638          |      943012          |
+| Logs receive rate (avg)           |      855638          |      943012          |
 | Logs failed at loadgen            |           0          |           0          |
 | Logs lost in transit              |           0          |           0          |
 | Logs received by backend          |           2.2475e+07 |           2.5535e+07 |
@@ -574,8 +574,8 @@ hooks:
                 aggregated_metrics["metric_name"] == "delta(received_logs)", "value"
             ].iloc[0],
             "Duration": self.duration,
-            "Logs attempt rate (avg)": safe_lookup(
-                aggregated_metrics, "mean(rate(sent))"
+            "Logs receive rate (avg)": safe_lookup(
+                aggregated_metrics, "mean(rate(received_logs))"
             ),
             "Total logs lost": aggregated_metrics.loc[
                 aggregated_metrics["metric_name"] == "sum(total_sent)", "value"

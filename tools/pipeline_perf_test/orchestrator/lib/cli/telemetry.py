@@ -41,8 +41,8 @@ from ..core.telemetry.metric import (
     FrameworkMetricsRetriever,
 )
 
-from lib.cli.util import get_git_info
 from ..core.telemetry.log import SpanAwareLogHandler
+from .util import get_git_info
 
 SERVICE = "pipeline-perf-test-orchestrator"
 git_info = get_git_info()
