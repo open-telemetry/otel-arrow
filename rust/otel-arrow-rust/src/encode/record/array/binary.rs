@@ -210,12 +210,14 @@ mod test {
         ArrayAppend::append_value(&mut binary_builder, &b"a".to_vec());
         ArrayAppend::append_value(&mut binary_builder, &b"b".to_vec());
         ArrayAppend::append_value(&mut binary_builder, &b"c".to_vec());
+        binary_builder.append_slice(b"d");
+        binary_builder.append_slice_n(b"e", 2);
 
         let result = ArrayBuilder::finish(&mut binary_builder);
 
         assert_eq!(result.data_type(), &DataType::Binary);
 
-        let expected = BinaryArray::from_iter_values(vec![b"a", b"b", b"c"]);
+        let expected = BinaryArray::from_iter_values(vec![b"a", b"b", b"c", b"d", b"e", b"e"]);
         assert_eq!(
             result.as_any().downcast_ref::<BinaryArray>().unwrap(),
             &expected

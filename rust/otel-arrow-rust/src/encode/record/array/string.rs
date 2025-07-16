@@ -203,12 +203,14 @@ mod test {
         ArrayAppend::append_value(&mut string_builder, &"a".to_string());
         ArrayAppend::append_value(&mut string_builder, &"b".to_string());
         ArrayAppend::append_value(&mut string_builder, &"c".to_string());
+        string_builder.append_str("d");
+        string_builder.append_str_n("e", 2);
 
         let result = ArrayBuilder::finish(&mut string_builder);
 
         assert_eq!(result.data_type(), &DataType::Utf8);
 
-        let expected = StringArray::from(vec!["a", "b", "c"]);
+        let expected = StringArray::from(vec!["a", "b", "c", "d", "e", "e"]);
         assert_eq!(
             result.as_any().downcast_ref::<StringArray>().unwrap(),
             &expected
