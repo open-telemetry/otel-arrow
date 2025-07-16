@@ -50,7 +50,7 @@ where
     match source.value_type() {
         ValueType::String => {
             let s = source.as_string().expect("expected string");
-            serializer.serialize_str(s.as_ref())
+            serializer.serialize_str(s)
         }
         ValueType::Bool => {
             let b = source.as_bool().expect("expected bool");
