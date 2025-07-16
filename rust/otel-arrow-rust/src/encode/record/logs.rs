@@ -601,12 +601,8 @@ impl ResourceBuilder {
     }
 
     /// Append the value of `id` to the builder `n` times
-    pub fn append_id_n(&mut self, val: Option<u16>, n: usize) {
-        if let Some(val) = val {
-            self.id.append_value_n(&val, n);
-        } else {
-            self.id.append_nulls(n);
-        }
+    pub fn append_id_n(&mut self, val: u16, n: usize) {
+        self.id.append_value_n(&val, n);
     }
 
     /// Append a value to the `schema_url` array
@@ -721,12 +717,8 @@ impl ScopeBuilder {
     }
 
     /// Append the value of `id` to the builder `n` times
-    pub fn append_id_n(&mut self, val: Option<u16>, n: usize) {
-        if let Some(val) = val {
-            self.id.append_value_n(&val, n);
-        } else {
-            self.id.append_nulls(n);
-        }
+    pub fn append_id_n(&mut self, val: u16, n: usize) {
+        self.id.append_value_n(&val, n);
     }
 
     /// Append a value to the `name` array

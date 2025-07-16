@@ -249,7 +249,7 @@ where
                 }
             }
 
-            logs.scope.append_id_n(Some(curr_scope_id), scope_log_count);
+            logs.scope.append_id_n(curr_scope_id, scope_log_count);
             logs.scope.append_name_n(scope_name, scope_log_count);
             logs.scope.append_version_n(scope_version, scope_log_count);
             logs.scope
@@ -260,11 +260,9 @@ where
         }
 
         logs.resource
-            .append_id_n(Some(curr_resource_id), resource_log_count);
-
+            .append_id_n(curr_resource_id, resource_log_count);
         logs.resource
             .append_schema_url_n(resource_schema_url, resource_log_count);
-
         logs.resource
             .append_dropped_attributes_count_n(resource_dropped_attrs_count, resource_log_count);
     }
