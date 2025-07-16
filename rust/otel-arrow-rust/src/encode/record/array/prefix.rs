@@ -123,6 +123,10 @@ mod test {
         fn append_value(&mut self, value: &Self::Native) {
             self.builder.append_value(*value);
         }
+
+        fn append_value_n(&mut self, value: &Self::Native, n: usize) {
+            self.builder.append_value_n(*value, n);
+        }
     }
 
     impl ArrayAppendNulls for TestArrayBuilder {

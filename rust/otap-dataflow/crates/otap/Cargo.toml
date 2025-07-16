@@ -45,6 +45,7 @@ prost = "0.13.5"
 tokio-stream = "0.1.17"
 async-stream = "0.3.6"
 thiserror = { workspace = true }
+serde_cbor = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }

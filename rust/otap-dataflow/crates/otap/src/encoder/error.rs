@@ -24,3 +24,11 @@ impl From<ciborium::ser::Error<std::io::Error>> for Error {
         }
     }
 }
+
+impl From<serde_cbor::Error> for Error {
+    fn from(e: serde_cbor::Error) -> Self {
+        Self::CborError {
+            error: format!("{e}"),
+        }
+    }
+}
