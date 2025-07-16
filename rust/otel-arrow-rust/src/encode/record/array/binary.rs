@@ -28,7 +28,7 @@ impl ArrayAppend for BinaryBuilder {
     }
 
     #[inline(always)]
-    fn append_values(&mut self, value: &Self::Native, n: usize) {
+    fn append_value_n(&mut self, value: &Self::Native, n: usize) {
         for _ in 0..n {
             self.append_value(value);
         }

@@ -383,7 +383,7 @@ where
         }
     }
 
-    pub fn append_values(&mut self, value: &T, n: usize) -> Result<usize> {
+    pub fn append_value_n(&mut self, value: &T, n: usize) -> Result<usize> {
         loop {
             let append_result = match &mut self.variant {
                 DictIndexVariant::UInt8(dict_builder) => dict_builder.append_values(value, n),

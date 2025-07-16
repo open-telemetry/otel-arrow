@@ -79,7 +79,7 @@ pub trait ArrayAppend: ArrayAppendNulls {
     fn append_value(&mut self, value: &Self::Native);
 
     /// Append the value to the array builder `n` times
-    fn append_values(&mut self, value: &Self::Native, n: usize);
+    fn append_value_n(&mut self, value: &Self::Native, n: usize);
 }
 
 /// this trait implementation called by adaptive array builders on the base array builders to
@@ -255,7 +255,6 @@ where
     {
         if let Some(default_val) = default_value {
             if default_val == value {
-                // prefix.append_value();
                 return true;
             }
         }
@@ -441,12 +440,12 @@ where
         );
     }
 
-    fn append_values(&mut self, value: &Self::Native, n: usize) {
+    fn append_value_n(&mut self, value: &Self::Native, n: usize) {
         handle_append!(
             self,
-            append_values(value, n),
+            append_value_n(value, n),
             default_check = Self::is_default_value(&self.default_value, value),
-            retry = { self.append_values(value, n) }
+            retry = { self.append_value_n(value, n) }
         );
     }
 }
@@ -817,7 +816,7 @@ pub mod test {
         builder.append_null();
         builder.append_value(&values[0]);
         builder.append_nulls(2);
-        builder.append_values(&values[1], 2);
+        builder.append_value_n(&values[1], 2);
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -867,7 +866,7 @@ pub mod test {
         builder.append_null();
         builder.append_value(&values[1]);
         builder.append_nulls(2);
-        builder.append_values(&values[1], 2);
+        builder.append_value_n(&values[1], 2);
         let result = builder.finish().unwrap();
         assert_eq!(result.len(), 8);
         let array = result

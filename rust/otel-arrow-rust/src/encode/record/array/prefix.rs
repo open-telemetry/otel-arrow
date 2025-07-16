@@ -124,7 +124,7 @@ mod test {
             self.builder.append_value(*value);
         }
 
-        fn append_values(&mut self, value: &Self::Native, n: usize) {
+        fn append_value_n(&mut self, value: &Self::Native, n: usize) {
             self.builder.append_value_n(*value, n);
         }
     }

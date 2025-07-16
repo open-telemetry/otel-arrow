@@ -603,7 +603,7 @@ impl ResourceBuilder {
     /// Append the value of `id` to the builder `n` times
     pub fn append_id_n(&mut self, val: Option<u16>, n: usize) {
         if let Some(val) = val {
-            self.id.append_values(&val, n);
+            self.id.append_value_n(&val, n);
         } else {
             self.id.append_nulls(n);
         }
@@ -634,7 +634,7 @@ impl ResourceBuilder {
 
     /// Append a value to the `dropped_attributes_count` array `n` times
     pub fn append_dropped_attributes_count_n(&mut self, val: u32, n: usize) {
-        self.dropped_attributes_count.append_values(&val, n);
+        self.dropped_attributes_count.append_value_n(&val, n);
     }
 
     /// Finish this builder and build the resulting `StructArray` for the resource
@@ -723,7 +723,7 @@ impl ScopeBuilder {
     /// Append the value of `id` to the builder `n` times
     pub fn append_id_n(&mut self, val: Option<u16>, n: usize) {
         if let Some(val) = val {
-            self.id.append_values(&val, n);
+            self.id.append_value_n(&val, n);
         } else {
             self.id.append_nulls(n);
         }
@@ -772,7 +772,7 @@ impl ScopeBuilder {
 
     /// Append a value to the `dropped_attributes_count` array `n` times
     pub fn append_dropped_attributes_count_n(&mut self, val: u32, n: usize) {
-        self.dropped_attributes_count.append_values(&val, n);
+        self.dropped_attributes_count.append_value_n(&val, n);
     }
 
     /// Finish this builder and build the resulting `StructArray` for the scope
