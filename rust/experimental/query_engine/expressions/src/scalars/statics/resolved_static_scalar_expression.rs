@@ -20,9 +20,11 @@ impl ResolvedStaticScalarExpression<'_> {
             ResolvedStaticScalarExpression::Value(s) => s.to_value(),
         }
     }
+}
 
-    #[cfg(test)]
-    pub fn as_ref(&self) -> &StaticScalarExpression {
+#[cfg(test)]
+impl AsRef<StaticScalarExpression> for ResolvedStaticScalarExpression<'_> {
+    fn as_ref(&self) -> &StaticScalarExpression {
         match self {
             ResolvedStaticScalarExpression::Reference(s) => s,
             ResolvedStaticScalarExpression::Value(s) => s,
