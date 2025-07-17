@@ -12,6 +12,7 @@ COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 // Literals
 true_literal = @{ "true" }
 false_literal = @{ "false" }
+nil_literal = @{ "nil" }
 integer_literal = @{
     ("+" | "-")?
     ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
@@ -37,5 +38,6 @@ scalar_expression = {
     | float_literal
     | integer_literal
     | string_literal
+    | nil_literal
     | ("(" ~ scalar_expression ~ ")")
 }
