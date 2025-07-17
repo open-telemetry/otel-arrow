@@ -56,7 +56,6 @@ impl shared::Receiver<OtapBatch> for OTLPReceiver {
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(ControlMsg::Shutdown {..}) => {
-                            // ToDo: add proper deadline function
                             break;
                         },
                         Err(e) => {

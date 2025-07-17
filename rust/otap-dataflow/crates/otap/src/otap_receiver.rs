@@ -115,9 +115,6 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
                     .accept_compressed(encoding);
             }
 
-            // TODO add the innter and use a constructor
-            // let otlp_logs_to_otap_server = otlp::LogsServiceServer{ inner: Arc::new(()) };
-
             tokio::select! {
                 biased; //prioritize ctrl_msg over all other blocks
                 // Process internal event
@@ -140,7 +137,6 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
                 .add_service(logs_service_server)
                 .add_service(metrics_service_server)
                 .add_service(trace_service_server)
-                // .add_service(otlp_logs_to_otap_server)
                 .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(error) = result {
                         // Report receiver error

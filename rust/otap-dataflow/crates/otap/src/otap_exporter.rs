@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright The OpenTelemetry Authors
 
 //! Implementation of the OTAP exporter node
 //!
