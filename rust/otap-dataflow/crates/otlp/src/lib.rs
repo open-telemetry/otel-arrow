@@ -27,6 +27,7 @@
 /// OTLP batch processor implementation
 mod otlp_batch_processor;
 
+use crate::fake_signal_receiver::config::OTLPSignal;
 use crate::grpc::OTLPData;
 use linkme::distributed_slice;
 use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
@@ -36,7 +37,10 @@ use otap_df_engine::shared::{
 
 /// compression formats
 pub mod compression;
+/// debug exporter implementation, logs data collected in pipeline to console
 pub mod debug_exporter;
+/// fake signal receiver implementation, creates fake signals to use for pipeline testing
+pub mod fake_signal_receiver;
 /// gRPC service implementation
 pub mod grpc;
 /// otlp exporter implementation
@@ -65,6 +69,10 @@ pub static LOCAL_EXPORTERS: [LocalExporterFactory<OTLPData>] = [..];
 /// A slice of shared receiver factories for OTLP data.
 #[distributed_slice]
 pub static SHARED_RECEIVERS: [SharedReceiverFactory<OTLPData>] = [..];
+
+/// A slice of shared receiver factories for OTLP data.
+#[distributed_slice]
+pub static FAKE_SIGNAL_RECEIVERS: [SharedReceiverFactory<OTLPSignal>] = [..];
 
 /// A slice of shared processor factories for OTLP data.
 #[distributed_slice]
