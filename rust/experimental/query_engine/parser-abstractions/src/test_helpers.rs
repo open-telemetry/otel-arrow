@@ -148,7 +148,7 @@ pub mod parse_test_helpers {
         }
     }
 
-    pub fn test_parse_nil_literal<P, R>(parser_rule: R, inputs: &[&str])
+    pub fn test_parse_null_literal<P, R>(parser_rule: R, inputs: &[&str])
     where
         P: Parser<R>,
         R: RuleType,
@@ -156,11 +156,11 @@ pub mod parse_test_helpers {
         let run_test = |input: &str| {
             let mut result = P::parse(parser_rule, input).unwrap();
             let pair = result.next().unwrap();
-            let expr = parse_standard_nil_literal(pair);
+            let expr = parse_standard_null_literal(pair);
 
             match expr {
                 StaticScalarExpression::Null(_) => {} // Success!
-                _ => panic!("Unexpected type returned from parse_nil_literal, got: {expr:?}"),
+                _ => panic!("Unexpected type returned from parse_null_literal, got: {expr:?}"),
             }
         };
 

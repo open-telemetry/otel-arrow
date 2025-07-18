@@ -37,9 +37,9 @@ mod pest_tests {
     }
 
     #[test]
-    fn test_pest_nil_literal() {
+    fn test_pest_null_literal() {
         pest_test_helpers::test_pest_rule::<OttlPestParser, Rule>(
-            Rule::nil_literal,
+            Rule::null_literal,
             &["nil"],
             &["Nil", "NIL", "null", "NULL", "none", "true", "false"],
         );
@@ -117,9 +117,9 @@ mod parse_tests {
     }
 
     #[test]
-    fn test_parse_nil_literal() {
-        parse_test_helpers::test_parse_nil_literal::<OttlPestParser, Rule>(
-            Rule::nil_literal,
+    fn test_parse_null_literal() {
+        parse_test_helpers::test_parse_null_literal::<OttlPestParser, Rule>(
+            Rule::null_literal,
             &["nil"],
         );
     }
