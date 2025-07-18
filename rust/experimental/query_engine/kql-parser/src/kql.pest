@@ -57,6 +57,7 @@ identifier_or_pattern_literal = ${
 	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
     | ("[" ~ string_literal ~ "]")
 }
+null_literal = @{ "null" }
 
 // Expressions
 accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
@@ -76,6 +77,7 @@ scalar_expression = {
     | double_literal
     | integer_literal
     | string_literal
+    | null_literal
     | accessor_expression
     | ("(" ~ scalar_expression ~ ")")
     | ("(" ~ logical_expression ~ ")")

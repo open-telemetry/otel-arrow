@@ -1313,4 +1313,24 @@ mod tests {
             )),
         );
     }
+
+    #[test]
+    fn test_pest_parse_null_literal_rule() {
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+            Rule::null_literal,
+            &["null"],
+            &["NULL", "Null", "nil"],
+        );
+    }
+
+    #[test]
+    fn test_parse_null_literal() {
+        let mut result = KqlPestParser::parse(Rule::null_literal, "null").unwrap();
+        let actual = parse_standard_null_literal(result.next().unwrap());
+
+        match actual {
+            StaticScalarExpression::Null(_) => {} // Success
+            _ => panic!("Expected Null expression"),
+        }
+    }
 }

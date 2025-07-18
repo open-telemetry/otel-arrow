@@ -28,6 +28,7 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
         }
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
+        Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so
@@ -75,6 +76,7 @@ mod tests {
                 "false",
                 "(true == true)",
                 "\"hello world\"",
+                "null",
                 "variable",
                 "(1)",
                 "iff(true, 0, 1)",
@@ -170,6 +172,13 @@ mod tests {
             ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
+            ))),
+        );
+
+        run_test_success(
+            "null",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
             ))),
         );
 

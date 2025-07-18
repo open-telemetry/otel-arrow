@@ -170,6 +170,9 @@ mod tests {
                 "1 >= 1",
                 "1 < 1",
                 "1 <= 1",
+                "null == null",
+                "variable != null",
+                "null > 1",
             ],
             &[],
         );
@@ -313,6 +316,37 @@ mod tests {
                 )),
             )),
         );
+
+        run_test(
+            "variable == null",
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "variable",
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                    QueryLocation::new_fake(),
+                ))),
+            )),
+        );
+
+        run_test(
+            "null != 'hello'",
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                    )),
+                )),
+            )),
+        );
     }
 
     #[test]
@@ -328,6 +362,9 @@ mod tests {
                 "(true)",
                 "(true or variable['a'])",
                 "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)",
+                "variable == null",
+                "null != 'test' and variable == 1",
+                "field == null or field != null",
             ],
             &["!"],
         );

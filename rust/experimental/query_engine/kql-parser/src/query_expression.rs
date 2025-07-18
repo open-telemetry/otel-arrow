@@ -281,5 +281,55 @@ mod tests {
             "KS201",
             "A variable with the name 'var1' has already been declared",
         );
+
+        run_test_success(
+            "let nullVar = null;",
+            PipelineExpressionBuilder::new("let nullVar = null;")
+                .with_constants(vec![StaticScalarExpression::Null(
+                    NullScalarExpression::new(QueryLocation::new_fake()),
+                )])
+                .build()
+                .unwrap(),
+        );
+
+        run_test_success(
+            "logs | extend nullField = null",
+            PipelineExpressionBuilder::new("logs | extend nullField = null")
+                .with_constants(vec![])
+                .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
+                    SetTransformExpression::new(
+                        QueryLocation::new_fake(),
+                        ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                QueryLocation::new_fake(),
+                            )),
+                        )),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "nullField",
+                                )),
+                            )]),
+                        )),
+                    ),
+                ))])
+                .build()
+                .unwrap(),
+        );
+
+        // Simple parsing verification tests for various null scenarios
+        let result1 = parse_query("logs | where field == null", Default::default());
+        assert!(result1.is_ok(), "Should parse null comparison successfully");
+
+        let result2 = parse_query(
+            "logs | project field = iff(condition, value, null)",
+            Default::default(),
+        );
+        assert!(
+            result2.is_ok(),
+            "Should parse null in conditional successfully"
+        );
     }
 }
