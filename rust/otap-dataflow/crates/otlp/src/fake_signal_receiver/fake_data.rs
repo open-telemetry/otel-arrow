@@ -21,10 +21,24 @@ const SCOPE_NAME: &str = "fake_signal";
 /// default scope version to use for fake signals
 const SCOPE_VERSION: &str = "1.0.0";
 
+/// arrays containing values to choose from
 const TRACE_STATES: [&str; 3] = ["started", "ended", "unknown"];
-
 const SEVERITY_TEXT: [&str; 6] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
-
+const SPAN_NAMES: [&str; 6] = [
+    "dns-lookup",
+    "message-send",
+    "http-close",
+    "unknown",
+    "http-send",
+    "http-close",
+];
+const EVENT_NAMES: [&str; 5] = [
+    "unknown",
+    "message-receive",
+    "message-send",
+    "http-receive",
+    "http-send",
+];
 const SPAN_KIND: [SpanKind; 6] = [
     SpanKind::Unspecified,
     SpanKind::Internal,
@@ -33,28 +47,20 @@ const SPAN_KIND: [SpanKind; 6] = [
     SpanKind::Producer,
     SpanKind::Consumer,
 ];
-
 const SPAN_FLAGS: [SpanFlags; 4] = [
     SpanFlags::DoNotUse,
     SpanFlags::TraceFlagsMask,
     SpanFlags::ContextHasIsRemoteMask,
     SpanFlags::ContextIsRemoteMask,
 ];
-
 const STATUS_CODES: [StatusCode; 3] = [StatusCode::Unset, StatusCode::Error, StatusCode::Ok];
-
 const LOG_RECORD_FLAGS: [LogRecordFlags; 2] =
     [LogRecordFlags::DoNotUse, LogRecordFlags::TraceFlagsMask];
-
 const AGGREGATION_TEMPORALITY: [AggregationTemporality; 3] = [
     AggregationTemporality::Unspecified,
     AggregationTemporality::Delta,
     AggregationTemporality::Cumulative,
 ];
-
-// const SPAN_NAMES: [&str; 6] =
-
-// const SPAN_EVENT_NAMES: [&str; 6] =
 
 /// provide attributes for fake signals, attribute field
 #[must_use]
@@ -143,6 +149,7 @@ pub fn get_body_text() -> AnyValue {
 
     AnyValue::new_string(body)
 }
+
 /// provide data for the trace_state field
 #[must_use]
 pub fn get_trace_state() -> String {
@@ -150,11 +157,15 @@ pub fn get_trace_state() -> String {
     let option: usize = rng.random_range(0..TRACE_STATES.len());
     TRACE_STATES[option].to_string()
 }
+
 /// provide data for the span name field
 #[must_use]
 pub fn get_span_name() -> String {
-    "span_name".to_string()
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..SPAN_NAMES.len());
+    SPAN_NAMES[option].to_string()
 }
+
 /// provide data for the status field
 #[must_use]
 pub fn get_status() -> Status {
@@ -163,15 +174,15 @@ pub fn get_status() -> Status {
     let status = STATUS_CODES[option];
     Status::new(status.as_str_name(), status)
 }
+
 /// provide data for the event_name field for spans, can be an empty stream
 #[must_use]
 pub fn get_event_name() -> String {
-    if rand::random() {
-        "".to_string()
-    } else {
-        "event_name".to_string()
-    }
+    let mut rng = rand::rng();
+    let option: usize = rng.random_range(0..EVENT_NAMES.len());
+    EVENT_NAMES[option].to_string()
 }
+
 /// provide data for the time_unix_nano field
 #[must_use]
 pub fn get_time_unix_nano() -> u64 {
@@ -179,6 +190,7 @@ pub fn get_time_unix_nano() -> u64 {
     let unix_time: u64 = rng.random_range(165030000000000000..165050000000000000);
     unix_time
 }
+
 /// provide data for the start_time_unix_nano field
 #[must_use]
 pub fn get_start_time_unix_nano() -> u64 {
@@ -186,6 +198,7 @@ pub fn get_start_time_unix_nano() -> u64 {
     let unix_time: u64 = rng.random_range(165030000000000000..165040000000000000);
     unix_time
 }
+
 /// provide data for the end_time_unix_nano field
 #[must_use]
 pub fn get_end_time_unix_nano() -> u64 {
@@ -206,6 +219,7 @@ pub fn get_monotonic() -> bool {
     let is_monotonic: bool = rand::random();
     is_monotonic
 }
+
 /// provide data for the log flag field
 #[must_use]
 pub fn get_log_record_flag() -> LogRecordFlags {
@@ -213,6 +227,7 @@ pub fn get_log_record_flag() -> LogRecordFlags {
     let option: usize = rng.random_range(0..LOG_RECORD_FLAGS.len());
     LOG_RECORD_FLAGS[option]
 }
+
 /// provide data for the span flag field
 #[must_use]
 pub fn get_span_flag() -> SpanFlags {
@@ -220,6 +235,7 @@ pub fn get_span_flag() -> SpanFlags {
     let option: usize = rng.random_range(0..SPAN_FLAGS.len());
     SPAN_FLAGS[option]
 }
+
 /// provide data for the span kind field
 #[must_use]
 pub fn get_span_kind() -> SpanKind {
@@ -264,4 +280,20 @@ pub fn get_buckets() -> Buckets {
 #[must_use]
 pub fn get_int_value() -> u64 {
     rand::random()
+}
+
+/// provides vec of f64 for the buckets count
+#[must_use]
+pub fn get_explicit_bounds() -> Vec<f64> {
+    let mut rng = rand::rng();
+    let count: usize = rng.random_range(1..3);
+    rand::random_iter().take(count).collect()
+}
+
+/// provides vec of u64 for the buckets count
+#[must_use]
+pub fn get_buckets_count() -> Vec<u64> {
+    let mut rng = rand::rng();
+    let count: usize = rng.random_range(1..4);
+    rand::random_iter().take(count).collect()
 }

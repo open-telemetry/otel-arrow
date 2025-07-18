@@ -254,10 +254,14 @@ fn fake_histogram_datapoints(
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
         datapoints.push(
-            HistogramDataPoint::build(get_time_unix_nano(), [1u64, 2u64, 3u64], [1.0, 10.0])
-                .start_time_unix_nano(get_start_time_unix_nano())
-                .attributes(get_attributes(attribute_count))
-                .finish(),
+            HistogramDataPoint::build(
+                get_time_unix_nano(),
+                get_buckets_count(),
+                get_explicit_bounds(),
+            )
+            .start_time_unix_nano(get_start_time_unix_nano())
+            .attributes(get_attributes(attribute_count))
+            .finish(),
         )
     }
 
@@ -273,7 +277,7 @@ fn fake_exp_histogram_datapoints(
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
         datapoints.push(
-            ExponentialHistogramDataPoint::build(get_time_unix_nano(), 7, get_buckets())
+            ExponentialHistogramDataPoint::build(get_time_unix_nano(), 1, get_buckets())
                 .start_time_unix_nano(get_start_time_unix_nano())
                 .attributes(get_attributes(attribute_count))
                 .count(get_int_value())

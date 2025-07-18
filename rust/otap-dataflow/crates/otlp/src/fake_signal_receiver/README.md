@@ -4,8 +4,8 @@ Status: **WIP**
 
 This crate will contain the implementation of the fake signal receiver
 
-The fake signal receiver will allow users to test their pipelines by defining 
-a scenario to run, this scenario will be made up of various steps where each 
+The fake signal receiver will allow users to test their pipelines by defining
+a scenario to run, this scenario will be made up of various steps where each
 step will describe a batch of signals to send
 
 ## Example configuration

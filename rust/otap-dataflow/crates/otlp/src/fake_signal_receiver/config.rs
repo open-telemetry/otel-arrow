@@ -1,34 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Implementation of the configuration of the fake signal receiver
+//!
+
+
 use crate::fake_signal_receiver::fake_signal::{
     fake_otlp_logs,
     fake_otlp_metrics,
-    fake_otlp_traces, // fake_otlp_profiles,
+    fake_otlp_traces, 
 };
 use otel_arrow_rust::proto::opentelemetry::{
     logs::v1::LogsData,
-    metrics::v1::MetricsData, // profiles::v1development::ProfilesData,
+    metrics::v1::MetricsData,
     trace::v1::TracesData,
 };
 use serde::{Deserialize, Serialize};
-// Defines the settings of the perf exporter such as what to track
-
-// name: <scenario_name>
-// steps:
-//   - name: <step_name>
-//      type: signal | control
-//      signal_type: metric|log|span|profile
-//      batch_count: <number>
-//      delay_between_batch: <duration>
-//      metrics:
-//         attribute_count: <number>
-//         ...
-//      logs:
-//        ...
-//   - name: <another_step>
-//      ...
-// Fetch goals:
-
-// Support distributions
-//
 
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
@@ -98,25 +84,6 @@ impl ScenarioStep {
         self.delay_between_batch
     }
 }
-
-/*
-In the configuration, we should be able for each signal type to specify scenarios:
-
-Number of batches + delay between each batch
-For each batch, number of signals
-For metric signals
-Instrument
-Number of data points
-Number of attributes
-For log signals
-Number of attributes
-For spans
-Number of attributes
-Number of events
-Number of links
-For Profiles
-TBD
-*/
 
 /// configs to describe the data being generated
 #[derive(Clone, Copy, Deserialize, Serialize)]

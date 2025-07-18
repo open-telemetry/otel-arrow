@@ -6,7 +6,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::SHARED_RECEIVERS;
+use crate::FAKE_SIGNAL_RECEIVERS;
 
 use crate::fake_signal_receiver::config::{Config, OTLPSignal, ScenarioStep, SignalConfig};
 use async_trait::async_trait;
@@ -22,25 +22,25 @@ pub struct FakeSignalReceiver {
     config: Config,
 }
 
-// /// Declares the OTLP receiver as a shared receiver factory
-// ///
-// /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
-// /// This macro is part of the `linkme` crate which is considered safe and well maintained.
-// #[allow(unsafe_code)]
-// #[distributed_slice(SHARED_RECEIVERS)]
-// pub static FAKE_SIGNAL_RECEIVER: SharedReceiverFactory<OTLPSignal> = SharedReceiverFactory {
-//     name: "urn:otel:fake:signal:receiver",
-//     create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
-// };
+/// Declares the Fake Signal receiver as a shared receiver factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+#[allow(unsafe_code)]
+#[distributed_slice(FAKE_SIGNAL_RECEIVERS)]
+pub static FAKE_SIGNAL_RECEIVER: SharedReceiverFactory<OTLPSignal> = SharedReceiverFactory {
+    name: "urn:otel:fake:signal:receiver",
+    create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
+};
 
 impl FakeSignalReceiver {
-    /// creates a new OTLP Receiver
+    /// creates a new FakeSignalReceiver
     #[must_use]
     pub fn new(config: Config) -> Self {
         FakeSignalReceiver { config }
     }
 
-    /// Creates a new OTLPReceiver from a configuration object
+    /// Creates a new FakeSignalReceiver from a configuration object
     #[must_use]
     pub fn from_config(config: &Value) -> Self {
         let config: Config = serde_json::from_value(config.clone())
@@ -121,12 +121,24 @@ mod tests {
         },
         receiver::FakeSignalReceiver,
     };
-
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
     use std::future::Future;
     use std::pin::Pin;
     use tokio::time::{Duration, sleep, timeout};
+
+    const RESOURCE_COUNT: usize = 1;
+    const SPAN_COUNT: usize = 1;
+    const METRIC_COUNT: usize = 1;
+    const LOG_COUNT: usize = 1;
+    const DATAPOINT_COUNT: usize = 1;
+    const ATTRIBUTE_COUNT: usize = 1;
+    const EVENT_COUNT: usize = 1;
+    const LINK_COUNT: usize = 1;
+    const SCOPE_COUNT: usize = 1;
+    const BATCH_COUNT: u64 = 1;
+    const DELAY: u64 = 0;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario() -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -168,82 +180,85 @@ mod tests {
                 match metric_received {
                     OTLPSignal::Metric(metric) => {
                         // loop and check count
-                        let mut resource_count = 0;
-                        let mut scope_count = 0;
-                        let mut metric_count = 0;
-                        let mut datapoint_count = 0;
+                        let resource_count = metric.resource_metrics.len();
+                        assert!(resource_count == RESOURCE_COUNT);
                         for resource in metric.resource_metrics.iter() {
-                            resource_count += 1;
+                            let scope_count = resource.scope_metrics.len();
+                            assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_metrics.iter() {
-                                scope_count += 1;
+                                let metric_count = scope.metrics.len();
+                                assert!(metric_count == METRIC_COUNT);
                                 for metric_data in scope.metrics.iter() {
-                                    metric_count += 1;
-                                    for _ in metric_data.data.iter() {
-                                        datapoint_count += 1;
+                                    if let Some(data) = &metric_data.data {
+                                        match data {
+                                            Data::Gauge(gauge) => {
+                                                let datapoint_count = gauge.data_points.len();
+                                                assert!(datapoint_count == DATAPOINT_COUNT);
+                                                for datapoint in gauge.data_points.iter() {
+                                                    let attribute_count =
+                                                        datapoint.attributes.len();
+                                                    assert!(attribute_count == ATTRIBUTE_COUNT);
+                                                }
+                                            }
+                                            Data::Histogram(_histogram) => {
+                                                assert!(false, "datatype was not gauge");
+                                            }
+                                            Data::Sum(_sum) => {
+                                                assert!(false, "datatype was not gauge");
+                                            }
+                                            Data::ExponentialHistogram(_exp_histogram) => {
+                                                assert!(false, "datatype was not gauge");
+                                            }
+                                            Data::Summary(_summary) => {
+                                                assert!(false, "datatype was not gauge");
+                                            }
+                                        }
+                                    } else {
+                                        assert!(false, "data was None");
                                     }
                                 }
                             }
                         }
-
-                        assert!(resource_count == 1);
-                        assert!(scope_count == 1);
-                        assert!(metric_count == 1);
-                        assert!(datapoint_count == 1);
                     }
                     _ => assert!(false),
                 }
 
                 match trace_received {
                     OTLPSignal::Span(span) => {
-                        let mut resource_count = 0;
-                        let mut scope_count = 0;
-                        let mut span_count = 0;
-                        let mut link_count = 0;
-                        let mut event_count = 0;
-                        let mut attribute_count = 0;
+                        let resource_count = span.resource_spans.len();
+                        assert!(resource_count == RESOURCE_COUNT);
                         for resource in span.resource_spans.iter() {
-                            resource_count += 1;
+                            let scope_count = resource.scope_spans.len();
+                            assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_spans.iter() {
-                                scope_count += 1;
+                                let span_count = scope.spans.len();
+                                assert!(span_count == SPAN_COUNT);
                                 for span_data in scope.spans.iter() {
-                                    span_count += 1;
-                                    for _ in span_data.events.iter() {
-                                        event_count += 1;
-                                    }
-                                    for _ in span_data.links.iter() {
-                                        link_count += 1;
-                                    }
+                                    let event_count = span_data.events.len();
+                                    let link_count = span_data.links.len();
+                                    let attribute_count = span_data.attributes.len();
+                                    assert!(link_count == LINK_COUNT);
+                                    assert!(event_count == EVENT_COUNT);
+                                    assert!(attribute_count == ATTRIBUTE_COUNT);
                                 }
                             }
                         }
-
-                        assert!(resource_count == 1);
-                        assert!(scope_count == 1);
-                        assert!(span_count == 1);
-                        assert!(link_count == 1);
-                        assert!(event_count == 1);
                     }
                     _ => assert!(false),
                 }
 
                 match log_received {
                     OTLPSignal::Log(log) => {
-                        let mut resource_count = 0;
-                        let mut scope_count = 0;
-                        let mut log_count = 0;
+                        let resource_count = log.resource_logs.len();
+                        assert!(resource_count == RESOURCE_COUNT);
                         for resource in log.resource_logs.iter() {
-                            resource_count += 1;
+                            let scope_count = resource.scope_logs.len();
+                            assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_logs.iter() {
-                                scope_count += 1;
-                                for _ in scope.log_records.iter() {
-                                    log_count += 1;
-                                }
+                                let log_count = scope.log_records.len();
+                                assert!(log_count == LOG_COUNT);
                             }
                         }
-
-                        assert!(resource_count == 1);
-                        assert!(scope_count == 1);
-                        assert!(log_count == 1);
                     }
                     _ => assert!(false),
                 }
@@ -256,15 +271,41 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let mut steps = vec![];
-        let metric_config = MetricConfig::new(1, 1, 1, 1, MetricType::Gauge, 1);
-        let trace_config = SpanConfig::new(1, 1, 1, 1, 1, 1);
+        let metric_config = MetricConfig::new(
+            RESOURCE_COUNT,
+            SCOPE_COUNT,
+            METRIC_COUNT,
+            DATAPOINT_COUNT,
+            MetricType::Gauge,
+            ATTRIBUTE_COUNT,
+        );
+        let trace_config = SpanConfig::new(
+            RESOURCE_COUNT,
+            SCOPE_COUNT,
+            SPAN_COUNT,
+            EVENT_COUNT,
+            LINK_COUNT,
+            ATTRIBUTE_COUNT,
+        );
 
-        let log_config = LogConfig::new(1, 1, 1, 1);
+        let log_config = LogConfig::new(RESOURCE_COUNT, SCOPE_COUNT, LOG_COUNT, ATTRIBUTE_COUNT);
 
-        steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
+        steps.push(ScenarioStep::new(
+            SignalConfig::Metric(metric_config),
+            BATCH_COUNT,
+            DELAY,
+        ));
 
-        steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
-        steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
+        steps.push(ScenarioStep::new(
+            SignalConfig::Span(trace_config),
+            BATCH_COUNT,
+            DELAY,
+        ));
+        steps.push(ScenarioStep::new(
+            SignalConfig::Log(log_config),
+            BATCH_COUNT,
+            DELAY,
+        ));
         let config = Config::new("config".to_string(), steps);
 
         // create our receiver
