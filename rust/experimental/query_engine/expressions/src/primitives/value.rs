@@ -374,6 +374,12 @@ impl Value<'_> {
     }
 }
 
+impl PartialEq for Value<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        Self::are_values_equal(&QueryLocation::new_fake(), self, other, false).unwrap_or_default()
+    }
+}
+
 pub trait BooleanValue: Debug {
     fn get_value(&self) -> bool;
 
