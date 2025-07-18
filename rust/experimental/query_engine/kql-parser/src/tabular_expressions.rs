@@ -495,9 +495,9 @@ fn get_root_map_key_from_source_scalar_expression(
     if selectors.len() == 1 {
         let first = selectors.first().unwrap();
         if let Some(s) = first
-            .try_resolve_static(state.get_pipeline())
+            .try_resolve_value_type(state.get_pipeline())
             .map_err(|e| ParserError::from(&e))?
-            && let StaticScalarExpression::String(_) = s.as_ref()
+            && s == ValueType::String
         {
             return Ok(Some(first.clone()));
         } else {
@@ -514,7 +514,7 @@ fn get_root_map_key_from_source_scalar_expression(
             .unwrap()
             .try_resolve_static(state.get_pipeline())
             .map_err(|e| ParserError::from(&e))?
-            && let StaticScalarExpression::String(k) = s.as_ref()
+            && let Value::String(k) = s.to_value()
         {
             let root_key = k.get_value();
 
