@@ -32,9 +32,9 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::LocalEffectHandlerCore;
 use crate::error::Error;
-use crate::message::MessageChannel;
+use crate::message::{ControlMsg, MessageChannel, Sender};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -85,7 +85,7 @@ pub trait Exporter<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: LocalEffectHandlerCore,
 
     /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
     /// will consume.
@@ -98,7 +98,25 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn new(name: Cow<'static, str>) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: LocalEffectHandlerCore {
+                node_name: name,
+                control_sender: None,
+            },
+            _pd: PhantomData,
+        }
+    }
+
+    /// Creates a new local (!Send) `EffectHandler` with the given exporter name and control sender.
+    #[must_use]
+    pub fn with_control_sender(
+        name: Cow<'static, str>,
+        control_sender: Sender<ControlMsg>,
+    ) -> Self {
+        EffectHandler {
+            core: LocalEffectHandlerCore {
+                node_name: name,
+                control_sender: Some(control_sender),
+            },
             _pd: PhantomData,
         }
     }
@@ -109,5 +127,161 @@ impl<PData> EffectHandler<PData> {
         self.core.node_name()
     }
 
+    /// Sends an ACK control message upstream to indicate successful processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the control message could not be sent.
+    pub async fn send_ack(&self, id: u64) -> Result<(), Error<PData>> {
+        self.core.send_ack(id).await
+    }
+
+    /// Sends a NACK control message upstream to indicate failed processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the control message could not be sent.
+    pub async fn send_nack(&self, id: u64, reason: &str) -> Result<(), Error<PData>> {
+        self.core.send_nack(id, reason).await
+    }
+
     // More methods will be added in the future as needed.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{ControlMsg, Sender};
+    use otap_df_channel::mpsc;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct TestData {
+        id: u64,
+        payload: String,
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_creation() {
+        let handler = EffectHandler::<TestData>::new("test_exporter".into());
+
+        assert_eq!(handler.exporter_name(), "test_exporter");
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_with_control_sender() {
+        let (sender, _receiver) = mpsc::Channel::new(100);
+        let handler = EffectHandler::<TestData>::with_control_sender(
+            "test_exporter".into(),
+            Sender::Local(sender),
+        );
+
+        assert_eq!(handler.exporter_name(), "test_exporter");
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_ack() {
+        let (sender, receiver) = mpsc::Channel::new(100);
+        let handler = EffectHandler::<TestData>::with_control_sender(
+            "test_exporter".into(),
+            Sender::Local(sender),
+        );
+
+        let result = handler.send_ack(123).await;
+        assert!(result.is_ok());
+
+        let received_msg = receiver.recv().await.unwrap();
+        assert_eq!(received_msg, ControlMsg::Ack { id: 123 });
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_nack() {
+        let (sender, receiver) = mpsc::Channel::new(100);
+        let handler = EffectHandler::<TestData>::with_control_sender(
+            "test_exporter".into(),
+            Sender::Local(sender),
+        );
+
+        let result = handler.send_nack(456, "Test error").await;
+        assert!(result.is_ok());
+
+        let received_msg = receiver.recv().await.unwrap();
+        assert_eq!(
+            received_msg,
+            ControlMsg::Nack {
+                id: 456,
+                reason: "Test error".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_ack_no_sender() {
+        let handler = EffectHandler::<TestData>::new("test_exporter".into());
+
+        let result = handler.send_ack(123).await;
+        assert!(result.is_ok()); // Should succeed even without a control sender
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_nack_no_sender() {
+        let handler = EffectHandler::<TestData>::new("test_exporter".into());
+
+        let result = handler.send_nack(456, "Test error").await;
+        assert!(result.is_ok()); // Should succeed even without a control sender
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_exporter_name() {
+        let handler = EffectHandler::<TestData>::new("my_custom_exporter".into());
+
+        assert_eq!(handler.exporter_name(), "my_custom_exporter");
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_multiple_acks() {
+        let (sender, receiver) = mpsc::Channel::new(100);
+        let handler = EffectHandler::<TestData>::with_control_sender(
+            "test_exporter".into(),
+            Sender::Local(sender),
+        );
+
+        let result1 = handler.send_ack(111).await;
+        let result2 = handler.send_ack(222).await;
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        let received_msg1 = receiver.recv().await.unwrap();
+        let received_msg2 = receiver.recv().await.unwrap();
+
+        assert_eq!(received_msg1, ControlMsg::Ack { id: 111 });
+        assert_eq!(received_msg2, ControlMsg::Ack { id: 222 });
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_mixed_ack_nack() {
+        let (sender, receiver) = mpsc::Channel::new(100);
+        let handler = EffectHandler::<TestData>::with_control_sender(
+            "test_exporter".into(),
+            Sender::Local(sender),
+        );
+
+        let result1 = handler.send_ack(333).await;
+        let result2 = handler.send_nack(444, "Mixed test error").await;
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        let received_msg1 = receiver.recv().await.unwrap();
+        let received_msg2 = receiver.recv().await.unwrap();
+
+        assert_eq!(received_msg1, ControlMsg::Ack { id: 333 });
+        assert_eq!(
+            received_msg2,
+            ControlMsg::Nack {
+                id: 444,
+                reason: "Mixed test error".to_string(),
+            }
+        );
+    }
 }

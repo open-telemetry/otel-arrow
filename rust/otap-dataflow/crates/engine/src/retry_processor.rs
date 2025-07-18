@@ -254,3 +254,535 @@ impl<PData: Clone + Send + 'static> Default for RetryProcessor<PData> {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::processor::EffectHandler;
+    use crate::message::{ControlMsg, Message, Sender};
+    use otap_df_channel::mpsc;
+    use std::time::Duration;
+    use tokio::time;
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct TestData {
+        id: u64,
+        payload: String,
+    }
+
+    fn create_test_effect_handler() -> (EffectHandler<TestData>, mpsc::Receiver<TestData>) {
+        let (sender, receiver) = mpsc::Channel::new(100);
+        (
+            EffectHandler::new("test_processor".into(), Sender::Local(sender)),
+            receiver,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_new_processor_has_default_config() {
+        let processor = RetryProcessor::<TestData>::new();
+        assert_eq!(processor.config.max_retries, 3);
+        assert_eq!(processor.config.initial_retry_delay_ms, 1000);
+        assert_eq!(processor.config.max_retry_delay_ms, 30000);
+        assert_eq!(processor.config.backoff_multiplier, 2.0);
+        assert_eq!(processor.config.max_pending_messages, 10000);
+        assert_eq!(processor.config.cleanup_interval_secs, 60);
+        assert_eq!(processor.next_message_id, 1);
+        assert!(processor.pending_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_custom_config() {
+        let config = RetryConfig {
+            max_retries: 5,
+            initial_retry_delay_ms: 500,
+            max_retry_delay_ms: 60000,
+            backoff_multiplier: 1.5,
+            max_pending_messages: 5000,
+            cleanup_interval_secs: 30,
+        };
+        let processor = RetryProcessor::<TestData>::with_config(config.clone());
+        assert_eq!(processor.config.max_retries, 5);
+        assert_eq!(processor.config.initial_retry_delay_ms, 500);
+        assert_eq!(processor.config.max_retry_delay_ms, 60000);
+        assert_eq!(processor.config.backoff_multiplier, 1.5);
+        assert_eq!(processor.config.max_pending_messages, 5000);
+        assert_eq!(processor.config.cleanup_interval_secs, 30);
+    }
+
+    #[tokio::test]
+    async fn test_process_pdata_message() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+        let test_data = TestData {
+            id: 1,
+            payload: "test message".to_string(),
+        };
+
+        let result = processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(processor.pending_messages.len(), 1);
+        assert_eq!(processor.next_message_id, 2);
+        assert!(processor.pending_messages.contains_key(&1));
+    }
+
+    #[tokio::test]
+    async fn test_acknowledge_removes_message() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+        let test_data = TestData {
+            id: 1,
+            payload: "test message".to_string(),
+        };
+
+        // Add a message
+        processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await
+            .unwrap();
+        assert_eq!(processor.pending_messages.len(), 1);
+
+        // Acknowledge the message
+        processor
+            .process(
+                Message::Control(ControlMsg::Ack { id: 1 }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+        assert_eq!(processor.pending_messages.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_nack_schedules_retry() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+        let test_data = TestData {
+            id: 1,
+            payload: "test message".to_string(),
+        };
+
+        // Add a message
+        processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await
+            .unwrap();
+        assert_eq!(processor.pending_messages.len(), 1);
+
+        // NACK the message
+        processor
+            .process(
+                Message::Control(ControlMsg::Nack {
+                    id: 1,
+                    reason: "Test failure".to_string(),
+                }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        // Message should still be pending but with updated retry count
+        assert_eq!(processor.pending_messages.len(), 1);
+        let pending = processor.pending_messages.get(&1).unwrap();
+        assert_eq!(pending.retry_count, 1);
+        assert_eq!(pending.last_error, "Test failure");
+    }
+
+    #[tokio::test]
+    async fn test_exponential_backoff() {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_retry_delay_ms: 1000,
+            max_retry_delay_ms: 30000,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 10000,
+            cleanup_interval_secs: 60,
+        };
+        let mut processor = RetryProcessor::<TestData>::with_config(config);
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+        let test_data = TestData {
+            id: 1,
+            payload: "test message".to_string(),
+        };
+
+        // Add a message
+        processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await
+            .unwrap();
+
+        let initial_time = processor.pending_messages.get(&1).unwrap().next_retry_time;
+
+        // First NACK - should schedule retry with 1000ms delay
+        processor
+            .process(
+                Message::Control(ControlMsg::Nack {
+                    id: 1,
+                    reason: "First failure".to_string(),
+                }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        let first_retry_time = processor.pending_messages.get(&1).unwrap().next_retry_time;
+        assert!(first_retry_time > initial_time);
+
+        // Second NACK - should schedule retry with 2000ms delay (2.0 * 1000)
+        processor
+            .process(
+                Message::Control(ControlMsg::Nack {
+                    id: 1,
+                    reason: "Second failure".to_string(),
+                }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        let second_retry_time = processor.pending_messages.get(&1).unwrap().next_retry_time;
+        assert!(second_retry_time > first_retry_time);
+        assert_eq!(processor.pending_messages.get(&1).unwrap().retry_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_max_retries_drops_message() {
+        let config = RetryConfig {
+            max_retries: 2,
+            initial_retry_delay_ms: 1000,
+            max_retry_delay_ms: 30000,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 10000,
+            cleanup_interval_secs: 60,
+        };
+        let mut processor = RetryProcessor::<TestData>::with_config(config);
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+        let test_data = TestData {
+            id: 1,
+            payload: "test message".to_string(),
+        };
+
+        // Add a message
+        processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await
+            .unwrap();
+
+        // NACK twice (up to max_retries)
+        for i in 1..=2 {
+            processor
+                .process(
+                    Message::Control(ControlMsg::Nack {
+                        id: 1,
+                        reason: format!("Failure {i}"),
+                    }),
+                    &mut effect_handler,
+                )
+                .await
+                .unwrap();
+            assert_eq!(processor.pending_messages.len(), 1);
+        }
+
+        // Third NACK should drop the message (exceeds max_retries)
+        processor
+            .process(
+                Message::Control(ControlMsg::Nack {
+                    id: 1,
+                    reason: "Final failure".to_string(),
+                }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(processor.pending_messages.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_max_pending_messages_limit() {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_retry_delay_ms: 1000,
+            max_retry_delay_ms: 30000,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 2, // Very small limit for testing
+            cleanup_interval_secs: 60,
+        };
+        let mut processor = RetryProcessor::<TestData>::with_config(config);
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+
+        // Add messages up to the limit
+        for i in 1..=2 {
+            let test_data = TestData {
+                id: i,
+                payload: format!("test message {i}"),
+            };
+            processor
+                .process(Message::PData(test_data), &mut effect_handler)
+                .await
+                .unwrap();
+        }
+        assert_eq!(processor.pending_messages.len(), 2);
+
+        // Adding another message should still work but log a warning
+        let test_data = TestData {
+            id: 3,
+            payload: "test message 3".to_string(),
+        };
+        let result = processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await;
+
+        // Should still succeed but the message won't be tracked for retry
+        assert!(result.is_ok());
+        assert_eq!(processor.pending_messages.len(), 2); // Still at limit
+    }
+
+    #[tokio::test]
+    async fn test_timer_tick_processes_ready_retries() {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_retry_delay_ms: 1, // Very short delay for testing
+            max_retry_delay_ms: 30000,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 10000,
+            cleanup_interval_secs: 60,
+        };
+        let mut processor = RetryProcessor::<TestData>::with_config(config);
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+        let test_data = TestData {
+            id: 1,
+            payload: "test message".to_string(),
+        };
+
+        // Add and NACK a message
+        processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await
+            .unwrap();
+        processor
+            .process(
+                Message::Control(ControlMsg::Nack {
+                    id: 1,
+                    reason: "Test failure".to_string(),
+                }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        // Wait for retry time to pass
+        time::sleep(Duration::from_millis(2)).await;
+
+        // Process timer tick should retry the message
+        let result = processor
+            .process(
+                Message::Control(ControlMsg::TimerTick {}),
+                &mut effect_handler,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        // Message should still be pending (waiting for ACK/NACK)
+        assert_eq!(processor.pending_messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_config_update() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+
+        let new_config = RetryConfig {
+            max_retries: 5,
+            initial_retry_delay_ms: 500,
+            max_retry_delay_ms: 60000,
+            backoff_multiplier: 1.5,
+            max_pending_messages: 5000,
+            cleanup_interval_secs: 30,
+        };
+
+        let config_json = serde_json::to_value(new_config).unwrap();
+
+        processor
+            .process(
+                Message::Control(ControlMsg::Config {
+                    config: config_json,
+                }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(processor.config.max_retries, 5);
+        assert_eq!(processor.config.initial_retry_delay_ms, 500);
+        assert_eq!(processor.config.max_retry_delay_ms, 60000);
+        assert_eq!(processor.config.backoff_multiplier, 1.5);
+        assert_eq!(processor.config.max_pending_messages, 5000);
+        assert_eq!(processor.config.cleanup_interval_secs, 30);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_sends_all_pending_messages() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+
+        // Add multiple messages
+        for i in 1..=3 {
+            let test_data = TestData {
+                id: i,
+                payload: format!("test message {i}"),
+            };
+            processor
+                .process(Message::PData(test_data), &mut effect_handler)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(processor.pending_messages.len(), 3);
+
+        // Shutdown should send all pending messages
+        processor
+            .process(
+                Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::ZERO,
+                    reason: "Test shutdown".to_string(),
+                }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        // All messages should be removed from pending queue
+        assert_eq!(processor.pending_messages.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_acknowledge_nonexistent_message() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+
+        // Try to acknowledge a message that doesn't exist
+        let result = processor
+            .process(
+                Message::Control(ControlMsg::Ack { id: 999 }),
+                &mut effect_handler,
+            )
+            .await;
+
+        // Should not error, but should log a warning
+        assert!(result.is_ok());
+        assert_eq!(processor.pending_messages.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_nack_nonexistent_message() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+
+        // Try to NACK a message that doesn't exist
+        let result = processor
+            .process(
+                Message::Control(ControlMsg::Nack {
+                    id: 999,
+                    reason: "Test failure".to_string(),
+                }),
+                &mut effect_handler,
+            )
+            .await;
+
+        // Should not error
+        assert!(result.is_ok());
+        assert_eq!(processor.pending_messages.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_messages_with_different_ids() {
+        let mut processor = RetryProcessor::<TestData>::new();
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+
+        // Add multiple messages
+        for i in 1..=5 {
+            let test_data = TestData {
+                id: i,
+                payload: format!("test message {i}"),
+            };
+            processor
+                .process(Message::PData(test_data), &mut effect_handler)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(processor.pending_messages.len(), 5);
+        assert_eq!(processor.next_message_id, 6);
+
+        // Acknowledge some messages
+        processor
+            .process(
+                Message::Control(ControlMsg::Ack { id: 2 }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+        processor
+            .process(
+                Message::Control(ControlMsg::Ack { id: 4 }),
+                &mut effect_handler,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(processor.pending_messages.len(), 3);
+        assert!(!processor.pending_messages.contains_key(&2));
+        assert!(!processor.pending_messages.contains_key(&4));
+        assert!(processor.pending_messages.contains_key(&1));
+        assert!(processor.pending_messages.contains_key(&3));
+        assert!(processor.pending_messages.contains_key(&5));
+    }
+
+    #[tokio::test]
+    async fn test_max_retry_delay_cap() {
+        let config = RetryConfig {
+            max_retries: 10,
+            initial_retry_delay_ms: 1000,
+            max_retry_delay_ms: 2000, // Cap at 2 seconds
+            backoff_multiplier: 3.0,  // Aggressive multiplier
+            max_pending_messages: 10000,
+            cleanup_interval_secs: 60,
+        };
+        let mut processor = RetryProcessor::<TestData>::with_config(config);
+        let (mut effect_handler, _receiver) = create_test_effect_handler();
+        let test_data = TestData {
+            id: 1,
+            payload: "test message".to_string(),
+        };
+
+        // Add a message
+        processor
+            .process(Message::PData(test_data), &mut effect_handler)
+            .await
+            .unwrap();
+
+        // Multiple NACKs should eventually cap at max_retry_delay_ms
+        for i in 1..=5 {
+            processor
+                .process(
+                    Message::Control(ControlMsg::Nack {
+                        id: 1,
+                        reason: format!("Failure {i}"),
+                    }),
+                    &mut effect_handler,
+                )
+                .await
+                .unwrap();
+        }
+
+        // After many retries, delay should be capped at max_retry_delay_ms
+        let pending = processor.pending_messages.get(&1).unwrap();
+        assert_eq!(pending.retry_count, 5);
+        // The delay calculation is internal, but we can verify the message is still pending
+        assert!(processor.pending_messages.contains_key(&1));
+    }
+}

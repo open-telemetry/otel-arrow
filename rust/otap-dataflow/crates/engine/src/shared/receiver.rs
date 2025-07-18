@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::SharedEffectHandlerCore;
 use crate::error::Error;
 use crate::message::ControlMsg;
 use async_trait::async_trait;
@@ -82,7 +82,7 @@ impl ControlChannel {
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: SharedEffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
     msg_sender: tokio::sync::mpsc::Sender<PData>,
@@ -100,8 +100,9 @@ impl<PData> EffectHandler<PData> {
         msg_sender: tokio::sync::mpsc::Sender<PData>,
     ) -> Self {
         EffectHandler {
-            core: EffectHandlerCore {
+            core: SharedEffectHandlerCore {
                 node_name: receiver_name,
+                control_sender: None,
             },
             msg_sender,
         }

@@ -22,7 +22,7 @@ pub enum Message<PData> {
 }
 
 /// Control messages used for managing pipeline operations and node behaviors.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ControlMsg {
     /// Indicates that a downstream component (either internal or external) has reliably received
     /// and processed telemetry data.
