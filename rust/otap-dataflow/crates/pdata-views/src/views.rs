@@ -6,6 +6,7 @@
 pub mod common;
 pub mod logs;
 pub mod resource;
+pub mod trace;
 
 /// helpers for writing benchmarks against view implementations
 #[cfg(feature = "bench")]

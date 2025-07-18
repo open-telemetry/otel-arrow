@@ -5,5 +5,6 @@
 
 pub mod attributes;
 pub mod logs;
+pub mod spans;
 
 mod array;
