@@ -190,37 +190,24 @@ mod tests {
                                 assert!(metric_count == METRIC_COUNT);
                                 for metric_data in scope.metrics.iter() {
                                     if let Some(data) = &metric_data.data {
-                                        match data {
-                                            Data::Gauge(gauge) => {
-                                                let datapoint_count = gauge.data_points.len();
-                                                assert!(datapoint_count == DATAPOINT_COUNT);
-                                                for datapoint in gauge.data_points.iter() {
-                                                    let attribute_count =
-                                                        datapoint.attributes.len();
-                                                    assert!(attribute_count == ATTRIBUTE_COUNT);
-                                                }
+                                        if let Data::Gauge(gauge) = data {
+                                            let datapoint_count = gauge.data_points.len();
+                                            assert!(datapoint_count == DATAPOINT_COUNT);
+                                            for datapoint in gauge.data_points.iter() {
+                                                let attribute_count = datapoint.attributes.len();
+                                                assert!(attribute_count == ATTRIBUTE_COUNT);
                                             }
-                                            Data::Histogram(_histogram) => {
-                                                assert!(false, "datatype was not gauge");
-                                            }
-                                            Data::Sum(_sum) => {
-                                                assert!(false, "datatype was not gauge");
-                                            }
-                                            Data::ExponentialHistogram(_exp_histogram) => {
-                                                assert!(false, "datatype was not gauge");
-                                            }
-                                            Data::Summary(_summary) => {
-                                                assert!(false, "datatype was not gauge");
-                                            }
+                                        } else {
+                                            unreachable!("Wrong MetricType received");
                                         }
                                     } else {
-                                        assert!(false, "data was None");
+                                        unreachable!("Option should not be None");
                                     }
                                 }
                             }
                         }
                     }
-                    _ => assert!(false),
+                    _ => unreachable!("Signal should have been a Metric type"),
                 }
 
                 match trace_received {
@@ -244,7 +231,7 @@ mod tests {
                             }
                         }
                     }
-                    _ => assert!(false),
+                    _ => unreachable!("Signal should have been a Span type"),
                 }
 
                 match log_received {
@@ -260,7 +247,7 @@ mod tests {
                             }
                         }
                     }
-                    _ => assert!(false),
+                    _ => unreachable!("Signal should have been a Log type"),
                 }
             })
         }

@@ -3,16 +3,11 @@
 //! Implementation of the configuration of the fake signal receiver
 //!
 
-
 use crate::fake_signal_receiver::fake_signal::{
-    fake_otlp_logs,
-    fake_otlp_metrics,
-    fake_otlp_traces, 
+    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
 use otel_arrow_rust::proto::opentelemetry::{
-    logs::v1::LogsData,
-    metrics::v1::MetricsData,
-    trace::v1::TracesData,
+    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
 use serde::{Deserialize, Serialize};
 
@@ -269,6 +264,6 @@ mod tests {
         let config = Config::new("config".to_string(), steps);
         // Convert the Point to a JSON string.
         let serialized = serde_json::to_string(&config).unwrap();
-        println!("{}", serialized);
+        println!("{serialized}");
     }
 }
