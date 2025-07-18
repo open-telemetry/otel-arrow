@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::LocalEffectHandlerCore;
 use crate::error::Error;
 use crate::message::{ControlMsg, Sender};
 use async_trait::async_trait;
@@ -114,7 +114,7 @@ impl ControlChannel {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: LocalEffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
     msg_sender: Sender<PData>,
@@ -126,8 +126,9 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn new(receiver_name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
         EffectHandler {
-            core: EffectHandlerCore {
+            core: LocalEffectHandlerCore {
                 node_name: receiver_name,
+                control_sender: None,
             },
             msg_sender,
         }

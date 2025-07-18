@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::LocalEffectHandlerCore;
 use crate::error::Error;
 use crate::message::{Message, Sender};
 use async_trait::async_trait;
@@ -81,7 +81,7 @@ pub trait Processor<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: LocalEffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
     msg_sender: Sender<PData>,
@@ -93,7 +93,10 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn new(name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: LocalEffectHandlerCore {
+                node_name: name,
+                control_sender: None,
+            },
             msg_sender,
         }
     }
@@ -115,4 +118,77 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::Sender;
+    use otap_df_channel::mpsc;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct TestData {
+        id: u64,
+        payload: String,
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_creation() {
+        let (sender, _receiver) = mpsc::Channel::<TestData>::new(100);
+        let handler = EffectHandler::new("test_processor".into(), Sender::Local(sender));
+
+        assert_eq!(handler.processor_name(), "test_processor");
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_message() {
+        let (sender, receiver) = mpsc::Channel::<TestData>::new(100);
+        let handler = EffectHandler::new("test_processor".into(), Sender::Local(sender));
+
+        let test_data = TestData {
+            id: 123,
+            payload: "test message".to_string(),
+        };
+
+        let result = handler.send_message(test_data.clone()).await;
+        assert!(result.is_ok());
+
+        let received_msg = receiver.recv().await.unwrap();
+        assert_eq!(received_msg, test_data);
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_multiple_messages() {
+        let (sender, receiver) = mpsc::Channel::<TestData>::new(100);
+        let handler = EffectHandler::new("test_processor".into(), Sender::Local(sender));
+
+        let test_data1 = TestData {
+            id: 1,
+            payload: "message 1".to_string(),
+        };
+        let test_data2 = TestData {
+            id: 2,
+            payload: "message 2".to_string(),
+        };
+
+        let result1 = handler.send_message(test_data1.clone()).await;
+        let result2 = handler.send_message(test_data2.clone()).await;
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        let received_msg1 = receiver.recv().await.unwrap();
+        let received_msg2 = receiver.recv().await.unwrap();
+
+        assert_eq!(received_msg1, test_data1);
+        assert_eq!(received_msg2, test_data2);
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_processor_name() {
+        let (sender, _receiver) = mpsc::Channel::<TestData>::new(100);
+        let handler = EffectHandler::new("my_custom_processor".into(), Sender::Local(sender));
+
+        assert_eq!(handler.processor_name(), "my_custom_processor");
+    }
 }

@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::SharedEffectHandlerCore;
 use crate::error::Error;
 use crate::message::{ControlMsg, Message};
 use async_trait::async_trait;
@@ -203,7 +203,7 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: SharedEffectHandlerCore,
 
     /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
     /// will consume.
@@ -216,7 +216,25 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn new(name: Cow<'static, str>) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: SharedEffectHandlerCore {
+                node_name: name,
+                control_sender: None,
+            },
+            _pd: PhantomData,
+        }
+    }
+
+    /// Creates a new shared (Send) `EffectHandler` with the given exporter name and control sender.
+    #[must_use]
+    pub fn with_control_sender(
+        name: Cow<'static, str>,
+        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+    ) -> Self {
+        EffectHandler {
+            core: SharedEffectHandlerCore {
+                node_name: name,
+                control_sender: Some(control_sender),
+            },
             _pd: PhantomData,
         }
     }
@@ -227,5 +245,385 @@ impl<PData> EffectHandler<PData> {
         self.core.node_name()
     }
 
+    /// Sends an ACK control message upstream to indicate successful processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the control message could not be sent.
+    pub async fn send_ack(&self, id: u64) -> Result<(), Error<PData>> {
+        self.core.send_ack(id).await
+    }
+
+    /// Sends a NACK control message upstream to indicate failed processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the control message could not be sent.
+    pub async fn send_nack(&self, id: u64, reason: &str) -> Result<(), Error<PData>> {
+        self.core.send_nack(id, reason).await
+    }
+
     // More methods will be added in the future as needed.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::time;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct TestData {
+        id: u64,
+        payload: String,
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_creation() {
+        let handler = EffectHandler::<TestData>::new("test_exporter".into());
+
+        assert_eq!(handler.exporter_name(), "test_exporter");
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_with_control_sender() {
+        let (sender, _receiver) = mpsc::channel(100);
+        let handler =
+            EffectHandler::<TestData>::with_control_sender("test_exporter".into(), sender);
+
+        assert_eq!(handler.exporter_name(), "test_exporter");
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_ack() {
+        let (sender, mut receiver) = mpsc::channel(100);
+        let handler =
+            EffectHandler::<TestData>::with_control_sender("test_exporter".into(), sender);
+
+        let result = handler.send_ack(123).await;
+        assert!(result.is_ok());
+
+        let received_msg = receiver.recv().await.unwrap();
+        assert_eq!(received_msg, ControlMsg::Ack { id: 123 });
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_nack() {
+        let (sender, mut receiver) = mpsc::channel(100);
+        let handler =
+            EffectHandler::<TestData>::with_control_sender("test_exporter".into(), sender);
+
+        let result = handler.send_nack(456, "Test error").await;
+        assert!(result.is_ok());
+
+        let received_msg = receiver.recv().await.unwrap();
+        assert_eq!(
+            received_msg,
+            ControlMsg::Nack {
+                id: 456,
+                reason: "Test error".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_ack_no_sender() {
+        let handler = EffectHandler::<TestData>::new("test_exporter".into());
+
+        let result = handler.send_ack(123).await;
+        assert!(result.is_ok()); // Should succeed even without a control sender
+    }
+
+    #[tokio::test]
+    async fn test_effect_handler_send_nack_no_sender() {
+        let handler = EffectHandler::<TestData>::new("test_exporter".into());
+
+        let result = handler.send_nack(456, "Test error").await;
+        assert!(result.is_ok()); // Should succeed even without a control sender
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_creation() {
+        let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(100);
+        let (data_tx, data_rx) = mpsc::channel::<String>(100);
+
+        let channel = MessageChannel::new(control_rx, data_rx);
+
+        // Drop senders to avoid unused warnings
+        drop(control_tx);
+        drop(data_tx);
+
+        // Channel should be created successfully
+        // We can't access private fields directly, so we just verify creation succeeded
+        drop(channel);
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_recv_control_message() {
+        let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(100);
+        let (data_tx, data_rx) = mpsc::channel::<String>(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        // Send a control message
+        control_tx.send(ControlMsg::Ack { id: 123 }).await.unwrap();
+
+        // Receive the message
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::Control(ControlMsg::Ack { id }) => assert_eq!(id, 123),
+            _ => panic!("Expected ACK control message"),
+        }
+
+        drop(control_tx);
+        drop(data_tx);
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_recv_pdata_message() {
+        let (control_tx, control_rx) = mpsc::channel(100);
+        let (data_tx, data_rx) = mpsc::channel(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        let test_data = TestData {
+            id: 456,
+            payload: "test data".to_string(),
+        };
+
+        // Send a pdata message
+        data_tx.send(test_data.clone()).await.unwrap();
+
+        // Receive the message
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::PData(data) => assert_eq!(data, test_data),
+            _ => panic!("Expected PData message"),
+        }
+
+        drop(control_tx);
+        drop(data_tx);
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_control_priority() {
+        let (control_tx, control_rx) = mpsc::channel(100);
+        let (data_tx, data_rx) = mpsc::channel(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        let test_data = TestData {
+            id: 789,
+            payload: "test data".to_string(),
+        };
+
+        // Send both control and data messages
+        data_tx.send(test_data.clone()).await.unwrap();
+        control_tx.send(ControlMsg::Ack { id: 999 }).await.unwrap();
+
+        // Control message should be received first
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::Control(ControlMsg::Ack { id }) => assert_eq!(id, 999),
+            _ => panic!("Expected ACK control message first"),
+        }
+
+        // Then the data message
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::PData(data) => assert_eq!(data, test_data),
+            _ => panic!("Expected PData message second"),
+        }
+
+        drop(control_tx);
+        drop(data_tx);
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_immediate_shutdown() {
+        let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(100);
+        let (data_tx, data_rx) = mpsc::channel::<String>(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        // Send immediate shutdown (zero deadline)
+        control_tx
+            .send(ControlMsg::Shutdown {
+                deadline: Duration::ZERO,
+                reason: "Test shutdown".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Should receive shutdown immediately
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                assert_eq!(deadline, Duration::ZERO);
+                assert_eq!(reason, "Test shutdown");
+            }
+            _ => panic!("Expected Shutdown control message"),
+        }
+
+        // Further calls should return closed
+        let result = channel.recv().await;
+        assert!(result.is_err());
+
+        drop(control_tx);
+        drop(data_tx);
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_graceful_shutdown() {
+        let (control_tx, control_rx) = mpsc::channel(100);
+        let (data_tx, data_rx) = mpsc::channel(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        let test_data = TestData {
+            id: 123,
+            payload: "test data".to_string(),
+        };
+
+        // Send data message first
+        data_tx.send(test_data.clone()).await.unwrap();
+
+        // Send graceful shutdown with deadline
+        control_tx
+            .send(ControlMsg::Shutdown {
+                deadline: Duration::from_millis(100),
+                reason: "Graceful shutdown".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Should receive the data message first (draining mode)
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::PData(data) => assert_eq!(data, test_data),
+            _ => panic!("Expected PData message first"),
+        }
+
+        // Close data channel to trigger shutdown
+        drop(data_tx);
+
+        // Should receive shutdown after data is drained
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                assert_eq!(deadline, Duration::ZERO);
+                assert_eq!(reason, "Graceful shutdown");
+            }
+            _ => panic!("Expected Shutdown control message"),
+        }
+
+        drop(control_tx);
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_shutdown_deadline_expiry() {
+        let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(100);
+        let (data_tx, data_rx) = mpsc::channel::<String>(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        // Send graceful shutdown with very short deadline
+        control_tx
+            .send(ControlMsg::Shutdown {
+                deadline: Duration::from_millis(1),
+                reason: "Quick shutdown".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Wait for deadline to expire
+        time::sleep(Duration::from_millis(5)).await;
+
+        // Should receive shutdown after deadline expires
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                assert_eq!(deadline, Duration::ZERO);
+                assert_eq!(reason, "Quick shutdown");
+            }
+            _ => panic!("Expected Shutdown control message"),
+        }
+
+        drop(control_tx);
+        drop(data_tx);
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_closed_channels() {
+        let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(100);
+        let (data_tx, data_rx) = mpsc::channel::<String>(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        // Close both channels
+        drop(control_tx);
+        drop(data_tx);
+
+        // Should receive closed error
+        let result = channel.recv().await;
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            RecvError::Closed => (),
+            _ => panic!("Expected closed error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_message_channel_shutdown_discards_further_control() {
+        let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(100);
+        let (data_tx, data_rx) = mpsc::channel::<String>(100);
+
+        let mut channel = MessageChannel::new(control_rx, data_rx);
+
+        // Send shutdown
+        control_tx
+            .send(ControlMsg::Shutdown {
+                deadline: Duration::from_millis(50),
+                reason: "First shutdown".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Send another control message that should be discarded
+        control_tx.send(ControlMsg::Ack { id: 123 }).await.unwrap();
+
+        // Close data channel to trigger shutdown
+        drop(data_tx);
+
+        // Should receive only the shutdown, not the ACK
+        let result = channel.recv().await;
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Message::Control(ControlMsg::Shutdown { reason, .. }) => {
+                assert_eq!(reason, "First shutdown");
+            }
+            _ => panic!("Expected Shutdown control message"),
+        }
+
+        drop(control_tx);
+    }
 }
