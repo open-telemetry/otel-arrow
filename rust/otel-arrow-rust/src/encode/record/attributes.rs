@@ -119,14 +119,14 @@ where
     pub fn append_str(&mut self, val: &str) {
         self.value_type
             .append_value(&(AttributeValueType::Str as u8));
-        
+
         // Flush pending nulls for string array and append the actual value
         if self.pending_string_nulls > 0 {
             self.string_value.append_nulls(self.pending_string_nulls);
             self.pending_string_nulls = 0;
         }
         self.string_value.append_str(val);
-        
+
         // Increment pending nulls for all other arrays
         self.pending_int_nulls += 1;
         self.pending_double_nulls += 1;
@@ -139,14 +139,14 @@ where
     pub fn append_bool(&mut self, val: bool) {
         self.value_type
             .append_value(&(AttributeValueType::Bool as u8));
-        
+
         // Flush pending nulls for bool array and append the actual value
         if self.pending_bool_nulls > 0 {
             self.bool_value.append_nulls(self.pending_bool_nulls);
             self.pending_bool_nulls = 0;
         }
         self.bool_value.append_value(val);
-        
+
         // Increment pending nulls for all other arrays
         self.pending_string_nulls += 1;
         self.pending_int_nulls += 1;
@@ -159,14 +159,14 @@ where
     pub fn append_int(&mut self, val: i64) {
         self.value_type
             .append_value(&(AttributeValueType::Int as u8));
-        
+
         // Flush pending nulls for int array and append the actual value
         if self.pending_int_nulls > 0 {
             self.int_value.append_nulls(self.pending_int_nulls);
             self.pending_int_nulls = 0;
         }
         self.int_value.append_value(&val);
-        
+
         // Increment pending nulls for all other arrays
         self.pending_string_nulls += 1;
         self.pending_double_nulls += 1;
@@ -179,14 +179,14 @@ where
     pub fn append_double(&mut self, val: f64) {
         self.value_type
             .append_value(&(AttributeValueType::Double as u8));
-        
+
         // Flush pending nulls for double array and append the actual value
         if self.pending_double_nulls > 0 {
             self.double_value.append_nulls(self.pending_double_nulls);
             self.pending_double_nulls = 0;
         }
         self.double_value.append_value(&val);
-        
+
         // Increment pending nulls for all other arrays
         self.pending_string_nulls += 1;
         self.pending_int_nulls += 1;
@@ -199,14 +199,14 @@ where
     pub fn append_bytes(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Bytes as u8));
-        
+
         // Flush pending nulls for bytes array and append the actual value
         if self.pending_bytes_nulls > 0 {
             self.bytes_value.append_nulls(self.pending_bytes_nulls);
             self.pending_bytes_nulls = 0;
         }
         self.bytes_value.append_slice(val);
-        
+
         // Increment pending nulls for all other arrays
         self.pending_string_nulls += 1;
         self.pending_int_nulls += 1;
@@ -219,14 +219,14 @@ where
     pub fn append_slice(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Slice as u8));
-        
+
         // Flush pending nulls for ser array and append the actual value
         if self.pending_ser_nulls > 0 {
             self.ser_value.append_nulls(self.pending_ser_nulls);
             self.pending_ser_nulls = 0;
         }
         self.ser_value.append_slice(val);
-        
+
         // Increment pending nulls for all other arrays
         self.pending_string_nulls += 1;
         self.pending_int_nulls += 1;
@@ -239,14 +239,14 @@ where
     pub fn append_map(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Map as u8));
-        
+
         // Flush pending nulls for ser array and append the actual value
         if self.pending_ser_nulls > 0 {
             self.ser_value.append_nulls(self.pending_ser_nulls);
             self.pending_ser_nulls = 0;
         }
         self.ser_value.append_slice(val);
-        
+
         // Increment pending nulls for all other arrays
         self.pending_string_nulls += 1;
         self.pending_int_nulls += 1;
@@ -259,7 +259,7 @@ where
     pub fn append_empty(&mut self) {
         self.value_type
             .append_value(&(AttributeValueType::Empty as u8));
-        
+
         // For empty values, just increment pending nulls for all arrays
         self.pending_string_nulls += 1;
         self.pending_int_nulls += 1;
@@ -273,7 +273,7 @@ where
     pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
         // Ensure all arrays have the same length by bulk appending nulls where needed
         self.fill_missing_nulls();
-        
+
         let mut columns = vec![];
         let mut fields = vec![];
 
