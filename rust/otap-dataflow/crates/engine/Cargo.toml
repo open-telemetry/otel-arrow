@@ -12,6 +12,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
@@ -21,4 +24,4 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
-socket2 = "0.5.9"
+socket2 = { version = "0.6.0", features = ["all"] }

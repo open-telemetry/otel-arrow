@@ -26,7 +26,7 @@ pub enum Error {
     #[snafu(display("Cannot find column: {}", name))]
     ColumnNotFound { name: String, backtrace: Backtrace },
     #[snafu(display(
-        "Column {} data type mismatch, expect: {}, actual: {}",
+        "Column `{}` data type mismatch, expect: {}, actual: {}",
         name,
         expect,
         actual
@@ -180,6 +180,12 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Span record not found"))]
+    SpanRecordNotFound {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Record batch is in unexpected state. reason: {}", reason))]
     UnexpectedRecordBatchState {
         reason: String,
@@ -221,6 +227,25 @@ pub enum Error {
     #[snafu(display("Unsupported string dictionary key type, given: {}", data_type))]
     UnsupportedStringDictKeyType {
         data_type: DataType,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Found duplicate field name: {}", name))]
+    DuplicateFieldName {
+        name: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
+        "Invalid byte slice for ID, expect len: {} ,given len: {}",
+        expected,
+        given
+    ))]
+    InvalidId {
+        expected: usize,
+        given: usize,
         #[snafu(implicit)]
         location: Location,
     },

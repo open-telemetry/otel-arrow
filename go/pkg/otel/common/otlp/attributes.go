@@ -22,11 +22,11 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"golang.org/x/exp/constraints"
 
-	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	arrowutils "github.com/open-telemetry/otel-arrow/go/pkg/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 type (

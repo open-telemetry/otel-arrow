@@ -1,0 +1,116 @@
+// KQL Grammar is heavily influenced by the following sources:
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/KqlTokens.g4
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/Kql.g4
+
+// These two special rules, when defined, are implicitly allowed at:
+// - at every sequence (split by ~)
+// - between every repetition (+ or *)
+// Atomics (marked with @) are excluded
+// See https://pest.rs/book/grammars/syntax.html#implicit-whitespace
+WHITESPACE = _{ " " | NEWLINE }
+COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
+
+// Tokens
+minus_token = { "-" }
+plus_token = { "+" }
+positive_infinity_token = { "+inf" }
+negative_infinity_token = { "-inf" }
+equals_token = @{ "==" }
+not_equals_token = @{ "!=" }
+greater_than_token = @{ ">" ~ !"=" }
+greater_than_or_equal_to_token = @{ ">=" }
+less_than_token = @{ "<" ~ !"=" }
+less_than_or_equal_to_token = @{ "<=" }
+and_token = @{ "and" }
+or_token = @{ "or" }
+statement_end_token = { &";" }
+
+// Literals
+true_literal = @{ "true" | "True" | "TRUE" }
+false_literal = @{ "false" | "False" | "FALSE" }
+integer_literal = @{
+    "-"?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+}
+double_quote_string_char = _{
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+single_quote_string_char = _{
+    !("'" | "\\") ~ ANY
+    | "\\" ~ ("'" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+exponent_literal = { ^"e" ~ (plus_token | minus_token)? ~ integer_literal }
+double_literal = @{
+    (integer_literal ~ "." ~ integer_literal ~ exponent_literal?)
+    | (integer_literal ~ exponent_literal)
+}
+string_literal = @{
+    ("\"" ~ double_quote_string_char* ~ "\"")
+    | ("'" ~ single_quote_string_char* ~ "'")
+}
+datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
+identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+identifier_or_pattern_literal = ${
+	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
+    | ("[" ~ string_literal ~ "]")
+}
+
+// Expressions
+accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
+accessor = _{ (identifier_literal | ("[" ~ string_literal ~ "]")) ~ accessor_index? }
+accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
+
+boolean_expression = _{ true_literal | false_literal }
+real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
+datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
+conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
+
+scalar_expression = {
+    real_expression
+    | datetime_expression
+    | conditional_expression
+    | boolean_expression
+    | double_literal
+    | integer_literal
+    | string_literal
+    | accessor_expression
+    | ("(" ~ scalar_expression ~ ")")
+    | ("(" ~ logical_expression ~ ")")
+}
+
+comparison_expression = { scalar_expression ~ (equals_token|not_equals_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression }
+logical_expressions = _{ comparison_expression|scalar_expression }
+logical_expression = { logical_expressions ~ ((and_token|or_token) ~ logical_expressions)* }
+
+assignment_expression = { accessor_expression ~ "=" ~ scalar_expression }
+
+extend_expression = { "extend" ~ assignment_expression ~ ("," ~ assignment_expression)* }
+project_expression = { "project" ~ (assignment_expression|accessor_expression) ~ ("," ~ (assignment_expression|accessor_expression))* }
+project_keep_expression = { "project-keep" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
+project_away_expression = { "project-away" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
+where_expression = { "where" ~ logical_expression }
+
+tabular_expressions = _{
+    extend_expression
+    | project_expression
+    | project_keep_expression
+    | project_away_expression
+    | where_expression
+}
+
+tabular_expression = {
+    identifier_literal ~ ("|" ~ tabular_expressions)*
+}
+
+let_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
+
+query_expressions = _{
+    let_expression|tabular_expression
+}
+
+query = {
+    SOI ~ (query_expressions ~ (";" ~ query_expressions)* ~ ";"?)? ~ EOI
+}

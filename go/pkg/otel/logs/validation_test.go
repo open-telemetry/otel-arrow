@@ -25,17 +25,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/datagen"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	logsarrow "github.com/open-telemetry/otel-arrow/pkg/otel/logs/arrow"
-	logsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/logs/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	acommon "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	logsarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/logs/arrow"
+	logsotlp "github.com/open-telemetry/otel-arrow/go/pkg/otel/logs/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
 )
 
 var (
@@ -53,7 +53,7 @@ var (
 func TestLogsEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
+	entropy := datagen.NewTestEntropy()
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(5000, 100))
@@ -68,7 +68,7 @@ func TestLogsEncodingDecoding(t *testing.T) {
 func TestInvalidLogsDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
+	entropy := datagen.NewTestEntropy()
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(100, 100))
@@ -126,7 +126,7 @@ func MultiRoundOfCheckEncodeMessUpDecode(
 	t *testing.T,
 	expectedRequest plogotlp.ExportRequest,
 ) {
-	rng := rand.New(rand.NewSource(int64(rand.Uint64())))
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 100; i++ {
 		CheckEncodeMessUpDecode(t, expectedRequest, rng)

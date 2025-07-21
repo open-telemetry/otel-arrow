@@ -23,10 +23,10 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
-	transform2 "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/transform"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/events"
+	transform2 "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/transform"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/update"
 )
 
 // FieldTransform is an interface to apply a transformation to a field.

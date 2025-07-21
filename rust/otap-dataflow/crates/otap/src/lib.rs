@@ -10,6 +10,8 @@ use otap_df_engine::shared::{
     SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory,
 };
 
+/// Code for encoding OTAP batch from pdata view
+pub mod encoder;
 /// gRPC service implementation
 pub mod grpc;
 /// Implementation of OTAP Exporter that implements the exporter trait
@@ -20,6 +22,8 @@ pub mod otap_receiver;
 pub mod proto;
 
 pub mod parquet_exporter;
+
+pub mod perf_exporter;
 
 /// testing utilities
 #[cfg(test)]

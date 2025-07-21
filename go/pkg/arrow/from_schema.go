@@ -22,7 +22,7 @@ package arrow
 import (
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // FieldIDFromSchema returns the field id of a field from an Arrow schema or -AbsentFieldID

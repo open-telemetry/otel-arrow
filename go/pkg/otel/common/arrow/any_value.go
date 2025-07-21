@@ -22,10 +22,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // Constants used to identify the type of value in the union.

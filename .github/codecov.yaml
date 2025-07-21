@@ -15,10 +15,17 @@ component_management:
       name: "otel-arrow-rust"
       paths:
         - "rust/otel-arrow-rust/"
+      ignore:
+        - "rust/otel-arrow-rust/src/pdata/otlp/derive/"
+        - "rust/otel-arrow-rust/src/pdata/otlp/model/"
     - component_id: "query_abstraction"
       name: "query_abstraction"
       paths:
         - "rust/experimental/query_abstraction/"
+    - component_id: "query_engine"
+      name: "query_engine"
+      paths:
+        - "rust/experimental/query_engine/"
     - component_id: "syslog_cef_receivers"
       name: "syslog_cef_receivers"
       paths:

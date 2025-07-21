@@ -31,7 +31,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/olekukonko/tablewriter"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/stats"
 )
 
 // Section identifiers used in the benchmark output.

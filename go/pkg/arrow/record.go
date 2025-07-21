@@ -28,8 +28,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 const (
