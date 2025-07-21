@@ -1,6 +1,7 @@
 # Releasing
 
-This document describes the unified release process for both Go and Rust components in the OTel Arrow repository.
+This document describes the unified release process for both Go and Rust
+components in the OTel Arrow repository.
 
 ## Overview
 
@@ -9,13 +10,16 @@ The repository uses two GitHub Actions workflows to manage releases:
 1. **Prepare Release**: Updates versions and creates a pull request
 2. **Push Release**: Creates git tags and publishes the GitHub release
 
-This two-step process ensures that all changes are reviewed before the release is published.
+This two-step process ensures that all changes are reviewed before the release
+is published.
 
 ## Prerequisites
 
-1. **Maintainer Access**: Only repository maintainers can trigger the release workflows
+1. **Maintainer Access**: Only repository maintainers can trigger the release
+   workflows
 2. **Clean Repository**: Ensure your local repository has no uncommitted changes
-3. **Updated CHANGELOG**: Add entries to the "## Unreleased" section describing changes for the new release
+3. **Updated CHANGELOG**: Add entries to the "## Unreleased" section describing
+   changes for the new release
 
 ## Release Process
 
@@ -34,7 +38,8 @@ This two-step process ensures that all changes are reviewed before the release i
 
 ### Step 2: Run Prepare Release Workflow
 
-1. Go to the [Actions tab](https://github.com/open-telemetry/otel-arrow/actions) in the GitHub repository
+1. Go to the [Actions tab](https://github.com/open-telemetry/otel-arrow/actions)
+   in the GitHub repository
 2. Select the "Prepare Release" workflow
 3. Click "Run workflow"
 4. Fill in the required inputs:
@@ -72,11 +77,13 @@ Before making actual changes, run the workflow in dry-run mode:
 
 ### Step 6: Run Push Release Workflow
 
-1. Go to the [Actions tab](https://github.com/open-telemetry/otel-arrow/actions) in the GitHub repository
+1. Go to the [Actions tab](https://github.com/open-telemetry/otel-arrow/actions)
+   in the GitHub repository
 2. Select the "Push Release" workflow
 3. Click "Run workflow"
 4. Fill in the required inputs:
-   - **Version**: The same version number used in the prepare step (e.g., `0.40.0`)
+   - **Version**: The same version number used in the prepare step (e.g.,
+     `0.40.0`)
    - **Dry run**: Check this box to preview what will happen
 
 ### Step 7: Review Push Release Dry Run (Recommended)
@@ -111,6 +118,14 @@ The release process handles:
 - All crates under the `rust/` directory
 - Workspace and individual crate versions are updated consistently
 
+### TODO: Cargo publish to crates.io
+Currently the `push-release` workflow only updates Cargo.toml versions but does
+not publish to crates.io. We should consult with the OpenTelemetry-Rust owners
+about the best approach for publishing Rust crates. There is a [recommended
+pattern](https://docs.github.com/en/actions/how-tos/writing-workflows/building-and-testing/building-and-testing-rust#publishing-your-package-or-library-to-cratesio)
+from GitHub documentation that may require working with OpenTelemetry admins to
+add a `CRATES_IO_TOKEN` secret to be used in this workflow.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -122,7 +137,8 @@ The release process handles:
 - Commit or stash any local changes before running the workflow
 
 **"Version is not greater than last version"**
-- Ensure the new version follows semantic versioning and is greater than the current version
+- Ensure the new version follows semantic versioning and is greater than the
+  current version
 - Check existing releases to see the current version
 
 **"Workflow failed during Cargo.toml updates"**
@@ -154,9 +170,12 @@ In case the automated workflow cannot be used, you can create a manual release:
    git push origin vX.Y.Z
    ```
 4. Create a GitHub release manually
+5. <!-- TODO: Add step for manual cargo publish once implemented -->
+   Manually publish Rust crates to crates.io (once cargo publish is implemented)
 
 ## Version Strategy
 
 - All components (Go modules and Rust crates) use the same version number
 - Versions follow [Semantic Versioning](https://semver.org/)
-- Pre-release versions are not currently supported through the automated workflow
+- Pre-release versions are not currently supported through the automated
+  workflow
