@@ -44,6 +44,10 @@ name = "otlp"
 harness = false
 
 [[bench]]
+name = "otlp"
+harness = false
+
+[[bench]]
 name = "config"
 harness = false
 
