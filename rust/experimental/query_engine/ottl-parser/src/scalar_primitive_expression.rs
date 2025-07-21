@@ -37,6 +37,15 @@ mod pest_tests {
     }
 
     #[test]
+    fn test_pest_null_literal() {
+        pest_test_helpers::test_pest_rule::<OttlPestParser, Rule>(
+            Rule::null_literal,
+            &["nil"],
+            &["Nil", "NIL", "null", "NULL", "none", "true", "false"],
+        );
+    }
+
+    #[test]
     fn test_pest_integer_literal() {
         pest_test_helpers::test_pest_rule::<OttlPestParser, Rule>(
             Rule::integer_literal,
@@ -104,6 +113,14 @@ mod parse_tests {
                 ("+.5", 0.5),
                 ("123.456", 123.456),
             ],
+        );
+    }
+
+    #[test]
+    fn test_parse_null_literal() {
+        parse_test_helpers::test_parse_null_literal::<OttlPestParser, Rule>(
+            Rule::null_literal,
+            &["nil"],
         );
     }
 }
