@@ -57,7 +57,7 @@ Before making actual changes, run the workflow in dry-run mode:
    - Validate the version format and increment
    - Update all Cargo.toml files with the new version
    - Move unreleased content from CHANGELOG.md to a new release section
-   - Create a release branch (`release-vX.Y.Z`)
+   - Create a release branch (`otelbot/release-vX.Y.Z`)
    - Open a pull request with all changes
 
 ### Step 5: Review and Merge PR
@@ -135,7 +135,7 @@ If the workflow fails partway through:
 
 1. Delete the release branch if it was created:
    ```bash
-   git push origin --delete release-vX.Y.Z
+   git push origin --delete otelbot/release-vX.Y.Z
    ```
 
 2. Delete the draft release from the GitHub UI if it was created
