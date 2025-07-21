@@ -23,7 +23,7 @@ pub mod schema;
 pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum OtapBatch {
     /// Represents a batch of logs data.
@@ -200,7 +200,7 @@ const POSITION_LOOKUP: &[usize] = &[
 const UNUSED_INDEX: usize = 99;
 
 /// Store of record batches for a batch of OTAP logs data.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Logs {
     batches: [Option<RecordBatch>; 4],
 }
@@ -250,7 +250,7 @@ impl OtapBatchStore for Logs {
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
     batches: [Option<RecordBatch>; 18],
 }
@@ -367,7 +367,7 @@ impl OtapBatchStore for Metrics {
 }
 
 /// Store of record batches for a batch of OTAP traces data.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Traces {
     batches: [Option<RecordBatch>; 8],
 }
