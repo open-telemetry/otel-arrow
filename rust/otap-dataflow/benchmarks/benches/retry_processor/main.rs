@@ -80,9 +80,8 @@ fn bench_message_throughput(c: &mut Criterion) {
     // Benchmark pure success path (0% retries)
     let _ = group.throughput(Throughput::Elements(LARGE_MSG_COUNT as u64));
     let _ = group.bench_function(BenchmarkId::new("success_path", LARGE_MSG_COUNT), |b| {
+        let local = LocalSet::new();
         b.to_async(&rt).iter(|| async {
-            let local = LocalSet::new();
-
             local
                 .run_until(async {
                     let _processor = RetryProcessor::<OTLPData>::new();
@@ -109,9 +108,8 @@ fn bench_message_throughput(c: &mut Criterion) {
     let _ = group.bench_function(
         BenchmarkId::new("with_20_percent_retries", LARGE_MSG_COUNT),
         |b| {
+            let local = LocalSet::new();
             b.to_async(&rt).iter(|| async {
-                let local = LocalSet::new();
-
                 local
                     .run_until(async {
                         let config = RetryConfig {
