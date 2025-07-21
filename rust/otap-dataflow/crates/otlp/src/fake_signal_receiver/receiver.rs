@@ -12,8 +12,8 @@ use crate::fake_signal_receiver::config::{Config, OTLPSignal, ScenarioStep, Sign
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_engine::error::Error;
+use otap_df_engine::local::{LocalReceiverFactory, receiver as local};
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
@@ -22,13 +22,13 @@ pub struct FakeSignalReceiver {
     config: Config,
 }
 
-/// Declares the Fake Signal receiver as a shared receiver factory
+/// Declares the Fake Signal receiver as a local receiver factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
 #[distributed_slice(FAKE_SIGNAL_RECEIVERS)]
-pub static FAKE_SIGNAL_RECEIVER: SharedReceiverFactory<OTLPSignal> = SharedReceiverFactory {
+pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPSignal> = LocalReceiverFactory {
     name: "urn:otel:fake:signal:receiver",
     create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
 };
@@ -49,14 +49,13 @@ impl FakeSignalReceiver {
     }
 }
 
-// Use the async_trait due to the need for thread safety because of tonic requiring Send and Sync traits
-// The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
-#[async_trait]
-impl shared::Receiver<OTLPSignal> for FakeSignalReceiver {
+// We use the local version of the receiver here since we don't need to worry about Send and Sync traits
+#[async_trait( ? Send)]
+impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: shared::ControlChannel,
-        effect_handler: shared::EffectHandler<OTLPSignal>,
+        mut ctrl_msg_recv: local::ControlChannel,
+        effect_handler: local::EffectHandler<OTLPSignal>,
     ) -> Result<(), Error<OTLPSignal>> {
         //start event loop
         loop {
@@ -90,15 +89,12 @@ impl shared::Receiver<OTLPSignal> for FakeSignalReceiver {
 }
 
 /// Run the configured scenario steps
-async fn run_scenario(
-    steps: &Vec<ScenarioStep>,
-    effect_handler: shared::EffectHandler<OTLPSignal>,
-) {
+async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHandler<OTLPSignal>) {
     // loop through each step
 
     for step in steps {
         // create batches if specified
-        let batches = step.get_batches() as usize;
+        let batches = step.get_batches_to_generate() as usize;
         for _ in 0..batches {
             let signal = match step.get_config() {
                 SignalConfig::Metric(config) => OTLPSignal::Metric(config.get_signal()),
@@ -107,7 +103,7 @@ async fn run_scenario(
             };
             _ = effect_handler.send_message(signal).await;
             // if there is a delay set between batches sleep for that amount before created the next signal in the batch
-            sleep(Duration::from_millis(step.get_delay_between_batch())).await;
+            sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
         }
     }
 }
@@ -297,7 +293,7 @@ mod tests {
 
         // create our receiver
         let receiver =
-            ReceiverWrapper::shared(FakeSignalReceiver::new(config), test_runtime.config());
+            ReceiverWrapper::local(FakeSignalReceiver::new(config), test_runtime.config());
 
         // run the test
         test_runtime

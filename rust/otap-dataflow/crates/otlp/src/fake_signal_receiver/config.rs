@@ -35,29 +35,33 @@ impl Config {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ScenarioStep {
     /// delay in ms
-    #[serde(default = "default_delay_between_batches")]
-    delay_between_batch: u64,
-    #[serde(default = "default_batches")]
-    batches: u64,
+    #[serde(default = "default_delay_between_batches_ms")]
+    delay_between_batches_ms: u64,
+    #[serde(default = "default_batches_to_generate")]
+    batches_to_generate: u64,
     config: SignalConfig,
 }
 
-fn default_delay_between_batches() -> u64 {
+fn default_delay_between_batches_ms() -> u64 {
     0
 }
 
-fn default_batches() -> u64 {
+fn default_batches_to_generate() -> u64 {
     1
 }
 
 impl ScenarioStep {
     /// create a new step
     #[must_use]
-    pub fn new(config: SignalConfig, batches: u64, delay_between_batch: u64) -> Self {
+    pub fn new(
+        config: SignalConfig,
+        batches_to_generate: u64,
+        delay_between_batches_ms: u64,
+    ) -> Self {
         Self {
             config,
-            batches,
-            delay_between_batch,
+            batches_to_generate,
+            delay_between_batches_ms,
         }
     }
     /// return the configuration stored inside the scenario step
@@ -68,20 +72,21 @@ impl ScenarioStep {
 
     /// return the number of batches to generate
     #[must_use]
-    pub fn get_batches(&self) -> u64 {
-        self.batches
+    pub fn get_batches_to_generate(&self) -> u64 {
+        self.batches_to_generate
     }
 
     /// return the delay in ms
     #[must_use]
-    pub fn get_delay_between_batch(&self) -> u64 {
-        self.delay_between_batch
+    pub fn get_delay_between_batches_ms(&self) -> u64 {
+        self.delay_between_batches_ms
     }
 }
 
 /// configs to describe the data being generated
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(tag = "signal_type")]
+#[serde(rename_all = "snake_case")]
 pub enum SignalConfig {
     /// metric config
     Metric(MetricConfig),
@@ -92,6 +97,7 @@ pub enum SignalConfig {
 }
 /// Specify the datapoint type for a metric
 #[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MetricType {
     /// gauge datapoints
     Gauge,

@@ -56,6 +56,10 @@ mod mock;
 
 /// A slice of local receiver factories for OTLP data.
 #[distributed_slice]
+pub static FAKE_SIGNAL_RECEIVERS: [LocalReceiverFactory<OTLPSignal>] = [..];
+
+/// A slice of local receiver factories for OTLP data.
+#[distributed_slice]
 pub static LOCAL_RECEIVERS: [LocalReceiverFactory<OTLPData>] = [..];
 
 /// A slice of local processor factories for OTLP data.
@@ -69,10 +73,6 @@ pub static LOCAL_EXPORTERS: [LocalExporterFactory<OTLPData>] = [..];
 /// A slice of shared receiver factories for OTLP data.
 #[distributed_slice]
 pub static SHARED_RECEIVERS: [SharedReceiverFactory<OTLPData>] = [..];
-
-/// A slice of shared receiver factories for OTLP data.
-#[distributed_slice]
-pub static FAKE_SIGNAL_RECEIVERS: [SharedReceiverFactory<OTLPSignal>] = [..];
 
 /// A slice of shared processor factories for OTLP data.
 #[distributed_slice]

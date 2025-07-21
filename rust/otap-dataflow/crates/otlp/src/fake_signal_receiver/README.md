@@ -12,26 +12,25 @@ step will describe a batch of signals to send
 
 ```json
 {
-    "name": "config",
     "steps": [
         {
-            "delay_between_batch": 0,
-            "batches": 1,
+            "delay_between_batches_ms": 0,
+            "batches_to_generate": 1,
             "config": {
-                "signal_type": "Metric",
+                "signal_type": "metric",
                 "resource_count": 1,
                 "scope_count": 1,
                 "metric_count": 1,
                 "datapoint_count": 1,
-                "datapoint_type": "Gauge",
+                "datapoint_type": "gauge",
                 "attribute_count": 1
             }
         },
         {
-            "delay_between_batch": 0,
-            "batches": 1,
+            "delay_between_batches_ms": 0,
+            "batches_to_generate": 1,
             "config": {
-                "signal_type": "Span",
+                "signal_type": "span",
                 "resource_count": 1,
                 "scope_count": 1,
                 "span_count": 1,
@@ -41,16 +40,16 @@ step will describe a batch of signals to send
             }
         },
         {
-            "delay_between_batch": 0,
-            "batches": 1,
+            "delay_between_batches_ms": 0,
+            "batches_to_generate": 1,
             "config": {
-                "signal_type": "Log",
+                "signal_type": "log",
                 "resource_count": 1,
                 "scope_count": 1,
                 "log_count": 1,
                 "attribute_count": 1
             }
-        },
+        }
     ]
 }
 ```
