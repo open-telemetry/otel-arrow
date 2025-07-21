@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::{Expression, KeyValueCallback, MapValue, QueryLocation, StaticScalarExpression, Value};
+use crate::{
+    AsValue, Expression, KeyValueCallback, MapValue, QueryLocation, StaticScalarExpression, Value,
+    ValueType,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapScalarExpression {
@@ -30,6 +33,16 @@ impl Expression for MapScalarExpression {
     }
 }
 
+impl AsValue for MapScalarExpression {
+    fn get_value_type(&self) -> ValueType {
+        ValueType::Map
+    }
+
+    fn to_value(&self) -> Value {
+        Value::Map(self)
+    }
+}
+
 impl MapValue for MapScalarExpression {
     fn is_empty(&self) -> bool {
         self.value.is_empty()
@@ -43,8 +56,8 @@ impl MapValue for MapScalarExpression {
         self.value.contains_key(key)
     }
 
-    fn get(&self, key: &str) -> Option<Value> {
-        self.value.get(key).map(|v| v.to_value())
+    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)> {
+        self.value.get(key).map(|v| v as &dyn AsValue)
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {

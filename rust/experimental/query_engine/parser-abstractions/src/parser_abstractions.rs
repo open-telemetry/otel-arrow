@@ -33,6 +33,22 @@ pub fn parse_standard_bool_literal<R: RuleType>(
     StaticScalarExpression::Boolean(BooleanScalarExpression::new(query_location, value))
 }
 
+/// Parses a null literal from a Pest rule pair and returns a `StaticScalarExpression` wrapping a `NullScalarExpression`.
+/// The rule name is required to be `null_literal`.
+pub fn parse_standard_null_literal<R: RuleType>(
+    null_literal_rule: Pair<R>,
+) -> StaticScalarExpression {
+    let query_location = to_query_location(&null_literal_rule);
+    let rule_name = format!("{:?}", null_literal_rule.as_rule());
+
+    // Handle both simple and module-qualified rule names
+    if rule_name == "null_literal" || rule_name.ends_with("::null_literal") {
+        StaticScalarExpression::Null(NullScalarExpression::new(query_location))
+    } else {
+        panic!("Unexpected rule in null_literal_rule: {null_literal_rule} (rule: {rule_name})")
+    }
+}
+
 /// Parses an integer literal from a Pest rule pair and returns a `StaticScalarExpression` wrapping an `IntegerScalarExpression`.
 /// Internally represents integers as i64.
 pub fn parse_standard_integer_literal<R: RuleType>(
