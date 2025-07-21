@@ -15,22 +15,31 @@ use std::time::{Duration, Instant};
 
 /// Trait for a batch type (e.g., ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServiceRequest)
 pub trait Batch: Sized {
+    /// The resource group type for this batch
     type Resource: ResourceGroup;
+    /// Returns a mutable reference to the vector of resources in this batch
     fn resources_mut(&mut self) -> &mut Vec<Self::Resource>;
+    /// Creates a new empty batch of this type
     fn new_empty() -> Self;
 }
 
 /// Trait for a resource group (e.g., ResourceSpans, ResourceMetrics, ResourceLogs)
 pub trait ResourceGroup: Sized {
+    /// The scope group type for this resource group
     type Scope: ScopeGroup;
+    /// Returns a mutable reference to the vector of scopes in this resource group
     fn scopes_mut(&mut self) -> &mut Vec<Self::Scope>;
+    /// Creates a new instance with only the resource fields, clearing scopes
     fn take_resource_fields(&mut self) -> Self;
 }
 
 /// Trait for a scope group (e.g., ScopeSpans, ScopeMetrics, ScopeLogs)
 pub trait ScopeGroup: Sized {
+    /// The leaf item type for this scope group (spans, metrics, or log records)
     type Leaf;
+    /// Returns a mutable reference to the vector of leaf items in this scope group
     fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf>;
+    /// Creates a new instance with only the scope fields, clearing leaf items
     fn take_scope_fields(&mut self) -> Self;
 }
 
