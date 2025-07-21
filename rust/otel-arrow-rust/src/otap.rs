@@ -18,6 +18,7 @@ use crate::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts,
 };
 
+pub mod schema;
 #[allow(missing_docs)]
 pub mod transform;
 
