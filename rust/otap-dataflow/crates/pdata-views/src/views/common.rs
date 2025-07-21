@@ -12,6 +12,12 @@
 /// If lossy UTF-8 support is needed in the future, this can be reverted to `Cow<'src, str>`.
 pub type Str<'src> = &'src str;
 
+/// Trace IDs are 16 binary bytes.
+pub type TraceId = [u8; 16];
+
+/// Span IDs are 8 binary bytes.
+pub type SpanId = [u8; 8];
+
 /// View for AnyValue
 pub trait AnyValueView<'val> {
     /// The `AttributeView` type associated with this impl of the `AnyValueView` trait.
