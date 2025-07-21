@@ -1,13 +1,11 @@
-use std::fmt::Debug;
+use crate::{AsValue, ExpressionError, QueryLocation, Value};
 
-use crate::{ExpressionError, QueryLocation, Value};
-
-pub trait ArrayValue: Debug {
+pub trait ArrayValue: AsValue {
     fn is_empty(&self) -> bool;
 
     fn len(&self) -> usize;
 
-    fn get(&self, index: usize) -> Option<Value>;
+    fn get(&self, index: usize) -> Option<&(dyn AsValue + 'static)>;
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool;
 
@@ -71,7 +69,7 @@ pub(crate) fn equal_to(
                     let r = Value::are_values_equal(
                         query_location,
                         &left_value,
-                        &right_value,
+                        &right_value.to_value(),
                         case_insensitive,
                     );
                     if let Err(exp_e) = r {

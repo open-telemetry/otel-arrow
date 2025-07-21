@@ -1,4 +1,4 @@
-use crate::{StaticScalarExpression, Value, ValueType};
+use crate::{AsValue, StaticScalarExpression, Value, ValueType};
 
 #[derive(Debug)]
 pub enum ResolvedStaticScalarExpression<'a> {
@@ -6,15 +6,15 @@ pub enum ResolvedStaticScalarExpression<'a> {
     Value(StaticScalarExpression),
 }
 
-impl ResolvedStaticScalarExpression<'_> {
-    pub fn get_value_type(&self) -> ValueType {
+impl AsValue for ResolvedStaticScalarExpression<'_> {
+    fn get_value_type(&self) -> ValueType {
         match self {
             ResolvedStaticScalarExpression::Reference(s) => s.get_value_type(),
             ResolvedStaticScalarExpression::Value(s) => s.get_value_type(),
         }
     }
 
-    pub fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         match self {
             ResolvedStaticScalarExpression::Reference(s) => s.to_value(),
             ResolvedStaticScalarExpression::Value(s) => s.to_value(),

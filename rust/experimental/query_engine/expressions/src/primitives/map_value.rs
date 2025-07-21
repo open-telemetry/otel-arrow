@@ -1,15 +1,13 @@
-use std::fmt::Debug;
+use crate::{AsValue, ExpressionError, QueryLocation, Value};
 
-use crate::{ExpressionError, QueryLocation, Value};
-
-pub trait MapValue: Debug {
+pub trait MapValue: AsValue {
     fn is_empty(&self) -> bool;
 
     fn len(&self) -> usize;
 
     fn contains_key(&self, key: &str) -> bool;
 
-    fn get(&self, key: &str) -> Option<Value>;
+    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)>;
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool;
 
@@ -72,7 +70,7 @@ pub(crate) fn equal_to(
                 let r = Value::are_values_equal(
                     query_location,
                     &left_value,
-                    &right_value,
+                    &right_value.to_value(),
                     case_insensitive,
                 );
                 if let Err(exp_e) = r {

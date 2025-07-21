@@ -1,6 +1,6 @@
 use crate::{
-    Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation, ScalarExpression,
-    ValueAccessor, ValueType,
+    AsValue, Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation,
+    ScalarExpression, ValueAccessor, ValueType,
 };
 
 #[derive(Debug, Clone, PartialEq)]
