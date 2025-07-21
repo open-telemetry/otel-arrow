@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
-    name: String,
+    // A ordered list of steps defining various signals to emit
     steps: Vec<ScenarioStep>,
 }
 
@@ -34,7 +34,6 @@ impl Config {
 /// A scenario step will contain a configuration
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ScenarioStep {
-    // name: String,
     /// delay in ms
     #[serde(default = "default_delay_between_batches")]
     delay_between_batch: u64,
