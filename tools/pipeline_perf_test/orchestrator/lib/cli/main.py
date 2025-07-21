@@ -12,7 +12,7 @@ This module handles:
 from lib.cli.parser import build_parser
 from lib.runner.schema.loader import load_config_from_file
 from lib.runner.factory import build_test_suite
-from lib.cli.telemetry import setup_telemetry
+from lib.cli.telemetry import setup_telemetry, TelemetryClient
 
 # Trigger all the default strategy / action registrations
 # pylint: disable=unused-import
@@ -38,6 +38,23 @@ def main():
     ts = build_test_suite(tsc, tr, args)
 
     ts.run()
+
+    if args.print_spans or args.print_events or args.print_metrics:
+        import pandas as pd
+
+        pd.set_option("display.max_columns", None)
+        pd.set_option("display.max_rows", None)
+        pd.set_option("display.max_colwidth", 150)
+        tc: TelemetryClient = ts.context.get_telemetry_client()
+        if args.print_spans:
+            print(tc.spans.query_spans().to_string())
+        if args.print_events:
+            events = tc.spans.query_span_events(
+                where=lambda df: df[df["name"] != "log"]
+            )
+            print(events)
+        if args.print_metrics:
+            print(tc.metrics.query_metrics().to_string())
 
 
 if __name__ == "__main__":
