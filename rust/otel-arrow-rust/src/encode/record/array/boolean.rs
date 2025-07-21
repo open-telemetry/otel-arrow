@@ -63,7 +63,7 @@ impl AdaptiveBooleanArrayBuilder {
     }
 
     /// Append `n` nulls to the builder
-    fn append_nulls(&mut self, n: usize) {
+    pub(crate) fn append_nulls(&mut self, n: usize) {
         match self.inner.as_mut() {
             Some(builder) => builder.append_nulls(n),
             None => self.nulls_prefix += n,
