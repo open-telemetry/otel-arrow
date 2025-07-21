@@ -4,11 +4,12 @@
 
 OpenTelemetry Protocol with Apache Arrow (OTAP) maintains per-stream state (schemas, dictionaries, other compression metadata) to reduce wire size; longer-lived streams generally compress better but accumulate memory and require coordination when recycled.
 
-In thread-per-core architectures that use `SO_REUSEPORT`, the kernel creates an independent accept queue per listening socket and selects a socket using a hash of the 4-tuple (src/dst IP, src/dst port), reducing accept contention but making distribution dependent on connection diversity.
+In thread-per-core architectures using `SO_REUSEPORT`, the kernel creates an independent accept queue per listening socket and selects a socket based on a hash of the connection 4-tuple (source/destination IP, source/destination port). This approach reduces accept contention but makes load distribution dependent on connection diversity.
 
-Because gRPC multiplexes many logical calls (and bidirectional streaming RPCs) over a single HTTP/2 (hence single TCP) connection, an insufficient number of client connections can concentrate traffic on one reuseport bucket (one core) behind an L4 balancer. L7 (HTTP/2-aware) load balancing or deliberate client fan-out is needed for finer distribution.
+Since gRPC multiplexes multiple logical calls (including bidirectional streaming RPCs) over a single HTTP/2 (and thus single TCP) connection, too few client connections can cause traffic to concentrate on a single reuseport bucket (one core) behind an L4 balancer. Fine-grained distribution requires either L7 (HTTP/2-aware) load balancing or deliberate client fan-out.
 
-Addressing these interactions is essential for reliable scalability. This document outlines the problems, trade-offs, and practical mitigations for both exporters and servers. 
+Addressing these interactions is crucial for reliable scalability. This document outlines the associated challenges, trade-offs, and practical mitigations for both exporters and servers.
+
 
 ## Key Challenges
 
@@ -29,7 +30,7 @@ Addressing these interactions is essential for reliable scalability. This docume
 
 ### 1. Client‑Side Techniques (Exporter)
 
-| Technique                                                                | Purpose                                                                                                                                                                                                                           | Caveats                                                                                                                               |
+| Technique                                                                | Purpose                                                                                                                                                                                                                           | Considerations                                                                                                                        |
 | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **Increase connection fan-out** (`num_streams` / multiple gRPC channels) | Create multiple concurrent TCP connections so reuseport has entropy; improves distribution and concurrency headroom. Start near `max(1, CPUs/2)` (current `otelarrowexporter` default) and tune; cap for TLS / resource overhead. | More channels consume sockets, TLS handshakes, and exporter CPU; too many can hurt compression efficiency because state is sharded.   |
 | **Client-side gRPC load-balancing policy** (`round_robin`, etc.)         | Ensure channels spread across backend endpoints (or front-end L7 proxies) instead of `pick_first` pinning. OTEL-Arrow exporter defaults to `round_robin`.                                                                         | Requires name resolution / endpoint list; risk of thundering herd on endpoint change if misconfigured.                                |
@@ -43,11 +44,11 @@ Addressing these interactions is essential for reliable scalability. This docume
 
 #### 2.a. Custom `SO_REUSEPORT` BPF Selection
 
-We can attach an eBPF program (`SO_ATTACH_REUSEPORT_EBPF` / `BPF_PROG_TYPE_SK_REUSEPORT`) to influence how the kernel selects a listener within a reuseport group. Practical uses include introducing randomization, weighting sockets, or incorporating additional header bits when the default hash produces skew.
+An eBPF program (`SO_ATTACH_REUSEPORT_EBPF` / `BPF_PROG_TYPE_SK_REUSEPORT`) can be attached to influence kernel listener selection within a reuseport group. Practical uses include adding randomization, weighting sockets, or leveraging additional header information to mitigate distribution skew.
 
 #### 2.b. Front-End **L7 (HTTP/2-aware) Load Balancer**
 
-Place an Envoy, NGINX, or similar proxy that terminates HTTP/2/TLS and re-establishes backend connections; the proxy can distribute individual gRPC calls/streams across backends, overcoming L4 connection pinning. This is the recommended approach when fine-grained load balance for long-lived streaming RPCs is required.
+Deploying an HTTP/2-aware proxy (e.g. Envoy, NGINX) that terminates HTTP/2/TLS and creates new backend connections enables finer distribution of individual gRPC calls/streams, effectively addressing L4 connection pinning. This is the recommended approach for achieving balanced load distribution of long-lived streaming RPCs.
 
 > **Tip:** If you already run a thread-per-core backend behind the proxy, you typically expose *one* service port and rely on reuseport behind the proxy; per-core port sharding is rarely needed.
 
@@ -58,33 +59,26 @@ Sockmap/SK_MSG programs can redirect application payloads between established so
 
 ## Recommended Baseline Configuration
 
-1. **Per‑CPU listener sockets** (one per core) created with `SO_REUSEPORT`.
-2. **Exporter** opens 8-16 connections per pipeline, spread across interfaces if possible.
-3. **Stream‑reset interval**: start at 30 s; monitor dictionary growth and tune.
-4. **Observability**: scrape per‑listener QPS & latency; if >20 % skew persists, enable eBPF approach or introduce an L7 LB.
-
-## Recommended Baseline Configuration
-
-1. **Per-CPU listener sockets** using `SO_REUSEPORT` (one service port; 1 socket per core / worker) to reduce accept contention and improve locality.  
-2. **Exporter connection fan-out:** start with exporter `num_streams ≈ max(1, CPUs/2)` (current default) and measure; scale up if per-listener skew persists and resources allow.   
-3. **Stream recycle:** begin with `max_stream_lifetime` in the 30s–2m range; lengthen for better compression if memory allows; shorten if you need faster rebalancing or to stay within proxy keepalive limits. Coordinate with server `keepalive` & `max_connection_age`.  
-4. **Observability:** scrape per-listener connection counts, QPS, latency to detect skew and compression efficiency; alert when any listener deviates >X% from median (choose X per SLO, e.g. 20%).
+1. **Per-CPU listener sockets:** Use `SO_REUSEPORT` (one service port; one socket per core/worker) to reduce accept contention and improve CPU locality.  
+2. **Exporter connection fan-out:** Begin with `num_streams ≈ max(1, CPUs/2)` (current default); monitor and adjust upward if skew persists and resources permit.  
+3. **Stream recycling:** Start with `max_stream_lifetime` set between 30 seconds and 2 minutes; lengthen this interval for improved compression if memory allows, or shorten it to rebalance faster or respect proxy keepalive constraints. Align with server-side settings like `keepalive` and `max_connection_age`.  
+4. **Observability:** Monitor per-listener connection counts, QPS, latency, and compression efficiency; alert when deviation exceeds acceptable thresholds (e.g. >20% from median) aligned with your Service Level Objectives (SLOs).
 
 
 ## Future Work
 
-* Adaptive autotuning of stream‑reset interval and connection fan‑out based on live metrics.
+* Adaptive autotuning of stream reset intervals and connection fan-out based on live operational metrics.
 * Prototype & benchmark eBPF hash strategies.
-* Investigate **hot‑stream migration** without full TCP reconnect (protocol extension): explore techniques to shift an active OTAP gRPC stream to a new listener/core so load can be rebalanced without forcing the exporter to reconnect or replay its Arrow dictionaries.
+* Investigate **hot-stream migration** without a full TCP reconnect (protocol extension): explore methods for shifting active OTAP gRPC streams to new listeners/cores, allowing load rebalancing without forcing exporters to reconnect or resend Arrow dictionaries.
 
 
 ## Appendix - Why *Not* a Single Accept Listener?
 
-* **CPU & lock contention:** A shared accept queue forces synchronization across workers and can skew load, especially with epoll LIFO behavior that feeds the busiest worker.
+* **CPU & lock contention:** A shared accept queue forces synchronization among workers, potentially skewing load distribution particularly when combined with epoll’s LIFO behavior, which preferentially feeds the busiest worker.
 * **Locality & scalability:** Per-socket queues improve packet locality and reduce cross-CPU bouncing, aiding multicore scaling (NUMA). 
-* **Extra syscalls**: passing accepted sockets to workers adds overhead.
+* **Extra syscalls:** Passing accepted sockets between workers introduces unnecessary syscall overhead.
 * **Global back‑pressure**: one slow worker stalls all new connections.
-* **Redundant engineering**: you end up reinventing what `SO_REUSEPORT` already offers.
+* **Redundant engineering:** Duplicates functionality already efficiently provided by `SO_REUSEPORT`.
 * **Failure risk**: single point of failure—if the acceptor crashes, all new connections stall.
 
 
