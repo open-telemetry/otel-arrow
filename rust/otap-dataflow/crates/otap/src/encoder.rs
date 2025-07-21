@@ -447,7 +447,6 @@ where
                     }
                 }
 
-
                 for log_record in log_records_slice {
                     let mut log_attrs_count = 0;
                     for kv in log_record
