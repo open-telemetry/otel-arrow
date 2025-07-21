@@ -41,7 +41,7 @@
       // it is very rare to have issues with these upgrades
       // fine to take them together
       "groupName": "github workflow dependencies",
-      "matchFileNames": [".github/workflows/*.yml"],
+      "matchFileNames": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
       "schedule": [
         "before 8am on Monday"
       ]
