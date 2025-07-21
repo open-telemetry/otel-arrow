@@ -7,3 +7,12 @@ go:
 ci/cd:
 - changed-files:
   - any-glob-to-any-file: '.github/**/*'
+query-engine:
+- changed-files:
+  - any-glob-to-any-file: 'rust/experimental/query_engine/**/*'
+query-engine-kql:
+- changed-files:
+  - any-glob-to-any-file: 'rust/experimental/query_engine/kql-parser/**/*'
+query-engine-ottl:
+- changed-files:
+  - any-glob-to-any-file: 'rust/experimental/query_engine/ottl-parser/**/*'
