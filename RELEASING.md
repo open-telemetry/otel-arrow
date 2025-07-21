@@ -29,7 +29,7 @@ is published.
 
    ```markdown
    ## Unreleased
-   
+
    - Add your changes here
    - Include PR references: [#123](https://github.com/open-telemetry/otel-arrow/pull/123)
    - Follow the existing format
