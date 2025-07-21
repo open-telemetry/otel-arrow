@@ -26,6 +26,7 @@ is published.
 ### Step 1: Prepare Release Content
 
 1. Ensure the `CHANGELOG.md` file has content under the "## Unreleased" section:
+
    ```markdown
    ## Unreleased
    
@@ -102,6 +103,7 @@ Before publishing the release, run the push workflow in dry-run mode:
    - Make the release available to users
 
 This will automatically create the necessary git tags:
+
 - `v0.40.0` (main release tag)
 - `go/v0.40.0` (Go module tag)
 - `collector/cmd/otelarrowcol/v0.40.0` (collector module tag)
@@ -111,14 +113,17 @@ This will automatically create the necessary git tags:
 The release process handles:
 
 **Go Modules:**
+
 - `github.com/open-telemetry/otel-arrow/go`
 - `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol`
 
 **Rust Crates:**
+
 - All crates under the `rust/` directory
 - Workspace and individual crate versions are updated consistently
 
 ### TODO: Cargo publish to crates.io
+
 Currently the `push-release` workflow only updates Cargo.toml versions but does
 not publish to crates.io. We should consult with the OpenTelemetry-Rust owners
 about the best approach for publishing Rust crates. There is a [recommended
@@ -130,18 +135,22 @@ add a `CRATES_IO_TOKEN` secret to be used in this workflow.
 
 ### Common Issues
 
-**"No unreleased content found in CHANGELOG.md"**
+#### "No unreleased content found in CHANGELOG.md"**
+
 - Add content to the "## Unreleased" section before running the workflow
 
-**"Repository has uncommitted changes"**
+#### "Repository has uncommitted changes"**
+
 - Commit or stash any local changes before running the workflow
 
-**"Version is not greater than last version"**
+#### "Version is not greater than last version"**
+
 - Ensure the new version follows semantic versioning and is greater than the
   current version
 - Check existing releases to see the current version
 
-**"Workflow failed during Cargo.toml updates"**
+#### "Workflow failed during Cargo.toml updates"**
+
 - Verify that all Cargo.toml files in the rust/ directory are properly formatted
 - Check for any syntax errors in Cargo.toml files
 
@@ -150,6 +159,7 @@ add a `CRATES_IO_TOKEN` secret to be used in this workflow.
 If the workflow fails partway through:
 
 1. Delete the release branch if it was created:
+
    ```bash
    git push origin --delete otelbot/release-vX.Y.Z
    ```
@@ -165,10 +175,12 @@ In case the automated workflow cannot be used, you can create a manual release:
 1. Update all Cargo.toml files manually
 2. Update CHANGELOG.md
 3. Create and push appropriate git tags:
+
    ```bash
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
    git push origin vX.Y.Z
    ```
+
 4. Create a GitHub release manually
 5. <!-- TODO: Add step for manual cargo publish once implemented -->
    Manually publish Rust crates to crates.io (once cargo publish is implemented)
