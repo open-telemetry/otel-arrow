@@ -11,8 +11,12 @@
     "docker:pinDigests",
     "helpers:pinGitHubActionDigestsToSemver"
   ],
-  // this directory has generated code, don't send updates to it
-  "ignorePaths": ["collector/cmd/otelarrowcol/**"],
+  "ignorePaths": [
+    // this directory has generated code, don't send updates to it
+    "collector/cmd/otelarrowcol/**",
+    // this reference implementation has been removed from our build pipelines
+    "rust/beaubourg/**"
+  ],
   "packageRules": [
     {
       // reduces the number of Renovate PRs
@@ -41,7 +45,7 @@
       // it is very rare to have issues with these upgrades
       // fine to take them together
       "groupName": "github workflow dependencies",
-      "matchFileNames": [".github/workflows/*.yml"],
+      "matchFileNames": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
       "schedule": [
         "before 8am on Monday"
       ]
