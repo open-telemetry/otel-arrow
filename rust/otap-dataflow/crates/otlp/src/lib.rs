@@ -24,9 +24,6 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-/// OTLP batch processor implementation
-mod otlp_batch_processor;
-
 use crate::grpc::OTLPData;
 use linkme::distributed_slice;
 use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
@@ -39,6 +36,10 @@ pub mod compression;
 pub mod debug_exporter;
 /// gRPC service implementation
 pub mod grpc;
+/// OTLP Batch Processor implementation
+pub mod otlp_batch_processor;
+pub use otlp_batch_processor::{ExportTraceServiceRequest, HierarchicalBatchSplit};
+
 /// otlp exporter implementation
 pub mod otlp_exporter;
 /// Implementation of OTLP Receiver that implements the receiver trait
