@@ -24,6 +24,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::string_literal => {
             ScalarExpression::Static(parse_standard_string_literal(scalar_rule))
         }
+        Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, _state)?,
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
@@ -84,6 +85,13 @@ mod tests {
             ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
+            ))),
+        );
+
+        run_test_success(
+            "nil",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
             ))),
         );
     }
