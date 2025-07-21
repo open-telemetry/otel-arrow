@@ -43,8 +43,8 @@ impl FakeSignalReceiver {
     /// Creates a new FakeSignalReceiver from a configuration object
     #[must_use]
     pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone())
-            .unwrap_or_else(|_| Config::new(String::new(), vec![]));
+        let config: Config =
+            serde_json::from_value(config.clone()).unwrap_or_else(|_| Config::new(vec![]));
         FakeSignalReceiver { config }
     }
 }
@@ -293,7 +293,7 @@ mod tests {
             BATCH_COUNT,
             DELAY,
         ));
-        let config = Config::new("config".to_string(), steps);
+        let config = Config::new(steps);
 
         // create our receiver
         let receiver =

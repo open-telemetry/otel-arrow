@@ -3,6 +3,7 @@
 //!
 //! The fake signal module provides methods for generating OTLP signals for testing
 //!
+//! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 
 use crate::fake_signal_receiver::config::MetricType;
 use crate::fake_signal_receiver::fake_data::*;

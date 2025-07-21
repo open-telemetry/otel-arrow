@@ -21,8 +21,8 @@ pub struct Config {
 impl Config {
     /// Create a new config given a name and a vector of scenario steps
     #[must_use]
-    pub fn new(name: String, steps: Vec<ScenarioStep>) -> Self {
-        Self { name, steps }
+    pub fn new(steps: Vec<ScenarioStep>) -> Self {
+        Self { steps }
     }
     /// Provide a reference to the vector of scenario steps
     #[must_use]
@@ -260,7 +260,7 @@ mod tests {
         steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
         steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
 
-        let config = Config::new("config".to_string(), steps);
+        let config = Config::new(steps);
         // Convert the Point to a JSON string.
         let serialized = serde_json::to_string(&config).unwrap();
         println!("{serialized}");
