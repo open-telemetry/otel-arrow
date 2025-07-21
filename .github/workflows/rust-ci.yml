@@ -26,7 +26,6 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - beaubourg
           - otel-arrow-rust
           - experimental/query_abstraction
           - experimental/query_engine
@@ -64,7 +63,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
@@ -91,7 +89,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
@@ -109,13 +106,8 @@ jobs:
           toolchain: stable
           components: clippy
       - name: cargo clippy ${{ matrix.folder }}
-        # beaubourg is a reference implementation without active development, so don't break the build on warnings
         run: |
-          if [ "${{ matrix.folder }}" = "beaubourg" ]; then
-            cargo clippy --all-targets --all-features --workspace
-          else
-            cargo clippy --all-targets --all-features --workspace -- -D warnings
-          fi
+          cargo clippy --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
   deny:
@@ -124,7 +116,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
@@ -171,7 +162,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
@@ -197,7 +187,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
