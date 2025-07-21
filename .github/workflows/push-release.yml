@@ -39,7 +39,7 @@ jobs:
             echo "Make sure you have run the 'Prepare Release' workflow and merged the PR first"
             exit 1
           fi
-          
+
           # Check if repository is clean
           if [ -n "$(git status --porcelain)" ]; then
             echo "Error: Repository has uncommitted changes"
@@ -66,7 +66,7 @@ jobs:
         run: |
           LAST_VERSION="${{ steps.last_version.outputs.last_version }}"
           NEW_VERSION="${{ inputs.version }}"
-          
+
           # Simple version comparison (assumes semantic versioning)
           if [ "$LAST_VERSION" != "0.0.0" ]; then
             if ! printf '%s\n%s\n' "$LAST_VERSION" "$NEW_VERSION" | sort -V -C; then
@@ -91,12 +91,12 @@ jobs:
             if (/^## \[/) exit
             print
           }" CHANGELOG.md | sed '/^$/d')
-          
+
           if [ -z "$RELEASE_CONTENT" ]; then
             echo "Error: No release content found for version ${{ inputs.version }} in CHANGELOG.md"
             exit 1
           fi
-          
+
           # Save to file for later use
           echo "$RELEASE_CONTENT" > /tmp/release_content.txt
           echo "Found release content:"
@@ -138,14 +138,14 @@ jobs:
           # Configure git
           git config user.name otelbot
           git config user.email 197425009+otelbot@users.noreply.github.com
-          
+
           # Create main release tag
           git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
-          
+
           # Create Go module tags
           git tag -a "go/v${{ inputs.version }}" -m "Release go/v${{ inputs.version }}"
           git tag -a "collector/cmd/otelarrowcol/v${{ inputs.version }}" -m "Release collector/cmd/otelarrowcol/v${{ inputs.version }}"
-          
+
           echo "Created tags:"
           git tag --list "v${{ inputs.version }}"
           git tag --list "*v${{ inputs.version }}"
@@ -157,7 +157,7 @@ jobs:
           git push origin "v${{ inputs.version }}"
           git push origin "go/v${{ inputs.version }}"
           git push origin "collector/cmd/otelarrowcol/v${{ inputs.version }}"
-          
+
           echo "Pushed tags:"
           echo "- v${{ inputs.version }}"
           echo "- go/v${{ inputs.version }}"
@@ -171,22 +171,22 @@ jobs:
           # Create release body content
           cat > /tmp/release_body.md << 'EOF'
           ## What's Changed
-          
+
           $(cat /tmp/release_content.txt)
-          
+
           **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${{ steps.last_version.outputs.last_version }}...v${{ inputs.version }}
-          
+
           ## Go Modules
-          
+
           This release includes the following Go modules:
           - `github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}`
           - `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}`
-          
+
           ## Rust Crates
-          
+
           All Rust crates under the `rust/` directory have been updated to version `${{ inputs.version }}`.
           EOF
-          
+
           # Create the GitHub release using GitHub CLI
           gh release create "v${{ inputs.version }}" \
             --title "Release v${{ inputs.version }}" \
@@ -197,11 +197,11 @@ jobs:
       - name: Summary
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "✅ Dry run completed successfully"
+            echo ":heavy_check_mark: Dry run completed successfully"
             echo "No changes were made to the repository"
             echo "Review the planned changes above and run again without dry-run when ready"
           else
-            echo "✅ Release published successfully"
+            echo ":heavy_check_mark: Release published successfully"
             echo ""
             echo "Release details:"
             echo "- Version: v${{ inputs.version }}"

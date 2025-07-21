@@ -31,7 +31,7 @@ jobs:
             echo "Error: Version must be in format X.Y.Z (e.g., 0.40.0)"
             exit 1
           fi
-          
+
           # Check if repository is clean
           if [ -n "$(git status --porcelain)" ]; then
             echo "Error: Repository has uncommitted changes"
@@ -58,7 +58,7 @@ jobs:
         run: |
           LAST_VERSION="${{ steps.last_version.outputs.last_version }}"
           NEW_VERSION="${{ inputs.version }}"
-          
+
           # Simple version comparison (assumes semantic versioning)
           if [ "$LAST_VERSION" != "0.0.0" ]; then
             if ! printf '%s\n%s\n' "$LAST_VERSION" "$NEW_VERSION" | sort -V -C; then
@@ -75,19 +75,19 @@ jobs:
             echo "Error: CHANGELOG.md not found"
             exit 1
           fi
-          
+
           # Get unreleased content
           UNRELEASED_CONTENT=$(awk '/^## Unreleased/,/^## \[/ {
             if (/^## Unreleased/) next
             if (/^## \[/) exit
             print
           }' CHANGELOG.md | sed '/^$/d')
-          
+
           if [ -z "$UNRELEASED_CONTENT" ]; then
             echo "Error: No unreleased content found in CHANGELOG.md"
             exit 1
           fi
-          
+
           # Save to file for later use
           echo "$UNRELEASED_CONTENT" > /tmp/changelog_content.txt
           echo "Found changelog content:"
@@ -109,13 +109,13 @@ jobs:
             echo "Updating $file"
             # Update version in [package] section
             sed -i.bak "s/^version = \"[^\"]*\"/version = \"${{ inputs.version }}\"/" "$file"
-            
+
             # Also update workspace version if it exists
             sed -i.bak "s/^version = \"[^\"]*\"/version = \"${{ inputs.version }}\"/" "$file"
-            
+
             # Clean up backup files
             rm -f "$file.bak"
-            
+
             echo "Updated $file to version ${{ inputs.version }}"
           done < /tmp/cargo_files.txt
 
@@ -124,25 +124,25 @@ jobs:
           # Create new changelog with release section
           RELEASE_DATE=$(date -u +"%Y-%m-%d")
           NEW_VERSION="${{ inputs.version }}"
-          
+
           # Create temporary file with new content
           {
             # Keep everything up to ## Unreleased
             awk '/^## Unreleased/ {print; exit}' CHANGELOG.md
             echo ""
-            
+
             # Add new release section
             echo "## [${NEW_VERSION}](https://github.com/open-telemetry/otel-arrow/releases/tag/v${NEW_VERSION}) - ${RELEASE_DATE}"
             echo ""
-            
+
             # Add unreleased content
             cat /tmp/changelog_content.txt
             echo ""
-            
+
             # Add rest of changelog (starting from first existing release)
             awk '/^## \[.*\]/ {found=1} found {print}' CHANGELOG.md
           } > CHANGELOG.md.tmp
-          
+
           mv CHANGELOG.md.tmp CHANGELOG.md
           echo "Updated CHANGELOG.md with release $NEW_VERSION"
 
@@ -156,9 +156,9 @@ jobs:
           echo "- Last version: ${{ steps.last_version.outputs.last_version }}"
           echo ""
           echo "Git diff:"
-          
+
           git diff
-          
+
           echo ""
           echo "Git operations that would occur:"
           echo "  - Create branch: release-v${{ inputs.version }}"
@@ -181,21 +181,21 @@ jobs:
           # Configure git
           git config user.name otelbot
           git config user.email 197425009+otelbot@users.noreply.github.com
-          
+
           # Create and switch to release branch
           git checkout -b "otelbot/release-v${{ inputs.version }}"
-          
+
           # Add all changes
           git add .
-          
+
           # Commit changes
           git commit -m "Prepare release v${{ inputs.version }}
 
           - Update all Cargo.toml files to version ${{ inputs.version }}
           - Update CHANGELOG.md with release notes for v${{ inputs.version }}
-          
+
           This commit prepares the repository for release v${{ inputs.version }}."
-          
+
           # Push branch
           git push origin "otelbot/release-v${{ inputs.version }}"
 
@@ -207,27 +207,27 @@ jobs:
           # Create PR body content
           cat > /tmp/pr_body.md << 'EOF'
           ## Release v${{ inputs.version }}
-          
+
           This PR prepares the repository for release v${{ inputs.version }}.
-          
+
           ### Changes included:
           - Updated all Cargo.toml files to version ${{ inputs.version }}
           - Updated CHANGELOG.md with release notes
-          
+
           ### Release Notes:
           ```
           $(cat /tmp/changelog_content.txt)
           ```
-          
+
           ### Checklist:
           - [ ] Review version updates in all Cargo.toml files
           - [ ] Verify CHANGELOG.md formatting and content
           - [ ] Confirm all tests pass
           - [ ] Ready to merge and tag release
-          
+
           After merging this PR, run the **Push Release** workflow to create git tags and publish the GitHub release.
           EOF
-          
+
           # Create the pull request using GitHub CLI
           gh pr create \
             --title "Release v${{ inputs.version }}" \
@@ -239,11 +239,11 @@ jobs:
       - name: Summary
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "✅ Dry run completed successfully"
+            echo ":heavy_check_mark: Dry run completed successfully"
             echo "No changes were made to the repository"
             echo "Review the planned changes above and run again without dry-run when ready"
           else
-            echo "✅ Release preparation completed successfully"
+            echo ":heavy_check_mark: Release preparation completed successfully"
             echo ""
             echo "Next steps:"
             echo "1. Review and merge the pull request: https://github.com/open-telemetry/otel-arrow/pulls"
