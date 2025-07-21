@@ -155,6 +155,15 @@ impl LogsRecordBatchBuilder {
         }
     }
 
+    /// append a value to the `schema_url` array `n` times
+    pub fn append_schema_url_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.schema_url.append_str_n(val, n);
+        } else {
+            self.schema_url.append_nulls(n);
+        }
+    }
+
     /// append a value to the `severity_text` array
     pub fn append_severity_text(&mut self, val: Option<&str>) {
         if let Some(val) = val {
@@ -591,6 +600,11 @@ impl ResourceBuilder {
         }
     }
 
+    /// Append the value of `id` to the builder `n` times
+    pub fn append_id_n(&mut self, val: u16, n: usize) {
+        self.id.append_value_n(&val, n);
+    }
+
     /// Append a value to the `schema_url` array
     pub fn append_schema_url(&mut self, val: Option<&str>) {
         if let Some(val) = val {
@@ -600,9 +614,23 @@ impl ResourceBuilder {
         }
     }
 
+    /// Append a value to the `schema_url` array `n` times
+    pub fn append_schema_url_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.schema_url.append_str_n(val, n);
+        } else {
+            self.schema_url.append_nulls(n);
+        }
+    }
+
     /// Append a value to the `dropped_attributes_count` array
     pub fn append_dropped_attributes_count(&mut self, val: u32) {
         self.dropped_attributes_count.append_value(&val);
+    }
+
+    /// Append a value to the `dropped_attributes_count` array `n` times
+    pub fn append_dropped_attributes_count_n(&mut self, val: u32, n: usize) {
+        self.dropped_attributes_count.append_value_n(&val, n);
     }
 
     /// Finish this builder and build the resulting `StructArray` for the resource
@@ -688,12 +716,26 @@ impl ScopeBuilder {
         }
     }
 
+    /// Append the value of `id` to the builder `n` times
+    pub fn append_id_n(&mut self, val: u16, n: usize) {
+        self.id.append_value_n(&val, n);
+    }
+
     /// Append a value to the `name` array
     pub fn append_name(&mut self, val: Option<&str>) {
         if let Some(val) = val {
             self.name.append_str(val)
         } else {
             self.name.append_null();
+        }
+    }
+
+    /// Append a value to the `name` array n times
+    pub fn append_name_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.name.append_str_n(val, n);
+        } else {
+            self.name.append_nulls(n);
         }
     }
 
@@ -706,9 +748,23 @@ impl ScopeBuilder {
         }
     }
 
+    /// Append a value to the `version` array n times`
+    pub fn append_version_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.version.append_str_n(val, n);
+        } else {
+            self.version.append_nulls(n);
+        }
+    }
+
     /// Append a value to the `dropped_attributes_count` array
     pub fn append_dropped_attributes_count(&mut self, val: u32) {
         self.dropped_attributes_count.append_value(&val);
+    }
+
+    /// Append a value to the `dropped_attributes_count` array `n` times
+    pub fn append_dropped_attributes_count_n(&mut self, val: u32, n: usize) {
+        self.dropped_attributes_count.append_value_n(&val, n);
     }
 
     /// Finish this builder and build the resulting `StructArray` for the scope

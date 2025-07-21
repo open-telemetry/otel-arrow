@@ -25,7 +25,24 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-fn create_logs_data() -> LogsData {
+struct LogsDataGenParams {
+    num_resources: usize,
+    /// number of scopes for each resource
+    num_scopes: usize,
+    /// number of logs for each scope
+    num_logs: usize,
+}
+
+impl LogsDataGenParams {
+    fn test_id(&self) -> String {
+        format!(
+            "resources={},scopes={},logs={}",
+            self.num_resources, self.num_scopes, self.num_logs
+        )
+    }
+}
+
+fn create_logs_data(params: &LogsDataGenParams) -> LogsData {
     let attr_values = vec![
         AnyValue::new_string("terry"),
         AnyValue::new_bool(true),
@@ -52,7 +69,7 @@ fn create_logs_data() -> LogsData {
     });
 
     LogsData::new(
-        (0..5)
+        (0..params.num_resources)
             .map(|_| {
                 ResourceLogs::build(
                     Resource::build(vec![KeyValue::new(
@@ -63,7 +80,7 @@ fn create_logs_data() -> LogsData {
                 )
                 .schema_url("https://schema.opentelemetry.io/resource_schema")
                 .scope_logs(
-                    (0..10)
+                    (0..params.num_scopes)
                         .map(|_| {
                             ScopeLogs::build(
                                 InstrumentationScope::build("library")
@@ -87,7 +104,7 @@ fn create_logs_data() -> LogsData {
                             )
                             .schema_url("https://schema.opentelemetry.io/scope_schema")
                             .log_records(
-                                (0..5)
+                                (0..params.num_logs)
                                     .map(|_| {
                                         LogRecord::build(
                                             2_000_000_000u64,
@@ -119,62 +136,87 @@ fn create_logs_data() -> LogsData {
 }
 
 fn bench_encode_logs(c: &mut Criterion) {
-    let input = create_logs_data();
-    let mut input_bytes = vec![];
-    input
-        .encode(&mut input_bytes)
-        .expect("can encode proto bytes");
+    let test_params = vec![
+        LogsDataGenParams {
+            num_logs: 5,
+            num_scopes: 10,
+            num_resources: 5,
+        },
+        LogsDataGenParams {
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 1000,
+        },
+        LogsDataGenParams {
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 5000,
+        },
+        LogsDataGenParams {
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 10000,
+        },
+    ];
 
     // benchmark encoding OTAP logs
     let mut group = c.benchmark_group("encode_otap_logs_using_views");
     let _ = group.sample_size(1000);
 
-    // 1. proto_bytes->views->OTAP
-    let _ = group.bench_with_input(
-        BenchmarkId::new("proto_bytes->views->OTAP", "default"),
-        &input_bytes,
-        |b, input| {
-            b.iter_batched(
-                || RawLogsData::new(input.as_ref()),
-                |logs_data| {
-                    let result = encode_logs_otap_batch(&logs_data).expect("no error");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            )
-        },
-    );
+    for datagen_params in &test_params {
+        let input = create_logs_data(datagen_params);
+        let mut input_bytes = vec![];
+        input
+            .encode(&mut input_bytes)
+            .expect("can encode proto bytes");
 
-    // 2. proto_bytes->prost->views->OTAP
-    let _ = group.bench_with_input(
-        BenchmarkId::new("proto_bytes->prost->views->OTAP", "default"),
-        &input_bytes,
-        |b, input| {
-            b.iter_batched(
-                || input,
-                |input| {
-                    let logs_data =
-                        LogsData::decode(input.as_ref()).expect("can decode proto bytes");
-                    let result = encode_logs_otap_batch(&logs_data).expect("no error");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            )
-        },
-    );
+        // 1. proto_bytes->views->OTAP
+        let _ = group.bench_with_input(
+            BenchmarkId::new("proto_bytes->views->OTAP", datagen_params.test_id()),
+            &input_bytes,
+            |b, input| {
+                b.iter_batched(
+                    || RawLogsData::new(input.as_ref()),
+                    |logs_data| {
+                        let result = encode_logs_otap_batch(&logs_data).expect("no error");
+                        black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
 
-    // 3. prost->views->OTAP
-    let _ = group.bench_with_input(
-        BenchmarkId::new("prost->views->OTAP", "default"),
-        &input,
-        |b, input| {
-            b.iter_batched(
-                || input,
-                |logs_data| encode_logs_otap_batch(logs_data).expect("no error"),
-                BatchSize::SmallInput,
-            )
-        },
-    );
+        // 2. proto_bytes->prost->views->OTAP
+        let _ = group.bench_with_input(
+            BenchmarkId::new("proto_bytes->prost->views->OTAP", datagen_params.test_id()),
+            &input_bytes,
+            |b, input| {
+                b.iter_batched(
+                    || input,
+                    |input| {
+                        let logs_data =
+                            LogsData::decode(input.as_ref()).expect("can decode proto bytes");
+                        let result = encode_logs_otap_batch(&logs_data).expect("no error");
+                        black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+
+        // 3. prost->views->OTAP
+        let _ = group.bench_with_input(
+            BenchmarkId::new("prost->views->OTAP", datagen_params.test_id()),
+            &input,
+            |b, input| {
+                b.iter_batched(
+                    || input,
+                    |logs_data| encode_logs_otap_batch(logs_data).expect("no error"),
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+    }
 
     group.finish();
 
@@ -182,38 +224,56 @@ fn bench_encode_logs(c: &mut Criterion) {
     let mut decode_to_prost_group = c.benchmark_group("decode_proto_bytes");
     let _ = decode_to_prost_group.sample_size(1000);
 
-    let _ = decode_to_prost_group.bench_with_input(
-        BenchmarkId::new("proto_bytes->prost", "default"),
-        &input_bytes,
-        |b, input| {
-            b.iter_batched(
-                || input.as_ref(),
-                |bytes| {
-                    let result = LogsData::decode(bytes).expect("can decode proto bytes");
-                    black_box(result)
-                },
-                BatchSize::SmallInput,
-            )
-        },
-    );
+    for datagen_params in &test_params {
+        let input = create_logs_data(datagen_params);
+        let mut input_bytes = vec![];
+        input
+            .encode(&mut input_bytes)
+            .expect("can encode proto bytes");
 
+        let _ = decode_to_prost_group.bench_with_input(
+            BenchmarkId::new("proto_bytes->prost", datagen_params.test_id()),
+            &input_bytes,
+            |b, input| {
+                b.iter_batched(
+                    || input.as_ref(),
+                    |bytes| {
+                        let result = LogsData::decode(bytes).expect("can decode proto bytes");
+                        black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+    }
     decode_to_prost_group.finish();
 
     let mut traverse_view_group = c.benchmark_group("traverse_views");
     let _ = traverse_view_group.sample_size(1000);
-    let _ = traverse_view_group.bench_with_input(
-        BenchmarkId::new("proto_bytes->view->traverse views", "default"),
-        &input_bytes,
-        |b, input| {
-            b.iter_batched(
-                || RawLogsData::new(input.as_ref()),
-                |logs_data| {
-                    visit_logs_data(&logs_data);
-                },
-                BatchSize::SmallInput,
-            )
-        },
-    );
+    for datagen_params in &test_params {
+        let input = create_logs_data(datagen_params);
+        let mut input_bytes = vec![];
+        input
+            .encode(&mut input_bytes)
+            .expect("can encode proto bytes");
+
+        let _ = traverse_view_group.bench_with_input(
+            BenchmarkId::new(
+                "proto_bytes->view->traverse views",
+                datagen_params.test_id(),
+            ),
+            &input_bytes,
+            |b, input| {
+                b.iter_batched(
+                    || RawLogsData::new(input.as_ref()),
+                    |logs_data| {
+                        visit_logs_data(&logs_data);
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+    }
 
     traverse_view_group.finish();
 }

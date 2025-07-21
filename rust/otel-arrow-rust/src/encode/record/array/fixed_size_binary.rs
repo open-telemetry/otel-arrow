@@ -58,12 +58,7 @@ impl ArrayAppendNulls for FixedSizeBinaryBuilder {
     }
 
     fn append_nulls(&mut self, n: usize) {
-        // TODO - after the next release of arrow-rs we should revisit this and call append_nulls
-        // on the base builder. Waiting on these changes to be released:
-        // https://github.com/apache/arrow-rs/pull/7606
-        for _ in 0..n {
-            self.append_null();
-        }
+        self.append_nulls(n);
     }
 }
 
@@ -130,12 +125,7 @@ where
     }
 
     fn append_nulls(&mut self, n: usize) {
-        // TODO - after the next release of arrow-rs we should revisit this and call append_nulls
-        // on the base builder. Waiting on these changes to be released:
-        // https://github.com/apache/arrow-rs/pull/7606
-        for _ in 0..n {
-            self.append_null();
-        }
+        self.append_nulls(n);
     }
 }
 
