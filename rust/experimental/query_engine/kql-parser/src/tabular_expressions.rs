@@ -843,10 +843,7 @@ mod tests {
                     ImmutableValueExpression::Scalar(ScalarExpression::Variable(
                         VariableScalarExpression::new(
                             QueryLocation::new_fake(),
-                            StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "variable",
-                            ),
+                            StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                             ValueAccessor::new(),
                         ),
                     )),
@@ -926,10 +923,7 @@ mod tests {
                     ImmutableValueExpression::Scalar(ScalarExpression::Variable(
                         VariableScalarExpression::new(
                             QueryLocation::new_fake(),
-                            StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "variable",
-                            ),
+                            StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                             ValueAccessor::new(),
                         ),
                     )),
@@ -948,10 +942,7 @@ mod tests {
                     ImmutableValueExpression::Scalar(ScalarExpression::Attached(
                         AttachedScalarExpression::new(
                             QueryLocation::new_fake(),
-                            StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "resource",
-                            ),
+                            StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
                             ValueAccessor::new_with_selectors(vec![ScalarExpression::Variable(
                                 VariableScalarExpression::new(
                                     QueryLocation::new_fake(),
@@ -1037,10 +1028,7 @@ mod tests {
                             )),
                             ScalarExpression::Variable(VariableScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "variable",
-                                ),
+                                StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                                 ValueAccessor::new(),
                             )),
                         ])),
@@ -1271,10 +1259,7 @@ mod tests {
                             )),
                             ScalarExpression::Variable(VariableScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "variable",
-                                ),
+                                StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                                 ValueAccessor::new(),
                             )),
                         ])),
@@ -1468,10 +1453,7 @@ mod tests {
                             )),
                             ScalarExpression::Variable(VariableScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "variable",
-                                ),
+                                StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                                 ValueAccessor::new(),
                             )),
                         ])),
@@ -1541,10 +1523,7 @@ mod tests {
                         LogicalExpression::Scalar(ScalarExpression::Variable(
                             VariableScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "variable",
-                                ),
+                                StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                                 ValueAccessor::new(),
                             ),
                         )),
