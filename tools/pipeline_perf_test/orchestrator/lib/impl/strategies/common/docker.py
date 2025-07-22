@@ -55,7 +55,7 @@ class ComponentDockerRuntime(BaseModel):
     type: ClassVar[Literal["component_docker_runtime"]] = "component_docker_runtime"
 
     container_id: Optional[str] = None
-    container_logs: Optional[str] = None
+    container_logs: Optional[list[str]] = None
     network_created: Optional[bool] = False
 
 
@@ -133,6 +133,35 @@ def stop_and_remove_container(
         raise
     except APIError as e:
         logger.error(f"Error stopping/removing Docker container: {e}")
+        raise
+
+
+def get_container_logs(
+        ctx: Union[StepContext, ComponentHookContext],
+        client: docker.DockerClient,
+        runtime: ComponentDockerRuntime
+):
+    """Get docker container logs and save them to the runtime.
+
+    Args:
+        ctx: The current context
+        client: The docker API client to use
+        runtime: ComponentDockerRuntime for the container
+    """
+    logger = ctx.get_logger(__name__)
+    args = ctx.get_suite().get_runtime("args")
+    try:
+        container = client.containers.get(runtime.container_id)
+        logs = container.logs(
+            stdout=True, stderr=True, stream=False, timestamps=False
+        )
+        decoded = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
+        if args.debug:
+            logger.debug("Container Logs For %s:\n%s", runtime.container_id, decoded)
+        runtime.container_logs = decoded.splitlines()
+        set_component_docker_runtime_data(ctx, runtime)
+    except (NotFound, APIError) as e:
+        logger.error(f"Error getting Docker container logs: {e}")
         raise
 
 

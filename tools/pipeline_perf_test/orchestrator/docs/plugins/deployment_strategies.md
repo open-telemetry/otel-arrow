@@ -5,6 +5,7 @@
 | Type Name | Module | Class | Config Class | Description Summary |
 |-----------|--------|-------|--------------|----------------------|
 | `docker` | `lib.impl.strategies.deployment.docker` | `DockerDeployment` | `DockerDeploymentConfig` | Deployment strategy to manage the lifecycle of components using Docker containers |
+| `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components using processes in a thread |
 
 ---
 
@@ -62,4 +63,46 @@ components:
         command: ["--config", "/etc/otel/collector-config.yaml"]
         ports:
           - "8888:8888"
+```
+
+## `process`
+
+**Class**: `lib.impl.strategies.deployment.process.ProcessDeployment`
+
+**Config Class**: `lib.impl.strategies.deployment.process.ProcessDeploymentConfig`
+
+**Supported Contexts:**
+
+- StepContext
+
+**Description:**
+
+```python
+"""
+Deployment strategy to manage the lifecycle of components using processes in a thread.
+
+This class handles starting and stopping processes based on the given
+deployment configuration.
+
+Methods:
+    start(component: Component, ctx: StepContext):
+        Starts a process in a thread for the specified component using the deployment
+        configuration.
+
+    stop(component: Component, ctx: StepContext):
+        Stops and removes the process associated with the component, using
+        process ID, and thread stored in the component runtime. Raises errors if process
+        cannot be found or stopped.
+"""
+```
+
+**Example YAML:**
+
+```yaml
+components:
+  otel-collector:
+    deployment:
+      process:
+        command: python -m ./load_generator/loadgen.py --serve
+        environment: {}
 ```
