@@ -211,7 +211,10 @@ impl<PData: Clone + Send + 'static> Processor<PData> for RetryProcessor<PData> {
                     }
                     Err(error_msg) => {
                         log::warn!("{error_msg}");
-                        effect_handler.send_message(data).await?;
+                        // Send NACK upstream to signal backpressure instead of forwarding message
+                        // without retry protection. This allows upstream to handle the situation
+                        // (e.g., queue message elsewhere, slow down, or drop message gracefully)
+                        effect_handler.send_nack(0, &error_msg).await?;
                     }
                 }
                 Ok(())
@@ -539,6 +542,65 @@ mod tests {
         // Should still succeed but the message won't be tracked for retry
         assert!(result.is_ok());
         assert_eq!(processor.pending_messages.len(), 2); // Still at limit
+    }
+
+    #[tokio::test]
+    async fn test_max_pending_messages_sends_nack_when_full() {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_retry_delay_ms: 1000,
+            max_retry_delay_ms: 30000,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 1, // Very small limit for testing
+            cleanup_interval_secs: 60,
+        };
+        let mut processor = RetryProcessor::<TestData>::with_config(config);
+
+        // Create effect handler with control channel to capture NACK
+        let (msg_sender, _msg_receiver) = mpsc::Channel::new(100);
+        let (control_sender, control_receiver) = mpsc::Channel::new(100);
+        let effect_handler = EffectHandler::with_control_sender(
+            "test_processor".into(),
+            Sender::Local(msg_sender),
+            Sender::Local(control_sender),
+        );
+
+        let mut effect_handler = effect_handler;
+
+        // Add one message to fill the queue
+        let test_data1 = TestData {
+            id: 1,
+            payload: "test message 1".to_string(),
+        };
+        processor
+            .process(Message::PData(test_data1), &mut effect_handler)
+            .await
+            .unwrap();
+        assert_eq!(processor.pending_messages.len(), 1);
+
+        // Adding another message should send NACK upstream
+        let test_data2 = TestData {
+            id: 2,
+            payload: "test message 2".to_string(),
+        };
+        let result = processor
+            .process(Message::PData(test_data2), &mut effect_handler)
+            .await;
+
+        // Should succeed (NACK sent upstream)
+        assert!(result.is_ok());
+        // Queue should still be full
+        assert_eq!(processor.pending_messages.len(), 1);
+
+        // Check that NACK was sent
+        let control_msg = control_receiver.recv().await.unwrap();
+        match control_msg {
+            ControlMsg::Nack { id, reason } => {
+                assert_eq!(id, 0); // ID 0 indicates overflow
+                assert!(reason.contains("Retry queue is full"));
+            }
+            _ => panic!("Expected NACK message, got {control_msg:?}"),
+        }
     }
 
     #[tokio::test]
