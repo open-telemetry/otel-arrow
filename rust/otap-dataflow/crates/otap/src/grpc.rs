@@ -211,20 +211,3 @@ pub enum OTAPData {
     ArrowTraces(BatchArrowRecords),
 }
 
-impl otap_df_traits::Retryable for OTAPData {
-    fn id(&self) -> u64 {
-        // Use the batch_id from BatchArrowRecords directly
-        // This is ideal since Arrow batches already have unique IDs
-        match self {
-            OTAPData::ArrowLogs(batch) => batch.batch_id as u64,
-            OTAPData::ArrowMetrics(batch) => batch.batch_id as u64,
-            OTAPData::ArrowTraces(batch) => batch.batch_id as u64,
-        }
-    }
-
-    fn deadline(&self) -> Option<std::time::Instant> {
-        // Arrow batches don't currently have built-in deadlines
-        // Could potentially extract deadline from headers in the future
-        None
-    }
-}

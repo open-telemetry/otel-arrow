@@ -156,88 +156,22 @@ pub enum OTLPData {
     Profiles(ExportProfilesServiceRequest),
 }
 
-impl otap_df_traits::Retryable for OTLPData {
-    fn id(&self) -> u64 {
-        use prost::Message;
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-
-        // Include enum variant discriminant for uniqueness across variants
-        match self {
-            OTLPData::Logs(request) => {
-                "logs".hash(&mut hasher);
-                request.encode_to_vec().hash(&mut hasher);
-            }
-            OTLPData::Metrics(request) => {
-                "metrics".hash(&mut hasher);
-                request.encode_to_vec().hash(&mut hasher);
-            }
-            OTLPData::Traces(request) => {
-                "traces".hash(&mut hasher);
-                request.encode_to_vec().hash(&mut hasher);
-            }
-            OTLPData::Profiles(request) => {
-                "profiles".hash(&mut hasher);
-                request.encode_to_vec().hash(&mut hasher);
-            }
-        }
-
-        hasher.finish()
-    }
-
-    fn deadline(&self) -> Option<std::time::Instant> {
-        // OTLP messages don't have built-in deadlines
-        // Could be extended to extract deadline from headers/metadata in the future
-        None
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_traits::Retryable;
 
     #[test]
-    fn test_otlp_data_retryable_id_deterministic() {
-        let logs_request = ExportLogsServiceRequest::default();
-        let data1 = OTLPData::Logs(logs_request.clone());
-        let data2 = OTLPData::Logs(logs_request);
-
-        // Same data should produce same ID
-        assert_eq!(data1.id(), data2.id());
-    }
-
-    #[test]
-    fn test_otlp_data_retryable_id_unique_across_variants() {
+    fn test_otlp_data_enum_variants() {
         let logs_request = ExportLogsServiceRequest::default();
         let metrics_request = ExportMetricsServiceRequest::default();
+        let traces_request = ExportTraceServiceRequest::default();
+        let profiles_request = ExportProfilesServiceRequest::default();
 
-        let logs_data = OTLPData::Logs(logs_request);
-        let metrics_data = OTLPData::Metrics(metrics_request);
-
-        // Different variants should produce different IDs
-        assert_ne!(logs_data.id(), metrics_data.id());
-    }
-
-    #[test]
-    fn test_otlp_data_retryable_deadline() {
-        let logs_request = ExportLogsServiceRequest::default();
-        let data = OTLPData::Logs(logs_request);
-
-        // Should return None for deadline (not implemented yet)
-        assert!(data.deadline().is_none());
-    }
-
-    #[test]
-    fn test_otlp_data_retryable_trait_bounds() {
-        // Test that OTLPData satisfies Retryable trait bounds
-        fn requires_retryable<T: Retryable>(_: T) {}
-
-        let logs_request = ExportLogsServiceRequest::default();
-        let data = OTLPData::Logs(logs_request);
-
-        requires_retryable(data);
+        // Test that all enum variants can be created
+        let _logs_data = OTLPData::Logs(logs_request);
+        let _metrics_data = OTLPData::Metrics(metrics_request);
+        let _traces_data = OTLPData::Traces(traces_request);
+        let _profiles_data = OTLPData::Profiles(profiles_request);
     }
 }

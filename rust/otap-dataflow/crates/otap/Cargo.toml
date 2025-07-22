@@ -21,7 +21,6 @@ futures.workspace = true
 futures-timer.workspace = true
 object_store.workspace = true
 otel-arrow-rust.workspace = true
-otap-df-traits = { path = "../traits" }
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
 otap-df-otlp = { path = "../otlp" }
