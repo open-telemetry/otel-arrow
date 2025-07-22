@@ -63,7 +63,7 @@ fn create_otlp_logs_data() -> OTLPData {
     OTLPData::Logs(logs_request)
 }
 
-/// Benchmark 1: Message throughput comparison between success path and retry scenarios
+/// Benchmark 1: Message throughput comparison across different retry percentages
 fn bench_message_throughput(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -76,103 +76,88 @@ fn bench_message_throughput(c: &mut Criterion) {
     _ = core_affinity::set_for_current(*core);
 
     let mut group = c.benchmark_group("retry_processor_throughput");
-
-    // Benchmark pure success path (0% retries)
     let _ = group.throughput(Throughput::Elements(LARGE_MSG_COUNT as u64));
-    let _ = group.bench_function(BenchmarkId::new("success_path", LARGE_MSG_COUNT), |b| {
-        let local = LocalSet::new();
-        b.to_async(&rt).iter(|| async {
-            local
-                .run_until(async {
-                    let _processor = RetryProcessor::<OTLPData>::new();
-                    let mut effect_handler = MockEffectHandler::<OTLPData>::new();
 
-                    // Send OTLP logs messages (success path)
-                    for _i in 0..LARGE_MSG_COUNT {
-                        let otlp_data = create_otlp_logs_data();
-                        effect_handler
-                            .send_message(otlp_data)
-                            .await
-                            .expect("failed to send message in success path benchmark");
+    // Test different retry percentages: 0%, 20%, 50%
+    let retry_percentages = [0, 20, 50];
 
-                        // No need to simulate ACK/NACK for throughput test
-                    }
+    for retry_percentage in retry_percentages {
+        let _ = group.bench_function(
+            BenchmarkId::new("retry_processor", format!("{retry_percentage}%_retries")),
+            |b| {
+                let local = LocalSet::new();
+                b.to_async(&rt).iter(|| async {
+                    local
+                        .run_until(async {
+                            let config = RetryConfig {
+                                max_retries: 1, // Limit retries to prevent hanging
+                                initial_retry_delay_ms: 1,
+                                max_retry_delay_ms: 10,
+                                backoff_multiplier: 2.0,
+                                max_pending_messages: 50000,
+                                cleanup_interval_secs: 3600,
+                            };
+                            let mut processor = RetryProcessor::with_config(config);
+                            let (sender, _receiver) = mpsc::Channel::new(1000);
+                            let mut effect_handler =
+                                EffectHandler::new("bench_processor".into(), Sender::Local(sender));
 
-                    let _ = black_box(0usize); // We don't track count in this benchmark
-                })
-                .await;
-        });
-    });
-
-    // Benchmark with 20% retry rate (simplified to avoid hanging)
-    let _ = group.bench_function(
-        BenchmarkId::new("with_20_percent_retries", LARGE_MSG_COUNT),
-        |b| {
-            let local = LocalSet::new();
-            b.to_async(&rt).iter(|| async {
-                local
-                    .run_until(async {
-                        let config = RetryConfig {
-                            max_retries: 1, // Limit retries to prevent hanging
-                            initial_retry_delay_ms: 1,
-                            max_retry_delay_ms: 10,
-                            backoff_multiplier: 2.0,
-                            max_pending_messages: 50000,
-                            cleanup_interval_secs: 3600,
-                        };
-                        let mut processor = RetryProcessor::with_config(config);
-                        let (sender, _receiver) = mpsc::Channel::new(1000);
-                        let mut effect_handler =
-                            EffectHandler::new("bench_processor".into(), Sender::Local(sender));
-
-                        // Send messages and process them with ACK/NACK patterns
-                        for i in 0..LARGE_MSG_COUNT {
-                            let otlp_data = create_otlp_logs_data();
-                            let msg_id = i as u64; // Use simple sequential IDs for benchmarking
-                            processor
-                                .process(Message::PData(otlp_data), &mut effect_handler)
-                                .await
-                                .expect("failed to process PData in retry benchmark");
-
-                            if i % 5 == 0 {
-                                // NACK every 5th message (20%) but immediately resolve
+                            // Send messages and process them with ACK/NACK patterns
+                            for i in 0..LARGE_MSG_COUNT {
+                                let otlp_data = create_otlp_logs_data();
+                                let msg_id = i as u64; // Use simple sequential IDs for benchmarking
                                 processor
-                                    .process(
-                                        Message::Control(ControlMsg::Nack {
-                                            id: msg_id,
-                                            reason: "Simulated failure".to_string(),
-                                        }),
-                                        &mut effect_handler,
-                                    )
+                                    .process(Message::PData(otlp_data), &mut effect_handler)
                                     .await
-                                    .expect("failed to process NACK in retry benchmark");
+                                    .expect("failed to process PData in retry benchmark");
 
-                                // Immediately ACK to resolve the retry
-                                processor
-                                    .process(
-                                        Message::Control(ControlMsg::Ack { id: msg_id }),
-                                        &mut effect_handler,
-                                    )
-                                    .await
-                                    .expect("failed to process ACK after NACK in retry benchmark");
-                            } else {
-                                // ACK successful messages immediately
-                                processor
-                                    .process(
-                                        Message::Control(ControlMsg::Ack { id: msg_id }),
-                                        &mut effect_handler,
-                                    )
-                                    .await
-                                    .expect("failed to process ACK in retry benchmark");
+                                // Determine if this message should be retried based on percentage
+                                let should_retry = retry_percentage > 0
+                                    && (i * 100 / LARGE_MSG_COUNT)
+                                        < (retry_percentage * LARGE_MSG_COUNT / 100);
+
+                                if should_retry {
+                                    // NACK the message but immediately resolve
+                                    processor
+                                        .process(
+                                            Message::Control(ControlMsg::Nack {
+                                                id: msg_id,
+                                                reason: "Simulated failure".to_string(),
+                                            }),
+                                            &mut effect_handler,
+                                        )
+                                        .await
+                                        .expect("failed to process NACK in retry benchmark");
+
+                                    // Immediately ACK to resolve the retry
+                                    processor
+                                        .process(
+                                            Message::Control(ControlMsg::Ack { id: msg_id }),
+                                            &mut effect_handler,
+                                        )
+                                        .await
+                                        .expect(
+                                            "failed to process ACK after NACK in retry benchmark",
+                                        );
+                                } else {
+                                    // ACK successful messages immediately
+                                    processor
+                                        .process(
+                                            Message::Control(ControlMsg::Ack { id: msg_id }),
+                                            &mut effect_handler,
+                                        )
+                                        .await
+                                        .expect("failed to process ACK in retry benchmark");
+                                }
                             }
-                        }
 
-                        let _ = black_box(0usize);
-                    })
-                    .await;
-            });
-        },
-    );
+                            let _ = black_box(0usize);
+                        })
+                        .await;
+                });
+            },
+        );
+    }
 
     group.finish();
 }
