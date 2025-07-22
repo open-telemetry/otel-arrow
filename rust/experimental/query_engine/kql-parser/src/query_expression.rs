@@ -49,7 +49,7 @@ pub(crate) fn parse_query(
 
                     if let TransformExpression::Set(s) = &let_expression {
                         if let MutableValueExpression::Variable(v) = s.get_destination() {
-                            let name = v.get_name();
+                            let name = v.get_name().get_value();
 
                             if let ImmutableValueExpression::Scalar(ScalarExpression::Static(s)) =
                                 s.get_source()
