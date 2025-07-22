@@ -5,12 +5,15 @@
 //!
 //! `BatchArrowRecords` is the protobuf type that contains the Arrow IPC serialized messages.
 
+// TODO we will eventually use this code as part of the implementation of PDATA for OTAP pipelines
+// https://github.com/open-telemetry/otel-arrow/issues/728
+#![allow(dead_code)]
+
 use std::{collections::HashMap, io::Cursor};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
-use prost::bytes::Buf;
 use snafu::ResultExt;
 
 use crate::error::{self, Result};
@@ -42,7 +45,9 @@ impl StreamProducer {
     }
 
     fn serialize_batch(&mut self, record_batch: &RecordBatch) -> Result<Vec<u8>> {
-        self.stream_writer.write(record_batch).unwrap(); // TODO no unwrap
+        self.stream_writer
+            .write(record_batch)
+            .context(error::WriteRecordBatchSnafu)?;
         let cursor = self.stream_writer.get_mut();
         let pos = cursor.position() as usize;
         let result = cursor.get_ref()[..pos].to_vec();
@@ -104,7 +109,7 @@ impl Producer {
                 Some(s) => s,
             };
 
-            let serialized_rb = stream_producer.serialize_batch(&record_batch)?;
+            let serialized_rb = stream_producer.serialize_batch(record_batch)?;
             arrow_payloads.push(ArrowPayload {
                 schema_id: format!("{}", stream_producer.schema_id),
                 r#type: *payload_type as i32,
@@ -117,7 +122,7 @@ impl Producer {
         self.next_batch_id += 1;
 
         Ok(BatchArrowRecords {
-            batch_id: batch_id,
+            batch_id,
             arrow_payloads,
             ..Default::default()
         })
@@ -174,7 +179,11 @@ mod test {
             vec![
                 Arc::new(UInt32Array::from_iter_values(vec![5, 6, 7])),
                 Arc::new(UInt16Array::from_iter_values(vec![9, 7, 8])),
-                Arc::new(StringArray::from_iter(vec![Some("fox"), None, Some("pig")])),
+                Arc::new(StringArray::from_iter(vec![
+                    Some("fox"),
+                    None,
+                    Some("frog"),
+                ])),
             ],
         )
         .unwrap();

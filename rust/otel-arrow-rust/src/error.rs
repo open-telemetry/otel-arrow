@@ -170,6 +170,14 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Failed to write record batch"))]
+    WriteRecordBatch {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Batch is empty"))]
     EmptyBatch {
         #[snafu(implicit)]
