@@ -98,7 +98,7 @@ pub(crate) fn parse_let_expression(
         ImmutableValueExpression::Scalar(scalar),
         MutableValueExpression::Variable(VariableScalarExpression::new(
             identifier.get_query_location().clone(),
-            identifier.get_value(),
+            identifier,
             ValueAccessor::new(),
         )),
     )))
@@ -182,7 +182,7 @@ mod tests {
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable".into()),
                     ValueAccessor::new(),
                 )),
             )),
@@ -253,7 +253,7 @@ mod tests {
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "var1",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var1".into()),
                     ValueAccessor::new(),
                 )),
             )),

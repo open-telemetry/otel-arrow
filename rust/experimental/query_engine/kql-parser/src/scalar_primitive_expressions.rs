@@ -209,12 +209,15 @@ pub(crate) fn parse_accessor_expression(
 
     let root_accessor_identity_rule = accessor_rules.next().unwrap();
 
-    let root_accessor_identity: Box<str> = match root_accessor_identity_rule.as_rule() {
+    let root_accessor_identity = match root_accessor_identity_rule.as_rule() {
         Rule::string_literal => match parse_string_literal(root_accessor_identity_rule) {
-            StaticScalarExpression::String(v) => v.get_value().into(),
+            StaticScalarExpression::String(v) => v,
             _ => panic!("Unexpected type returned from parse_string_literal"),
         },
-        Rule::identifier_literal => root_accessor_identity_rule.as_str().into(),
+        Rule::identifier_literal => StringScalarExpression::new(
+            to_query_location(&root_accessor_identity_rule),
+            root_accessor_identity_rule.as_str(),
+        ),
         _ => panic!("Unexpected rule in accessor_expression: {root_accessor_identity_rule}"),
     };
 
@@ -310,21 +313,21 @@ pub(crate) fn parse_accessor_expression(
         }
     }
 
-    if root_accessor_identity.as_ref() == "source" {
+    if root_accessor_identity.get_value() == "source" {
         Ok(ScalarExpression::Source(SourceScalarExpression::new(
             query_location,
             value_accessor,
         )))
-    } else if state.is_attached_data_defined(&root_accessor_identity) {
+    } else if state.is_attached_data_defined(root_accessor_identity.get_value()) {
         return Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
             query_location,
-            &root_accessor_identity,
+            root_accessor_identity,
             value_accessor,
         )));
-    } else if state.is_variable_defined(&root_accessor_identity) {
+    } else if state.is_variable_defined(root_accessor_identity.get_value()) {
         return Ok(ScalarExpression::Variable(VariableScalarExpression::new(
             query_location,
-            &root_accessor_identity,
+            root_accessor_identity,
             value_accessor,
         )));
     } else {
@@ -338,7 +341,9 @@ pub(crate) fn parse_accessor_expression(
         // * extend const_str = 1: This expression needs to execute as
         //   source['const_str'] = 1 so the const_str is not evaluated.
         if allow_root_scalar {
-            if let Some((constant_id, value_type)) = state.get_constant(&root_accessor_identity) {
+            if let Some((constant_id, value_type)) =
+                state.get_constant(root_accessor_identity.get_value())
+            {
                 if value_accessor.has_selectors() {
                     // Note: It is not currently supported to access into a constant.
                     // This is because statics are currently simple things like string,
@@ -359,10 +364,7 @@ pub(crate) fn parse_accessor_expression(
 
         value_accessor.insert_selector(
             0,
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                query_location.clone(),
-                &root_accessor_identity,
-            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(root_accessor_identity)),
         );
 
         return Ok(ScalarExpression::Source(SourceScalarExpression::new(
@@ -960,7 +962,7 @@ mod tests {
                     )),
                     ScalarExpression::Variable(VariableScalarExpression::new(
                         QueryLocation::new_fake(),
-                        "var",
+                        StringScalarExpression::new(QueryLocation::new_fake(), "var".into()),
                         ValueAccessor::new()
                     )),
                     ScalarExpression::Negate(NegateScalarExpression::new(
@@ -1027,7 +1029,7 @@ mod tests {
         .unwrap();
 
         if let ScalarExpression::Attached(a) = expression {
-            assert_eq!("resource", a.get_name());
+            assert_eq!("resource", a.get_name().get_value());
             assert_eq!(
                 &[ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "~at'tr~")
@@ -1051,7 +1053,7 @@ mod tests {
         let expression = parse_accessor_expression(result.next().unwrap(), &state, true).unwrap();
 
         if let ScalarExpression::Variable(v) = expression {
-            assert_eq!("a", v.get_name());
+            assert_eq!("a", v.get_name().get_value());
             assert_eq!(
                 &[ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), -1)

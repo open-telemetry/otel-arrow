@@ -198,7 +198,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable".into()),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -260,7 +260,7 @@ mod tests {
                 )),
                 ScalarExpression::Attached(AttachedScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "resource",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "resource".into()),
                     ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
                         StaticScalarExpression::String(StringScalarExpression::new(
                             QueryLocation::new_fake(),
@@ -401,7 +401,7 @@ mod tests {
             "resource.attributes['service.name']",
             LogicalExpression::Scalar(ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
-                "resource",
+                StringScalarExpression::new(QueryLocation::new_fake(), "resource".into()),
                 ValueAccessor::new_with_selectors(vec![
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
@@ -417,7 +417,7 @@ mod tests {
             "variable",
             LogicalExpression::Scalar(ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
-                "variable",
+                StringScalarExpression::new(QueryLocation::new_fake(), "variable".into()),
                 ValueAccessor::new(),
             ))),
         );
@@ -428,7 +428,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable".into()),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -443,7 +443,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable".into()),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -482,7 +482,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable".into()),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(

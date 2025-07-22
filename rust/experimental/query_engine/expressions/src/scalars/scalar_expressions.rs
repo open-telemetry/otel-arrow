@@ -138,24 +138,24 @@ impl Expression for SourceScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttachedScalarExpression {
     query_location: QueryLocation,
-    name: Box<str>,
+    name: StringScalarExpression,
     accessor: ValueAccessor,
 }
 
 impl AttachedScalarExpression {
     pub fn new(
         query_location: QueryLocation,
-        name: &str,
+        name: StringScalarExpression,
         accessor: ValueAccessor,
     ) -> AttachedScalarExpression {
         Self {
             query_location,
-            name: name.into(),
+            name,
             accessor,
         }
     }
 
-    pub fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &StringScalarExpression {
         &self.name
     }
 
@@ -177,24 +177,24 @@ impl Expression for AttachedScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariableScalarExpression {
     query_location: QueryLocation,
-    name: Box<str>,
+    name: StringScalarExpression,
     accessor: ValueAccessor,
 }
 
 impl VariableScalarExpression {
     pub fn new(
         query_location: QueryLocation,
-        name: &str,
+        name: StringScalarExpression,
         accessor: ValueAccessor,
     ) -> VariableScalarExpression {
         Self {
             query_location,
-            name: name.into(),
+            name,
             accessor,
         }
     }
 
-    pub fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &StringScalarExpression {
         &self.name
     }
 
@@ -575,7 +575,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
-                "resource",
+                StringScalarExpression::new(QueryLocation::new_fake(), "resource".into()),
                 ValueAccessor::new(),
             )),
             None,
@@ -592,7 +592,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
-                "var",
+                StringScalarExpression::new(QueryLocation::new_fake(), "var".into()),
                 ValueAccessor::new(),
             )),
             None,
@@ -818,7 +818,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
-                "resource",
+                StringScalarExpression::new(QueryLocation::new_fake(), "resource".into()),
                 ValueAccessor::new(),
             )),
             None,
@@ -835,7 +835,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
-                "var",
+                StringScalarExpression::new(QueryLocation::new_fake(), "var".into()),
                 ValueAccessor::new(),
             )),
             None,
