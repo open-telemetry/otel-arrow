@@ -55,6 +55,7 @@ impl AdaptiveBooleanArrayBuilder {
     }
 
     /// Append a null value to the builder
+    #[allow(dead_code)]
     pub fn append_null(&mut self) {
         match self.inner.as_mut() {
             Some(builder) => builder.append_null(),
