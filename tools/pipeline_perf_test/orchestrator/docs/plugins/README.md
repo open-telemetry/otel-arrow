@@ -18,14 +18,14 @@ This directory contains auto-generated documentation for all plugin registries.
 | Type | Plugin Name | Module | Class | Config Class | Description |
 |------|-------------|--------|-------|--------------|-------------|
 | `docker` | `docker` | `lib.impl.strategies.deployment.docker` | `DockerDeployment` | `DockerDeploymentConfig` | Deployment strategy to manage the lifecycle of components using Docker containers |
-| `process` | `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components using processes in a thread |
+| `process` | `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components as a sub-process |
 
 ## Plugin Summary: `monitoring_strategies`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
 |------|-------------|--------|-------|--------------|-------------|
 | `docker_component` | `docker_component` | `lib.impl.strategies.monitoring.docker_component` | `DockerComponentMonitoringStrategy` | `DockerComponentMonitoringConfig` | Strategy for monitoring a docker container resource mentrics via the python docker API client |
-| `process_component` | `process_component` | `lib.impl.strategies.monitoring.process_component` | `ProcessComponentMonitoringStrategy` | `ProcessComponentMonitoringConfig` | Strategy for monitoring a Process via the python process library |
+| `process_component` | `process_component` | `lib.impl.strategies.monitoring.process_component` | `ProcessComponentMonitoringStrategy` | `ProcessComponentMonitoringConfig` | Strategy for monitoring a Process via the python psutil library |
 | `prometheus` | `prometheus` | `lib.impl.strategies.monitoring.prometheus` | `PrometheusMonitoringStrategy` | `PrometheusMonitoringConfig` | Strategy for monitoring a prometheus endpoint for a component |
 
 ## Plugin Summary: `execution_strategies`

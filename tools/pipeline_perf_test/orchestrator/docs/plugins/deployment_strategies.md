@@ -5,7 +5,7 @@
 | Type Name | Module | Class | Config Class | Description Summary |
 |-----------|--------|-------|--------------|----------------------|
 | `docker` | `lib.impl.strategies.deployment.docker` | `DockerDeployment` | `DockerDeploymentConfig` | Deployment strategy to manage the lifecycle of components using Docker containers |
-| `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components using processes in a thread |
+| `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components as a sub-process |
 
 ---
 
@@ -79,7 +79,7 @@ components:
 
 ```python
 """
-Deployment strategy to manage the lifecycle of components using processes in a thread.
+Deployment strategy to manage the lifecycle of components as a sub-process.
 
 This class handles starting and stopping processes based on the given
 deployment configuration.
