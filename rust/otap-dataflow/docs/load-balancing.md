@@ -23,12 +23,12 @@ Addressing these interactions is crucial for reliable scalability. This document
 outlines the associated challenges, trade-offs, and practical mitigations for
 both exporters and servers.
 
-## Key Challenges
+## Key Challenges
 
 | #   | Challenge                               | Symptoms                                                                                                                       | Root Cause                                                                                                                                                                 |
 | --- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **Skewed listener utilization**         | All (or most) exporter TCP connections land on the same reuseport listener => one core saturated, others idle                  | Too few distinct TCP 4-tuples (e.g. single long-lived gRPC channel) means the kernel’s reuseport hash has little entropy; distribution collapses statistically.            |
-| 2   | **In-stream vs connection imbalance**   | Recycling an OTAP _stream_ clears state but stays on the same TCP connection, so work remains pinned to the same listener/core | gRPC stream lifetime ≠ TCP connection lifetime; reuseport selection happens once per connection handshake. To move work you must rotate the connection or rebalance at L7. |
+| 1   | **Skewed listener utilization**         | All (or most) exporter TCP connections land on the same reuseport listener => one core saturated, others idle                  | Too few distinct TCP 4-tuples (e.g. single long-lived gRPC channel) means the kernel's reuseport hash has little entropy; distribution collapses statistically.            |
+| 2   | **In-stream vs connection imbalance**   | Recycling an OTAP _stream_ clears state but stays on the same TCP connection, so work remains pinned to the same listener/core | gRPC stream lifetime != TCP connection lifetime; reuseport selection happens once per connection handshake. To move work you must rotate the connection or rebalance at L7. |
 | 3   | **Dictionary / stream-state growth**    | High-cardinality attributes inflate Arrow dictionary & per-stream memory                                                       | Stateful OTAP encoding accumulates per-stream dictionaries until recycled or bounded by receiver memory/admission limits.                                                  |
 | 4   | **Single accept listener anti-pattern** | One thread does all `accept()` => CPU hotspot, lock contention, cache/NUMA misses, global back-pressure                        | Shared accept queues can become contended and distribute unevenly; `SO_REUSEPORT` (per-socket queues) improves scalability but has fairness/latency trade-offs.            |
 
@@ -45,9 +45,9 @@ both exporters and servers.
   and
   [Perfect locality and three epic SystemTap scripts](https://blog.cloudflare.com/perfect-locality-and-three-epic-systemtap-scripts/)
 
-## Solution Space
+## Solution Space
 
-### 1. Client‑Side Techniques (Exporter)
+### 1. Client-Side Techniques (Exporter)
 
 | Technique                                                                | Purpose                                                                                                                                                                                                                           | Considerations                                                                                                                        |
 | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -88,11 +88,11 @@ meshes. In theory we could parse (plaintext) HTTP/2 frames and steer them across
 worker sockets, but doing so (especially through TLS) is complex and typically
 unnecessary if an L7 proxy is available. Treat as research / last resort.
 
-## Recommended Baseline Configuration
+## Recommended Baseline Configuration
 
 1. **Per-CPU listener sockets:** Use `SO_REUSEPORT` (one service port; one
    socket per core/worker) to reduce accept contention and improve CPU locality.
-2. **Exporter connection fan-out:** Begin with `num_streams ≈ max(1, CPUs/2)`
+2. **Exporter connection fan-out:** Begin with `num_streams ~= max(1, CPUs/2)`
    (current default); monitor and adjust upward if skew persists and resources
    permit.
 3. **Stream recycling:** Start with `max_stream_lifetime` set between 30 seconds
@@ -104,7 +104,7 @@ unnecessary if an L7 proxy is available. Treat as research / last resort.
    compression efficiency; alert when deviation exceeds acceptable thresholds
    (e.g. >20% from median) aligned with your Service Level Objectives (SLOs).
 
-## Future Work
+## Future Work
 
 - Adaptive autotuning of stream reset intervals and connection fan-out based on
   live operational metrics.
@@ -114,16 +114,16 @@ unnecessary if an L7 proxy is available. Treat as research / last resort.
   listeners/cores, allowing load rebalancing without forcing exporters to
   reconnect or resend Arrow dictionaries.
 
-## Appendix - Why _Not_ a Single Accept Listener?
+## Appendix - Why _Not_ a Single Accept Listener?
 
 - **CPU & lock contention:** A shared accept queue forces synchronization among
   workers, potentially skewing load distribution particularly when combined with
-  epoll’s LIFO behavior, which preferentially feeds the busiest worker.
+  epoll's LIFO behavior, which preferentially feeds the busiest worker.
 - **Locality & scalability:** Per-socket queues improve packet locality and
   reduce cross-CPU bouncing, aiding multicore scaling (NUMA).
 - **Extra syscalls:** Passing accepted sockets between workers introduces
   unnecessary syscall overhead.
-- **Global back‑pressure**: one slow worker stalls all new connections.
+- **Global back-pressure**: one slow worker stalls all new connections.
 - **Redundant engineering:** Duplicates functionality already efficiently
   provided by `SO_REUSEPORT`.
 - **Failure risk**: single point of failure. If the acceptor crashes, all new
