@@ -171,29 +171,6 @@ impl<PData: Clone + Send + 'static> RetryProcessor<PData> {
 
         self.last_cleanup_time = now;
     }
-
-    fn add_message_for_retry(&mut self, data: PData) -> Result<u64, String> {
-        if self.pending_messages.len() >= self.config.max_pending_messages {
-            return Err(format!(
-                "Retry queue is full (capacity: {}), cannot add message",
-                self.config.max_pending_messages
-            ));
-        }
-
-        let id = self.next_message_id;
-        self.next_message_id += 1;
-
-        let pending = PendingMessage {
-            data,
-            retry_count: 0,
-            next_retry_time: Instant::now(),
-            last_error: String::new(),
-        };
-
-        let _previous = self.pending_messages.insert(id, pending);
-        log::debug!("Added message {id} to retry queue");
-        Ok(id)
-    }
 }
 
 #[async_trait(?Send)]
@@ -205,17 +182,34 @@ impl<PData: Clone + Send + 'static> Processor<PData> for RetryProcessor<PData> {
     ) -> Result<(), Error<PData>> {
         match msg {
             Message::PData(data) => {
-                match self.add_message_for_retry(data.clone()) {
-                    Ok(_id) => {
-                        effect_handler.send_message(data).await?;
-                    }
-                    Err(error_msg) => {
-                        log::warn!("{error_msg}");
-                        // Send NACK upstream to signal backpressure instead of forwarding message
-                        // without retry protection. This allows upstream to handle the situation
-                        // (e.g., queue message elsewhere, slow down, or drop message gracefully)
-                        effect_handler.send_nack(0, &error_msg).await?;
-                    }
+                // Clone only if we need to add to retry queue AND send downstream
+                // Check if queue is full first to avoid unnecessary clone
+                if self.pending_messages.len() >= self.config.max_pending_messages {
+                    let error_msg = format!(
+                        "Retry queue is full (capacity: {}), cannot add message",
+                        self.config.max_pending_messages
+                    );
+                    log::warn!("{error_msg}");
+                    // Send NACK upstream to signal backpressure instead of forwarding message
+                    // without retry protection. This allows upstream to handle the situation
+                    // (e.g., queue message elsewhere, slow down, or drop message gracefully)
+                    effect_handler.send_nack(0, &error_msg).await?;
+                } else {
+                    // Queue has space, add message for retry and send downstream
+                    let id = self.next_message_id;
+                    self.next_message_id += 1;
+
+                    let pending = PendingMessage {
+                        data: data.clone(), // Only clone when we know we need to store AND send
+                        retry_count: 0,
+                        next_retry_time: Instant::now(),
+                        last_error: String::new(),
+                    };
+
+                    let _previous = self.pending_messages.insert(id, pending);
+                    log::debug!("Added message {id} to retry queue");
+
+                    effect_handler.send_message(data).await?;
                 }
                 Ok(())
             }
