@@ -6,14 +6,14 @@
 //! under different load patterns and configurations. Key metrics include:
 //!
 //! 1. **Message Throughput**: Success path vs retry overhead
-//! 2. **HashMap Scalability**: Performance with large numbers of pending messages  
+//! 2. **Pending Message Scalability**: Performance with large numbers of pending messages  
 //! 3. **Memory Cleanup**: Cost of expired message cleanup operations
 //!
 //! ## Performance Optimizations
 //!
 //! To keep benchmarks fast and avoid hanging, this suite implements several caps:
 //! - **Throughput benchmarks**: Limited to max 100 iterations (vs Criterion's auto-detected count)
-//! - **HashMap benchmarks**: Limited to max 100 messages (even for "1000" scale tests)
+//! - **Pending message benchmarks**: Limited to max 100 messages (even for "1000" scale tests)
 //! - **Duration scaling**: Results are extrapolated proportionally for accurate throughput metrics
 //!
 //! These optimizations maintain benchmark accuracy while ensuring reasonable execution times.
@@ -187,19 +187,19 @@ fn bench_message_throughput(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark 2: HashMap performance with different numbers of pending messages
+/// Benchmark 2: Pending message performance with different numbers of pending messages
 fn bench_pending_message_operations(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("failed to build Tokio runtime");
 
-    let mut group = c.benchmark_group("retry_processor_hashmap_scale");
+    let mut group = c.benchmark_group("retry_processor_pending_scale");
 
     for &pending_count in PENDING_MESSAGE_SCALES {
         let _ = group.throughput(Throughput::Elements(pending_count as u64));
 
-        let _ = group.bench_function(BenchmarkId::new("hashmap_operations", pending_count), |b| {
+        let _ = group.bench_function(BenchmarkId::new("pending_operations", pending_count), |b| {
             b.to_async(&rt).iter(move || async move {
                 let local = LocalSet::new();
 
@@ -218,7 +218,7 @@ fn bench_pending_message_operations(c: &mut Criterion) {
                         let mut effect_handler =
                             EffectHandler::new("bench_processor".into(), Sender::Local(sender));
 
-                        // Fill up the pending messages HashMap (but limit for large counts)
+                        // Fill up the pending messages (but limit for large counts)
                         // Note: Even "1000" scale tests are capped at 100 for performance - see module docs
                         let actual_count = std::cmp::min(pending_count, 100);
                         for i in 0..actual_count {
@@ -227,7 +227,7 @@ fn bench_pending_message_operations(c: &mut Criterion) {
                             processor
                                 .process(Message::PData(otlp_data), &mut effect_handler)
                                 .await
-                                .expect("failed to process PData in hashmap benchmark");
+                                .expect("failed to process PData in pending benchmark");
 
                             // NACK to keep in pending state
                             processor
@@ -239,10 +239,9 @@ fn bench_pending_message_operations(c: &mut Criterion) {
                                     &mut effect_handler,
                                 )
                                 .await
-                                .expect("failed to process NACK in hashmap benchmark");
+                                .expect("failed to process NACK in pending benchmark");
                         }
 
-                        // Now measure operations on the full HashMap
                         let start = Instant::now();
 
                         // Perform lookup operations (simulating retry checks)
@@ -310,7 +309,7 @@ fn bench_expired_message_cleanup(c: &mut Criterion) {
                                 let is_expired = past_deadline < Instant::now();
                                 let _ = black_box(is_expired);
 
-                                // Simulate removing an expired message from HashMap
+                                // Simulate removing an expired message from pending storage
                                 if i % 2 == 0 {
                                     // Simulate 50% of messages being expired
                                     let otlp_data = create_otlp_logs_data();

@@ -210,4 +210,3 @@ pub enum OTAPData {
     /// Trace object
     ArrowTraces(BatchArrowRecords),
 }
-

@@ -156,7 +156,6 @@ pub enum OTLPData {
     Profiles(ExportProfilesServiceRequest),
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
