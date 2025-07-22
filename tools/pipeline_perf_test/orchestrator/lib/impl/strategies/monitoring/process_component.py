@@ -1,3 +1,34 @@
+"""
+Process Component Monitoring Strategy Module.
+
+This module implements a monitoring strategy for components deployed as operating system
+processes. It integrates with the OpenTelemetry framework to periodically collect and
+report resource usage metrics (CPU and memory) for a given process ID (PID) using the
+`psutil` library.
+
+The strategy is designed to work within a test automation framework where components are
+deployed and monitored in real time. The implementation includes:
+
+- A dataclass to hold runtime monitoring thread state (`ProcessComponentMonitoringRuntime`).
+- A configuration class to control monitoring interval (`ProcessComponentMonitoringConfig`).
+- A strategy class (`ProcessComponentMonitoringStrategy`) that defines how monitoring is
+  started, stopped, and how data is collected.
+- A `monitor` function that runs in a background thread, collecting CPU and memory stats
+  from the target process at regular intervals, and pushing them to OpenTelemetry metrics.
+
+The strategy is registered under the name `"process_component"` and is compatible with
+step-level execution contexts.
+
+
+Usage Example (YAML):
+components:
+  backend-service:
+    deployment:
+      process: ...
+    monitoring:
+      process_component:
+        interval: 1.0
+"""
 import threading
 import time
 from dataclasses import dataclass, field

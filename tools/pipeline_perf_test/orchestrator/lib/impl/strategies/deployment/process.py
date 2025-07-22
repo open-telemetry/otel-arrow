@@ -1,3 +1,34 @@
+"""
+Process-Based Deployment Strategy Module.
+
+This module defines a deployment strategy for running components as operating system
+subprocesses. It provides configuration models, runtime tracking structures, and logic to
+start and stop processes using Python's `subprocess` module.
+
+Key Components:
+- `ComponentProcessRuntime`: A Pydantic model that stores runtime metadata for a process,
+  including its PID, `Popen` handle, and captured stdout/stderr logs.
+- `ProcessDeploymentConfig`: A configuration model specifying the command to execute and
+  optional environment variables.
+- `ProcessDeployment`: A concrete deployment strategy that implements how to launch and
+  terminate a process as part of the component lifecycle.
+
+Features:
+- Environment variable support via both `dict` and `list[str]` formats.
+- Graceful process termination with a fallback to force kill if needed.
+- Capture and optional debug logging of stdout and stderr output from the process.
+
+This strategy is registered under the name `"process"` and integrates with the component
+framework and step-level test execution context.
+
+YAML Usage Example:
+components:
+  otel-collector:
+    deployment:
+      process:
+        command: python -m ./load_generator/loadgen.py --serve
+        environment: {}
+"""
 import os
 import subprocess
 
