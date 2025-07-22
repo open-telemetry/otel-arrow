@@ -33,7 +33,7 @@
 
 use crate::effect_handler::LocalEffectHandlerCore;
 use crate::error::Error;
-use crate::message::{Message, Sender};
+use crate::message::{ControlMsg, Message, Sender};
 use async_trait::async_trait;
 use std::borrow::Cow;
 
@@ -101,6 +101,22 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
+    /// Creates a new local (!Send) `EffectHandler` with the given processor name and control sender.
+    #[must_use]
+    pub fn with_control_sender(
+        name: Cow<'static, str>,
+        msg_sender: Sender<PData>,
+        control_sender: Sender<ControlMsg>,
+    ) -> Self {
+        EffectHandler {
+            core: LocalEffectHandlerCore {
+                node_name: name,
+                control_sender: Some(control_sender),
+            },
+            msg_sender,
+        }
+    }
+
     /// Returns the name of the processor associated with this handler.
     #[must_use]
     pub fn processor_name(&self) -> Cow<'static, str> {
@@ -113,8 +129,25 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send(data).await?;
-        Ok(())
+        self.msg_sender.send(data).await.map_err(Error::from)
+    }
+
+    /// Sends an ACK control message upstream to indicate successful processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the control message could not be sent.
+    pub async fn send_ack(&self, id: u64) -> Result<(), Error<PData>> {
+        self.core.send_ack(id).await
+    }
+
+    /// Sends a NACK control message upstream to indicate failed processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the control message could not be sent.
+    pub async fn send_nack(&self, id: u64, reason: &str) -> Result<(), Error<PData>> {
+        self.core.send_nack(id, reason).await
     }
 
     // More methods will be added in the future as needed.

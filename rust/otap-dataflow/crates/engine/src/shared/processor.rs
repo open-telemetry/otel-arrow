@@ -32,10 +32,11 @@
 
 use crate::effect_handler::SharedEffectHandlerCore;
 use crate::error::Error;
-use crate::message::Message;
+use crate::message::{ControlMsg, Message};
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use std::borrow::Cow;
+use std::marker::PhantomData;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -85,6 +86,10 @@ pub struct EffectHandler<PData> {
 
     /// A sender used to forward messages from the processor.
     msg_sender: tokio::sync::mpsc::Sender<PData>,
+
+    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the processor
+    /// will consume.
+    _pd: PhantomData<PData>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -98,6 +103,24 @@ impl<PData> EffectHandler<PData> {
                 control_sender: None,
             },
             msg_sender,
+            _pd: PhantomData,
+        }
+    }
+
+    /// Creates a new shared (Send) `EffectHandler` with the given processor name and control sender.
+    #[must_use]
+    pub fn with_control_sender(
+        name: Cow<'static, str>,
+        msg_sender: tokio::sync::mpsc::Sender<PData>,
+        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+    ) -> Self {
+        EffectHandler {
+            core: SharedEffectHandlerCore {
+                node_name: name,
+                control_sender: Some(control_sender),
+            },
+            msg_sender,
+            _pd: PhantomData,
         }
     }
 

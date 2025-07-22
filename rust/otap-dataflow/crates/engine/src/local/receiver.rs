@@ -37,6 +37,7 @@ use crate::message::{ControlMsg, Sender};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -118,6 +119,10 @@ pub struct EffectHandler<PData> {
 
     /// A sender used to forward messages from the receiver.
     msg_sender: Sender<PData>,
+
+    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the receiver
+    /// will produce.
+    _pd: PhantomData<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -131,6 +136,24 @@ impl<PData> EffectHandler<PData> {
                 control_sender: None,
             },
             msg_sender,
+            _pd: PhantomData,
+        }
+    }
+
+    /// Creates a new local (!Send) `EffectHandler` with the given receiver name and control sender.
+    #[must_use]
+    pub fn with_control_sender(
+        receiver_name: Cow<'static, str>,
+        msg_sender: Sender<PData>,
+        control_sender: Sender<ControlMsg>,
+    ) -> Self {
+        EffectHandler {
+            core: LocalEffectHandlerCore {
+                node_name: receiver_name,
+                control_sender: Some(control_sender),
+            },
+            msg_sender,
+            _pd: PhantomData,
         }
     }
 

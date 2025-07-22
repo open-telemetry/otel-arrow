@@ -37,6 +37,7 @@ use crate::message::ControlMsg;
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -79,21 +80,22 @@ impl ControlChannel {
     }
 }
 
-/// A `Send` implementation of the EffectHandlerTrait.
+/// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     core: SharedEffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
     msg_sender: tokio::sync::mpsc::Sender<PData>,
+
+    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the receiver
+    /// will produce.
+    _pd: PhantomData<PData>,
 }
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new sendable effect handler with the given receiver name.
-    ///
-    /// Use this constructor when your receiver do need to be sent across threads or
-    /// when it uses components that are `Send`.
+    /// Creates a new shared (Send) `EffectHandler` with the given receiver name.
     #[must_use]
     pub fn new(
         receiver_name: Cow<'static, str>,
@@ -105,6 +107,24 @@ impl<PData> EffectHandler<PData> {
                 control_sender: None,
             },
             msg_sender,
+            _pd: PhantomData,
+        }
+    }
+
+    /// Creates a new shared (Send) `EffectHandler` with the given receiver name and control sender.
+    #[must_use]
+    pub fn with_control_sender(
+        receiver_name: Cow<'static, str>,
+        msg_sender: tokio::sync::mpsc::Sender<PData>,
+        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+    ) -> Self {
+        EffectHandler {
+            core: SharedEffectHandlerCore {
+                node_name: receiver_name,
+                control_sender: Some(control_sender),
+            },
+            msg_sender,
+            _pd: PhantomData,
         }
     }
 
