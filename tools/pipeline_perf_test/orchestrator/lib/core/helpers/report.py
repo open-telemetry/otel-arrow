@@ -41,7 +41,9 @@ def group_by_populated_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataF
     # Check if all columns exist in the DataFrame
     missing_columns = [col for col in columns if col not in df.columns]
     if missing_columns:
-        raise ValueError(f"The following columns are missing from the DataFrame: {', '.join(missing_columns)}")
+        raise ValueError(
+            f"The following columns are missing from the DataFrame: {', '.join(missing_columns)}"
+        )
 
     def populated_signature(row):
         return tuple(

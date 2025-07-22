@@ -137,9 +137,9 @@ def stop_and_remove_container(
 
 
 def get_container_logs(
-        ctx: Union[StepContext, ComponentHookContext],
-        client: docker.DockerClient,
-        runtime: ComponentDockerRuntime
+    ctx: Union[StepContext, ComponentHookContext],
+    client: docker.DockerClient,
+    runtime: ComponentDockerRuntime,
 ):
     """Get docker container logs and save them to the runtime.
 
@@ -152,9 +152,7 @@ def get_container_logs(
     args = ctx.get_suite().get_runtime("args")
     try:
         container = client.containers.get(runtime.container_id)
-        logs = container.logs(
-            stdout=True, stderr=True, stream=False, timestamps=False
-        )
+        logs = container.logs(stdout=True, stderr=True, stream=False, timestamps=False)
         decoded = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
         if args.debug:
             logger.debug("Container Logs For %s:\n%s", runtime.container_id, decoded)

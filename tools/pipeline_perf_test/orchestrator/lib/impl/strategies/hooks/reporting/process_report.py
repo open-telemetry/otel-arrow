@@ -419,12 +419,18 @@ test.suite: Test OTLP Vs OTAP
                 metric_prefix = "process"
 
             process_counter_metrics = tc.metrics.query_metrics(
-                metric_name=[f"{metric_prefix}.network.rx", f"{metric_prefix}.network.tx"],
+                metric_name=[
+                    f"{metric_prefix}.network.rx",
+                    f"{metric_prefix}.network.tx",
+                ],
                 metric_attrs={"component_name": component_name},
                 time_range=(self.report_start, self.report_end),
             )
             process_gauge_metrics = tc.metrics.query_metrics(
-                metric_name=[f"{metric_prefix}.cpu.usage", f"{metric_prefix}.memory.usage"],
+                metric_name=[
+                    f"{metric_prefix}.cpu.usage",
+                    f"{metric_prefix}.memory.usage",
+                ],
                 metric_attrs={"component_name": component_name},
                 time_range=(self.report_start, self.report_end),
             )
@@ -434,9 +440,15 @@ test.suite: Test OTLP Vs OTAP
             # Check if the process_counter_metrics DataFrame is empty
             if process_counter_metrics.empty:
                 if metric_prefix == "process":
-                    logger.debug("Component is a process deployment, so no network metrics expected: %s", component_name)
+                    logger.debug(
+                        "Component is a process deployment, so no network metrics expected: %s",
+                        component_name,
+                    )
                 else:
-                    logger.warning("Missing process counter metrics for component %s", component_name)
+                    logger.warning(
+                        "Missing process counter metrics for component %s",
+                        component_name,
+                    )
                     continue
             else:
                 counter_rates = compute_rate_over_time(
@@ -444,14 +456,16 @@ test.suite: Test OTLP Vs OTAP
                     by=["metric_attributes.component_name", "metric_name"],
                 )
                 counter_deltas = process_counter_metrics.with_aggregation(
-                    by=["metric_attributes.component_name", "metric_name"], agg_func=delta
+                    by=["metric_attributes.component_name", "metric_name"],
+                    agg_func=delta,
                 )
 
             # Check if the process_gauge_metrics DataFrame is empty
             if process_gauge_metrics.empty:
-                logger.warning("Missing process gauge metrics for component %s", component_name)
+                logger.warning(
+                    "Missing process gauge metrics for component %s", component_name
+                )
                 continue
-                
 
             # Component detail
             gauge_metrics = concat_metrics_df(

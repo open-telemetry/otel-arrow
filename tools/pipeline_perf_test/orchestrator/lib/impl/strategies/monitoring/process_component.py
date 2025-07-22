@@ -67,7 +67,7 @@ class ProcessComponentMonitoringConfig(MonitoringStrategyConfig):
 @monitoring_registry.register_class(STRATEGY_NAME)
 class ProcessComponentMonitoringStrategy(MonitoringStrategy):
     """
-    Strategy for monitoring a Process via the python process library.
+    Strategy for monitoring a Process via the python psutil library.
 
     Monitoring strategies define how to start, stop, and collect data from a component's monitoring
     system. Concrete implementations should specify how to track, log, and aggregate monitoring
@@ -117,7 +117,8 @@ components:
         logger.debug(f"Starting monitoring for {component.name}...")
         monitoring_runtime: ProcessComponentMonitoringRuntime = (
             component.get_or_create_runtime(
-                ProcessComponentMonitoringRuntime.type, ProcessComponentMonitoringRuntime
+                ProcessComponentMonitoringRuntime.type,
+                ProcessComponentMonitoringRuntime,
             )
         )
         process_runtime: ComponentProcessRuntime = component.get_or_create_runtime(
@@ -158,7 +159,8 @@ components:
         logger.debug(f"Stopping monitoring for {component.name}")
         monitoring_runtime: ProcessComponentMonitoringRuntime = (
             component.get_or_create_runtime(
-                ProcessComponentMonitoringRuntime.type, ProcessComponentMonitoringRuntime
+                ProcessComponentMonitoringRuntime.type,
+                ProcessComponentMonitoringRuntime,
             )
         )
         self.stop_event.set()
@@ -216,7 +218,7 @@ def monitor(
 
     try:
         proc = psutil.Process(pid)
-        
+
         with tracer.start_as_current_span(
             f"Process Monitor: PID {pid}", context=ctx, kind=SpanKind.PRODUCER
         ) as span:
@@ -247,7 +249,6 @@ def monitor(
 
                     # Memory usage calculation (using memory_info())
                     mem_usage = proc.memory_info().rss  # RSS in bytes
-
 
                     labels = {
                         "pid": str(pid),

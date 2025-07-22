@@ -16,7 +16,6 @@ from ....core.strategies.deployment_strategy import (
 from ....runner.registry import deployment_registry, PluginMeta
 
 
-
 STRATEGY_NAME = "process"
 
 
@@ -47,10 +46,11 @@ class ProcessDeploymentConfig(DeploymentStrategyConfig):
     command: str
     environment: Optional[Union[Dict[str, str], List[str]]] = None
 
+
 @deployment_registry.register_class(STRATEGY_NAME)
 class ProcessDeployment(DeploymentStrategy):
     """
-    Deployment strategy to manage the lifecycle of components using processes in a thread.
+    Deployment strategy to manage the lifecycle of components as a sub-process.
 
     This class handles starting and stopping processes based on the given
     deployment configuration.
@@ -100,12 +100,10 @@ components:
 
         logger = ctx.get_logger(__name__)
         logger.debug(f"Starting process for {component.name}")
-        process_runtime: ComponentProcessRuntime = (
-            component.get_or_create_runtime(
-                ComponentProcessRuntime.type, ComponentProcessRuntime
-            )
+        process_runtime: ComponentProcessRuntime = component.get_or_create_runtime(
+            ComponentProcessRuntime.type, ComponentProcessRuntime
         )
-        
+
         # Prepare environment
         env = os.environ.copy()
         if isinstance(self.config.environment, dict):
@@ -133,8 +131,9 @@ components:
         process_runtime.process = process
         component.set_runtime_data(ComponentProcessRuntime.type, process_runtime)
 
-        logger.debug(f"Process for {component.name} started with PID: {process_runtime.pid}")
-
+        logger.debug(
+            f"Process for {component.name} started with PID: {process_runtime.pid}"
+        )
 
     def stop(self, component: Component, ctx: StepContext):
         """Stop a process running in a background thread.
@@ -166,27 +165,35 @@ components:
                 process.wait(timeout=5)
                 logger.info(f"Process for {component.name} terminated successfully.")
             except subprocess.TimeoutExpired:
-                logger.warning(f"Process for {component.name} did not terminate, killing it.")
+                logger.warning(
+                    f"Process for {component.name} did not terminate, killing it."
+                )
                 process.kill()  # Force kill if terminate fails
-
 
             stdout_logs, stderr_logs = process.communicate()
             args = ctx.get_suite().get_runtime("args")
             if stdout_logs:
-                decoded = stdout_logs.decode("utf-8") if isinstance(stdout_logs, bytes) else str(stdout_logs)
+                decoded = (
+                    stdout_logs.decode("utf-8")
+                    if isinstance(stdout_logs, bytes)
+                    else str(stdout_logs)
+                )
                 runtime.std_out_logs = decoded.splitlines()
                 if args.debug:
                     logger.debug("Process std out For %s:\n%s", component.name, decoded)
             if stderr_logs:
-                decoded = stderr_logs.decode("utf-8") if isinstance(stderr_logs, bytes) else str(stderr_logs)
+                decoded = (
+                    stderr_logs.decode("utf-8")
+                    if isinstance(stderr_logs, bytes)
+                    else str(stderr_logs)
+                )
                 runtime.std_err_logs = decoded.splitlines()
                 if args.debug:
                     logger.debug("Process std err For %s:\n%s", component.name, decoded)
 
-
         except Exception as e:
             logger.exception(f"Error stopping process for {component.name}: {e}")
-        
+
         # Clear runtime info
         runtime.process = None
         runtime.pid = None
