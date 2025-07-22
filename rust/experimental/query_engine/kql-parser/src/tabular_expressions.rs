@@ -845,7 +845,7 @@ mod tests {
                             QueryLocation::new_fake(),
                             StringScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                "variable".into(),
+                                "variable",
                             ),
                             ValueAccessor::new(),
                         ),
@@ -928,7 +928,7 @@ mod tests {
                             QueryLocation::new_fake(),
                             StringScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                "variable".into(),
+                                "variable",
                             ),
                             ValueAccessor::new(),
                         ),
@@ -950,14 +950,14 @@ mod tests {
                             QueryLocation::new_fake(),
                             StringScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                "resource".into(),
+                                "resource",
                             ),
                             ValueAccessor::new_with_selectors(vec![ScalarExpression::Variable(
                                 VariableScalarExpression::new(
                                     QueryLocation::new_fake(),
                                     StringScalarExpression::new(
                                         QueryLocation::new_fake(),
-                                        "variable".into(),
+                                        "variable",
                                     ),
                                     ValueAccessor::new(),
                                 ),
@@ -1039,7 +1039,7 @@ mod tests {
                                 QueryLocation::new_fake(),
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    "variable".into(),
+                                    "variable",
                                 ),
                                 ValueAccessor::new(),
                             )),
@@ -1273,7 +1273,7 @@ mod tests {
                                 QueryLocation::new_fake(),
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    "variable".into(),
+                                    "variable",
                                 ),
                                 ValueAccessor::new(),
                             )),
@@ -1470,7 +1470,7 @@ mod tests {
                                 QueryLocation::new_fake(),
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    "variable".into(),
+                                    "variable",
                                 ),
                                 ValueAccessor::new(),
                             )),
@@ -1543,7 +1543,7 @@ mod tests {
                                 QueryLocation::new_fake(),
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    "variable".into(),
+                                    "variable",
                                 ),
                                 ValueAccessor::new(),
                             ),

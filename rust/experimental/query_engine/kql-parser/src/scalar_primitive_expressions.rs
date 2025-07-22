@@ -962,7 +962,7 @@ mod tests {
                     )),
                     ScalarExpression::Variable(VariableScalarExpression::new(
                         QueryLocation::new_fake(),
-                        StringScalarExpression::new(QueryLocation::new_fake(), "var".into()),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "var"),
                         ValueAccessor::new()
                     )),
                     ScalarExpression::Negate(NegateScalarExpression::new(

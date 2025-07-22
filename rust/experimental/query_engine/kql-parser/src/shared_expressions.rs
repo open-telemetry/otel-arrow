@@ -182,7 +182,7 @@ mod tests {
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    StringScalarExpression::new(QueryLocation::new_fake(), "variable".into()),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                     ValueAccessor::new(),
                 )),
             )),
@@ -253,7 +253,7 @@ mod tests {
                 )),
                 MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    StringScalarExpression::new(QueryLocation::new_fake(), "var1".into()),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
                     ValueAccessor::new(),
                 )),
             )),

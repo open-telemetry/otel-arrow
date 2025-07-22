@@ -575,7 +575,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "resource".into()),
+                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
                 ValueAccessor::new(),
             )),
             None,
@@ -592,7 +592,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var".into()),
+                StringScalarExpression::new(QueryLocation::new_fake(), "var"),
                 ValueAccessor::new(),
             )),
             None,
@@ -818,7 +818,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "resource".into()),
+                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
                 ValueAccessor::new(),
             )),
             None,
@@ -835,7 +835,7 @@ mod tests {
         run_test_success(
             ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var".into()),
+                StringScalarExpression::new(QueryLocation::new_fake(), "var"),
                 ValueAccessor::new(),
             )),
             None,
