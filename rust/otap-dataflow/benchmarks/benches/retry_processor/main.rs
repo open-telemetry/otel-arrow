@@ -2,12 +2,9 @@
 
 //! Retry Processor Performance Benchmarks
 //!
-//! This benchmark suite measures the performance characteristics of the retry processor
-//! under different load patterns and configurations. Key metrics include:
-//!
-//! 1. **Message Throughput**: Success path vs retry overhead
-//! 2. **Pending Message Scalability**: Performance with large numbers of pending messages  
-//! 3. **Memory Cleanup**: Cost of expired message cleanup operations
+//! This benchmark suite measures the performance characteristics of the retry processor.
+//! For details on the retry processor's ACK/NACK feedback loop architecture and behavior,
+//! see the [`otap_df_engine::retry_processor`] module documentation.
 //!
 //! ## Performance Optimizations
 //!

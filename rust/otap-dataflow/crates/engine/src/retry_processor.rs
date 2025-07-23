@@ -1,3 +1,60 @@
+//! Retry Processor with ACK/NACK Feedback Loop
+//!
+//! The retry processor implements reliable message delivery through an ACK/NACK feedback system.
+//! Messages are tracked with unique IDs and retried on failure using exponential backoff.
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────┐   ACK/NACK   ┌─────────────┐   ACK/NACK   ┌─────────────┐
+//! │  Upstream   │◄─────────────│    Retry    │◄─────────────│ Downstream  │
+//! │ Component   │              │  Processor  │              │ Component   │
+//! └─────────────┘              └─────────────┘              └─────────────┘
+//! ```
+//!
+//! ## Key Features
+//!
+//! - **Reliable Delivery**: Messages are tracked until acknowledged
+//! - **Exponential Backoff**: Failed messages are retried with increasing delays
+//! - **Backpressure**: When queue is full, sends NACK upstream instead of dropping messages
+//! - **Automatic Cleanup**: Expired messages are periodically removed
+//!
+//! ## ACK/NACK Behavior
+//!
+//! - **ACK**: Remove message from pending retry queue (successful processing)
+//! - **NACK**: Schedule message for retry with exponential backoff
+//! - **Queue Full**: Send NACK upstream with ID=0 to signal backpressure
+//!
+//! ## Configuration
+//!
+//! The processor is configured via [`retry_processor::RetryConfig`] with parameters for:
+//! - Maximum retry attempts
+//! - Initial and maximum retry delays
+//! - Backoff multiplier
+//! - Queue capacity limits
+//!
+//! ## Example
+//!
+//! ```rust
+//! use otap_df_engine::retry_processor::{RetryProcessor, RetryConfig};
+//!
+//! #[derive(Clone)]
+//! struct MyData {
+//!     id: u64,
+//!     payload: String,
+//! }
+//!
+//! let config = RetryConfig {
+//!     max_retries: 3,
+//!     initial_retry_delay_ms: 1000,
+//!     max_retry_delay_ms: 30000,
+//!     backoff_multiplier: 2.0,
+//!     max_pending_messages: 10000,
+//!     cleanup_interval_secs: 60,
+//! };
+//! let processor = RetryProcessor::<MyData>::with_config(config);
+//! ```
+
 use crate::error::Error;
 use crate::local::processor::{EffectHandler, Processor};
 use crate::message::{ControlMsg, Message};
