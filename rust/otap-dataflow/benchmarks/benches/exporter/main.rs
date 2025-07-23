@@ -8,10 +8,11 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
+use otap_df_engine::node::NodeWithPDataReceiver;
 use otap_df_engine::{
     config::ExporterConfig,
     exporter::ExporterWrapper,
-    message::{ControlMsg, Receiver, Sender},
+    message::{Receiver, Sender},
 };
 use otap_df_otap::{
     grpc::OTAPData,
@@ -55,8 +56,14 @@ use tonic::transport::Server;
 
 use tonic::{Request, Response, Status};
 
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::control::{ControlMsg, Controllable};
 use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
+use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
+use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use std::pin::Pin;
+use std::rc::Rc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -404,35 +411,38 @@ fn bench_exporter(c: &mut Criterion) {
         // Benchmark the `start` function
         let _ = group.bench_with_input(
             BenchmarkId::new("perf_exporter_full_config_enabled", size),
-            &batches,
-            |b, batches| {
+            &otap_signals,
+            |b, otap_signals| {
                 b.to_async(&rt).iter(|| async {
                     // start perf exporter
                     let config = Config::new(1000, 0.3, true, true, true, true, true);
                     let exporter_config = ExporterConfig::new("perf_exporter");
-                    let exporter =
-                        ExporterWrapper::local(PerfExporter::new(config, None), &exporter_config);
+                    let node_config =
+                        Rc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+                    let mut exporter = ExporterWrapper::local(
+                        PerfExporter::new(config, None),
+                        node_config,
+                        &exporter_config,
+                    );
 
                     // create necessary senders and receivers to communicate with the exporter
-                    let (control_tx, control_rx) = mpsc::Channel::new(100);
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = Sender::Local(control_tx);
-                    let control_receiver = Receiver::Local(control_rx);
-                    let pdata_sender = Sender::Local(pdata_tx);
-                    let pdata_receiver = Receiver::Local(pdata_rx);
+                    let control_sender = exporter.control_sender();
+                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
+                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
 
+                    exporter
+                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .expect("Failed to set PData receiver");
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(control_receiver, pdata_receiver)
-                            .await
-                            .expect("Exporter event loop failed");
+                        exporter.start().await.expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter
-                    for batch in batches {
-                        _ = pdata_sender.send(batch.clone()).await;
+                    for signal in otap_signals {
+                        _ = pdata_sender.send(signal.clone()).await;
                     }
 
                     _ = control_sender.send(ControlMsg::TimerTick {}).await;
@@ -447,35 +457,39 @@ fn bench_exporter(c: &mut Criterion) {
         );
         let _ = group.bench_with_input(
             BenchmarkId::new("perf_exporter_full_config_disabled", size),
-            &batches,
-            |b, batches| {
+            &otap_signals,
+            |b, otap_signals| {
                 b.to_async(&rt).iter(|| async {
                     // start perf exporter
                     let config = Config::new(1000, 0.3, false, false, false, false, false);
                     let exporter_config = ExporterConfig::new("perf_exporter");
-                    let exporter =
-                        ExporterWrapper::local(PerfExporter::new(config, None), &exporter_config);
+                    let node_config =
+                        Rc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+                    let mut exporter = ExporterWrapper::local(
+                        PerfExporter::new(config, None),
+                        node_config,
+                        &exporter_config,
+                    );
 
                     // create necessary senders and receivers to communicate with the exporter
-                    let (control_tx, control_rx) = mpsc::Channel::new(100);
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = Sender::Local(control_tx);
-                    let control_receiver = Receiver::Local(control_rx);
-                    let pdata_sender = Sender::Local(pdata_tx);
-                    let pdata_receiver = Receiver::Local(pdata_rx);
+                    let control_sender = exporter.control_sender();
+                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
+                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+
+                    exporter
+                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .expect("Failed to set PData receiver");
 
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(control_receiver, pdata_receiver)
-                            .await
-                            .expect("Exporter event loop failed");
+                        exporter.start().await.expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter
-                    for batch in batches {
-                        _ = pdata_sender.send(batch.clone()).await;
+                    for otap_signal in otap_signals {
+                        _ = pdata_sender.send(otap_signal.clone()).await;
                     }
 
                     _ = control_sender.send(ControlMsg::TimerTick {}).await;
@@ -499,26 +513,28 @@ fn bench_exporter(c: &mut Criterion) {
                     let grpc_addr = "127.0.0.1";
                     let (otap_signals, otlp_grpc_port) = input;
                     let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                    let exporter = ExporterWrapper::local(
+                    let node_config =
+                        Rc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+                    let mut exporter = ExporterWrapper::local(
                         OTAPExporter::new(grpc_endpoint, None),
+                        node_config,
                         &exporter_config,
                     );
 
                     // create necessary senders and receivers to communicate with the exporter
-                    let (control_tx, control_rx) = mpsc::Channel::new(100);
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = Sender::Local(control_tx);
-                    let control_receiver = Receiver::Local(control_rx);
-                    let pdata_sender = Sender::Local(pdata_tx);
-                    let pdata_receiver = Receiver::Local(pdata_rx);
+                    let control_sender = exporter.control_sender();
+                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
+                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+
+                    exporter
+                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .expect("Failed to set PData receiver");
 
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(control_receiver, pdata_receiver)
-                            .await
-                            .expect("Exporter event loop failed");
+                        exporter.start().await.expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter
@@ -546,26 +562,29 @@ fn bench_exporter(c: &mut Criterion) {
                     let (otlp_signals, otlp_grpc_port) = input;
                     let grpc_addr = "127.0.0.1";
                     let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                    let exporter = ExporterWrapper::local(
+                    let node_config =
+                        Rc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+                    let mut exporter = ExporterWrapper::local(
                         OTLPExporter::new(grpc_endpoint, None),
+                        node_config,
                         &exporter_config,
                     );
 
                     // create necessary senders and receivers to communicate with the exporter
-                    let (control_tx, control_rx) = mpsc::Channel::new(100);
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = Sender::Local(LocalSender::MpscSender(control_tx));
-                    let control_receiver = Receiver::Local(LocalReceiver::MpscReceiver(control_rx));
                     let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
                     let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+
+                    exporter
+                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .expect("Failed to set PData receiver");
+                    let control_sender = exporter.control_sender();
 
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(control_receiver, pdata_receiver)
-                            .await
-                            .expect("Exporter event loop failed");
+                        // ToDo (LQ) Should we pass the control receiver to the start function? That could be cleaner and less error-prone.
+                        exporter.start().await.expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter

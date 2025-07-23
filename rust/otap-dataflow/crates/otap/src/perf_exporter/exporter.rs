@@ -68,7 +68,6 @@ impl PerfExporter {
     }
 
     /// Creates a new PerfExporter from a configuration object
-    #[must_use]
     pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
         Ok(PerfExporter {
             config: serde_json::from_value(config.clone()).map_err(|e| {

@@ -84,7 +84,6 @@ impl OTAPReceiver {
     }
 
     /// Creates a new OTAPReceiver from a configuration object
-    #[must_use]
     pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {

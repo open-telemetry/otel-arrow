@@ -2,7 +2,7 @@
 
 //! Pipeline configuration specification.
 
-use crate::error::{Context, Error};
+use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::{Description, NamespaceId, NodeId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
@@ -145,10 +145,12 @@ impl PipelineConfig {
                     errors.push(Error::InvalidHyperEdgeSpec {
                         context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                         source_node: node_id.clone(),
-                        target_nodes: edge.destinations.iter().cloned().collect(),
-                        dispatch_strategy: edge.dispatch_strategy.clone(),
                         missing_source: false, // source exists since we're iterating over nodes
-                        missing_targets,
+                        details: Box::new(HyperEdgeSpecDetails {
+                            target_nodes: edge.destinations.iter().cloned().collect(),
+                            dispatch_strategy: edge.dispatch_strategy.clone(),
+                            missing_targets,
+                        }),
                     });
                 }
             }
@@ -459,10 +461,12 @@ impl PipelineConfigBuilder {
                 errors.push(Error::InvalidHyperEdgeSpec {
                     context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                     source_node: conn.src.clone(),
-                    target_nodes: conn.targets.iter().cloned().collect(),
-                    dispatch_strategy: conn.strategy,
                     missing_source: !src_exists,
-                    missing_targets: missing,
+                    details: Box::new(HyperEdgeSpecDetails {
+                        target_nodes: conn.targets.iter().cloned().collect(),
+                        dispatch_strategy: conn.strategy,
+                        missing_targets: missing,
+                    }),
                 });
                 continue;
             }
@@ -571,9 +575,11 @@ mod tests {
                     Error::InvalidHyperEdgeSpec {
                         source_node,
                         missing_source,
-                        missing_targets,
+                        details,
                         ..
-                    } if source_node == "X" && *missing_source && missing_targets.is_empty() => {}
+                    } if source_node == "X"
+                        && *missing_source
+                        && details.missing_targets.is_empty() => {}
                     other => panic!("expected InvalidHyperEdge missing_source, got {other:?}"),
                 }
             }
@@ -595,13 +601,12 @@ mod tests {
                     Error::InvalidHyperEdgeSpec {
                         source_node,
                         missing_source,
-                        missing_targets,
-                        target_nodes,
+                        details,
                         ..
                     } if source_node == "A"
                         && !*missing_source
-                        && missing_targets.as_slice() == ["Y"]
-                        && target_nodes.as_slice() == ["Y"] => {}
+                        && details.missing_targets.as_slice() == ["Y"]
+                        && details.target_nodes.as_slice() == ["Y"] => {}
                     other => panic!("expected InvalidHyperEdge missing_targets, got {other:?}"),
                 }
             }

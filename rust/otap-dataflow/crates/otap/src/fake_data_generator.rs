@@ -51,19 +51,24 @@ pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OTAPData> = ReceiverFactory
     },
 };
 
-impl FakeGeneratorReceiver {
-    /// creates a new fake data generator
-    #[must_use]
-    pub fn new() -> Self {
-        FakeGeneratorReceiver {
+impl Default for FakeGeneratorReceiver {
+    fn default() -> Self {
+        Self {
             config: Config {
                 batch_count: 10, // Default batch count
             },
         }
     }
+}
+
+impl FakeGeneratorReceiver {
+    /// creates a new fake data generator
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Creates a new fake data generator from a configuration object
-    #[must_use]
     pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {

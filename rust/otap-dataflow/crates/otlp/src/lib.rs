@@ -104,9 +104,13 @@ mod tests {
     #[test]
     fn test2() {
         let config = PipelineConfigBuilder::new()
-            .add_receiver("otlp_receiver", "urn:otel:otlp:receiver", Some(json!({
-                "listening_addr": "127.0.0.1:4317"
-            })))
+            .add_receiver(
+                "otlp_receiver",
+                "urn:otel:otlp:receiver",
+                Some(json!({
+                    "listening_addr": "127.0.0.1:4317"
+                })),
+            )
             .add_exporter(
                 "otlp_exporter",
                 "urn:otel:otlp:exporter",

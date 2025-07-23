@@ -29,7 +29,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::rc::Rc;
 
-const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
+/// The URN for the OTLP exporter
+pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
 
 /// Configuration for the OTLP exporter
 #[derive(Debug, Clone, Serialize, Deserialize)]

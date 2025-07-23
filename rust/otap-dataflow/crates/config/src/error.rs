@@ -7,6 +7,17 @@ use crate::{NamespaceId, NodeId, PipelineId, PortName};
 use miette::Diagnostic;
 use std::fmt::Display;
 
+/// Details about an invalid hyper-edge specification.
+#[derive(Debug)]
+pub struct HyperEdgeSpecDetails {
+    /// The target nodes of the hyper-edge.
+    pub target_nodes: Vec<NodeId>,
+    /// The dispatch strategy for the hyper-edge.
+    pub dispatch_strategy: DispatchStrategy,
+    /// The target nodes that are missing in the pipeline.
+    pub missing_targets: Vec<NodeId>,
+}
+
 /// Errors that can occur while processing the configuration of a data plane, a namespace, a pipeline,
 /// or a node.
 ///
@@ -79,9 +90,7 @@ pub enum Error {
     },
 
     /// An edge was specified with a source node or target nodes that do not exist in the pipeline.
-    #[error(
-        "Invalid hyper-edge specification: {source_node} -> {target_nodes:?}\nContext: {context}"
-    )]
+    #[error("Invalid hyper-edge specification: {source_node} -> {details:?}\nContext: {context}")]
     #[diagnostic(code(data_plane::invalid_hyper_edge_spec), url(docsrs))]
     InvalidHyperEdgeSpec {
         /// The context in which the error occurred.
@@ -89,14 +98,10 @@ pub enum Error {
 
         /// The source node of the hyper-edge.
         source_node: NodeId,
-        /// The target nodes of the hyper-edge.
-        target_nodes: Vec<NodeId>,
-        /// The dispatch strategy for the hyper-edge.
-        dispatch_strategy: DispatchStrategy,
         /// Whether the source node is missing.
         missing_source: bool,
-        /// The target nodes that are missing in the pipeline.
-        missing_targets: Vec<NodeId>,
+        /// Details about the hyper-edge specification.
+        details: Box<HyperEdgeSpecDetails>,
     },
 
     /// An invalid user configuration occurred.

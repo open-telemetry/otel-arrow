@@ -27,6 +27,7 @@ pub trait Node {
 
 /// Trait for nodes that can send pdata to a specific port.
 pub trait NodeWithPDataSender<PData>: Node {
+    /// Sets the sender for pdata messages on the node.
     fn set_pdata_sender(
         &mut self,
         node_id: NodeId,
@@ -37,6 +38,7 @@ pub trait NodeWithPDataSender<PData>: Node {
 
 /// Trait for nodes that can receive pdata.
 pub trait NodeWithPDataReceiver<PData>: Node {
+    /// Sets the receiver for pdata messages on the node.
     fn set_pdata_receiver(
         &mut self,
         node_id: NodeId,
