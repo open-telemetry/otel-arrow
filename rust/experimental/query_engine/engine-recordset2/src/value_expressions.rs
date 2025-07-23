@@ -7,7 +7,6 @@ use crate::{
     scalar_expressions::execute_scalar_expression, *,
 };
 
-#[allow(dead_code)]
 pub fn execute_immutable_value_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
     immutable_value_expression: &'a ImmutableValueExpression,
@@ -33,7 +32,6 @@ where
     }
 }
 
-#[allow(dead_code)]
 pub fn execute_mutable_value_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
