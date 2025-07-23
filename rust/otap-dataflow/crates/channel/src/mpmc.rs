@@ -27,7 +27,7 @@ pub struct Channel<T> {
 }
 
 impl<T> Channel<T> {
-    /// Creates a new channel with the specified capacity.
+    /// Creates a new MPMC channel with the specified capacity.
     #[allow(clippy::new_ret_no_self)]
     #[must_use]
     pub fn new(capacity: NonZeroUsize) -> (Sender<T>, Receiver<T>) {

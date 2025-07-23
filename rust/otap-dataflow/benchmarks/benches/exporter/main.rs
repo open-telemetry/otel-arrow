@@ -350,33 +350,9 @@ fn bench_exporter(c: &mut Criterion) {
     let row_size = 50;
     for size in [2, 4, 8, 16, 32] {
         // create data that will be used to benchmark the exporters
-        let mut batches = Vec::new();
         let mut otap_signals = Vec::new();
         let mut otlp_signals = Vec::new();
         for _ in 0..size {
-            let traces_batch_data = create_batch_arrow_record_helper(
-                TRACES_BATCH_ID,
-                ArrowPayloadType::Spans,
-                message_len,
-                row_size,
-            );
-            let logs_batch_data = create_batch_arrow_record_helper(
-                LOGS_BATCH_ID,
-                ArrowPayloadType::Logs,
-                message_len,
-                row_size,
-            );
-            let metrics_batch_data = create_batch_arrow_record_helper(
-                METRICS_BATCH_ID,
-                ArrowPayloadType::UnivariateMetrics,
-                message_len,
-                row_size,
-            );
-
-            batches.push(traces_batch_data);
-            batches.push(logs_batch_data);
-            batches.push(metrics_batch_data);
-
             let arrow_traces_batch_data = create_batch_arrow_record_helper(
                 TRACES_BATCH_ID,
                 ArrowPayloadType::Spans,
@@ -428,8 +404,8 @@ fn bench_exporter(c: &mut Criterion) {
                     // create necessary senders and receivers to communicate with the exporter
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                     let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
-                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
+                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -474,8 +450,8 @@ fn bench_exporter(c: &mut Criterion) {
                     // create necessary senders and receivers to communicate with the exporter
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                     let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
-                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
+                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -524,8 +500,8 @@ fn bench_exporter(c: &mut Criterion) {
                     // create necessary senders and receivers to communicate with the exporter
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                     let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
-                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
+                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -572,8 +548,8 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // create necessary senders and receivers to communicate with the exporter
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let pdata_sender = Sender::Local(LocalSender::MpscSender(pdata_tx));
-                    let pdata_receiver = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
+                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -583,7 +559,6 @@ fn bench_exporter(c: &mut Criterion) {
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        // ToDo (LQ) Should we pass the control receiver to the start function? That could be cleaner and less error-prone.
                         exporter.start().await.expect("Exporter event loop failed");
                     });
 
