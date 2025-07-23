@@ -6,6 +6,7 @@ pub(crate) mod primitives;
 pub(crate) mod scalar_expressions;
 pub(crate) mod test_helpers;
 pub(crate) mod transform;
+pub(crate) mod value_expressions;
 
 pub use engine::*;
 pub use log_message::*;
