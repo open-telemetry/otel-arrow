@@ -1,7 +1,7 @@
 # Dependencies for the pipeline performance test orchestrator
 
 # General dependencies
-requests>=2.25.0
+requests==2.32.3
 pyyaml>=5.4.1
 pydantic>=2.11.4
 
