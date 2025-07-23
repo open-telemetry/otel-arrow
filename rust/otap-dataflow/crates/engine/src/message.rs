@@ -6,10 +6,10 @@ use crate::control::ControlMsg;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::{RecvError, SendError};
+use otap_df_channel::mpsc;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
-use otap_df_channel::mpsc;
 
 /// Represents messages sent to nodes (receivers, processors, exporters, or connectors) within the
 /// pipeline.
@@ -109,7 +109,7 @@ impl<T> Sender<T> {
     pub fn new_local_mpsc_sender(mpsc_sender: mpsc::Sender<T>) -> Self {
         Sender::Local(LocalSender::MpscSender(mpsc_sender))
     }
-    
+
     /// Sends a message to the channel.
     pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
         match self {
@@ -132,7 +132,7 @@ impl<T> Receiver<T> {
     pub fn new_local_mpsc_receiver(mpsc_receiver: mpsc::Receiver<T>) -> Self {
         Receiver::Local(LocalReceiver::MpscReceiver(mpsc_receiver))
     }
-    
+
     /// Receives a message from the channel.
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         match self {
