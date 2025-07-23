@@ -441,6 +441,10 @@ mod tests {
                     OwnedValue::Integer(ValueStorage::new(2)),
                     OwnedValue::Integer(ValueStorage::new(3)),
                 ])),
+            )
+            .with_key_value(
+                "key3".into(),
+                OwnedValue::Map(MapValueStorage::new(HashMap::new())),
             );
 
         let run_test = |scalar_expression, validate: &dyn Fn(Option<ResolvedValueMut>)| {
@@ -481,6 +485,31 @@ mod tests {
                 if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
                     assert_eq!(
                         Value::String(&ValueStorage::new("key1".into())),
+                        key.to_value()
+                    );
+                } else {
+                    panic!()
+                }
+            },
+        );
+
+        // Test selecting a map key
+        run_test(
+            MutableValueExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "sub-key"),
+                    )),
+                ]),
+            )),
+            &|v| {
+                if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
+                    assert_eq!(
+                        Value::String(&ValueStorage::new("sub-key".into())),
                         key.to_value()
                     );
                 } else {
