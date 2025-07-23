@@ -3,7 +3,7 @@
 //! Implementation of the OTAP nodes (receiver, exporter, processor).
 //!
 
-use crate::grpc::OTAPData;
+use crate::pdata::OtapPdata;
 use linkme::distributed_slice;
 use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
 use otap_df_engine::shared::{
@@ -34,24 +34,24 @@ mod mock;
 
 /// A slice of local receiver factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_RECEIVERS: [LocalReceiverFactory<OTAPData>] = [..];
+pub static LOCAL_RECEIVERS: [LocalReceiverFactory<OtapPdata>] = [..];
 
 /// A slice of local processor factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_PROCESSORS: [LocalProcessorFactory<OTAPData>] = [..];
+pub static LOCAL_PROCESSORS: [LocalProcessorFactory<OtapPdata>] = [..];
 
 /// A slice of local exporter factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_EXPORTERS: [LocalExporterFactory<OTAPData>] = [..];
+pub static LOCAL_EXPORTERS: [LocalExporterFactory<OtapPdata>] = [..];
 
 /// A slice of shared receiver factories for OTAP data.
 #[distributed_slice]
-pub static SHARED_RECEIVERS: [SharedReceiverFactory<OTAPData>] = [..];
+pub static SHARED_RECEIVERS: [SharedReceiverFactory<OtapPdata>] = [..];
 
 /// A slice of shared processor factories for OTAP data.
 #[distributed_slice]
-pub static SHARED_PROCESSORS: [SharedProcessorFactory<OTAPData>] = [..];
+pub static SHARED_PROCESSORS: [SharedProcessorFactory<OtapPdata>] = [..];
 
 /// A slice of shared exporter factories for OTAP data.
 #[distributed_slice]
-pub static SHARED_EXPORTERS: [SharedExporterFactory<OTAPData>] = [..];
+pub static SHARED_EXPORTERS: [SharedExporterFactory<OtapPdata>] = [..];

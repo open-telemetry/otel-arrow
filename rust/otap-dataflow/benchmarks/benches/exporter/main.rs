@@ -17,12 +17,15 @@ use otap_df_otap::{
     grpc::OTAPData,
     otap_exporter::OTAPExporter,
     perf_exporter::{config::Config, exporter::PerfExporter},
-    proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
-        arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
-        arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
-        arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
-    },
+    // proto::opentelemetry::experimental::arrow::v1::{
+
+    // },
+};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+    arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
+    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
+    arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
 };
 
 use otap_df_otlp::{
@@ -521,7 +524,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
+                        _ = pdata_sender.send(otap_signal.clone().into()).await;
                     }
 
                     _ = control_sender

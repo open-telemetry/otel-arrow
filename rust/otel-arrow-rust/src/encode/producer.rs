@@ -5,10 +5,6 @@
 //!
 //! `BatchArrowRecords` is the protobuf type that contains the Arrow IPC serialized messages.
 
-// TODO we will eventually use this code as part of the implementation of PDATA for OTAP pipelines
-// https://github.com/open-telemetry/otel-arrow/issues/728
-#![allow(dead_code)]
-
 use std::{collections::HashMap, io::Cursor};
 
 use arrow::array::RecordBatch;
@@ -57,7 +53,7 @@ impl StreamProducer {
 }
 
 /// Produces OTAP `BatchArrowRecords` from OTAP Batches
-struct Producer {
+pub struct Producer {
     next_batch_id: i64,
     next_schema_id: i64,
     stream_producers: HashMap<String, StreamProducer>,

@@ -8,6 +8,7 @@
 
 use crate::LOCAL_EXPORTERS;
 use crate::grpc::OTAPData;
+use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -34,7 +35,7 @@ pub struct OTAPExporter {
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
 #[distributed_slice(LOCAL_EXPORTERS)]
-pub static OTAP_EXPORTER: LocalExporterFactory<OTAPData> = LocalExporterFactory {
+pub static OTAP_EXPORTER: LocalExporterFactory<OtapPdata> = LocalExporterFactory {
     name: "urn:otel:otap:exporter",
     create: |config: &Value| Box::new(OTAPExporter::from_config(config)),
 };
@@ -63,12 +64,12 @@ impl OTAPExporter {
 
 /// Implement the local exporter trait for a OTAP Exporter
 #[async_trait(?Send)]
-impl local::Exporter<OTAPData> for OTAPExporter {
+impl local::Exporter<OtapPdata> for OTAPExporter {
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<OTAPData>,
-        effect_handler: local::EffectHandler<OTAPData>,
-    ) -> Result<(), Error<OTAPData>> {
+        mut msg_chan: MessageChannel<OtapPdata>,
+        effect_handler: local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         // start a grpc client and connect to the server
         let mut arrow_metrics_client =
             ArrowMetricsServiceClient::connect(self.grpc_endpoint.clone())
@@ -117,6 +118,8 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                 }
                 //send data
                 Message::PData(message) => {
+                    let message: OTAPData = message.try_into()?;
+
                     match message {
                         // match on OTAPData type and use the respective client to send message
                         // ToDo: Add Ack/Nack handling, send a signal that data has been exported
@@ -181,6 +184,7 @@ mod tests {
         create_batch_arrow_record,
     };
     use crate::otap_exporter::OTAPExporter;
+    use crate::pdata::OtapPdata;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
@@ -203,7 +207,7 @@ mod tests {
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
     fn scenario()
-    -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 // Send a data message
@@ -211,7 +215,7 @@ mod tests {
                     METRIC_BATCH_ID,
                     ArrowPayloadType::MultivariateMetrics,
                 ));
-                ctx.send_pdata(metric_message)
+                ctx.send_pdata(metric_message.into())
                     .await
                     .expect("Failed to send metric message");
 
@@ -219,7 +223,7 @@ mod tests {
                     LOG_BATCH_ID,
                     ArrowPayloadType::Logs,
                 ));
-                ctx.send_pdata(log_message)
+                ctx.send_pdata(log_message.into())
                     .await
                     .expect("Failed to send log message");
 
@@ -227,7 +231,7 @@ mod tests {
                     TRACE_BATCH_ID,
                     ArrowPayloadType::Spans,
                 ));
-                ctx.send_pdata(trace_message)
+                ctx.send_pdata(trace_message.into())
                     .await
                     .expect("Failed to send trace message");
 
@@ -241,15 +245,17 @@ mod tests {
 
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
-        mut receiver: tokio::sync::mpsc::Receiver<OTAPData>,
-    ) -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        mut receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
                 // check that the message was properly sent from the exporter
-                let metrics_received = timeout(Duration::from_secs(3), receiver.recv())
+                let metrics_received: OTAPData = timeout(Duration::from_secs(3), receiver.recv())
                     .await
                     .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    .expect("No message received")
+                    .try_into()
+                    .expect("Could convert pdata to OTAPData");
 
                 // Assert that the message received is what the exporter sent
                 let _expected_metrics_message = create_batch_arrow_record(
@@ -258,18 +264,22 @@ mod tests {
                 );
                 assert!(matches!(metrics_received, _expected_metrics_message));
 
-                let logs_received = timeout(Duration::from_secs(3), receiver.recv())
+                let logs_received: OTAPData = timeout(Duration::from_secs(3), receiver.recv())
                     .await
                     .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    .expect("No message received")
+                    .try_into()
+                    .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
                     create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 assert!(matches!(logs_received, _expected_logs_message));
 
-                let traces_received = timeout(Duration::from_secs(3), receiver.recv())
+                let traces_received: OTAPData = timeout(Duration::from_secs(3), receiver.recv())
                     .await
                     .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    .expect("No message received")
+                    .try_into()
+                    .expect("Could convert pdata to OTAPData");
 
                 let _expected_trace_message =
                     create_batch_arrow_record(TRACE_BATCH_ID, ArrowPayloadType::Spans);

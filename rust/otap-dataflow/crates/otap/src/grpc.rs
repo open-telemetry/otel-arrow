@@ -21,16 +21,18 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+use crate::pdata::OtapPdata;
+
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
-    effect_handler: shared::EffectHandler<OTAPData>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     channel_size: usize,
 }
 
 impl ArrowLogsServiceImpl {
     /// create a new ArrowLogsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>, channel_size: usize) -> Self {
         Self {
             effect_handler,
             channel_size,
@@ -39,14 +41,14 @@ impl ArrowLogsServiceImpl {
 }
 /// struct that implements the ArrowMetricsService trait
 pub struct ArrowMetricsServiceImpl {
-    effect_handler: shared::EffectHandler<OTAPData>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     channel_size: usize,
 }
 
 impl ArrowMetricsServiceImpl {
     /// create a new ArrowMetricsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>, channel_size: usize) -> Self {
         Self {
             effect_handler,
             channel_size,
@@ -56,14 +58,14 @@ impl ArrowMetricsServiceImpl {
 
 /// struct that implements the ArrowTracesService trait
 pub struct ArrowTracesServiceImpl {
-    effect_handler: shared::EffectHandler<OTAPData>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     channel_size: usize,
 }
 
 impl ArrowTracesServiceImpl {
     /// create a new ArrowTracesServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>, channel_size: usize) -> Self {
         Self {
             effect_handler,
             channel_size,
@@ -179,14 +181,14 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 async fn accept_data<OTAPDataType>(
     otap_data: OTAPDataType,
     batch: BatchArrowRecords,
-    effect_handler: &shared::EffectHandler<OTAPData>,
+    effect_handler: &shared::EffectHandler<OtapPdata>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<(), ()>
 where
     OTAPDataType: Fn(BatchArrowRecords) -> OTAPData,
 {
     let batch_id = batch.batch_id;
-    let status_result = match effect_handler.send_message(otap_data(batch)).await {
+    let status_result = match effect_handler.send_message(otap_data(batch).into()).await {
         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
         Err(error) => (StatusCode::Canceled, error.to_string()),
     };

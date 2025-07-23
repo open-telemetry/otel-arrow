@@ -24,8 +24,17 @@ pub mod error {
             error: String,
         },
     }
+
+    impl<T> From<Error> for otap_df_engine::error::Error<T> {
+        fn from(e: Error) -> Self {
+            otap_df_engine::error::Error::PdataConversionError {
+                error: format!("{e}"),
+            }
+        }
+    }
 }
 
+#[derive(Clone, Debug)]
 enum OtlpProtoBytes {
     // TODO revisit the names of these
     ExportLogsRequest(Vec<u8>),
@@ -34,7 +43,8 @@ enum OtlpProtoBytes {
 }
 
 /// Container for the various representations of the telemetry data
-enum OtapPdata {
+#[derive(Clone, Debug)]
+pub enum OtapPdata {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes(OtlpProtoBytes),
 
