@@ -3,4 +3,5 @@
 
 //! This crate contains code that is used to encode OTAP data.
 
+pub mod producer;
 pub mod record;

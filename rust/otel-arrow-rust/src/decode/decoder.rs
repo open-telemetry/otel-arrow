@@ -33,7 +33,7 @@ pub struct StreamConsumer {
 }
 
 impl StreamConsumer {
-    fn new(payload: ArrowPayloadType, initial_bytes: Vec<u8>) -> error::Result<Self> {
+    fn try_new(payload: ArrowPayloadType, initial_bytes: Vec<u8>) -> error::Result<Self> {
         let data = Cursor::new(initial_bytes);
         let stream_reader =
             StreamReader::try_new(data.clone(), None).context(error::BuildStreamReaderSnafu)?;
@@ -52,7 +52,7 @@ impl StreamConsumer {
     }
 }
 
-/// Consumer consumes OTAP `BatchArrowRecords` and converts them into OTLP messages.
+/// Consumer consumes OTAP `BatchArrowRecords` and can convert them into OTLP messages.
 #[derive(Default)]
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
@@ -87,7 +87,7 @@ impl Consumer {
                     self.stream_consumers = new_stream_consumer;
                     self.stream_consumers
                         .entry(schema_id.clone())
-                        .or_insert(StreamConsumer::new(payload_type, record)?)
+                        .or_insert(StreamConsumer::try_new(payload_type, record)?)
                 }
                 Some(s) => {
                     // stream consumer exists for given schema id, just reset the bytes.
