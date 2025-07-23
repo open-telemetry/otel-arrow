@@ -13,6 +13,7 @@ use crate::otlp::proto::common::{
     KeyValueIter, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id, read_str,
 };
 use crate::otlp::proto::resource::ObjResource;
+use crate::otlp::proto::wrappers::{GenericIterator, GenericObj};
 use crate::views::common::{SpanId, Str, TraceId};
 use crate::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
@@ -20,145 +21,40 @@ use crate::views::trace::{
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 
-/// Lightweight wrapper around `ResourceSpans` that implements `ResourceSpansView`
-#[derive(Clone, Copy)]
-pub struct ObjResourceSpans<'a> {
-    inner: &'a ResourceSpans,
-}
+/// A wrapper for `ResourceSpans`.
+pub type ObjResourceSpans<'a> = GenericObj<'a, ResourceSpans>;
 
-/// Lightweight wrapper around `ScopeSpans` that implements `ScopeSpansView`
-#[derive(Clone, Copy)]
-pub struct ObjScopeSpans<'a> {
-    inner: &'a ScopeSpans,
-}
+/// A wrapper for `ScopeSpans`.
+pub type ObjScopeSpans<'a> = GenericObj<'a, ScopeSpans>;
 
-/// Lightweight wrapper around `Span` that implements `SpanView`
-#[derive(Clone, Copy)]
-pub struct ObjSpan<'a> {
-    inner: &'a Span,
-}
+/// A wrapper for `Span`.
+pub type ObjSpan<'a> = GenericObj<'a, Span>;
 
-/// Lightweight wrapper around `Status` that implements `StatusView`
-#[derive(Clone, Copy)]
-pub struct ObjStatus<'a> {
-    inner: &'a Status,
-}
+/// A wrapper for `Status`.
+pub type ObjStatus<'a> = GenericObj<'a, Status>;
 
-/// Lightweight wrapper around `Event` that implements `EventView`
-#[derive(Clone, Copy)]
-pub struct ObjEvent<'a> {
-    inner: &'a Event,
-}
+/// A wrapper for `Event`.
+pub type ObjEvent<'a> = GenericObj<'a, Event>;
 
-/// Lightweight wrapper around `Link` that implements `LinkView`
-#[derive(Clone, Copy)]
-pub struct ObjLink<'a> {
-    inner: &'a Link,
-}
+/// A wrapper for `Link`.
+pub type ObjLink<'a> = GenericObj<'a, Link>;
 
 /* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
 
-// FIXME: surely these can all be consolidated into a single generic implementation....
+/// An iterator for `ObjResourceSpans`; it consumes a slice iterator of `ResourceSpans`
+pub type ResourceIter<'a> = GenericIterator<'a, ResourceSpans, ObjResourceSpans<'a>>;
 
-/// Iterator of `ObjResourceSpans`. Used in the implementation of `TracesDataView` to get an iterator
-/// of the resources contained in the trace data.
-#[derive(Clone)]
-pub struct ResourceIter<'a> {
-    it: std::slice::Iter<'a, ResourceSpans>,
-}
+/// An iterator for `ObjScopeSpans`; it consumes a slice iterator of `ScopeSpans`
+pub type ScopeSpansIter<'a> = GenericIterator<'a, ScopeSpans, ObjScopeSpans<'a>>;
 
-impl<'a> Iterator for ResourceIter<'a> {
-    type Item = ObjResourceSpans<'a>;
+/// An iterator for `ObjSpan`; it consumes a slice iterator of `Span`
+pub type SpanIter<'a> = GenericIterator<'a, Span, ObjSpan<'a>>;
 
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|r| ObjResourceSpans { inner: r })
-    }
+/// An iterator for `ObjEvent`; it consumes a slice iterator of `Event`
+pub type EventIter<'a> = GenericIterator<'a, Event, ObjEvent<'a>>;
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
-
-/// Iterator of `ObjScopeSpans`. Used in the implementation of `ResourceSpansView` to get an iterator
-/// of the scopes contained in the trace data.
-#[derive(Clone)]
-pub struct ScopeSpansIter<'a> {
-    it: std::slice::Iter<'a, ScopeSpans>,
-}
-
-impl<'a> Iterator for ScopeSpansIter<'a> {
-    type Item = ObjScopeSpans<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|r| ObjScopeSpans { inner: r })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
-
-/// Iterator of `ObjSpan`. Used in the implementation of `ScopeSpansView` to get an iterator
-/// of the scopes contained in the trace data.
-#[derive(Clone)]
-pub struct SpanIter<'a> {
-    it: std::slice::Iter<'a, Span>,
-}
-
-impl<'a> Iterator for SpanIter<'a> {
-    type Item = ObjSpan<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|r| ObjSpan { inner: r })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
-
-/// Iterator of `ObjEvent`. Used in the implementation of `SpanView` to get an iterator
-/// of the events contained in the trace data.
-#[derive(Clone)]
-pub struct EventIter<'a> {
-    it: std::slice::Iter<'a, Event>,
-}
-
-impl<'a> Iterator for EventIter<'a> {
-    type Item = ObjEvent<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|r| ObjEvent { inner: r })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
-
-/// Iterator of `ObjLink`. Used in the implementation of `SpanView` to get an iterator
-/// of the links contained in the trace data.
-#[derive(Clone)]
-pub struct LinkIter<'a> {
-    it: std::slice::Iter<'a, Link>,
-}
-
-impl<'a> Iterator for LinkIter<'a> {
-    type Item = ObjLink<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|r| ObjLink { inner: r })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
+/// An iterator for `ObjLink`; it consumes a slice iterator of `Link`
+pub type LinkIter<'a> = GenericIterator<'a, Link, ObjLink<'a>>;
 
 /* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
 
@@ -174,9 +70,7 @@ impl TracesView for TracesData {
         Self: 'a;
 
     fn resources(&self) -> Self::ResourcesIter<'_> {
-        ResourceIter {
-            it: self.resource_spans.iter(),
-        }
+        ResourceIter::new(self.resource_spans.iter())
     }
 }
 
@@ -201,9 +95,7 @@ impl ResourceSpansView for ObjResourceSpans<'_> {
     }
 
     fn scopes(&self) -> Self::ScopesIter<'_> {
-        ScopeSpansIter {
-            it: self.inner.scope_spans.iter(),
-        }
+        ScopeSpansIter::new(self.inner.scope_spans.iter())
     }
 
     fn schema_url(&self) -> Option<Str<'_>> {
@@ -232,9 +124,7 @@ impl ScopeSpansView for ObjScopeSpans<'_> {
     }
 
     fn spans(&self) -> Self::SpanIter<'_> {
-        SpanIter {
-            it: self.inner.spans.iter(),
-        }
+        SpanIter::new(self.inner.spans.iter())
     }
 
     fn schema_url(&self) -> Option<Str<'_>> {
@@ -326,9 +216,7 @@ impl SpanView for ObjSpan<'_> {
     }
 
     fn events(&self) -> Self::EventsIter<'_> {
-        EventIter {
-            it: self.inner.events.iter(),
-        }
+        EventIter::new(self.inner.events.iter())
     }
 
     fn dropped_events_count(&self) -> u32 {
@@ -336,9 +224,7 @@ impl SpanView for ObjSpan<'_> {
     }
 
     fn links(&self) -> Self::LinksIter<'_> {
-        LinkIter {
-            it: self.inner.links.iter(),
-        }
+        LinkIter::new(self.inner.links.iter())
     }
 
     fn dropped_links_count(&self) -> u32 {
