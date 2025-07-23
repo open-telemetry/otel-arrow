@@ -24,9 +24,7 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-/// OTLP batch processor implementation
-mod otlp_batch_processor;
-
+use crate::fake_signal_receiver::config::OTLPSignal;
 use crate::grpc::OTLPData;
 use linkme::distributed_slice;
 use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
@@ -36,9 +34,16 @@ use otap_df_engine::shared::{
 
 /// compression formats
 pub mod compression;
+/// debug exporter implementation, logs data collected in pipeline to console
 pub mod debug_exporter;
+/// fake signal receiver implementation, creates fake signals to use for pipeline testing
+pub mod fake_signal_receiver;
 /// gRPC service implementation
 pub mod grpc;
+/// OTLP Batch Processor implementation
+pub mod otlp_batch_processor;
+pub use otlp_batch_processor::{ExportTraceServiceRequest, HierarchicalBatchSplit};
+
 /// otlp exporter implementation
 pub mod otlp_exporter;
 /// Implementation of OTLP Receiver that implements the receiver trait
@@ -49,6 +54,10 @@ pub mod proto;
 /// grpc mock server for testing
 #[cfg(test)]
 mod mock;
+
+/// A slice of local receiver factories for OTLP data.
+#[distributed_slice]
+pub static FAKE_SIGNAL_RECEIVERS: [LocalReceiverFactory<OTLPSignal>] = [..];
 
 /// A slice of local receiver factories for OTLP data.
 #[distributed_slice]

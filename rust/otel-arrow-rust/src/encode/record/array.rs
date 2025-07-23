@@ -25,6 +25,7 @@ use arrow::datatypes::{
     TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow::error::ArrowError;
+use paste::paste;
 
 use crate::arrays::NullableArrayAccessor;
 use crate::encode::record::array::dictionary::{
@@ -76,6 +77,9 @@ pub trait ArrayAppend: ArrayAppendNulls {
     type Native;
 
     fn append_value(&mut self, value: &Self::Native);
+
+    /// Append the value to the array builder `n` times
+    fn append_value_n(&mut self, value: &Self::Native, n: usize);
 }
 
 /// this trait implementation called by adaptive array builders on the base array builders to
@@ -107,6 +111,9 @@ pub trait ArrayAppendNulls {
 pub trait ArrayAppendStr {
     /// Append a value of type str to the builder
     fn append_str(&mut self, value: &str);
+
+    /// Append a value of type str to the builder `n` times
+    fn append_str_n(&mut self, value: &str, n: usize);
 }
 
 /// this trait can be implemented by types that can receive a value to append as a type of &[T].
@@ -119,6 +126,9 @@ pub trait ArrayAppendSlice {
     /// append a slice of T to the builder. Note that this does not append an individual
     /// element for each value in the slice, it appends the slice as a single row
     fn append_slice(&mut self, val: &[Self::Native]);
+
+    /// append the slice to the builder `n` times
+    fn append_slice_n(&mut self, val: &[Self::Native], n: usize);
 }
 
 /// Checked variant of ArrayAppendSlice for values that can return an error
@@ -245,7 +255,6 @@ where
     {
         if let Some(default_val) = default_value {
             if default_val == value {
-                // prefix.append_value();
                 return true;
             }
         }
@@ -296,10 +305,11 @@ where
     TD8: ArrayAppendNulls,
     TD16: ArrayAppendNulls,
 {
+    #[inline(always)]
     fn append_null(&mut self) {
         match &mut self.inner {
-            InnerBuilder::Native(builder) => builder.append_null(),
             InnerBuilder::Dictionary(builder) => builder.append_null(),
+            InnerBuilder::Native(builder) => builder.append_null(),
             InnerBuilder::Uninitialized(prefix) => prefix.append_null(),
         }
     }
@@ -313,145 +323,90 @@ where
     }
 }
 
-impl<T, TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<T, TArgs, TN, TD8, TD16>
-where
-    T: Clone + PartialEq,
-    TArgs: Clone,
-    TN: ArrayBuilderConstructor<Args = TArgs> + ArrayAppendNulls + ArrayAppend<Native = T>,
-    TD8: ArrayBuilderConstructor<Args = TArgs>
-        + ArrayAppendNulls
-        + ConvertToNativeHelper
-        + DictionaryArrayAppend<Native = T>
-        + DictionaryBuilder<UInt8Type>
-        + UpdateDictionaryIndexInto<TD16>,
-    <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-    TD16: ArrayBuilderConstructor<Args = TArgs>
-        + ArrayAppendNulls
-        + ConvertToNativeHelper
-        + DictionaryArrayAppend<Native = T>
-        + DictionaryBuilder<UInt16Type>,
-    <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-{
-    // generic function to handle doing an append and upgrading the array. There are some types
-    // that have an optimized append mechanism, for example to avoid cloning str and slice so
-    // we try to use the optimized append functions here while having one generic function that
-    // contains logic for how/when to upgrade the inner builder
-    fn handle_append<FIsDefault, FNative, FDict, FRetry>(
-        &mut self,
-        is_default: FIsDefault,
-        default_value: &Option<T>,
-        mut append_native_fn: FNative,
-        mut append_dict_fn: FDict,
-        retry_append: FRetry,
-    ) where
-        FIsDefault: FnOnce() -> bool,
-        FNative: FnMut(&mut TN),
-        FDict: FnMut(
-            &mut AdaptiveDictionaryBuilder<TD8, TD16>,
-        ) -> Result<usize, DictionaryBuilderError>,
-        FRetry: FnOnce(&mut Self),
-    {
-        match &mut self.inner {
+// general macro  to handle doing an append and upgrading the array. There are some types
+// that have an optimized append mechanism, for example to avoid cloning str and slice so
+// we try to use the optimized append functions here while having one generic function that
+// contains logic for how/when to upgrade the inner builder
+macro_rules! handle_append {
+(
+        $self:ident,
+        $method:ident ( $($arg:expr),* ),
+        default_check = $default_check:expr,
+        retry = $retry:block
+    ) => {
+        match &mut $self.inner {
             InnerBuilder::Native(native_builder) => {
-                append_native_fn(native_builder);
+                native_builder.$method($($arg),*);
             }
             InnerBuilder::Dictionary(dictionary_builder) => {
-                match append_dict_fn(dictionary_builder) {
+                match dictionary_builder.$method($($arg),*) {
                     Ok(_) => {}
                     Err(DictionaryBuilderError::DictOverflow {}) => {
-                        let mut native = TN::new(self.inner_args.clone());
+                        let mut native = TN::new($self.inner_args.clone());
                         dictionary_builder.to_native(&mut native);
-                        self.inner = InnerBuilder::Native(native);
-                        retry_append(self);
+                        $self.inner = InnerBuilder::Native(native);
+                        $retry
                     }
                 }
             }
             InnerBuilder::Uninitialized(prefix) => {
-                if is_default() {
+                if $default_check {
                     prefix.append_value();
                 } else {
-                    let mut prefix = self.initialize_inner().expect("can get prefix");
-                    prefix.init_builder(self, default_value.clone());
-                    retry_append(self);
+                    let mut prefix = $self.initialize_inner().expect("can get prefix");
+                    prefix.init_builder($self, $self.default_value.clone());
+                    $retry
                 }
             }
         }
-    }
+    };
 }
 
-impl<T, TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<T, TArgs, TN, TD8, TD16>
-where
-    T: Clone + PartialEq,
-    TArgs: Clone,
-    TN: ArrayBuilderConstructor<Args = TArgs> + ArrayAppendNulls + CheckedArrayAppend<Native = T>,
-    TD8: ArrayBuilderConstructor<Args = TArgs>
-        + ArrayAppendNulls
-        + ConvertToNativeHelper
-        + CheckedDictionaryArrayAppend<Native = T>
-        + DictionaryBuilder<UInt8Type>
-        + UpdateDictionaryIndexInto<TD16>,
-    <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-    TD16: ArrayBuilderConstructor<Args = TArgs>
-        + ArrayAppendNulls
-        + ConvertToNativeHelper
-        + CheckedDictionaryArrayAppend<Native = T>
-        + DictionaryBuilder<UInt16Type>,
-    <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-{
-    // generic function to handle doing an append and upgrading the array. There are some types
-    // that have an optimized append mechanism, for example to avoid cloning str and slice so
-    // we try to use the optimized append functions here while having one generic function that
-    // contains logic for how/when to upgrade the inner builder
-    fn handle_append_checked<FIsDefault, FNative, FDict, FRetry>(
-        &mut self,
-        is_default: FIsDefault,
-        default_value: &Option<T>,
-        mut append_native_fn: FNative,
-        mut append_dict_fn: FDict,
-        retry_append: FRetry,
-    ) -> Result<(), ArrowError>
-    where
-        FIsDefault: FnOnce() -> bool,
-        FNative: FnMut(&mut TN) -> Result<(), ArrowError>,
-        FDict: FnMut(
-            &mut AdaptiveDictionaryBuilder<TD8, TD16>,
-        ) -> Result<usize, checked::DictionaryBuilderError>,
-        FRetry: FnOnce(&mut Self) -> Result<(), ArrowError>,
-    {
-        match &mut self.inner {
-            InnerBuilder::Native(native_builder) => append_native_fn(native_builder),
-            InnerBuilder::Dictionary(dictionary_builder) => {
-                match append_dict_fn(dictionary_builder) {
-                    Ok(_) => {
-                        // append succeeded
-                        Ok(())
-                    }
-
-                    Err(checked::DictionaryBuilderError::DictOverflow {}) => {
-                        let mut native = TN::new(self.inner_args.clone());
-                        dictionary_builder.to_native_checked(&mut native)?;
-                        self.inner = InnerBuilder::Native(native);
-                        retry_append(self)
-                    }
-                    Err(checked::DictionaryBuilderError::CheckedBuilderError {
-                        source: arrow_error,
-                    }) => Err(arrow_error),
+macro_rules! handle_append_checked {
+    (
+        $self:ident,
+        $method:ident ( $($arg:expr),* ),
+        default_check = $default_check:expr,
+        retry = $retry:block
+    ) => {
+        paste! {
+            match &mut $self.inner {
+                InnerBuilder::Native(native_builder) => {
+                    native_builder.$method($($arg),*)
                 }
-            }
-            InnerBuilder::Uninitialized(prefix) => {
-                if is_default() {
-                    prefix.append_value();
-                    Ok(())
-                } else {
-                    // safety: initialize_inner will return the prefix if the inner variant is
-                    // `Uninitialized` which we've checked in the match here
-                    let mut prefix = self.initialize_inner().expect("can get prefix");
-                    prefix.init_builder_checked(self, default_value.clone())?;
-                    retry_append(self)
+                InnerBuilder::Dictionary(dictionary_builder) => {
+                    match dictionary_builder.[<$method _checked>]($($arg),*) {
+                        Ok(_) => {
+                            // append succeeded
+                            Ok(())
+                        }
+
+                        Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                            let mut native = TN::new($self.inner_args.clone());
+                            dictionary_builder.to_native_checked(&mut native)?;
+                            $self.inner = InnerBuilder::Native(native);
+                            $retry
+                        }
+                        Err(checked::DictionaryBuilderError::CheckedBuilderError {
+                            source: arrow_error,
+                        }) => Err(arrow_error),
+                    }
+                }
+                InnerBuilder::Uninitialized(prefix) => {
+                    if $default_check {
+                        prefix.append_value();
+                        Ok(())
+                    } else {
+                        // safety: initialize_inner will return the prefix if the inner variant is
+                        // `Uninitialized` which we've checked in the match here
+                        let mut prefix = $self.initialize_inner().expect("can get prefix");
+                        prefix.init_builder_checked($self, $self.default_value.clone())?;
+                        $retry
+                    }
                 }
             }
         }
-    }
+    };
 }
 
 impl<T, TArgs, TN, TD8, TD16> ArrayAppend for AdaptiveArrayBuilder<T, TArgs, TN, TD8, TD16>
@@ -477,20 +432,21 @@ where
 
     /// Append a value to the underlying builder
     fn append_value(&mut self, value: &T) {
-        // temporarily move the value of default_value to avoid borrowing self as mut and non-mut
-        // at the same time
-        let default_value = std::mem::take(&mut self.default_value);
-        let is_default = || Self::is_default_value(&default_value, value);
-        self.handle_append(
-            is_default,
-            &default_value,
-            |native| native.append_value(value),
-            |dict| dict.append_value(value),
-            |me| me.append_value(value),
+        handle_append!(
+            self,
+            append_value(value),
+            default_check = Self::is_default_value(&self.default_value, value),
+            retry = { self.append_value(value) }
         );
+    }
 
-        // restore the default value
-        self.default_value = default_value;
+    fn append_value_n(&mut self, value: &Self::Native, n: usize) {
+        handle_append!(
+            self,
+            append_value_n(value, n),
+            default_check = Self::is_default_value(&self.default_value, value),
+            retry = { self.append_value_n(value, n) }
+        );
     }
 }
 
@@ -518,35 +474,21 @@ where
     <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = String> + 'static,
 {
     fn append_str(&mut self, value: &str) {
-        // the logic is duplicated here and in handle_append, but it turns out having the duplicated
-        // logic is a good performance gain and because appending strings is so common (e.g. this
-        // is called for all attr keys), it's worth it to have the code duplicated.
+        handle_append!(
+            self,
+            append_str(value),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_str(value) }
+        );
+    }
 
-        match &mut self.inner {
-            InnerBuilder::Native(native_builder) => {
-                native_builder.append_str(value);
-            }
-            InnerBuilder::Dictionary(dictionary_builder) => {
-                match dictionary_builder.append_str(value) {
-                    Ok(_) => {}
-                    Err(DictionaryBuilderError::DictOverflow {}) => {
-                        let mut native = TN::new(self.inner_args.clone());
-                        dictionary_builder.to_native(&mut native);
-                        self.inner = InnerBuilder::Native(native);
-                        self.append_str(value); // retry
-                    }
-                }
-            }
-            InnerBuilder::Uninitialized(prefix) => {
-                if Self::is_default_value(&self.default_value, &value) {
-                    prefix.append_value();
-                } else {
-                    let mut prefix = self.initialize_inner().expect("can get prefix");
-                    prefix.init_builder(self, self.default_value.clone());
-                    self.append_str(value); // retry
-                }
-            }
-        }
+    fn append_str_n(&mut self, value: &str, n: usize) {
+        handle_append!(
+            self,
+            append_str_n(value, n),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_str_n(value, n) }
+        );
     }
 }
 
@@ -578,19 +520,21 @@ where
     type Native = T;
 
     fn append_slice(&mut self, value: &[Self::Native]) {
-        // temporarily move the value of default_value to avoid borrowing self as mut and non-mut
-        // at the same time
-        let default_value = std::mem::take(&mut self.default_value);
-        let is_default = || Self::is_default_value(&default_value, &value);
-        self.handle_append(
-            is_default,
-            &default_value,
-            |native| native.append_slice(value),
-            |dict| dict.append_slice(value),
-            |me| me.append_slice(value),
-        );
-        // restore value of default value
-        self.default_value = default_value
+        handle_append!(
+            self,
+            append_slice(value),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_slice(value) }
+        )
+    }
+
+    fn append_slice_n(&mut self, value: &[Self::Native], n: usize) {
+        handle_append!(
+            self,
+            append_slice_n(value, n),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_slice_n(value, n) }
+        )
     }
 }
 
@@ -618,22 +562,12 @@ where
     /// Try to append a value to the underlying builder. This method may return an error if
     /// the value is not valid.
     fn append_value(&mut self, value: &T) -> Result<(), ArrowError> {
-        // temporarily move the value of default_value to avoid borrowing self as mut and non-mut
-        // at the same time
-        let default_value = std::mem::take(&mut self.default_value);
-        let is_default = || Self::is_default_value(&default_value, value);
-        let result = self.handle_append_checked(
-            is_default,
-            &default_value,
-            |native| native.append_value(value),
-            |dict| dict.append_value_checked(value),
-            |me| me.append_value(value),
-        );
-
-        // restore the default value
-        self.default_value = default_value;
-
-        result
+        handle_append_checked!(
+            self,
+            append_value(value),
+            default_check = Self::is_default_value(&self.default_value, value),
+            retry = { self.append_value(value) }
+        )
     }
 }
 
@@ -667,22 +601,12 @@ where
     /// Try to append a value to the underlying builder. This method may return an error if
     /// the value is not valid
     fn append_slice(&mut self, value: &[Self::Native]) -> Result<(), ArrowError> {
-        // temporarily move the value of default_value to avoid borrowing self as mut and non-mut
-        // at the same time
-        let default_value = std::mem::take(&mut self.default_value);
-        let is_default = || Self::is_default_value(&default_value, &value);
-        let result = self.handle_append_checked(
-            is_default,
-            &default_value,
-            |native| native.append_slice(value),
-            |dict| dict.append_slice_checked(value),
-            |me| me.append_slice(value),
-        );
-
-        // restore the default value
-        self.default_value = default_value;
-
-        result
+        handle_append_checked!(
+            self,
+            append_slice(value),
+            default_check = Self::is_default_value(&self.default_value, &value),
+            retry = { self.append_slice(value) }
+        )
     }
 }
 
@@ -892,7 +816,7 @@ pub mod test {
         builder.append_null();
         builder.append_value(&values[0]);
         builder.append_nulls(2);
-        builder.append_value(&values[1]);
+        builder.append_value_n(&values[1], 2);
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -902,7 +826,7 @@ pub mod test {
                 Box::new(expected_data_type.clone())
             )
         );
-        assert_eq!(result.len(), 8);
+        assert_eq!(result.len(), 9);
 
         let dict_array = result
             .as_any()
@@ -919,7 +843,8 @@ pub mod test {
                 Some(0),
                 None,
                 None,
-                Some(1)
+                Some(1),
+                Some(1),
             ])
         );
         let dict_values = dict_array
@@ -941,9 +866,9 @@ pub mod test {
         builder.append_null();
         builder.append_value(&values[1]);
         builder.append_nulls(2);
-        builder.append_value(&values[1]);
+        builder.append_value_n(&values[1], 2);
         let result = builder.finish().unwrap();
-        assert_eq!(result.len(), 7);
+        assert_eq!(result.len(), 8);
         let array = result
             .as_any()
             .downcast_ref::<<TD8 as ConvertToNativeHelper>::Accessor>()
@@ -955,6 +880,7 @@ pub mod test {
         assert!(array.value_at(4).is_none());
         assert!(array.value_at(5).is_none());
         assert_eq!(array.value_at(6).unwrap(), values[1]);
+        assert_eq!(array.value_at(7).unwrap(), values[1]);
 
         // expect that when dictionary overflow happens, we get the native builder
         let mut builder = array_builder_factory(ArrayOptions {
@@ -1078,6 +1004,7 @@ pub mod test {
         builder.append_null();
         builder.append_str("foo");
         builder.append_str("baz");
+        builder.append_str_n("bar", 2);
         builder.append_nulls(2);
 
         let result = builder.finish().unwrap();
@@ -1085,7 +1012,7 @@ pub mod test {
             result.data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
         );
-        assert_eq!(result.len(), 7);
+        assert_eq!(result.len(), 9);
 
         let dict_array = result
             .as_any()
@@ -1094,7 +1021,17 @@ pub mod test {
         let dict_keys = dict_array.keys();
         assert_eq!(
             dict_keys,
-            &UInt8Array::from_iter(vec![Some(0), Some(1), None, Some(0), Some(2), None, None])
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                Some(2),
+                Some(1),
+                Some(1),
+                None,
+                None
+            ])
         );
         let dict_values = dict_array
             .values()
@@ -1164,6 +1101,7 @@ pub mod test {
         builder.append_null();
         builder.append_slice(b"foo");
         builder.append_slice(b"baz");
+        builder.append_slice_n(b"bar", 2);
         builder.append_nulls(2);
 
         let result = builder.finish().unwrap();
@@ -1171,7 +1109,7 @@ pub mod test {
             result.data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Binary))
         );
-        assert_eq!(result.len(), 7);
+        assert_eq!(result.len(), 9);
 
         let dict_array = result
             .as_any()
@@ -1180,7 +1118,17 @@ pub mod test {
         let dict_keys = dict_array.keys();
         assert_eq!(
             dict_keys,
-            &UInt8Array::from_iter(vec![Some(0), Some(1), None, Some(0), Some(2), None, None])
+            &UInt8Array::from_iter(vec![
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                Some(2),
+                Some(1),
+                Some(1),
+                None,
+                None
+            ])
         );
         let dict_values = dict_array
             .values()

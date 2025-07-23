@@ -41,11 +41,6 @@ impl AdaptiveBooleanArrayBuilder {
 
     pub fn append_value(&mut self, value: bool) {
         if self.inner.is_none() {
-            // TODO -- when we handle nulls here we need to keep track of how many
-            // nulls have been appended before the first value, and prefix this
-            // newly initialized array with that number of nulls
-            // https://github.com/open-telemetry/otel-arrow/issues/534
-
             self.inner = Some(BooleanBuilder::new());
             if self.nulls_prefix > 0 {
                 self.append_nulls(self.nulls_prefix);
@@ -60,6 +55,7 @@ impl AdaptiveBooleanArrayBuilder {
     }
 
     /// Append a null value to the builder
+    #[allow(dead_code)]
     pub fn append_null(&mut self) {
         match self.inner.as_mut() {
             Some(builder) => builder.append_null(),
@@ -68,7 +64,7 @@ impl AdaptiveBooleanArrayBuilder {
     }
 
     /// Append `n` nulls to the builder
-    fn append_nulls(&mut self, n: usize) {
+    pub(crate) fn append_nulls(&mut self, n: usize) {
         match self.inner.as_mut() {
             Some(builder) => builder.append_nulls(n),
             None => self.nulls_prefix += n,
