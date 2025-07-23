@@ -11,7 +11,7 @@
 //!
 
 use crate::grpc::OTAPData;
-use crate::proto::opentelemetry::experimental::arrow::v1::{
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
     arrow_logs_service_server::ArrowLogsService, arrow_metrics_service_server::ArrowMetricsService,
     arrow_traces_service_server::ArrowTracesService,

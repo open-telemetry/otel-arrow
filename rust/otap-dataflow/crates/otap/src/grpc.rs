@@ -10,12 +10,12 @@
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 //!
 
-use crate::proto::opentelemetry::experimental::arrow::v1::{
+use otap_df_engine::shared::receiver as shared;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     BatchArrowRecords, BatchStatus, StatusCode, arrow_logs_service_server::ArrowLogsService,
     arrow_metrics_service_server::ArrowMetricsService,
     arrow_traces_service_server::ArrowTracesService,
 };
-use otap_df_engine::shared::receiver as shared;
 use std::pin::Pin;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;

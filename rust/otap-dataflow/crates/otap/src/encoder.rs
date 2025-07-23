@@ -23,7 +23,7 @@ use otel_arrow_rust::{
 use crate::encoder::error::{Error, Result};
 
 mod cbor;
-mod error;
+pub mod error;
 
 /// Traverse the trace structure within the TracesView and produces an `OtapBatch' for the span
 /// data.

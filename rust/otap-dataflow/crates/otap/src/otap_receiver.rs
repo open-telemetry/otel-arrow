@@ -12,17 +12,17 @@ use crate::SHARED_RECEIVERS;
 use crate::grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
 };
-use crate::proto::opentelemetry::experimental::arrow::v1::{
-    arrow_logs_service_server::ArrowLogsServiceServer,
-    arrow_metrics_service_server::ArrowMetricsServiceServer,
-    arrow_traces_service_server::ArrowTracesServiceServer,
-};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
 use otap_df_otlp::compression::CompressionMethod;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    arrow_logs_service_server::ArrowLogsServiceServer,
+    arrow_metrics_service_server::ArrowMetricsServiceServer,
+    arrow_traces_service_server::ArrowTracesServiceServer,
+};
 use serde_json::Value;
 use std::net::SocketAddr;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
@@ -155,14 +155,14 @@ mod tests {
     use crate::grpc::OTAPData;
     use crate::mock::create_batch_arrow_record;
     use crate::otap_receiver::OTAPReceiver;
-    use crate::proto::opentelemetry::experimental::arrow::v1::{
+    use async_stream::stream;
+    use otap_df_engine::receiver::ReceiverWrapper;
+    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
-    use async_stream::stream;
-    use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;

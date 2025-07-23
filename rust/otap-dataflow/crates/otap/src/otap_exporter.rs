@@ -8,11 +8,6 @@
 
 use crate::LOCAL_EXPORTERS;
 use crate::grpc::OTAPData;
-use crate::proto::opentelemetry::experimental::arrow::v1::{
-    arrow_logs_service_client::ArrowLogsServiceClient,
-    arrow_metrics_service_client::ArrowMetricsServiceClient,
-    arrow_traces_service_client::ArrowTracesServiceClient,
-};
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -20,6 +15,11 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::{LocalExporterFactory, exporter as local};
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    arrow_logs_service_client::ArrowLogsServiceClient,
+    arrow_metrics_service_client::ArrowMetricsServiceClient,
+    arrow_traces_service_client::ArrowTracesServiceClient,
+};
 use serde_json::Value;
 
 /// Exporter that sends OTAP data via gRPC
@@ -181,14 +181,14 @@ mod tests {
         create_batch_arrow_record,
     };
     use crate::otap_exporter::OTAPExporter;
-    use crate::proto::opentelemetry::experimental::arrow::v1::{
+    use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::testing::exporter::TestContext;
+    use otap_df_engine::testing::exporter::TestRuntime;
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::TestContext;
-    use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
