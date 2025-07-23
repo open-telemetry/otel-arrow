@@ -92,6 +92,7 @@ pub enum NodeKind {
     // ToDo(LQ) : Add more node kinds as needed.
     // A connector between two pipelines
     // Connector,
+    
     /// A merged chain of consecutive processors (experimental).
     ProcessorChain,
 }

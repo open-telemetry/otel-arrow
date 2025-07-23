@@ -50,6 +50,7 @@ fn default_pdata_channel_size() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum PipelineType {
     /// OpenTelemetry Protocol (OTLP) pipeline.
+    /// ToDo: With the recent benchmark results on proto_bytes->views->OTAP, we could consider to get rid of the OTLP pipeline type.
     OTLP,
     /// OpenTelemetry with Apache Arrow Protocol (OTAP) pipeline.
     OTAP,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The configuration for engine.
+//! The configuration for the dataflow engine.
 
 use crate::NamespaceId;
 use crate::error::Error;
