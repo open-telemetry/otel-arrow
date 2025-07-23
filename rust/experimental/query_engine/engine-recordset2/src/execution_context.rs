@@ -45,22 +45,18 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         self.log_messages.borrow_mut().push(message);
     }
 
-    #[allow(dead_code)]
     pub fn get_pipeline(&self) -> &'a PipelineExpression {
         self.pipeline
     }
 
-    #[allow(dead_code)]
     pub fn get_attached_records(&self) -> Option<&'b dyn AttachedRecords> {
         self.attached_records
     }
 
-    #[allow(dead_code)]
     pub fn get_record(&self) -> &RefCell<TRecord> {
         &self.record
     }
 
-    #[allow(dead_code)]
     pub fn get_variables(&self) -> &RefCell<MapValueStorage<OwnedValue>> {
         &self.variables
     }
