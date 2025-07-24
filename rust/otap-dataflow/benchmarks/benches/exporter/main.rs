@@ -17,9 +17,6 @@ use otap_df_otap::{
     grpc::OTAPData,
     otap_exporter::OTAPExporter,
     perf_exporter::{config::Config, exporter::PerfExporter},
-    // proto::opentelemetry::experimental::arrow::v1::{
-
-    // },
 };
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,

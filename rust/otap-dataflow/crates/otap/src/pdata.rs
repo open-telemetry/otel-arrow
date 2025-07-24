@@ -1,9 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// TODO revisit whether we actually need to allow this ...
-#![allow(dead_code)]
-
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_rust::otap::{OtapBatch, from_record_messages};
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
@@ -34,11 +31,14 @@ pub mod error {
     }
 }
 
+/// Pipeline data represented as protobuf serialized OTLP request messages
 #[derive(Clone, Debug)]
-enum OtlpProtoBytes {
-    // TODO revisit the names of these
+pub enum OtlpProtoBytes {
+    /// protobuf serialized ExportLogsServiceRequest
     ExportLogsRequest(Vec<u8>),
+    /// protobuf serialized ExportMetricsServiceRequest
     ExportMetricsRequest(Vec<u8>),
+    /// protobuf serialized ExportTracesServiceRequest
     ExportTracesRequest(Vec<u8>),
 }
 
@@ -234,14 +234,65 @@ impl TryFrom<OtapBatch> for OTAPData {
 
 #[cfg(test)]
 mod test {
-    use otel_arrow_rust::otap::OtapBatch;
-
-    use crate::pdata::OtapPdata;
+    use super::*;
+    use otel_arrow_rust::{
+        otap::OtapBatch,
+        proto::opentelemetry::{
+            collector::logs::v1::ExportLogsServiceRequest,
+            common::v1::InstrumentationScope,
+            logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
+            resource::v1::Resource,
+        },
+    };
 
     #[test]
-    fn test_conversions() {
-        let otap_batch: OtapBatch = { todo!() };
+    fn test_conversion_logs() {
+        let otlp_service_req = ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource::default())
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::default())
+                        .log_records(vec![
+                            LogRecord::build(2u64, SeverityNumber::Info, "event").finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+        let mut otlp_bytes = vec![];
+        otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
-        let otap_pdata: OtapPdata = otap_batch.into();
+        let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
+
+        // test can go OtlpProtoBytes -> OtapBatch & back
+        let otap_batch: OtapBatch = pdata.try_into().unwrap();
+        assert!(matches!(otap_batch, OtapBatch::Logs(_)));
+        let pdata: OtapPdata = otap_batch.into();
+
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
+        let pdata: OtapPdata = otlp_bytes.into();
+
+        // test can go OtlpProtoBytes -> OTAPData
+        let otap_data: OTAPData = pdata.try_into().unwrap();
+        assert!(matches!(otap_data, OTAPData::ArrowLogs(_)));
+        let pdata: OtapPdata = otap_data.into();
+
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
+        let pdata: OtapPdata = otlp_bytes.into();
+
+        // test can go otap_batch -> OTAPData
+        let otap_batch: OtapBatch = pdata.try_into().unwrap();
+        let pdata: OtapPdata = otap_batch.into();
+        let otap_data: OTAPData = pdata.try_into().unwrap();
+        assert!(matches!(otap_data, OTAPData::ArrowLogs(_)));
+        let pdata: OtapPdata = otap_data.into();
+
+        let otap_batch: OtapBatch = pdata.try_into().unwrap();
+        assert!(matches!(otap_batch, OtapBatch::Logs(_)));
     }
+
+    // TODO add additional tests for converting between metrics & traces
+    // once we have the ability to convert between OTLP bytes -> OTAP for
+    // these signal types
 }
