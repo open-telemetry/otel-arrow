@@ -35,10 +35,12 @@ pub struct NodeUserConfig {
     pub plugin_urn: Urn,
 
     /// An optional description of this node.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<Description>,
 
     /// Outgoing hyper-edges, keyed by port name.
     /// Each port connects this node to one or more downstream nodes, with a specific dispatch strategy.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub out_ports: HashMap<PortName, HyperEdgeConfig>,
 
     /// Node-specific configuration.
@@ -68,6 +70,7 @@ pub struct HyperEdgeConfig {
 
 /// Dispatching strategies for hyper-edges.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum DispatchStrategy {
     /// Broadcast the data to all targeted nodes.
     Broadcast,
@@ -81,6 +84,7 @@ pub enum DispatchStrategy {
 
 /// Node kinds
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     /// A source of signals
     Receiver,

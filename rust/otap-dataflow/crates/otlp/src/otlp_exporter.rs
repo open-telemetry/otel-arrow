@@ -98,6 +98,9 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
+        
+        println!("Exporting OTLP traffic to gRPC endpoint: {}", self.grpc_endpoint);
+        
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::connect(self.grpc_endpoint.clone())
             .await

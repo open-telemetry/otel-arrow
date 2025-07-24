@@ -35,7 +35,8 @@ use std::rc::Rc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
-const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
+/// URN for the OTLP receiver
+pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 
 /// Configuration for the OTLP receiver
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +108,8 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
 
+        println!("Listening on {} for OTLP data", self.listening_addr);
+        
         //start event loop
         loop {
             //create services for the grpc server and clone the effect handler to pass message

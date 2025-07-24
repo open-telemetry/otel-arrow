@@ -28,6 +28,7 @@ pub struct PipelineConfig {
     r#type: PipelineType,
 
     /// Optional description of the pipeline’s purpose.
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<Description>,
 
     /// Settings for this pipeline.
@@ -48,12 +49,13 @@ fn default_pdata_channel_size() -> usize {
 /// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
 /// OTAP (OpenTelemetry with Apache Arrow Protocol).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PipelineType {
     /// OpenTelemetry Protocol (OTLP) pipeline.
     /// ToDo: With the recent benchmark results on proto_bytes->views->OTAP, we could consider to get rid of the OTLP pipeline type.
-    OTLP,
+    Otlp,
     /// OpenTelemetry with Apache Arrow Protocol (OTAP) pipeline.
-    OTAP,
+    Otap,
 }
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -523,7 +525,7 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .add_processor("A", "urn:test:processor", None) // duplicate
-            .build(PipelineType::OTAP, "namespace", "pipeline");
+            .build(PipelineType::Otap, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -545,7 +547,7 @@ mod tests {
             .add_exporter("B", "urn:test:exporter", None)
             .round_robin("A", "p", ["B"])
             .round_robin("A", "p", ["B"]) // duplicate port on A
-            .build(PipelineType::OTAP, "namespace", "pipeline");
+            .build(PipelineType::Otap, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -567,7 +569,7 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_receiver("B", "urn:test:receiver", None)
             .connect("X", "out", ["B"], DispatchStrategy::Broadcast) // X does not exist
-            .build(PipelineType::OTAP, "namespace", "pipeline");
+            .build(PipelineType::Otap, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -593,7 +595,7 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .connect("A", "out", ["Y"], DispatchStrategy::Broadcast) // Y does not exist
-            .build(PipelineType::OTAP, "namespace", "pipeline");
+            .build(PipelineType::Otap, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -622,7 +624,7 @@ mod tests {
             .add_processor("B", "urn:test:processor", None)
             .round_robin("A", "p", ["B"])
             .round_robin("B", "p", ["A"])
-            .build(PipelineType::OTAP, "namespace", "pipeline");
+            .build(PipelineType::Otap, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -648,7 +650,7 @@ mod tests {
             .add_receiver("Start", "urn:test:receiver", Some(json!({"foo": 1})))
             .add_exporter("End", "urn:test:exporter", None)
             .broadcast("Start", "out", ["End"])
-            .build(PipelineType::OTAP, "namespace", "pipeline");
+            .build(PipelineType::Otap, "namespace", "pipeline");
 
         match dag {
             Ok(pipeline_spec) => {
@@ -806,7 +808,7 @@ mod tests {
                 ["processor_enrich_events"],
             )
             // Finalize build
-            .build(PipelineType::OTAP, "namespace", "pipeline");
+            .build(PipelineType::Otap, "namespace", "pipeline");
 
         // Assert the DAG is valid and acyclic
         match dag {

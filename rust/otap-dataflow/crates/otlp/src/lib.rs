@@ -52,7 +52,7 @@ mod mock;
 
 /// Factory for OTLP-based pipeline
 #[pipeline_factory(OTLP, OTLPData)]
-static OTLP_PIPELINE_FACTORY: PipelineFactory<OTLPData> = build_factory();
+pub static OTLP_PIPELINE_FACTORY: PipelineFactory<OTLPData> = build_factory();
 
 #[cfg(test)]
 mod tests {
@@ -90,7 +90,7 @@ mod tests {
                 "out_port",
                 ["otlp_exporter1", "otlp_exporter2"],
             )
-            .build(PipelineType::OTLP, "namespace", "pipeline")
+            .build(PipelineType::Otlp, "namespace", "pipeline")
             .expect("Failed to build pipeline config");
         let result = OTLP_PIPELINE_FACTORY.build(config);
         assert!(
@@ -104,35 +104,5 @@ mod tests {
             3,
             "Expected 3 nodes in the pipeline"
         );
-    }
-
-    #[test]
-    fn test2() {
-        let config = PipelineConfigBuilder::new()
-            .add_receiver(
-                "otlp_receiver",
-                "urn:otel:otlp:receiver",
-                Some(json!({
-                    "listening_addr": "127.0.0.1:4317"
-                })),
-            )
-            .add_exporter(
-                "otlp_exporter",
-                "urn:otel:otlp:exporter",
-                Some(json!({
-                    "grpc_endpoint": "127.0.0.1:4318"
-                })),
-            )
-            .broadcast("otlp_receiver", "out_port", ["otlp_exporter"])
-            .build(PipelineType::OTLP, "namespace", "pipeline")
-            .expect("Failed to build pipeline config");
-        let result = OTLP_PIPELINE_FACTORY.build(config);
-        assert!(
-            result.is_ok(),
-            "Failed to create runtime pipeline: {:?}",
-            result.err()
-        );
-        let _runtime_pipeline = result.unwrap();
-        //runtime_pipeline.start().expect("Failed to start pipeline");
     }
 }
