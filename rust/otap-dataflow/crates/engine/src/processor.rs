@@ -67,7 +67,7 @@ pub enum ProcessorWrapper<PData> {
 
 /// Runtime components for a processor wrapper, containing all the necessary
 /// components to run a processor independently.
-/// 
+///
 /// This allows external control over the message processing loop, useful for testing and custom
 /// processing scenarios.
 pub enum ProcessorWrapperRuntime<PData> {

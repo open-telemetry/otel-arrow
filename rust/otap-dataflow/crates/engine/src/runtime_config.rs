@@ -5,12 +5,10 @@
 use crate::control::ControlMsg;
 use crate::error::Error;
 use crate::error::Error::EngineErrors;
-use crate::message::{Receiver, Sender};
 use crate::node::Node;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
-use otap_df_config::{NodeId, node::NodeUserConfig, pipeline::PipelineConfig};
+use otap_df_config::{NodeId, pipeline::PipelineConfig};
 use std::collections::HashMap;
-use std::rc::Rc;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
