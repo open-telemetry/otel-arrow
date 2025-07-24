@@ -4,6 +4,12 @@
 use otap_df_pdata_views::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
+    metrics::{
+        BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
+        ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
+        MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
+        SummaryDataPointView, SummaryView, ValueAtQuantileView,
+    },
     resource::ResourceView,
     trace::{
         EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
@@ -13,9 +19,15 @@ use otel_arrow_rust::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
         logs::LogsRecordBatchBuilder,
+        metrics::{
+            BucketsRecordBatchBuilder, ExemplarsRecordBatchBuilder,
+            ExponentialHistogramDataPointsRecordBatchBuilder,
+            HistogramDataPointsRecordBatchBuilder, MetricsRecordBatchBuilder,
+            NumberDataPointsRecordBatchBuilder, SummaryDataPointsRecordBatchBuilder,
+        },
         spans::{EventsBuilder, LinksBuilder, SpansRecordBatchBuilder},
     },
-    otap::{Logs, OtapBatch, Traces},
+    otap::{Logs, Metrics, OtapBatch, Traces},
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -546,6 +558,383 @@ where
     }
 
     Ok(())
+}
+
+// A helper function to centralize handling `Exemplar` data since we use it in several places.
+fn append_exemplar<View>(
+    exemplar: &mut ExemplarsRecordBatchBuilder,
+    exemplar_view: &View,
+    curr_id: &mut u32,
+    parent_id: &u32,
+    attrs: &mut AttributesRecordBatchBuilder<u32>,
+) -> Result<()>
+where
+    View: ExemplarView,
+{
+    exemplar.append_id(*curr_id);
+    exemplar.append_parent_id(*parent_id);
+    exemplar.append_time_unix_nano(exemplar_view.time_unix_nano() as i64);
+
+    let double = exemplar_view.value().and_then(|v| v.as_double());
+    let integer = exemplar_view.value().and_then(|v| v.as_integer());
+    // FIXME: OTAP defines these fields as non-nullable, but the data is
+    // inherently nullable coming from OTLP....
+    exemplar.append_double_value(double.unwrap_or(0.));
+    exemplar.append_int_value(integer.unwrap_or(0));
+
+    exemplar.append_span_id(exemplar_view.span_id().unwrap_or(&[0; 8]))?;
+    exemplar.append_trace_id(exemplar_view.trace_id().unwrap_or(&[0; 16]))?;
+
+    for kv in exemplar_view.filtered_attributes() {
+        attrs.append_parent_id(curr_id);
+        append_attribute_value(attrs, &kv)?;
+    }
+
+    *curr_id = curr_id.checked_add(1).ok_or(Error::U32OverflowError)?;
+    Ok(())
+}
+
+/// A helper function to append ExponentialHistogramDataPoint Bucket data
+fn append_ehdp_bucket<View>(view: Option<&View>, builder: &mut BucketsRecordBatchBuilder)
+where
+    View: BucketsView,
+{
+    let buckets = view.map(|v| (v.offset(), v.bucket_counts().copied()));
+    builder.append(buckets)
+}
+
+/// A helper function to centralize handling NumberDataPoint data for the Gauge and Sum cases.
+fn append_ndp<View>(
+    ndp: &mut NumberDataPointsRecordBatchBuilder,
+    ndp_view: &View,
+    curr_metric_id: &u16,
+    curr_ndp_id: &mut u32,
+    attrs: &mut AttributesRecordBatchBuilder<u32>,
+) -> Result<()>
+where
+    View: NumberDataPointView,
+{
+    ndp.append_id(*curr_ndp_id);
+    ndp.append_parent_id(*curr_metric_id);
+    ndp.append_start_time_unix_nano(Some(ndp_view.start_time_unix_nano() as i64));
+    ndp.append_time_unix_nano(ndp_view.time_unix_nano() as i64);
+    let double = ndp_view.value().and_then(|v| v.as_double());
+    let integer = ndp_view.value().and_then(|v| v.as_integer());
+    ndp.append_double_value(double);
+    ndp.append_int_value(integer);
+    ndp.append_flags(ndp_view.flags().into_inner());
+
+    for kv in ndp_view.attributes() {
+        attrs.append_parent_id(curr_ndp_id);
+        append_attribute_value(attrs, &kv)?;
+    }
+
+    *curr_ndp_id = curr_ndp_id.checked_add(1).ok_or(Error::U32OverflowError)?;
+    Ok(())
+}
+
+/// Traverse the metrics structure within the MetricsView and produces an `OtapBatch` for the
+/// metrics data.
+pub fn encode_metrics_otap_batch<T>(metrics_view: &T) -> Result<OtapBatch>
+where
+    T: MetricsView,
+{
+    let mut resource_attrs = AttributesRecordBatchBuilder::<u16>::new();
+    let mut scope_attrs = AttributesRecordBatchBuilder::<u16>::new();
+    let mut metric_attrs = AttributesRecordBatchBuilder::<u16>::new();
+
+    // variables for storing `NumberDataPoint` data
+    let mut curr_ndp_id: u32 = 0;
+    let mut ndp = NumberDataPointsRecordBatchBuilder::new();
+    let mut ndp_attrs = AttributesRecordBatchBuilder::<u32>::new();
+    // variables for storing `Exemplar` data associated with `NumberDataPoint`
+    let mut curr_ndpe_id: u32 = 0;
+    let mut ndpe = ExemplarsRecordBatchBuilder::new();
+    let mut ndpe_attrs = AttributesRecordBatchBuilder::<u32>::new();
+
+    // `HistogramDataPoints` support
+    let mut curr_hdp_id: u32 = 0;
+    let mut hdp = HistogramDataPointsRecordBatchBuilder::new();
+    let mut hdp_attrs = AttributesRecordBatchBuilder::<u32>::new();
+    // `Exemplars` associated wtih `HistogramDataPoints`
+    let mut curr_hdpe_id: u32 = 0;
+    let mut hdpe = ExemplarsRecordBatchBuilder::new();
+    let mut hdpe_attrs = AttributesRecordBatchBuilder::<u32>::new();
+
+    // `Summary` handling...
+    let mut curr_summary_id: u32 = 0;
+    let mut summary = SummaryDataPointsRecordBatchBuilder::new();
+    let mut summary_attrs = AttributesRecordBatchBuilder::<u32>::new();
+
+    // `ExponentialHistogramDataPoint` support...
+    let mut curr_ehdp_id: u32 = 0;
+    let mut ehdp = ExponentialHistogramDataPointsRecordBatchBuilder::new();
+    let mut ehdp_attrs = AttributesRecordBatchBuilder::<u32>::new();
+    // `Exemplars` associated wtih `ExponentialHistogramDataPoint`
+    let mut curr_ehdpe_id: u32 = 0;
+    let mut ehdpe = ExemplarsRecordBatchBuilder::new();
+    let mut ehdpe_attrs = AttributesRecordBatchBuilder::<u32>::new();
+
+    let mut metrics = MetricsRecordBatchBuilder::new();
+    let mut curr_resource_id: u16 = 0;
+    let mut curr_scope_id: u16 = 0;
+    let mut curr_metric_id: u16 = 0;
+
+    for resource_metric in metrics_view.resources() {
+        if let Some(resource) = resource_metric.resource() {
+            metrics.resource.append_id(Some(curr_resource_id));
+            for kv in resource.attributes() {
+                resource_attrs.append_parent_id(&curr_resource_id);
+                append_attribute_value(&mut resource_attrs, &kv)?;
+            }
+        }
+
+        for scope_metric in resource_metric.scopes() {
+            let metric_count = scope_metric.metrics().count();
+            let scope_schema_url = scope_metric.schema_url();
+            (0..metric_count).for_each(|_| metrics.append_scope_schema_url(scope_schema_url));
+
+            let scope = scope_metric.scope();
+            let scope_name = scope.as_ref().and_then(|s| s.name());
+            let scope_version = scope.as_ref().and_then(|s| s.version());
+            (0..metric_count).for_each(|_| metrics.scope.append_id(Some(curr_scope_id)));
+            (0..metric_count).for_each(|_| metrics.scope.append_name(scope_name));
+            (0..metric_count).for_each(|_| metrics.scope.append_version(scope_version));
+            if let Some(scope) = scope {
+                for kv in scope.attributes() {
+                    scope_attrs.append_parent_id(&curr_scope_id);
+                    append_attribute_value(&mut scope_attrs, &kv)?;
+                }
+            }
+
+            for metric in scope_metric.metrics() {
+                metrics.append_id(curr_metric_id);
+                let data_obj = metric.data();
+                let data = data_obj.as_ref();
+                // Note: `metric_type` is not optional in the OTAP schema and it is required in the
+                // OTLP `Data` enum, but `Data` is optional for `Metric`, which means it might not
+                // exist. Should we panic or use a different sentinel value for that case?
+                metrics.append_metric_type(data.map(|data| data.value_type() as u8).unwrap_or(0));
+                metrics.append_name(metric.name());
+                metrics.append_description(metric.description());
+                metrics.append_unit(metric.unit());
+
+                let aggregation_temporality = data.and_then(|data| {
+                    let sum = data.as_sum().map(|sum| sum.aggregation_temporality());
+                    let hist = data
+                        .as_histogram()
+                        .map(|hist| hist.aggregation_temporality());
+                    let exp = data
+                        .as_exponential_histogram()
+                        .map(|exp| exp.aggregation_temporality());
+                    sum.or(hist).or(exp)
+                });
+
+                metrics
+                    .append_aggregation_temporality(aggregation_temporality.map(|agg| agg as i32));
+
+                let is_monotonic =
+                    data.and_then(|data| data.as_sum().map(|sum| sum.is_monotonic()));
+                metrics.append_is_monotonic(is_monotonic);
+
+                for kv in metric.metadata() {
+                    metric_attrs.append_parent_id(&curr_resource_id);
+                    append_attribute_value(&mut metric_attrs, &kv)?;
+                }
+
+                if let Some(data) = data_obj {
+                    // FIXME: is there no way to make enums play nicely with our view
+                    // implementations so we can match instead of engaging in this abomination?
+
+                    if let Some(gauge) = data.as_gauge() {
+                        for ndp_view in gauge.data_points() {
+                            // exemplars have to be handled first since `append_ndp` will increment
+                            // `curr_ndp_id`.
+                            for exemplar in ndp_view.exemplars() {
+                                append_exemplar(
+                                    &mut ndpe,
+                                    &exemplar,
+                                    &mut curr_ndpe_id,
+                                    &curr_ndp_id,
+                                    &mut ndpe_attrs,
+                                )?;
+                            }
+
+                            append_ndp(
+                                &mut ndp,
+                                &ndp_view,
+                                &curr_metric_id,
+                                &mut curr_ndp_id,
+                                &mut ndp_attrs,
+                            )?;
+                        }
+                    } else if let Some(sum) = data.as_sum() {
+                        for ndp_view in sum.data_points() {
+                            // exemplars have to be handled first since `append_ndp` will increment
+                            // `curr_ndp_id`.
+                            for exemplar in ndp_view.exemplars() {
+                                append_exemplar(
+                                    &mut ndpe,
+                                    &exemplar,
+                                    &mut curr_ndpe_id,
+                                    &curr_ndp_id,
+                                    &mut ndpe_attrs,
+                                )?;
+                            }
+
+                            append_ndp(
+                                &mut ndp,
+                                &ndp_view,
+                                &curr_metric_id,
+                                &mut curr_ndp_id,
+                                &mut ndp_attrs,
+                            )?;
+                        }
+                    } else if let Some(histogram) = data.as_histogram() {
+                        for hdp_view in histogram.data_points() {
+                            for kv in hdp_view.attributes() {
+                                hdp_attrs.append_parent_id(&curr_hdp_id);
+                                append_attribute_value(&mut hdp_attrs, &kv)?;
+                            }
+
+                            for exemplar in hdp_view.exemplars() {
+                                append_exemplar(
+                                    &mut hdpe,
+                                    &exemplar,
+                                    &mut curr_hdpe_id,
+                                    &curr_hdp_id,
+                                    &mut hdpe_attrs,
+                                )?;
+                            }
+
+                            hdp.append_id(curr_hdp_id);
+                            hdp.append_parent_id(curr_metric_id);
+                            hdp.append_start_time_unix_nano(hdp_view.start_time_unix_nano() as i64);
+                            hdp.append_time_unix_nano(hdp_view.time_unix_nano() as i64);
+                            hdp.append_count(hdp_view.count());
+                            hdp.append_bucket_counts(hdp_view.bucket_counts().copied());
+                            hdp.append_explicit_bounds(hdp_view.explicit_bounds().copied());
+                            hdp.append_sum(hdp_view.sum());
+                            hdp.append_flags(hdp_view.flags().into_inner());
+                            hdp.append_min(hdp_view.min());
+                            hdp.append_max(hdp_view.max());
+
+                            curr_hdp_id =
+                                curr_hdp_id.checked_add(1).ok_or(Error::U32OverflowError)?;
+                        }
+                    } else if let Some(exponential_histogram) = data.as_exponential_histogram() {
+                        for ehdp_view in exponential_histogram.data_points() {
+                            for kv in ehdp_view.attributes() {
+                                ehdp_attrs.append_parent_id(&curr_ehdp_id);
+                                append_attribute_value(&mut ehdp_attrs, &kv)?;
+                            }
+                            ehdp.append_id(curr_ehdp_id);
+                            ehdp.append_parent_id(curr_metric_id);
+                            ehdp.append_start_time_unix_nano(
+                                ehdp_view.start_time_unix_nano() as i64
+                            );
+                            ehdp.append_time_unix_nano(ehdp_view.time_unix_nano() as i64);
+                            ehdp.append_count(ehdp_view.count());
+                            ehdp.append_sum(ehdp_view.sum());
+                            ehdp.append_scale(ehdp_view.scale());
+                            ehdp.append_zero_count(ehdp_view.zero_count());
+                            ehdp.append_flags(ehdp_view.flags().into_inner());
+                            ehdp.append_min(ehdp_view.min());
+                            ehdp.append_max(ehdp_view.max());
+
+                            for exemplar in ehdp_view.exemplars() {
+                                append_exemplar(
+                                    &mut ehdpe,
+                                    &exemplar,
+                                    &mut curr_ehdpe_id,
+                                    &curr_ehdp_id,
+                                    &mut ehdpe_attrs,
+                                )?;
+                            }
+                            append_ehdp_bucket(ehdp_view.positive().as_ref(), &mut ehdp.positive);
+                            append_ehdp_bucket(ehdp_view.negative().as_ref(), &mut ehdp.negative);
+
+                            curr_ehdp_id =
+                                curr_ehdp_id.checked_add(1).ok_or(Error::U32OverflowError)?;
+                        }
+                    } else if let Some(summary_view) = data.as_summary() {
+                        for sdp_view in summary_view.data_points() {
+                            for kv in sdp_view.attributes() {
+                                summary_attrs.append_parent_id(&curr_summary_id);
+                                append_attribute_value(&mut summary_attrs, &kv)?;
+                            }
+
+                            summary.append_id(curr_summary_id);
+                            summary.append_parent_id(curr_metric_id);
+                            summary.append_start_time_unix_nano(sdp_view.start_time_unix_nano() as i64);
+                            summary.append_time_unix_nano(sdp_view.time_unix_nano() as i64);
+                            summary.append_count(sdp_view.count());
+                            summary.append_sum(sdp_view.sum());
+                            summary.append_flags(sdp_view.flags().into_inner());
+
+                            for qv in sdp_view.quantile_values() {
+                                summary.quantile_values.append_quantile(qv.quantile());
+                                summary.quantile_values.append_value(qv.value());
+                            }
+
+                            curr_summary_id = curr_summary_id
+                                .checked_add(1)
+                                .ok_or(Error::U32OverflowError)?;
+                        }
+                    }
+                }
+
+                curr_metric_id = curr_metric_id
+                    .checked_add(1)
+                    .ok_or(Error::U16OverflowError)?;
+            }
+            curr_scope_id = curr_scope_id
+                .checked_add(1)
+                .ok_or(Error::U16OverflowError)?;
+        }
+        curr_resource_id = curr_resource_id
+            .checked_add(1)
+            .ok_or(Error::U16OverflowError)?;
+    }
+
+    let mut otap_batch = OtapBatch::Metrics(Metrics::default());
+    otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics.finish()?);
+
+    // FIXME: there doesn't seem to be a payload type for Metrics' attrs.
+    let pairs = [
+        (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
+        (scope_attrs.finish()?, ArrowPayloadType::ScopeAttrs),
+        (ndp.finish()?, ArrowPayloadType::NumberDataPoints),
+        (ndp_attrs.finish()?, ArrowPayloadType::NumberDpAttrs),
+        (ndpe.finish()?, ArrowPayloadType::NumberDpExemplars),
+        (
+            ndpe_attrs.finish()?,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+        ),
+        (hdp.finish()?, ArrowPayloadType::HistogramDataPoints),
+        (hdp_attrs.finish()?, ArrowPayloadType::HistogramDpAttrs),
+        (hdpe.finish()?, ArrowPayloadType::HistogramDpExemplars),
+        (
+            hdpe_attrs.finish()?,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+        ),
+        (ehdp.finish()?, ArrowPayloadType::ExpHistogramDataPoints),
+        (ehdp_attrs.finish()?, ArrowPayloadType::ExpHistogramDpAttrs),
+        (ehdpe.finish()?, ArrowPayloadType::ExpHistogramDpExemplars),
+        (
+            ehdpe_attrs.finish()?,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ),
+        (summary.finish()?, ArrowPayloadType::SummaryDataPoints),
+        (summary_attrs.finish()?, ArrowPayloadType::SummaryDpAttrs),
+    ];
+    for (rb, payload_type) in pairs {
+        if rb.num_rows() > 0 {
+            otap_batch.set(payload_type, rb);
+        }
+    }
+
+    Ok(otap_batch)
 }
 
 #[cfg(test)]
