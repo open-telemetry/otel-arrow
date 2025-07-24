@@ -19,9 +19,6 @@ use crate::{
 
 /// Lightweight wrapper so that `val()` can return `&Self::Val` without the
 /// double-reference gymnastics.
-// #[repr(transparent)]
-// #[derive(Clone, Copy)]
-// pub struct ObjAny<'a>(pub &'a AnyValue);
 pub type ObjAny<'a> = GenericObj<'a, AnyValue>;
 
 /// Lightweight wrapper for a Key-Value pair that implements the `AttributeView` trait
