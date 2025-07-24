@@ -1,7 +1,7 @@
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+pub use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
@@ -18,22 +18,31 @@ const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
 
 /// Trait for a batch type (e.g., ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServiceRequest)
 pub trait Batch: Sized {
+    /// The resource group type for this batch
     type Resource: ResourceGroup;
+    /// Returns a mutable reference to the vector of resources in this batch
     fn resources_mut(&mut self) -> &mut Vec<Self::Resource>;
+    /// Creates a new empty batch of this type
     fn new_empty() -> Self;
 }
 
 /// Trait for a resource group (e.g., ResourceSpans, ResourceMetrics, ResourceLogs)
 pub trait ResourceGroup: Sized {
+    /// The scope group type for this resource group
     type Scope: ScopeGroup;
+    /// Returns a mutable reference to the vector of scopes in this resource group
     fn scopes_mut(&mut self) -> &mut Vec<Self::Scope>;
+    /// Creates a new instance with only the resource fields, clearing scopes
     fn take_resource_fields(&mut self) -> Self;
 }
 
 /// Trait for a scope group (e.g., ScopeSpans, ScopeMetrics, ScopeLogs)
 pub trait ScopeGroup: Sized {
+    /// The leaf item type for this scope group (spans, metrics, or log records)
     type Leaf;
+    /// Returns a mutable reference to the vector of leaf items in this scope group
     fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf>;
+    /// Creates a new instance with only the scope fields, clearing leaf items
     fn take_scope_fields(&mut self) -> Self;
 }
 
@@ -128,6 +137,16 @@ pub fn split_into_batches<B: Batch>(mut batch: B, max_batch_size: usize) -> Vec<
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
+    /// Splits a batch into a vector of smaller batches, each with at most `max_batch_size` leaf items,
+    /// preserving all resource/scope/leaf (span/metric/logrecord) structure.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_batch_size` - The maximum number of leaf items (spans, metrics, or log records) per batch.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of batches, or an error if the batch size is zero.
     fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
 }
 
@@ -368,6 +387,7 @@ impl GenericBatcher {
 impl GenericBatcher {
     /// Creates a new `GenericBatcher` with the given configuration.
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
         Self {

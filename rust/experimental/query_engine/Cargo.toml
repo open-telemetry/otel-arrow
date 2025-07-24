@@ -6,6 +6,7 @@ members = [
     "ottl-parser",
     "engine-columnar",
     "engine-recordset",
+    "engine-recordset2",
 ]
 resolver = "2"
 

@@ -16,16 +16,17 @@ publish = false
 rust-version = "1.86.0"
 
 [workspace.dependencies]
-arrow = "55"
-arrow-ipc = { version = "55", features=["zstd"] }
+arrow = "55.2"
+arrow-ipc = { version = "55.2", features=["zstd"] }
 ciborium = "0.2.2"
 futures-timer = "3.0"
 object_store = "0.12"
 otel-arrow-rust = { path = "../otel-arrow-rust"}
-parquet = { version = "55", default-features = false, features = ["arrow", "async", "object_store"]}
+parquet = { version = "55.2", default-features = false, features = ["arrow", "async", "object_store"]}
 tempfile = "3"
 thiserror = "2.0.12"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_cbor = "0.11.2"
 serde_json = { version = "1.0.140" }
 tokio = { version = "1.45.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread"] }
 uuid = { version = "1.17.0", features = ["v4"] }

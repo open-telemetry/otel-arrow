@@ -87,12 +87,9 @@ pub(crate) fn parse_logical_expression(
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        let value_type_result = scalar.try_resolve_value_type();
+                        let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
                         if let Err(e) = value_type_result {
-                            return Err(ParserError::SyntaxError(
-                                e.get_query_location().clone(),
-                                e.to_string(),
-                            ));
+                            return Err(ParserError::from(&e));
                         }
                         if let Some(t) = value_type_result.unwrap()
                             && t != ValueType::Boolean
@@ -201,7 +198,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -263,7 +260,7 @@ mod tests {
                 )),
                 ScalarExpression::Attached(AttachedScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "resource",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
                     ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
                         StaticScalarExpression::String(StringScalarExpression::new(
                             QueryLocation::new_fake(),
@@ -404,7 +401,7 @@ mod tests {
             "resource.attributes['service.name']",
             LogicalExpression::Scalar(ScalarExpression::Attached(AttachedScalarExpression::new(
                 QueryLocation::new_fake(),
-                "resource",
+                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
                 ValueAccessor::new_with_selectors(vec![
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
@@ -420,7 +417,7 @@ mod tests {
             "variable",
             LogicalExpression::Scalar(ScalarExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
-                "variable",
+                StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                 ValueAccessor::new(),
             ))),
         );
@@ -431,7 +428,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -446,7 +443,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -485,7 +482,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "variable",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                     ValueAccessor::new(),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(

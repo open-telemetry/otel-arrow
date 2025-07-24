@@ -96,4 +96,76 @@ pub mod parse_test_helpers {
             }
         }
     }
+
+    pub fn test_parse_integer_literal<P, R>(parser_rule: R, inputs: &[(&str, i64)])
+    where
+        P: Parser<R>,
+        R: RuleType + Copy,
+    {
+        for (input, expected) in inputs {
+            let mut result = P::parse(parser_rule, input).unwrap();
+            let pair = result.next().unwrap();
+            let expr = parse_standard_integer_literal(pair).unwrap();
+
+            match expr {
+                StaticScalarExpression::Integer(v) => assert_eq!(*expected, v.get_value()),
+                _ => panic!("Unexpected type returned from parse_integer_literal"),
+            }
+        }
+    }
+
+    pub fn test_parse_double_literal<P, R>(parser_rule: R, inputs: &[(&str, f64)])
+    where
+        P: Parser<R>,
+        R: RuleType + Copy,
+    {
+        for (input, expected) in inputs {
+            let mut result = P::parse(parser_rule, input).unwrap();
+            let pair = result.next().unwrap();
+            let expr = parse_standard_double_literal(pair, None).unwrap();
+
+            match expr {
+                StaticScalarExpression::Double(v) => assert_eq!(*expected, v.get_value()),
+                _ => panic!("Unexpected type returned from parse_double_literal"),
+            }
+        }
+    }
+
+    pub fn test_parse_string_literal<P, R>(parser_rule: R, inputs: &[(&str, &str)])
+    where
+        P: Parser<R>,
+        R: RuleType + Copy,
+    {
+        for (input, expected) in inputs {
+            let mut result = P::parse(parser_rule, input).unwrap();
+            let pair = result.next().unwrap();
+            let expr = parse_standard_string_literal(pair);
+
+            match expr {
+                StaticScalarExpression::String(v) => assert_eq!(*expected, v.get_value()),
+                _ => panic!("Unexpected type returned from parse_string_literal"),
+            }
+        }
+    }
+
+    pub fn test_parse_null_literal<P, R>(parser_rule: R, inputs: &[&str])
+    where
+        P: Parser<R>,
+        R: RuleType,
+    {
+        let run_test = |input: &str| {
+            let mut result = P::parse(parser_rule, input).unwrap();
+            let pair = result.next().unwrap();
+            let expr = parse_standard_null_literal(pair);
+
+            match expr {
+                StaticScalarExpression::Null(_) => {} // Success!
+                _ => panic!("Unexpected type returned from parse_null_literal, got: {expr:?}"),
+            }
+        };
+
+        for input in inputs {
+            run_test(input);
+        }
+    }
 }

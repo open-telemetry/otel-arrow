@@ -24,16 +24,22 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-/// OTLP batch processor implementation
-mod otlp_batch_processor;
-
+use crate::fake_signal_receiver::config::OTLPSignal;
 use crate::grpc::OTLPData;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 /// compression formats
 pub mod compression;
+/// debug exporter implementation, logs data collected in pipeline to console
+pub mod debug_exporter;
+/// fake signal receiver implementation, creates fake signals to use for pipeline testing
+pub mod fake_signal_receiver;
 /// gRPC service implementation
 pub mod grpc;
+/// OTLP Batch Processor implementation
+pub mod otlp_batch_processor;
+pub use otlp_batch_processor::{ExportTraceServiceRequest, HierarchicalBatchSplit};
+
 /// otlp exporter implementation
 pub mod otlp_exporter;
 /// Implementation of OTLP Receiver that implements the receiver trait

@@ -6,3 +6,5 @@
 pub mod common;
 pub mod logs;
 pub mod resource;
+pub mod trace;
+mod wrappers;

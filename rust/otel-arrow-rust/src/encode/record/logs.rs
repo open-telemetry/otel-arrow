@@ -155,6 +155,15 @@ impl LogsRecordBatchBuilder {
         }
     }
 
+    /// append a value to the `schema_url` array `n` times
+    pub fn append_schema_url_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.schema_url.append_str_n(val, n);
+        } else {
+            self.schema_url.append_nulls(n);
+        }
+    }
+
     /// append a value to the `severity_text` array
     pub fn append_severity_text(&mut self, val: Option<&str>) {
         if let Some(val) = val {
@@ -318,6 +327,13 @@ pub struct LogsBodyBuilder {
     bytes_value: BinaryArrayBuilder,
     ser_value: BinaryArrayBuilder,
     nulls: NullBufferBuilder,
+    // Track pending null counts for each type for efficient batching
+    pending_string_nulls: usize,
+    pending_int_nulls: usize,
+    pending_double_nulls: usize,
+    pending_bool_nulls: usize,
+    pending_bytes_nulls: usize,
+    pending_ser_nulls: usize,
 }
 
 impl LogsBodyBuilder {
@@ -357,6 +373,12 @@ impl LogsBodyBuilder {
                 ..Default::default()
             }),
             nulls: NullBufferBuilder::new(0),
+            pending_string_nulls: 0,
+            pending_int_nulls: 0,
+            pending_double_nulls: 0,
+            pending_bool_nulls: 0,
+            pending_bytes_nulls: 0,
+            pending_ser_nulls: 0,
         }
     }
 
@@ -364,12 +386,20 @@ impl LogsBodyBuilder {
     pub fn append_str(&mut self, val: &str) {
         self.value_type
             .append_value(&(AttributeValueType::Str as u8));
+
+        // Flush pending nulls for string array and append the actual value
+        if self.pending_string_nulls > 0 {
+            self.string_value.append_nulls(self.pending_string_nulls);
+            self.pending_string_nulls = 0;
+        }
         self.string_value.append_str(val);
-        self.int_value.append_null();
-        self.double_value.append_null();
-        self.bool_value.append_null();
-        self.bytes_value.append_null();
-        self.ser_value.append_null();
+
+        // Increment pending nulls for all other arrays
+        self.pending_int_nulls += 1;
+        self.pending_double_nulls += 1;
+        self.pending_bool_nulls += 1;
+        self.pending_bytes_nulls += 1;
+        self.pending_ser_nulls += 1;
         self.nulls.append(true);
     }
 
@@ -377,12 +407,20 @@ impl LogsBodyBuilder {
     pub fn append_bool(&mut self, val: bool) {
         self.value_type
             .append_value(&(AttributeValueType::Bool as u8));
-        self.string_value.append_null();
-        self.int_value.append_null();
-        self.double_value.append_null();
+
+        // Flush pending nulls for bool array and append the actual value
+        if self.pending_bool_nulls > 0 {
+            self.bool_value.append_nulls(self.pending_bool_nulls);
+            self.pending_bool_nulls = 0;
+        }
         self.bool_value.append_value(val);
-        self.bytes_value.append_null();
-        self.ser_value.append_null();
+
+        // Increment pending nulls for all other arrays
+        self.pending_string_nulls += 1;
+        self.pending_int_nulls += 1;
+        self.pending_double_nulls += 1;
+        self.pending_bytes_nulls += 1;
+        self.pending_ser_nulls += 1;
         self.nulls.append(true);
     }
 
@@ -390,12 +428,20 @@ impl LogsBodyBuilder {
     pub fn append_int(&mut self, val: i64) {
         self.value_type
             .append_value(&(AttributeValueType::Int as u8));
-        self.string_value.append_null();
+
+        // Flush pending nulls for int array and append the actual value
+        if self.pending_int_nulls > 0 {
+            self.int_value.append_nulls(self.pending_int_nulls);
+            self.pending_int_nulls = 0;
+        }
         self.int_value.append_value(&val);
-        self.double_value.append_null();
-        self.bool_value.append_null();
-        self.bytes_value.append_null();
-        self.ser_value.append_null();
+
+        // Increment pending nulls for all other arrays
+        self.pending_string_nulls += 1;
+        self.pending_double_nulls += 1;
+        self.pending_bool_nulls += 1;
+        self.pending_bytes_nulls += 1;
+        self.pending_ser_nulls += 1;
         self.nulls.append(true);
     }
 
@@ -403,12 +449,20 @@ impl LogsBodyBuilder {
     pub fn append_double(&mut self, val: f64) {
         self.value_type
             .append_value(&(AttributeValueType::Double as u8));
-        self.string_value.append_null();
-        self.int_value.append_null();
+
+        // Flush pending nulls for double array and append the actual value
+        if self.pending_double_nulls > 0 {
+            self.double_value.append_nulls(self.pending_double_nulls);
+            self.pending_double_nulls = 0;
+        }
         self.double_value.append_value(&val);
-        self.bool_value.append_null();
-        self.bytes_value.append_null();
-        self.ser_value.append_null();
+
+        // Increment pending nulls for all other arrays
+        self.pending_string_nulls += 1;
+        self.pending_int_nulls += 1;
+        self.pending_bool_nulls += 1;
+        self.pending_bytes_nulls += 1;
+        self.pending_ser_nulls += 1;
         self.nulls.append(true);
     }
 
@@ -416,12 +470,20 @@ impl LogsBodyBuilder {
     pub fn append_bytes(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Bytes as u8));
-        self.string_value.append_null();
-        self.int_value.append_null();
-        self.double_value.append_null();
-        self.bool_value.append_null();
+
+        // Flush pending nulls for bytes array and append the actual value
+        if self.pending_bytes_nulls > 0 {
+            self.bytes_value.append_nulls(self.pending_bytes_nulls);
+            self.pending_bytes_nulls = 0;
+        }
         self.bytes_value.append_slice(val);
-        self.ser_value.append_null();
+
+        // Increment pending nulls for all other arrays
+        self.pending_string_nulls += 1;
+        self.pending_int_nulls += 1;
+        self.pending_double_nulls += 1;
+        self.pending_bool_nulls += 1;
+        self.pending_ser_nulls += 1;
         self.nulls.append(true);
     }
 
@@ -429,12 +491,20 @@ impl LogsBodyBuilder {
     pub fn append_slice(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Slice as u8));
-        self.string_value.append_null();
-        self.int_value.append_null();
-        self.double_value.append_null();
-        self.bool_value.append_null();
-        self.bytes_value.append_null();
+
+        // Flush pending nulls for ser array and append the actual value
+        if self.pending_ser_nulls > 0 {
+            self.ser_value.append_nulls(self.pending_ser_nulls);
+            self.pending_ser_nulls = 0;
+        }
         self.ser_value.append_slice(val);
+
+        // Increment pending nulls for all other arrays
+        self.pending_string_nulls += 1;
+        self.pending_int_nulls += 1;
+        self.pending_double_nulls += 1;
+        self.pending_bool_nulls += 1;
+        self.pending_bytes_nulls += 1;
         self.nulls.append(true);
     }
 
@@ -442,29 +512,71 @@ impl LogsBodyBuilder {
     pub fn append_map(&mut self, val: &[u8]) {
         self.value_type
             .append_value(&(AttributeValueType::Map as u8));
-        self.string_value.append_null();
-        self.int_value.append_null();
-        self.double_value.append_null();
-        self.bool_value.append_null();
-        self.bytes_value.append_null();
+
+        // Flush pending nulls for ser array and append the actual value
+        if self.pending_ser_nulls > 0 {
+            self.ser_value.append_nulls(self.pending_ser_nulls);
+            self.pending_ser_nulls = 0;
+        }
         self.ser_value.append_slice(val);
+
+        // Increment pending nulls for all other arrays
+        self.pending_string_nulls += 1;
+        self.pending_int_nulls += 1;
+        self.pending_double_nulls += 1;
+        self.pending_bool_nulls += 1;
+        self.pending_bytes_nulls += 1;
         self.nulls.append(true);
     }
 
     /// Append a null value to the body
     pub fn append_null(&mut self) {
         self.value_type.append_null();
-        self.string_value.append_null();
-        self.int_value.append_null();
-        self.double_value.append_null();
-        self.bool_value.append_null();
-        self.bytes_value.append_null();
-        self.ser_value.append_null();
+
+        // For null values, just increment pending nulls for all arrays
+        self.pending_string_nulls += 1;
+        self.pending_int_nulls += 1;
+        self.pending_double_nulls += 1;
+        self.pending_bool_nulls += 1;
+        self.pending_bytes_nulls += 1;
+        self.pending_ser_nulls += 1;
         self.nulls.append_null();
+    }
+
+    /// Fill arrays with nulls to ensure they all have the same length and maintain correct ordering
+    fn fill_missing_nulls(&mut self) {
+        // Simply append any remaining pending nulls to each array
+        if self.pending_string_nulls > 0 {
+            self.string_value.append_nulls(self.pending_string_nulls);
+            self.pending_string_nulls = 0;
+        }
+        if self.pending_int_nulls > 0 {
+            self.int_value.append_nulls(self.pending_int_nulls);
+            self.pending_int_nulls = 0;
+        }
+        if self.pending_double_nulls > 0 {
+            self.double_value.append_nulls(self.pending_double_nulls);
+            self.pending_double_nulls = 0;
+        }
+        if self.pending_bool_nulls > 0 {
+            self.bool_value.append_nulls(self.pending_bool_nulls);
+            self.pending_bool_nulls = 0;
+        }
+        if self.pending_bytes_nulls > 0 {
+            self.bytes_value.append_nulls(self.pending_bytes_nulls);
+            self.pending_bytes_nulls = 0;
+        }
+        if self.pending_ser_nulls > 0 {
+            self.ser_value.append_nulls(self.pending_ser_nulls);
+            self.pending_ser_nulls = 0;
+        }
     }
 
     /// Finish this builder try to build the resulting `StructArray` for the log body
     fn finish(&mut self) -> Option<Result<StructArray, ArrowError>> {
+        // Ensure all arrays have the same length by bulk appending nulls where needed
+        self.fill_missing_nulls();
+
         let len = self.nulls.len();
         let nulls = self.nulls.finish();
 
@@ -591,6 +703,11 @@ impl ResourceBuilder {
         }
     }
 
+    /// Append the value of `id` to the builder `n` times
+    pub fn append_id_n(&mut self, val: u16, n: usize) {
+        self.id.append_value_n(&val, n);
+    }
+
     /// Append a value to the `schema_url` array
     pub fn append_schema_url(&mut self, val: Option<&str>) {
         if let Some(val) = val {
@@ -600,9 +717,23 @@ impl ResourceBuilder {
         }
     }
 
+    /// Append a value to the `schema_url` array `n` times
+    pub fn append_schema_url_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.schema_url.append_str_n(val, n);
+        } else {
+            self.schema_url.append_nulls(n);
+        }
+    }
+
     /// Append a value to the `dropped_attributes_count` array
     pub fn append_dropped_attributes_count(&mut self, val: u32) {
         self.dropped_attributes_count.append_value(&val);
+    }
+
+    /// Append a value to the `dropped_attributes_count` array `n` times
+    pub fn append_dropped_attributes_count_n(&mut self, val: u32, n: usize) {
+        self.dropped_attributes_count.append_value_n(&val, n);
     }
 
     /// Finish this builder and build the resulting `StructArray` for the resource
@@ -688,12 +819,26 @@ impl ScopeBuilder {
         }
     }
 
+    /// Append the value of `id` to the builder `n` times
+    pub fn append_id_n(&mut self, val: u16, n: usize) {
+        self.id.append_value_n(&val, n);
+    }
+
     /// Append a value to the `name` array
     pub fn append_name(&mut self, val: Option<&str>) {
         if let Some(val) = val {
             self.name.append_str(val)
         } else {
             self.name.append_null();
+        }
+    }
+
+    /// Append a value to the `name` array n times
+    pub fn append_name_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.name.append_str_n(val, n);
+        } else {
+            self.name.append_nulls(n);
         }
     }
 
@@ -706,9 +851,23 @@ impl ScopeBuilder {
         }
     }
 
+    /// Append a value to the `version` array n times`
+    pub fn append_version_n(&mut self, val: Option<&str>, n: usize) {
+        if let Some(val) = val {
+            self.version.append_str_n(val, n);
+        } else {
+            self.version.append_nulls(n);
+        }
+    }
+
     /// Append a value to the `dropped_attributes_count` array
     pub fn append_dropped_attributes_count(&mut self, val: u32) {
         self.dropped_attributes_count.append_value(&val);
+    }
+
+    /// Append a value to the `dropped_attributes_count` array `n` times
+    pub fn append_dropped_attributes_count_n(&mut self, val: u32, n: usize) {
+        self.dropped_attributes_count.append_value_n(&val, n);
     }
 
     /// Finish this builder and build the resulting `StructArray` for the scope

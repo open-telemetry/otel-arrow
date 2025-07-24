@@ -26,7 +26,8 @@ prost = "0.13.5"
 prost-types = "0.13.5"
 hex = "0.4.3"
 linkme = "0.3.33"
-
+serde = {version="1", features=["derive"]}
+rand = "0.9.1"
 # Workspace dependencies
 thiserror.workspace = true
 serde_json.workspace = true
@@ -34,7 +35,7 @@ tokio.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 log.workspace = true
-serde = { version = "1.0.219", features = ["derive"] }
+otel-arrow-rust.workspace = true
 
 [build-dependencies]
 tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }

@@ -7,10 +7,6 @@ component_management:
       name: "otap-dataflow"
       paths:
         - "rust/otap-dataflow/"
-    - component_id: "beaubourg"
-      name: "beaubourg"
-      paths:
-        - "rust/beaubourg/"
     - component_id: "otel_arrow_rust"
       name: "otel-arrow-rust"
       paths:
@@ -34,4 +30,3 @@ component_management:
       name: "otel-arrow-go"
       paths:
         - "go/"
-        - "pkg/"

@@ -1,4 +1,7 @@
-use crate::{Expression, ExpressionError, QueryLocation, ScalarExpression, StaticScalarExpression};
+use crate::{
+    Expression, ExpressionError, PipelineExpression, QueryLocation, ScalarExpression,
+    resolved_static_scalar_expression::ResolvedStaticScalarExpression,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalExpression {
@@ -31,9 +34,16 @@ pub enum LogicalExpression {
 }
 
 impl LogicalExpression {
-    pub fn try_resolve_static(&self) -> Result<Option<StaticScalarExpression>, ExpressionError> {
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
         match self {
-            LogicalExpression::Scalar(s) => s.try_resolve_static(),
+            LogicalExpression::Scalar(s) => s.try_resolve_static(pipeline),
             // todo: Implement static resolution of logicals:
             LogicalExpression::EqualTo(_) => Ok(None),
             LogicalExpression::GreaterThan(_) => Ok(None),
@@ -53,6 +63,17 @@ impl Expression for LogicalExpression {
             LogicalExpression::GreaterThanOrEqualTo(g) => g.get_query_location(),
             LogicalExpression::Not(n) => n.get_query_location(),
             LogicalExpression::Chain(c) => c.get_query_location(),
+        }
+    }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            LogicalExpression::Scalar(_) => "LogicalExpression(Scalar)",
+            LogicalExpression::EqualTo(_) => "LogicalExpression(EqualTo)",
+            LogicalExpression::GreaterThan(_) => "LogicalExpression(GreaterThan)",
+            LogicalExpression::GreaterThanOrEqualTo(_) => "LogicalExpression(GreaterThanOrEqualTo)",
+            LogicalExpression::Not(_) => "LogicalExpression(Not)",
+            LogicalExpression::Chain(_) => "LogicalExpression(Chain)",
         }
     }
 }
@@ -95,6 +116,10 @@ impl Expression for ChainLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "ChainLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +161,10 @@ impl Expression for EqualToLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "EqualToLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,6 +199,10 @@ impl GreaterThanLogicalExpression {
 impl Expression for GreaterThanLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "GreaterThanLogicalExpression"
     }
 }
 
@@ -206,6 +239,10 @@ impl Expression for GreaterThanOrEqualToLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "GreaterThanOrEqualToLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -233,5 +270,9 @@ impl NotLogicalExpression {
 impl Expression for NotLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "NotLogicalExpression"
     }
 }
