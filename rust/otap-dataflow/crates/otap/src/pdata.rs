@@ -170,7 +170,11 @@ impl TryFrom<OtlpProtoBytes> for OtapBatch {
             }
             _ => {
                 // TODO add conversions when we support
-                todo!()
+                // https://github.com/open-telemetry/otel-arrow/issues/768
+                Err(error::Error::ConversionError {
+                    error: "converting from OTLP Bytes for this signal type not yet supported"
+                        .to_string(),
+                })
             }
         }
     }
@@ -302,4 +306,5 @@ mod test {
     // TODO add additional tests for converting between metrics & traces
     // once we have the ability to convert between OTLP bytes -> OTAP for
     // these signal types
+    // https://github.com/open-telemetry/otel-arrow/issues/768
 }
