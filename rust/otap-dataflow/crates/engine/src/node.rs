@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trait defining the common properties between all types of nodes in the pipeline engine.
+//! Set of traits defining the common properties between all types of nodes in the pipeline engine.
+//! 
+//! Receivers, processors, and exporters implement the [`Node`] trait.
+//! Receivers and processors implement the [`NodeWithPDataSender`] trait.
+//! Processors and exporters implement the [`NodeWithPDataReceiver`] trait.
 
 use crate::control::ControlMsg;
 use crate::error::Error;
