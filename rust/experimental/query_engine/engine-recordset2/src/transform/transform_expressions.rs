@@ -6,6 +6,7 @@ use crate::{
     execution_context::ExecutionContext,
     resolved_value_mut::*,
     scalar_expressions::execute_scalar_expression,
+    transform::reduce_map_transform_expression::execute_map_reduce_transform_expression,
     value_expressions::{execute_immutable_value_expression, execute_mutable_value_expression},
     *,
 };
@@ -201,7 +202,9 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
 
             Ok(())
         }
-        TransformExpression::ReduceMap(_) => todo!(),
+        TransformExpression::ReduceMap(r) => {
+            execute_map_reduce_transform_expression(execution_context, r)
+        }
         TransformExpression::RemoveMapKeys(r) => match r {
             RemoveMapKeysTransformExpression::Remove(m) => {
                 let keys = resolve_map_keys(execution_context, m)?;
