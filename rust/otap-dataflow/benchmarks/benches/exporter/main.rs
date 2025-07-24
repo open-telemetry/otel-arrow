@@ -58,7 +58,6 @@ use tonic::{Request, Response, Status};
 
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::control::{ControlMsg, Controllable};
-use otap_df_engine::local::message::{LocalReceiver, LocalSender};
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;

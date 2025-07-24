@@ -37,7 +37,7 @@ use crate::error::Error;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
-use std::borrow::Cow;
+use otap_df_config::NodeId;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -96,19 +96,17 @@ impl<PData> EffectHandler<PData> {
     /// Use this constructor when your receiver do need to be sent across threads or
     /// when it uses components that are `Send`.
     #[must_use]
-    pub fn new(receiver_name: Cow<'static, str>, msg_sender: SharedSender<PData>) -> Self {
+    pub fn new(node_id: NodeId, msg_sender: SharedSender<PData>) -> Self {
         EffectHandler {
-            core: EffectHandlerCore {
-                node_name: receiver_name,
-            },
+            core: EffectHandlerCore { node_id },
             msg_sender,
         }
     }
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn receiver_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -128,7 +126,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
-        self.core.tcp_listener(addr, self.receiver_name())
+        self.core.tcp_listener(addr, self.receiver_id())
     }
 
     // More methods will be added in the future as needed.

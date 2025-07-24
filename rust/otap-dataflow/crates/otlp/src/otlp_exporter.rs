@@ -102,27 +102,27 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         let mut metrics_client = MetricsServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
         let mut logs_client = LogsServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
         let mut trace_client = TraceServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
         let mut profiles_client = ProfilesServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
@@ -161,7 +161,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Metrics(req) => {
                             _ = metrics_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -169,7 +169,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Logs(req) => {
                             _ = logs_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -177,7 +177,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Traces(req) => {
                             _ = trace_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -185,7 +185,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Profiles(req) => {
                             _ = profiles_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -194,7 +194,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
+                        exporter: effect_handler.exporter_id(),
                         error: "Unknown control message".to_owned(),
                     });
                 }

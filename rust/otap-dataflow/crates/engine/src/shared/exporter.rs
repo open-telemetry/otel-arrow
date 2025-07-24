@@ -38,7 +38,7 @@ use crate::message::Message;
 use crate::shared::message::SharedReceiver;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use std::borrow::Cow;
+use otap_df_config::NodeId;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
@@ -213,17 +213,17 @@ pub struct EffectHandler<PData> {
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: EffectHandlerCore { node_id },
             _pd: PhantomData,
         }
     }
 
-    /// Returns the name of the exporter associated with this handler.
+    /// Returns the id of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn exporter_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     // More methods will be added in the future as needed.

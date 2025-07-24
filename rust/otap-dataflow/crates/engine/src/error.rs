@@ -7,7 +7,7 @@
 
 use crate::control::ControlMsg;
 use otap_df_channel::error::SendError;
-use otap_df_config::{NodeId, PortName};
+use otap_df_config::{NodeId, PortName, Urn};
 use std::borrow::Cow;
 
 /// All errors that can occur in the pipeline engine infrastructure.
@@ -80,7 +80,7 @@ pub enum Error<T> {
     #[error("Unknown receiver plugin `{plugin_urn}`")]
     UnknownReceiver {
         /// The name of the unknown receiver plugin.
-        plugin_urn: Cow<'static, str>,
+        plugin_urn: Urn,
     },
 
     /// The specified processor already exists in the pipeline.
@@ -105,7 +105,7 @@ pub enum Error<T> {
     #[error("Unknown processor plugin `{plugin_urn}`")]
     UnknownProcessor {
         /// The name of the unknown processor plugin.
-        plugin_urn: Cow<'static, str>,
+        plugin_urn: Urn,
     },
 
     /// The specified exporter already exists in the pipeline.
@@ -130,7 +130,7 @@ pub enum Error<T> {
     #[error("Unknown exporter plugin `{plugin_urn}`")]
     UnknownExporter {
         /// The name of the unknown exporter plugin.
-        plugin_urn: Cow<'static, str>,
+        plugin_urn: Urn,
     },
 
     /// Unknown node.

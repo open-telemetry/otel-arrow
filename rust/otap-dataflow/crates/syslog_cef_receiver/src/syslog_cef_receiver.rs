@@ -108,7 +108,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                     });
                                 },
                                 Err(e) => {
-                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: e.to_string()});
+                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
                                 }
                             }
                         }
@@ -145,7 +145,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                     effect_handler.send_message(buf[..n].to_vec()).await?;
                                 },
                                 Err(e) => {
-                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: e.to_string()});
+                                    return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
                                 }
                             }
                         },

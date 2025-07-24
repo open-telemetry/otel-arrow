@@ -36,7 +36,7 @@ use crate::message::Message;
 use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
-use std::borrow::Cow;
+use otap_df_config::NodeId;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -92,17 +92,17 @@ pub struct EffectHandler<PData> {
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>, msg_sender: SharedSender<PData>) -> Self {
+    pub fn new(node_id: NodeId, msg_sender: SharedSender<PData>) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: EffectHandlerCore { node_id },
             msg_sender,
         }
     }
 
-    /// Returns the name of the processor associated with this handler.
+    /// Returns the id of the processor associated with this handler.
     #[must_use]
-    pub fn processor_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn processor_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Sends a message to the next node(s) in the pipeline.

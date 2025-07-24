@@ -97,7 +97,7 @@ impl local::Exporter<OTAPData> for PerfExporter {
         let mut total_received_pdata_batch_count: u64 = 0;
         let mut last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
-            exporter: effect_handler.exporter_name(),
+            exporter: effect_handler.exporter_id(),
             error: format!("Failed to get process pid: {e}"),
         })?;
         let mut system = System::new();
@@ -143,7 +143,7 @@ impl local::Exporter<OTAPData> for PerfExporter {
             // update sysinfo data
             system.refresh_specifics(sys_refresh_list);
             let process = system.process(process_pid).ok_or(Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: "Failed to get process".to_owned(),
             })?;
 
@@ -245,7 +245,7 @@ impl local::Exporter<OTAPData> for PerfExporter {
                         decoder
                             .decode(&batch.headers)
                             .map_err(|_| Error::ExporterError {
-                                exporter: effect_handler.exporter_name(),
+                                exporter: effect_handler.exporter_id(),
                                 error: "Failed to decode batch headers".to_owned(),
                             })?;
                     // find the timestamp header and parse it
@@ -254,13 +254,13 @@ impl local::Exporter<OTAPData> for PerfExporter {
                     if let Some((_, value)) = timestamp_pair {
                         let timestamp =
                             decode_timestamp(value).map_err(|error| Error::ExporterError {
-                                exporter: effect_handler.exporter_name(),
+                                exporter: effect_handler.exporter_id(),
                                 error,
                             })?;
                         let current_unix_time = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map_err(|error| Error::ExporterError {
-                                exporter: effect_handler.exporter_name(),
+                                exporter: effect_handler.exporter_id(),
                                 error: error.to_string(),
                             })?;
                         let latency = (current_unix_time - timestamp).as_secs_f64();
@@ -305,7 +305,7 @@ impl local::Exporter<OTAPData> for PerfExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
+                        exporter: effect_handler.exporter_id(),
                         error: "Unknown control message".to_owned(),
                     });
                 }

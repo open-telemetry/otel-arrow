@@ -164,7 +164,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                 .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(error) = result {
                         // Report receiver error
-                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: error.to_string()});
+                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: error.to_string()});
                     }
                 }
             }

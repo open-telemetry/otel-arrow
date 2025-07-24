@@ -127,11 +127,11 @@ impl<PData> ExporterWrapper<PData> {
                 ..
             } => {
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
+                    exporter: effect_handler.exporter_id(),
                     error: "Control receiver not initialized".to_owned(),
                 })?;
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
+                    exporter: effect_handler.exporter_id(),
                     error: "PData receiver not initialized".to_owned(),
                 })?;
                 let message_channel =
@@ -146,11 +146,11 @@ impl<PData> ExporterWrapper<PData> {
                 ..
             } => {
                 let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
+                    exporter: effect_handler.exporter_id(),
                     error: "Control receiver not initialized".to_owned(),
                 })?;
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
+                    exporter: effect_handler.exporter_id(),
                     error: "PData receiver not initialized".to_owned(),
                 })?;
                 let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
@@ -275,7 +275,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: "Unknown control message".to_owned(),
                         });
                     }
@@ -310,7 +310,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: "Unknown control message".to_owned(),
                         });
                     }

@@ -67,7 +67,7 @@ where
     ) -> Result<(), Error<T>> {
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: format!("error initializing object store {e}"),
             })?;
 
@@ -98,7 +98,7 @@ where
                     return futures::select! {
                         _timeout = timeout =>
                             Err(Error::IoError {
-                                node: effect_handler.exporter_name(),
+                                node: effect_handler.exporter_id(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             })
                         ,
@@ -117,7 +117,7 @@ where
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: format!("ID Generation failed: {e}"),
                         });
                     }
@@ -149,7 +149,7 @@ where
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: format!("Parquet write failed: {e}"),
                         });
                     };

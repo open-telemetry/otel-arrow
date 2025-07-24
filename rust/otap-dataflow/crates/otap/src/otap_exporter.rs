@@ -88,21 +88,21 @@ impl local::Exporter<OTAPData> for OTAPExporter {
             ArrowMetricsServiceClient::connect(self.grpc_endpoint.clone())
                 .await
                 .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
+                    exporter: effect_handler.exporter_id(),
                     error: error.to_string(),
                 })?;
 
         let mut arrow_logs_client = ArrowLogsServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
         let mut arrow_traces_client = ArrowTracesServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
@@ -145,7 +145,7 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                                 .arrow_metrics(request_stream)
                                 .await
                                 .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 })?;
                         }
@@ -155,7 +155,7 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                             };
                             _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
                                 |error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 },
                             )?;
@@ -168,7 +168,7 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                                 .arrow_traces(request_stream)
                                 .await
                                 .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 })?;
                         }
@@ -176,7 +176,7 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
+                        exporter: effect_handler.exporter_id(),
                         error: "Unknown control message".to_owned(),
                     });
                 }

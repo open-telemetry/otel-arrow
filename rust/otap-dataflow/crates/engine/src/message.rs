@@ -129,6 +129,7 @@ pub enum Receiver<T> {
 
 impl<T> Receiver<T> {
     /// Creates a new local MPMC receiver.
+    #[must_use]
     pub fn new_local_mpsc_receiver(mpsc_receiver: mpsc::Receiver<T>) -> Self {
         Receiver::Local(LocalReceiver::MpscReceiver(mpsc_receiver))
     }

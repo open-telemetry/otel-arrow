@@ -229,6 +229,13 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
     }
 
     /// Builds a runtime pipeline from the given pipeline configuration.
+    ///
+    /// Steps:
+    /// - Create all runtime nodes based on the pipeline configuration.
+    /// - Analyze both the local vs shared nature of each pair of connected nodes and the nature of
+    ///   the hyper-edges between them to determine the best channel type.
+    /// - Assign channels to the source nodes and their destination nodes based on the previous
+    ///   analysis.
     pub fn build(
         &self,
         config: otap_df_config::pipeline::PipelineConfig,
