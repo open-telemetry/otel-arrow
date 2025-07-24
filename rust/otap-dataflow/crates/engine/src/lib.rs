@@ -9,7 +9,7 @@ use crate::{
     message::Sender,
     processor::ProcessorWrapper,
     receiver::ReceiverWrapper,
-    runtime_config::RuntimePipeline,
+    runtime_pipeline::RuntimePipeline,
 };
 use serde_json::Value;
 use std::num::NonZeroUsize;
@@ -27,8 +27,7 @@ pub mod control;
 mod effect_handler;
 pub mod local;
 pub mod node;
-pub mod pipeline;
-pub mod runtime_config;
+pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
 
