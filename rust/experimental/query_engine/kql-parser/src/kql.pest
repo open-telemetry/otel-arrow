@@ -57,6 +57,17 @@ identifier_or_pattern_literal = ${
 	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
     | ("[" ~ string_literal ~ "]")
 }
+null_literal = { 
+    ("bool(" ~ "null" ~ ")") |
+    ("datetime(" ~ "null" ~ ")") |
+    ("dynamic(" ~ "null" ~ ")") |
+    ("guid(" ~ "null" ~ ")") |
+    ("int(" ~ "null" ~ ")") |
+    ("long(" ~ "null" ~ ")") |
+    ("real(" ~ "null" ~ ")") |
+    ("double(" ~ "null" ~ ")") |
+    ("timespan(" ~ "null" ~ ")")
+}
 
 // Expressions
 accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
@@ -69,7 +80,8 @@ datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 
 scalar_expression = {
-    real_expression
+    null_literal
+    | real_expression
     | datetime_expression
     | conditional_expression
     | boolean_expression
