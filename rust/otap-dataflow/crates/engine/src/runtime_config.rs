@@ -39,42 +39,6 @@ pub enum NodeType {
     Exporter,
 }
 
-/// Represents a node in the runtime pipeline, which can be a receiver, processor, or exporter.
-pub enum RuntimeNode<PData> {
-    /// A node that acts as a receiver, receiving data from an external source.
-    Receiver {
-        /// The configuration for the node, including its name and channel settings.
-        config: Rc<NodeUserConfig>,
-        /// The instance of the receiver that processes incoming data.
-        instance: ReceiverWrapper<PData>,
-        /// Sender for PData messages.
-        /// ToDo(LQ): Support multiple ports
-        pdata_sender: Option<Sender<PData>>,
-    },
-    /// A node that processes data, transforming or analyzing it.
-    Processor {
-        /// The configuration for the node, including its name and channel settings.
-        config: Rc<NodeUserConfig>,
-        /// The instance of the processor that performs operations on the data.
-        instance: ProcessorWrapper<PData>,
-        /// Sender for PData messages.
-        /// ToDo(LQ): Support multiple ports
-        pdata_sender: Option<Sender<PData>>,
-        /// Receiver for PData messages.
-        pdata_receiver: Option<Receiver<PData>>,
-    },
-    /// A node that exports data to an external destination.
-    Exporter {
-        /// The configuration for the node, including its name and channel settings.
-        config: Rc<NodeUserConfig>,
-        /// The instance of the exporter that sends data to an external system.
-        instance: ExporterWrapper<PData>,
-        /// Receiver for PData messages.
-        pdata_receiver: Option<Receiver<PData>>,
-    },
-}
-
-// ToDo create 2 versions of this function into otlp and otap crates.
 impl<PData: 'static> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
     #[must_use]
