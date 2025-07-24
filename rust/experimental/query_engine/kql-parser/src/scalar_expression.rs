@@ -14,6 +14,7 @@ pub(crate) fn parse_scalar_expression(
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 
     let scalar = match scalar_rule.as_rule() {
+        Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
         Rule::real_expression => ScalarExpression::Static(parse_real_expression(scalar_rule)?),
         Rule::datetime_expression => {
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
@@ -78,6 +79,15 @@ mod tests {
                 "variable",
                 "(1)",
                 "iff(true, 0, 1)",
+                "bool(null)",
+                "int(null)",
+                "long(null)",
+                "real(null)",
+                "datetime(null)",
+                "time(null)",
+                "timespan(null)",
+                "guid(null)",
+                "dynamic(null)",
             ],
             &["!"],
         );
@@ -184,6 +194,69 @@ mod tests {
                     )),
                 )]),
             )),
+        );
+
+        run_test_success(
+            "bool(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "datetime(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "dynamic(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "guid(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "int(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "long(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "real(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "double(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        run_test_success(
+            "timespan(null)",
+            ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
         );
     }
 }
