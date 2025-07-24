@@ -81,4 +81,11 @@ pub enum Error<T> {
         /// ToDo We probably need to use a more specific error type here (JSON Node?).
         error: String,
     },
+
+    /// A Wrapper for the pdata conversion errors
+    #[error("Internal error occurred transforming pdata: {error}")]
+    PdataConversionError {
+        /// The error that occurred
+        error: String,
+    },
 }

@@ -5,10 +5,6 @@
 //!
 //! `BatchArrowRecords` is the protobuf type that contains the Arrow IPC serialized messages.
 
-// TODO we will eventually use this code as part of the implementation of PDATA for OTAP pipelines
-// https://github.com/open-telemetry/otel-arrow/issues/728
-#![allow(dead_code)]
-
 use std::{collections::HashMap, io::Cursor};
 
 use arrow::array::RecordBatch;
@@ -25,7 +21,6 @@ use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, Bat
 struct StreamProducer {
     payload_type: ArrowPayloadType,
     stream_writer: StreamWriter<Cursor<Vec<u8>>>,
-    schema: SchemaRef,
     schema_id: i64,
 }
 
@@ -39,7 +34,6 @@ impl StreamProducer {
         Ok(Self {
             payload_type,
             stream_writer,
-            schema,
             schema_id,
         })
     }
@@ -57,7 +51,7 @@ impl StreamProducer {
 }
 
 /// Produces OTAP `BatchArrowRecords` from OTAP Batches
-struct Producer {
+pub struct Producer {
     next_batch_id: i64,
     next_schema_id: i64,
     stream_producers: HashMap<String, StreamProducer>,
@@ -66,6 +60,7 @@ struct Producer {
 
 impl Producer {
     /// create a new instance of `Producer`
+    #[must_use]
     pub fn new() -> Self {
         Self {
             next_batch_id: 0,
@@ -126,6 +121,12 @@ impl Producer {
             arrow_payloads,
             ..Default::default()
         })
+    }
+}
+
+impl Default for Producer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
