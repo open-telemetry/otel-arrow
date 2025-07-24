@@ -60,6 +60,7 @@ pub struct Producer {
 
 impl Producer {
     /// create a new instance of `Producer`
+    #[must_use]
     pub fn new() -> Self {
         Self {
             next_batch_id: 0,
@@ -120,6 +121,12 @@ impl Producer {
             arrow_payloads,
             ..Default::default()
         })
+    }
+}
+
+impl Default for Producer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
