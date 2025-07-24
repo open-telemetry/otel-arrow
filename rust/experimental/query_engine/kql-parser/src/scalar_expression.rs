@@ -14,6 +14,7 @@ pub(crate) fn parse_scalar_expression(
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 
     let scalar = match scalar_rule.as_rule() {
+        Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
         Rule::real_expression => ScalarExpression::Static(parse_real_expression(scalar_rule)?),
         Rule::datetime_expression => {
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
@@ -27,7 +28,6 @@ pub(crate) fn parse_scalar_expression(
         Rule::integer_literal => {
             ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
         }
-        Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
