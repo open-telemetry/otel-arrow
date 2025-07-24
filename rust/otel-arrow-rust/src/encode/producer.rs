@@ -21,7 +21,6 @@ use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, Bat
 struct StreamProducer {
     payload_type: ArrowPayloadType,
     stream_writer: StreamWriter<Cursor<Vec<u8>>>,
-    schema: SchemaRef,
     schema_id: i64,
 }
 
@@ -35,7 +34,6 @@ impl StreamProducer {
         Ok(Self {
             payload_type,
             stream_writer,
-            schema,
             schema_id,
         })
     }

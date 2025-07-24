@@ -9,9 +9,7 @@
 //!
 
 use crate::SHARED_RECEIVERS;
-use crate::grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
-};
+use crate::grpc::{ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl};
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;

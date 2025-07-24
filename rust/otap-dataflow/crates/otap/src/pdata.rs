@@ -44,6 +44,7 @@ pub enum OtlpProtoBytes {
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum OtapPdata {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes(OtlpProtoBytes),
@@ -223,7 +224,11 @@ impl TryFrom<OtapBatch> for OTAPData {
 
     fn try_from(otap_batch: OtapBatch) -> Result<Self, Self::Error> {
         let mut producer = Producer::new();
-        let bar = producer.produce_bar(&otap_batch).unwrap();
+        let bar = producer
+            .produce_bar(&otap_batch)
+            .map_err(|e| error::Error::ConversionError {
+                error: format!("error encoding BatchArrowRecords: {e}"),
+            })?;
         Ok(match otap_batch {
             OtapBatch::Logs(_) => Self::ArrowLogs(bar),
             OtapBatch::Metrics(_) => Self::ArrowMetrics(bar),
@@ -239,7 +244,7 @@ mod test {
         otap::OtapBatch,
         proto::opentelemetry::{
             collector::logs::v1::ExportLogsServiceRequest,
-            common::v1::InstrumentationScope,
+            common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             resource::v1::Resource,
         },
@@ -252,7 +257,9 @@ mod test {
                 .scope_logs(vec![
                     ScopeLogs::build(InstrumentationScope::default())
                         .log_records(vec![
-                            LogRecord::build(2u64, SeverityNumber::Info, "event").finish(),
+                            LogRecord::build(2u64, SeverityNumber::Info, "event")
+                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                                .finish(),
                         ])
                         .finish(),
                 ])
