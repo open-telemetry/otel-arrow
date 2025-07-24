@@ -42,7 +42,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                         let v = v.to_value_mut();
                         let remove = match v {
                             Some(ValueMut::Map(m)) => {
-                                if !inner_reduction.keys.is_empty() {
+                                if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                                     if execution_context.is_enabled(LogLevel::Verbose) {
                                         execution_context.log(LogMessage::new(
                                             LogLevel::Verbose,
@@ -117,7 +117,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                         let v = v.to_value_mut();
                         match v {
                             Some(ValueMut::Map(m)) => {
-                                if !inner_reduction.keys.is_empty() {
+                                if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                                     if execution_context.is_enabled(LogLevel::Verbose) {
                                         execution_context.log(LogMessage::new(
                                             LogLevel::Verbose,
@@ -300,6 +300,10 @@ where
                     .or_insert(MapReduction::new());
                 return process_map_reduction_accessor(execution_context, selectors, t);
             }
+        } else if let Value::Regex(_) = value.to_value() {
+            current_reduction
+                .key_patterns
+                .push(value.try_resolve_regex().unwrap());
         } else if execution_context.is_enabled(LogLevel::Warn) {
             execution_context.log(LogMessage::new(
                     LogLevel::Warn,
@@ -319,11 +323,26 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
     reduction: &MapReduction<'_>,
 ) {
     map.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+        if !reduction.key_patterns.is_empty() {
+            for p in &reduction.key_patterns {
+                if p.get_value().is_match(k) {
+                    if execution_context.is_enabled(LogLevel::Verbose) {
+                        execution_context.log(LogMessage::new(
+                            LogLevel::Verbose,
+                            expression,
+                            format!("Removing '{k}' due to pattern match"),
+                        ));
+                    }
+                    return false;
+                }
+            }
+        }
+
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
             let v = v.to_value_mut();
             let remove = match v {
                 Some(ValueMut::Map(m)) => {
-                    if !inner_reduction.keys.is_empty() {
+                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         if execution_context.is_enabled(LogLevel::Verbose) {
                             execution_context.log(LogMessage::new(
                                 LogLevel::Verbose,
@@ -407,7 +426,7 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
             let v = v.to_value_mut();
             let remove = match v {
                 Some(ValueMut::Map(m)) => {
-                    if !inner_reduction.keys.is_empty() {
+                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         if execution_context.is_enabled(LogLevel::Verbose) {
                             execution_context.log(LogMessage::new(
                                 LogLevel::Verbose,
@@ -464,11 +483,19 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
     reduction: &MapReduction<'_>,
 ) {
     map.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+        if !reduction.key_patterns.is_empty() {
+            for p in &reduction.key_patterns {
+                if p.get_value().is_match(k) {
+                    return true;
+                }
+            }
+        }
+
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
             let v = v.to_value_mut();
             match v {
                 Some(ValueMut::Map(m)) => {
-                    if !inner_reduction.keys.is_empty() {
+                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         if execution_context.is_enabled(LogLevel::Verbose) {
                             execution_context.log(LogMessage::new(
                                 LogLevel::Verbose,
@@ -544,7 +571,7 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
             let v = v.to_value_mut();
             match v {
                 Some(ValueMut::Map(m)) => {
-                    if !inner_reduction.keys.is_empty() {
+                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         if execution_context.is_enabled(LogLevel::Verbose) {
                             execution_context.log(LogMessage::new(
                                 LogLevel::Verbose,
@@ -830,5 +857,92 @@ mod tests {
             "{\"key1\":{\"subkey1\":\"hello\",\"subkey3\":\"goodbye\"},\"key2\":[1,3]}",
             Value::Map(&result).to_string()
         );
+    }
+
+    #[test]
+    fn test_execute_reduce_map_transform_with_inner_regex_expression() {
+        let record = TestRecord::new()
+            .with_key_value(
+                "key1".into(),
+                OwnedValue::Map(MapValueStorage::new(HashMap::from([
+                    (
+                        "subkey1".into(),
+                        OwnedValue::String(ValueStorage::new("hello".into())),
+                    ),
+                    (
+                        "subkey2".into(),
+                        OwnedValue::String(ValueStorage::new("world".into())),
+                    ),
+                    (
+                        "subkey3".into(),
+                        OwnedValue::String(ValueStorage::new("goodbye".into())),
+                    ),
+                ]))),
+            )
+            .with_key_value(
+                "key2".into(),
+                OwnedValue::Array(ArrayValueStorage::new(vec![
+                    OwnedValue::Integer(ValueStorage::new(1)),
+                    OwnedValue::Integer(ValueStorage::new(2)),
+                    OwnedValue::Integer(ValueStorage::new(3)),
+                ])),
+            );
+
+        let run_test = |transform_expression| {
+            let pipeline = PipelineExpressionBuilder::new("set")
+                .with_expressions(vec![DataExpression::Transform(transform_expression)])
+                .build()
+                .unwrap();
+
+            let execution_context =
+                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+
+            if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
+                execute_transform_expression(&execution_context, t).unwrap();
+            } else {
+                panic!("Unexpected expression");
+            }
+
+            let result = execution_context.consume_into_record();
+
+            println!("{result}");
+
+            result.take_record()
+        };
+
+        // Test removing a key
+        let result = run_test(TransformExpression::ReduceMap(
+            ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![MapSelector::ValueAccessor(
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Regex(
+                            RegexScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                Regex::new("^sub.*").unwrap(),
+                            ),
+                        )),
+                    ]),
+                )],
+            )),
+        ));
+
+        assert_eq!(2, result.len());
+        assert!(result.contains_key("key1"));
+
+        if let Some(v) = result.get("key1").map(|v| v.to_value())
+            && let Value::Map(m) = v
+        {
+            assert_eq!(0, m.len());
+        } else {
+            panic!()
+        }
     }
 }
