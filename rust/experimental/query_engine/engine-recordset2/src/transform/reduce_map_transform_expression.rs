@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::{Display, Write},
     hash::Hash,
     slice::Iter,
 };
@@ -19,6 +20,14 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
     match reduce_map_transform_expression {
         ReduceMapTransformExpression::Remove(r) => {
             let reduction = resolve_map_reduction(execution_context, r)?;
+
+            if execution_context.is_enabled(LogLevel::Verbose) {
+                execution_context.log(LogMessage::new(
+                    LogLevel::Verbose,
+                    reduce_map_transform_expression,
+                    format!("Resolved map reduction: {reduction}"),
+                ));
+            }
 
             let target = execute_mutable_value_expression(execution_context, r.get_target())?;
 
@@ -103,6 +112,14 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
         ReduceMapTransformExpression::Retain(r) => {
             let reduction = resolve_map_reduction(execution_context, r)?;
 
+            if execution_context.is_enabled(LogLevel::Verbose) {
+                execution_context.log(LogMessage::new(
+                    LogLevel::Verbose,
+                    reduce_map_transform_expression,
+                    format!("Resolved map reduction: {reduction}"),
+                ));
+            }
+
             let target = execute_mutable_value_expression(execution_context, r.get_target())?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
@@ -183,6 +200,73 @@ impl<'a> MapReduction<'a> {
             key_patterns: Vec::new(),
             indices: HashMap::new(),
         }
+    }
+}
+
+impl Display for MapReduction<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('{')?;
+
+        if !self.keys.is_empty() {
+            f.write_str(" keys: [ ")?;
+
+            let mut first = true;
+            for (k, r) in &self.keys {
+                if first {
+                    first = false;
+                } else {
+                    f.write_str(", ")?;
+                }
+
+                f.write_str("{ name: ")?;
+                f.write_str(k.get_value())?;
+                f.write_str(", reduction: ")?;
+                r.fmt(f)?;
+                f.write_str(" }")?;
+            }
+
+            f.write_str(" ] ")?;
+        }
+
+        if !self.key_patterns.is_empty() {
+            f.write_str(" key_patterns: [ ")?;
+
+            let mut first = true;
+            for r in &self.key_patterns {
+                if first {
+                    first = false;
+                } else {
+                    f.write_str(", ")?;
+                }
+
+                r.get_value().fmt(f)?;
+            }
+
+            f.write_str(" ] ")?;
+        }
+
+        if !self.indices.is_empty() {
+            f.write_str(" indices: [ ")?;
+
+            let mut first = true;
+            for (i, r) in &self.indices {
+                if first {
+                    first = false;
+                } else {
+                    f.write_str(", ")?;
+                }
+
+                f.write_str("{ index: ")?;
+                i.fmt(f)?;
+                f.write_str(", reduction: ")?;
+                r.fmt(f)?;
+                f.write_str(" }")?;
+            }
+
+            f.write_str(" ] ")?;
+        }
+
+        f.write_char('}')
     }
 }
 
