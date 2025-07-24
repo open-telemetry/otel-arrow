@@ -10,3 +10,6 @@ pub use ottl_parser::*;
 // parser-abstractions crate just to parse queries.
 pub use data_engine_parser_abstractions::Parser;
 pub use data_engine_parser_abstractions::ParserError;
+pub use data_engine_parser_abstractions::ParserMapKeySchema;
+pub use data_engine_parser_abstractions::ParserMapSchema;
+pub use data_engine_parser_abstractions::ParserOptions;

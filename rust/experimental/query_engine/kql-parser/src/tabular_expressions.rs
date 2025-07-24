@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
@@ -62,13 +64,7 @@ pub(crate) fn parse_project_expression(
 
     let mut expressions = Vec::new();
 
-    let mut map_selection = MapSelectionExpression::new(
-        query_location.clone(),
-        MutableValueExpression::Source(SourceScalarExpression::new(
-            query_location.clone(),
-            ValueAccessor::new(),
-        )),
-    );
+    let mut reduction = MapReductionState::new();
 
     for rule in project_rules {
         let rule_location = to_query_location(&rule);
@@ -80,27 +76,12 @@ pub(crate) fn parse_project_expression(
                 if let TransformExpression::Set(s) = &assignment_expression {
                     match s.get_destination() {
                         MutableValueExpression::Source(s) => {
-                            if let Some(map_key) =
-                                get_root_map_key_from_source_scalar_expression(state, s)?
-                            {
-                                let result = map_selection.push_key_or_key_pattern(map_key);
-                                assert!(result);
-                            } else {
-                                let accessor = s.get_value_accessor();
-
-                                if !accessor.has_selectors()
-                                    || !map_selection.push_value_accessor(accessor.clone())
-                                {
-                                    let location = s.get_query_location();
-                                    return Err(ParserError::SyntaxError(
-                                        location.clone(),
-                                        format!(
-                                            "The '{}' accessor expression should refer to a map key on the source when used in a project expression",
-                                            state.get_query_slice(location).trim()
-                                        ),
-                                    ));
-                                }
-                            }
+                            process_map_selection_source_scalar_expression(
+                                "project",
+                                state,
+                                s,
+                                &mut reduction,
+                            )?;
                         }
                         MutableValueExpression::Variable(v) => {
                             let location = v.get_query_location();
@@ -125,26 +106,12 @@ pub(crate) fn parse_project_expression(
                 let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
-                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)?
-                    {
-                        let result = map_selection.push_key_or_key_pattern(map_key);
-                        assert!(result);
-                    } else {
-                        let accessor = s.get_value_accessor();
-
-                        if !accessor.has_selectors()
-                            || !map_selection.push_value_accessor(accessor.clone())
-                        {
-                            let location = s.get_query_location();
-                            return Err(ParserError::SyntaxError(
-                                location.clone(),
-                                format!(
-                                    "The '{}' accessor expression should refer to a map key on the source when used in a project expression",
-                                    state.get_query_slice(location).trim()
-                                ),
-                            ));
-                        }
-                    }
+                    process_map_selection_source_scalar_expression(
+                        "project",
+                        state,
+                        s,
+                        &mut reduction,
+                    )?;
                 } else {
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
@@ -159,40 +126,14 @@ pub(crate) fn parse_project_expression(
         }
     }
 
-    if map_selection
-        .get_selectors()
-        .iter()
-        .filter(|m| matches!(m, MapSelector::ValueAccessor(_)))
-        .count()
-        == 0
-    {
-        let items = map_selection
-            .get_selectors()
-            .iter()
-            .filter(|m| matches!(m, MapSelector::KeyOrKeyPattern(_)));
-        expressions.push(TransformExpression::RemoveMapKeys(
-            RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
-                query_location.clone(),
-                MutableValueExpression::Source(SourceScalarExpression::new(
-                    query_location,
-                    ValueAccessor::new(),
-                )),
-                items
-                    .map(|m| {
-                        if let MapSelector::KeyOrKeyPattern(k) = m {
-                            k.clone()
-                        } else {
-                            panic!("Unexpected MapSelector found in items");
-                        }
-                    })
-                    .collect(),
-            )),
-        ));
-    } else {
-        expressions.push(TransformExpression::ReduceMap(
-            ReduceMapTransformExpression::Retain(map_selection),
-        ));
-    }
+    push_map_transformation_expression(
+        "project",
+        state,
+        &mut expressions,
+        &query_location,
+        true,
+        reduction,
+    )?;
 
     Ok(expressions)
 }
@@ -200,30 +141,32 @@ pub(crate) fn parse_project_expression(
 pub(crate) fn parse_project_keep_expression(
     project_keep_expression_rule: Pair<Rule>,
     state: &ParserState,
-) -> Result<TransformExpression, ParserError> {
+) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_keep_expression_rule);
 
     let project_keep_rules = project_keep_expression_rule.into_inner();
 
-    let mut map_selection = MapSelectionExpression::new(
-        query_location.clone(),
-        MutableValueExpression::Source(SourceScalarExpression::new(
-            query_location.clone(),
-            ValueAccessor::new(),
-        )),
-    );
+    let mut expressions = Vec::new();
+
+    let mut reduction = MapReductionState::new();
 
     for rule in project_keep_rules {
         let rule_location = to_query_location(&rule);
 
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
-                if let Some(scalar) =
+                if let Some(identifier_or_pattern) =
                     parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
                 {
-                    let result =
-                        map_selection.push_key_or_key_pattern(ScalarExpression::Static(scalar));
-                    assert!(result);
+                    match identifier_or_pattern {
+                        IdentifierOrPattern::Identifier(s) => reduction.keys.push(s),
+                        IdentifierOrPattern::Map { name, key } => reduction
+                            .maps
+                            .entry(Into::<Box<str>>::into(name.get_value()))
+                            .or_default()
+                            .push((name, key)),
+                        IdentifierOrPattern::Pattern(r) => reduction.patterns.push(r),
+                    }
                 } else {
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
@@ -238,26 +181,12 @@ pub(crate) fn parse_project_keep_expression(
                 let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
-                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)?
-                    {
-                        let result = map_selection.push_key_or_key_pattern(map_key);
-                        assert!(result);
-                    } else {
-                        let accessor = s.get_value_accessor();
-
-                        if !accessor.has_selectors()
-                            || !map_selection.push_value_accessor(accessor.clone())
-                        {
-                            let location = s.get_query_location();
-                            return Err(ParserError::SyntaxError(
-                                location.clone(),
-                                format!(
-                                    "The '{}' accessor expression should refer to a map key on the source when used in a project-keep expression",
-                                    state.get_query_slice(location).trim()
-                                ),
-                            ));
-                        }
-                    }
+                    process_map_selection_source_scalar_expression(
+                        "project-keep",
+                        state,
+                        s,
+                        &mut reduction,
+                    )?;
                 } else {
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
@@ -272,69 +201,47 @@ pub(crate) fn parse_project_keep_expression(
         }
     }
 
-    if map_selection
-        .get_selectors()
-        .iter()
-        .filter(|m| matches!(m, MapSelector::ValueAccessor(_)))
-        .count()
-        == 0
-    {
-        let items = map_selection
-            .get_selectors()
-            .iter()
-            .filter(|m| matches!(m, MapSelector::KeyOrKeyPattern(_)));
-        return Ok(TransformExpression::RemoveMapKeys(
-            RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
-                query_location.clone(),
-                MutableValueExpression::Source(SourceScalarExpression::new(
-                    query_location,
-                    ValueAccessor::new(),
-                )),
-                items
-                    .map(|m| {
-                        if let MapSelector::KeyOrKeyPattern(k) = m {
-                            k.clone()
-                        } else {
-                            panic!("Unexpected MapSelector found in items");
-                        }
-                    })
-                    .collect(),
-            )),
-        ));
-    }
+    push_map_transformation_expression(
+        "project-keep",
+        state,
+        &mut expressions,
+        &query_location,
+        true,
+        reduction,
+    )?;
 
-    Ok(TransformExpression::ReduceMap(
-        ReduceMapTransformExpression::Retain(map_selection),
-    ))
+    Ok(expressions)
 }
 
 pub(crate) fn parse_project_away_expression(
     project_away_expression_rule: Pair<Rule>,
     state: &ParserState,
-) -> Result<TransformExpression, ParserError> {
+) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_away_expression_rule);
 
     let project_away_rules = project_away_expression_rule.into_inner();
 
-    let mut map_selection = MapSelectionExpression::new(
-        query_location.clone(),
-        MutableValueExpression::Source(SourceScalarExpression::new(
-            query_location.clone(),
-            ValueAccessor::new(),
-        )),
-    );
+    let mut expressions = Vec::new();
+
+    let mut reduction = MapReductionState::new();
 
     for rule in project_away_rules {
         let rule_location = to_query_location(&rule);
 
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
-                if let Some(scalar) =
+                if let Some(identifier_or_pattern) =
                     parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
                 {
-                    let result =
-                        map_selection.push_key_or_key_pattern(ScalarExpression::Static(scalar));
-                    assert!(result);
+                    match identifier_or_pattern {
+                        IdentifierOrPattern::Identifier(s) => reduction.keys.push(s),
+                        IdentifierOrPattern::Map { name, key } => reduction
+                            .maps
+                            .entry(Into::<Box<str>>::into(name.get_value()))
+                            .or_default()
+                            .push((name, key)),
+                        IdentifierOrPattern::Pattern(r) => reduction.patterns.push(r),
+                    }
                 } else {
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
@@ -349,26 +256,12 @@ pub(crate) fn parse_project_away_expression(
                 let accessor_expression = parse_accessor_expression(rule, state, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
-                    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(state, s)?
-                    {
-                        let result = map_selection.push_key_or_key_pattern(map_key);
-                        assert!(result);
-                    } else {
-                        let accessor = s.get_value_accessor();
-
-                        if !accessor.has_selectors()
-                            || !map_selection.push_value_accessor(accessor.clone())
-                        {
-                            let location = s.get_query_location();
-                            return Err(ParserError::SyntaxError(
-                                location.clone(),
-                                format!(
-                                    "The '{}' accessor expression should refer to a map key on the source when used in a project-away expression",
-                                    state.get_query_slice(location).trim()
-                                ),
-                            ));
-                        }
-                    }
+                    process_map_selection_source_scalar_expression(
+                        "project-away",
+                        state,
+                        s,
+                        &mut reduction,
+                    )?;
                 } else {
                     return Err(ParserError::SyntaxError(
                         rule_location.clone(),
@@ -383,40 +276,16 @@ pub(crate) fn parse_project_away_expression(
         }
     }
 
-    if map_selection
-        .get_selectors()
-        .iter()
-        .filter(|m| matches!(m, MapSelector::ValueAccessor(_)))
-        .count()
-        == 0
-    {
-        let items = map_selection
-            .get_selectors()
-            .iter()
-            .filter(|m| matches!(m, MapSelector::KeyOrKeyPattern(_)));
-        return Ok(TransformExpression::RemoveMapKeys(
-            RemoveMapKeysTransformExpression::Remove(MapKeyListExpression::new(
-                query_location.clone(),
-                MutableValueExpression::Source(SourceScalarExpression::new(
-                    query_location,
-                    ValueAccessor::new(),
-                )),
-                items
-                    .map(|m| {
-                        if let MapSelector::KeyOrKeyPattern(k) = m {
-                            k.clone()
-                        } else {
-                            panic!("Unexpected MapSelector found in items");
-                        }
-                    })
-                    .collect(),
-            )),
-        ));
-    }
+    push_map_transformation_expression(
+        "project-away",
+        state,
+        &mut expressions,
+        &query_location,
+        false,
+        reduction,
+    )?;
 
-    Ok(TransformExpression::ReduceMap(
-        ReduceMapTransformExpression::Remove(map_selection),
-    ))
+    Ok(expressions)
 }
 
 pub(crate) fn parse_where_expression(
@@ -470,12 +339,20 @@ pub(crate) fn parse_tabular_expression(
                     expressions.push(DataExpression::Transform(e));
                 }
             }
-            Rule::project_keep_expression => expressions.push(DataExpression::Transform(
-                parse_project_keep_expression(rule, state)?,
-            )),
-            Rule::project_away_expression => expressions.push(DataExpression::Transform(
-                parse_project_away_expression(rule, state)?,
-            )),
+            Rule::project_keep_expression => {
+                let project_keep_expressions = parse_project_keep_expression(rule, state)?;
+
+                for e in project_keep_expressions {
+                    expressions.push(DataExpression::Transform(e));
+                }
+            }
+            Rule::project_away_expression => {
+                let project_away_expressions = parse_project_away_expression(rule, state)?;
+
+                for e in project_away_expressions {
+                    expressions.push(DataExpression::Transform(e));
+                }
+            }
             Rule::where_expression => expressions.push(parse_where_expression(rule, state)?),
             _ => panic!("Unexpected rule in tabular_expression: {rule}"),
         }
@@ -485,53 +362,36 @@ pub(crate) fn parse_tabular_expression(
 }
 
 fn get_root_map_key_from_source_scalar_expression(
-    state: &ParserState,
     source_scalar_expression: &SourceScalarExpression,
-) -> Result<Option<ScalarExpression>, ParserError> {
+) -> Option<StringScalarExpression> {
     let selectors = source_scalar_expression
         .get_value_accessor()
         .get_selectors();
 
-    if selectors.len() == 1 {
-        let first = selectors.first().unwrap();
-        if let Some(s) = first
-            .try_resolve_value_type(state.get_pipeline())
-            .map_err(|e| ParserError::from(&e))?
-            && s == ValueType::String
-        {
-            return Ok(Some(first.clone()));
-        } else {
-            return Ok(None);
-        }
-    } else if selectors.len() == 2 {
-        // Note: If state has default_source_map_key we allow it
-        // to be referenced. For example key2, source.key2,
-        // attributes['key2'], and source.attributes['key2'] may
-        // all refer to the same thing when
-        // default_source_map_key=attributes.
-        if let Some(s) = selectors
-            .first()
-            .unwrap()
-            .try_resolve_static(state.get_pipeline())
-            .map_err(|e| ParserError::from(&e))?
-            && let Value::String(k) = s.to_value()
-        {
-            let root_key = k.get_value();
-
-            if Some(root_key) == state.get_default_source_map_key() {
-                return Ok(Some(selectors.get(1).unwrap().clone()));
-            }
-        }
+    if selectors.len() == 1
+        && let ScalarExpression::Static(StaticScalarExpression::String(key)) =
+            selectors.first().unwrap()
+    {
+        return Some(key.clone());
     }
 
-    Ok(None)
+    None
+}
+
+enum IdentifierOrPattern {
+    Identifier(StringScalarExpression),
+    Map {
+        name: StringScalarExpression,
+        key: ScalarExpression,
+    },
+    Pattern(RegexScalarExpression),
 }
 
 fn parse_identifier_or_pattern_literal(
     state: &ParserState,
     location: QueryLocation,
     identifier_or_pattern_literal: Pair<Rule>,
-) -> Result<Option<StaticScalarExpression>, ParserError> {
+) -> Result<Option<IdentifierOrPattern>, ParserError> {
     let raw = identifier_or_pattern_literal.as_str();
 
     let value: Box<str> = match identifier_or_pattern_literal.into_inner().next() {
@@ -546,7 +406,8 @@ fn parse_identifier_or_pattern_literal(
     };
 
     if value.contains("*") {
-        let pattern = regex::escape(&value).replace("\\*", ".*");
+        let mut pattern = regex::escape(&value).replace("\\*", ".*");
+        pattern.insert(0, '^');
         let regex = Regex::new(&pattern);
         if regex.is_err() {
             return Err(ParserError::SyntaxError(
@@ -557,16 +418,332 @@ fn parse_identifier_or_pattern_literal(
                 ),
             ));
         }
-        Ok(Some(StaticScalarExpression::Regex(
+        Ok(Some(IdentifierOrPattern::Pattern(
             RegexScalarExpression::new(location, regex.unwrap()),
         )))
     } else if state.is_well_defined_identifier(&value) {
         Ok(None)
+    } else if let Some(schema) = state.get_source_schema() {
+        if schema.get_schema_for_key(&value).is_some() {
+            Ok(Some(IdentifierOrPattern::Identifier(
+                StringScalarExpression::new(location, &value),
+            )))
+        } else if let Some(d) = schema.get_default_map_key() {
+            Ok(Some(IdentifierOrPattern::Map {
+                name: StringScalarExpression::new(location.clone(), d),
+                key: ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(location, &value),
+                )),
+            }))
+        } else {
+            Err(ParserError::QueryLanguageDiagnostic {
+                location,
+                diagnostic_id: "KS109",
+                message: format!(
+                    "The name '{value}' does not refer to any known column, table, variable or function",
+                ),
+            })
+        }
     } else {
-        Ok(Some(StaticScalarExpression::String(
+        Ok(Some(IdentifierOrPattern::Identifier(
             StringScalarExpression::new(location, &value),
         )))
     }
+}
+
+fn process_map_selection_source_scalar_expression(
+    expression_name: &str,
+    state: &ParserState,
+    source: &SourceScalarExpression,
+    reduction: &mut MapReductionState,
+) -> Result<(), ParserError> {
+    if let Some(map_key) = get_root_map_key_from_source_scalar_expression(source) {
+        reduction.keys.push(map_key);
+        return Ok(());
+    }
+
+    let destination_accessor = source.get_value_accessor();
+
+    if !destination_accessor.has_selectors() {
+        let location = source.get_query_location();
+        return Err(ParserError::SyntaxError(
+            location.clone(),
+            format!(
+                "The '{}' accessor expression should refer to a map key on the source when used in a {expression_name} expression",
+                state.get_query_slice(location).trim()
+            ),
+        ));
+    }
+
+    let destination_selectors = destination_accessor.get_selectors();
+
+    if destination_selectors.len() == 2 {
+        // Note: If state has source keys defined look for selectors targeting maps off the root.
+        if let ScalarExpression::Static(StaticScalarExpression::String(root)) =
+            destination_selectors.first().unwrap()
+        {
+            let root_key = root.get_value();
+
+            if Some(Some(Some(ValueType::Map)))
+                == state
+                    .get_source_schema()
+                    .map(|v| v.get_schema_for_key(root_key).map(|v| v.get_value_type()))
+            {
+                let keys = reduction.maps.entry(root_key.into()).or_default();
+                keys.push((root.clone(), destination_selectors.get(1).unwrap().clone()));
+                return Ok(());
+            }
+        }
+    }
+
+    reduction.selectors.push(source.clone());
+
+    Ok(())
+}
+
+fn foreach_source_schema_key<F>(schema: &ParserMapSchema, mut action: F)
+where
+    F: FnMut(&str),
+{
+    if cfg!(test) {
+        // Note: When building tests we sort the key list so that it is
+        // deterministice.
+        let mut source_keys: Vec<&Box<str>> = schema.get_schema_for_keys().keys().collect();
+        source_keys.sort();
+        for k in source_keys {
+            (action)(k)
+        }
+    } else {
+        let source_keys = schema.get_schema_for_keys().keys();
+        for k in source_keys {
+            (action)(k)
+        }
+    }
+}
+
+struct MapReductionState {
+    pub keys: Vec<StringScalarExpression>,
+    pub patterns: Vec<RegexScalarExpression>,
+    pub maps: HashMap<Box<str>, Vec<(StringScalarExpression, ScalarExpression)>>,
+    pub selectors: Vec<SourceScalarExpression>,
+}
+
+impl MapReductionState {
+    pub fn new() -> MapReductionState {
+        Self {
+            keys: Vec::new(),
+            patterns: Vec::new(),
+            maps: HashMap::new(),
+            selectors: Vec::new(),
+        }
+    }
+}
+
+fn push_map_transformation_expression(
+    expression_name: &str,
+    state: &ParserState,
+    expressions: &mut Vec<TransformExpression>,
+    query_location: &QueryLocation,
+    retain: bool,
+    mut reduction: MapReductionState,
+) -> Result<(), ParserError> {
+    if reduction.patterns.is_empty() && reduction.selectors.is_empty() {
+        // Note: If there are no patterns and no selectors this means we have a
+        // simple reduction. Instead of using ReduceMap we use the simpler
+        // RemoveMapKeys which is faster uses less resources to execute.
+
+        if !reduction.maps.is_empty() {
+            // maps contains the list of top-level maps on the source we want to
+            // modify. Take an expression like "project key1, attributes.key2"
+            // when using default_source_map_key=attributes. What we want to do
+            // is remove everything except key1 and key2 from attributes. To do
+            // this we issue a RemoveMapKeys expression targeting
+            // source.attributes.
+            for (_, v) in reduction.maps {
+                let mut first_root = None;
+                let mut map_keys = Vec::new();
+                for (root, key) in v {
+                    if first_root.is_none() {
+                        first_root = Some(root);
+                    }
+
+                    map_keys.push(key);
+                }
+
+                let first_root = first_root.expect("First root was not set");
+
+                let map_key_list = MapKeyListExpression::new(
+                    query_location.clone(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        query_location.clone(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(first_root.clone()),
+                        )]),
+                    )),
+                    map_keys,
+                );
+
+                if retain {
+                    expressions.push(TransformExpression::RemoveMapKeys(
+                        RemoveMapKeysTransformExpression::Retain(map_key_list),
+                    ));
+                } else {
+                    expressions.push(TransformExpression::RemoveMapKeys(
+                        RemoveMapKeysTransformExpression::Remove(map_key_list),
+                    ));
+                }
+
+                if retain && !reduction.keys.is_empty() {
+                    // In retain mode if we have other keys on the source we are
+                    // also going to issue a RemoveMapKeys for source itself. We
+                    // need to make sure the map is preserved so we add it to
+                    // the root list.
+                    reduction.keys.push(first_root);
+                }
+            }
+        }
+
+        if !reduction.keys.is_empty() {
+            // keys contains the top-level keys we want to preserve. We issue a
+            // RemoveMapKeys expression for the source with the list of keys.
+            let map_key_list = MapKeyListExpression::new(
+                query_location.clone(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location.clone(),
+                    ValueAccessor::new(),
+                )),
+                reduction
+                    .keys
+                    .drain(..)
+                    .map(|k| ScalarExpression::Static(StaticScalarExpression::String(k)))
+                    .collect(),
+            );
+
+            if retain {
+                expressions.push(TransformExpression::RemoveMapKeys(
+                    RemoveMapKeysTransformExpression::Retain(map_key_list),
+                ));
+            } else {
+                expressions.push(TransformExpression::RemoveMapKeys(
+                    RemoveMapKeysTransformExpression::Remove(map_key_list),
+                ));
+            }
+        }
+    } else {
+        let mut map_selection = MapSelectionExpression::new(
+            query_location.clone(),
+            MutableValueExpression::Source(SourceScalarExpression::new(
+                query_location.clone(),
+                ValueAccessor::new(),
+            )),
+        );
+
+        if !reduction.patterns.is_empty() {
+            if let Some(schema) = state.get_source_schema() {
+                let default_source_map = schema.get_default_map_key();
+                let mut default_source_map_matched_regex = false;
+
+                // Note: If we have schema we can apply the regex patterns ahead
+                // of time.
+                foreach_source_schema_key(schema, |k| {
+                    for p in &reduction.patterns {
+                        if p.get_value().is_match(k) {
+                            if let Some(d) = default_source_map
+                                && k == d
+                            {
+                                default_source_map_matched_regex = true;
+                                if retain {
+                                    continue;
+                                }
+                            }
+                            reduction
+                                .keys
+                                .push(StringScalarExpression::new(query_location.clone(), k));
+                            break;
+                        }
+                    }
+                });
+
+                if let Some(d) = default_source_map {
+                    if retain || !default_source_map_matched_regex {
+                        // Note: We add selectors for the default_source_map_key
+                        // which will run the regex for its keys. When we are in
+                        // remove mode if we already added the
+                        // default_source_map_key we can skip this because the
+                        // whole map will be removed.
+                        for p in reduction.patterns {
+                            reduction.selectors.push(SourceScalarExpression::new(
+                                query_location.clone(),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(query_location.clone(), d),
+                                    )),
+                                    ScalarExpression::Static(StaticScalarExpression::Regex(p)),
+                                ]),
+                            ));
+                        }
+                    }
+                }
+            } else {
+                for p in reduction.patterns {
+                    map_selection.push_key_or_key_pattern(ScalarExpression::Static(
+                        StaticScalarExpression::Regex(p),
+                    ));
+                }
+            }
+        }
+
+        let mut processed_keys: HashSet<Box<str>> = HashSet::new();
+
+        for k in reduction.keys {
+            if !retain {
+                processed_keys.insert(k.get_value().into());
+            }
+            let result = map_selection.push_key_or_key_pattern(ScalarExpression::Static(
+                StaticScalarExpression::String(k),
+            ));
+            debug_assert!(result);
+        }
+
+        for s in reduction.selectors {
+            if !map_selection.push_value_accessor(s.get_value_accessor().clone()) {
+                let location = s.get_query_location();
+                return Err(ParserError::SyntaxError(
+                    location.clone(),
+                    format!(
+                        "The '{}' accessor expression should refer to a map key on the source when used in a {expression_name} expression",
+                        state.get_query_slice(location).trim()
+                    ),
+                ));
+            }
+        }
+
+        for (_, v) in reduction.maps {
+            for (map, key) in v {
+                if !retain && processed_keys.contains(map.get_value()) {
+                    // Note: If we already removed the key we can ignore any
+                    // selectors.
+                    continue;
+                }
+                map_selection.push_value_accessor(ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(map)),
+                    key,
+                ]));
+            }
+        }
+
+        if retain {
+            expressions.push(TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Retain(map_selection),
+            ));
+        } else {
+            expressions.push(TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(map_selection),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -750,7 +927,11 @@ mod tests {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
-                    .with_default_source_map_key_name("attributes")
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition("body", ParserMapKeySchema::Any),
+                    )
                     .with_attached_data_names(&["resource"]),
             );
 
@@ -774,7 +955,11 @@ mod tests {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
-                    .with_default_source_map_key_name("attributes")
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition("body", ParserMapKeySchema::Any),
+                    )
                     .with_attached_data_names(&["resource"]),
             );
 
@@ -798,6 +983,9 @@ mod tests {
             }
         };
 
+        // This test only modifies a single key which is resolved as
+        // attributes['key1']. We use a RemoveMapKeys expression targeting
+        // "source.attributes" to do this.
         run_test_success(
             "project key1",
             vec![TransformExpression::RemoveMapKeys(
@@ -805,7 +993,12 @@ mod tests {
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        ValueAccessor::new(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "attributes",
+                            )),
+                        )]),
                     )),
                     vec![ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
@@ -814,25 +1007,56 @@ mod tests {
             )],
         );
 
+        // This test modifies "source.body" and "source.attributes" for "key1"
+        // and "key2". What we do is issue a RemoveMapKeys for the source to
+        // retain "body" and "attributes" and issue a RemoveMapKeys for
+        // source.attributes which retains "key1" and "key2".
         run_test_success(
-            "project key1, key2",
-            vec![TransformExpression::RemoveMapKeys(
-                RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
-                    QueryLocation::new_fake(),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
+            "project key1, body, attributes['key2']",
+            vec![
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
                         QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                    vec![
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
                         )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
-                        )),
-                    ],
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                            )),
+                        ],
+                    ),
                 )),
-            )],
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "body"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                        ],
+                    ),
+                )),
+            ],
         );
 
         run_test_success(
@@ -849,12 +1073,17 @@ mod tests {
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "key1",
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
                             )),
-                        )]),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ]),
                     )),
                 )),
                 TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
@@ -862,7 +1091,12 @@ mod tests {
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ValueAccessor::new(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
                         )),
                         vec![ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
@@ -892,12 +1126,17 @@ mod tests {
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "const_str",
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
                             )),
-                        )]),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "const_str"),
+                            )),
+                        ]),
                     )),
                 )),
                 TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
@@ -905,7 +1144,12 @@ mod tests {
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ValueAccessor::new(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
                         )),
                         vec![ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "const_str"),
@@ -929,12 +1173,17 @@ mod tests {
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "key1",
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
                             )),
-                        )]),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ]),
                     )),
                 )),
                 TransformExpression::Set(SetTransformExpression::new(
@@ -975,7 +1224,12 @@ mod tests {
                         QueryLocation::new_fake(),
                         MutableValueExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ValueAccessor::new(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
                         )),
                         vec![
                             ScalarExpression::Static(StaticScalarExpression::String(
@@ -1114,11 +1368,15 @@ mod tests {
 
     #[test]
     fn test_parse_project_keep_expression() {
-        let run_test_success = |input: &str, expected: TransformExpression| {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
-                    .with_default_source_map_key_name("attributes")
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition("body", ParserMapKeySchema::Any),
+                    )
                     .with_attached_data_names(&["resource"]),
             );
 
@@ -1142,7 +1400,11 @@ mod tests {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
-                    .with_default_source_map_key_name("attributes")
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition("body", ParserMapKeySchema::Any),
+                    )
                     .with_attached_data_names(&["resource"]),
             );
 
@@ -1166,65 +1428,220 @@ mod tests {
             }
         };
 
+        // Simple form where RemoveMapKeys is used to retain a single key from attributes.
+        run_test_success(
+            "project-keep key1",
+            vec![TransformExpression::RemoveMapKeys(
+                RemoveMapKeysTransformExpression::Retain(MapKeyListExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "attributes",
+                            )),
+                        )]),
+                    )),
+                    vec![ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                    ))],
+                )),
+            )],
+        );
+
+        // In this test we use the simple form of RemoveMapKeys but we make two
+        // calls. One to retain body & attributes on the source. And then a
+        // second call to preserve only key1 on attributes.
+        run_test_success(
+            "project-keep body, key1",
+            vec![
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
+                        )),
+                        vec![ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        ))],
+                    ),
+                )),
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "body"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                        ],
+                    ),
+                )),
+            ],
+        );
+
+        // Note: In this test body is not present in the ReduceMap because it
+        // doesn't match the regex.
         run_test_success(
             "project-keep ['namespace.*']",
-            TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
-                MapKeyListExpression::new(
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
-                    vec![ScalarExpression::Static(StaticScalarExpression::Regex(
-                        RegexScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            Regex::new("namespace\\..*").unwrap(),
-                        ),
-                    ))],
-                ),
-            )),
+                    vec![MapSelector::ValueAccessor(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("^namespace\\..*").unwrap(),
+                                ),
+                            )),
+                        ]),
+                    )],
+                )),
+            )],
         );
 
+        // Note: In this test body is present in the ReduceMap because it
+        // matches the regex.
         run_test_success(
-            "project-keep *key*value*, *, key1, attributes['key2'], source.attributes['key3']",
-            TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
-                MapKeyListExpression::new(
+            "project-keep b*",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
                     vec![
-                        ScalarExpression::Static(StaticScalarExpression::Regex(
-                            RegexScalarExpression::new(
+                        MapSelector::KeyOrKeyPattern(ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                Regex::new(".*key.*value.*").unwrap(),
-                            ),
+                                "body",
+                            )),
                         )),
-                        ScalarExpression::Static(StaticScalarExpression::Regex(
-                            RegexScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                Regex::new(".*").unwrap(),
-                            ),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
-                        )),
+                        MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("^b.*").unwrap(),
+                                ),
+                            )),
+                        ])),
                     ],
-                ),
-            )),
+                )),
+            )],
         );
 
+        // This is a more complex form of the previous tests just to make sure
+        // multiple regex expressions work.
+        run_test_success(
+            "project-keep *key*value*, *, key1, attributes['key2']",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    vec![
+                        MapSelector::KeyOrKeyPattern(ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "body",
+                            )),
+                        )),
+                        MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("^.*key.*value.*").unwrap(),
+                                ),
+                            )),
+                        ])),
+                        MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("^.*").unwrap(),
+                                ),
+                            )),
+                        ])),
+                        MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ])),
+                        MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                            )),
+                        ])),
+                    ],
+                )),
+            )],
+        );
+
+        // Test a more complex reduction on the body.
         run_test_success(
             "project-keep source.body.map['some_attr'], body.nested[0], body[variable]",
-            TransformExpression::ReduceMap(ReduceMapTransformExpression::Retain(
-                MapSelectionExpression::new_with_selectors(
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Retain(MapSelectionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1264,8 +1681,8 @@ mod tests {
                             )),
                         ])),
                     ],
-                ),
-            )),
+                )),
+            )],
         );
 
         run_test_failure(
@@ -1308,11 +1725,15 @@ mod tests {
 
     #[test]
     fn test_parse_project_away_expression() {
-        let run_test_success = |input: &str, expected: TransformExpression| {
+        let run_test_success = |input: &str, expected: Vec<TransformExpression>| {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
-                    .with_default_source_map_key_name("attributes")
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition("body", ParserMapKeySchema::Any),
+                    )
                     .with_attached_data_names(&["resource"]),
             );
 
@@ -1336,7 +1757,11 @@ mod tests {
             let mut state = ParserState::new_with_options(
                 input,
                 ParserOptions::new()
-                    .with_default_source_map_key_name("attributes")
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .set_default_map_key("attributes")
+                            .with_key_definition("body", ParserMapKeySchema::Any),
+                    )
                     .with_attached_data_names(&["resource"]),
             );
 
@@ -1360,65 +1785,168 @@ mod tests {
             }
         };
 
+        // Simple form where RemoveMapKeys is used to remove a single key from attributes.
         run_test_success(
-            "project-away key*",
-            TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Remove(
-                MapKeyListExpression::new(
+            "project-away key1",
+            vec![TransformExpression::RemoveMapKeys(
+                RemoveMapKeysTransformExpression::Remove(MapKeyListExpression::new(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "attributes",
+                            )),
+                        )]),
+                    )),
+                    vec![ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                    ))],
+                )),
+            )],
+        );
+
+        // In this test we use the simple form of RemoveMapKeys but we make two
+        // calls. One to remove body on the source. And then a
+        // second call to remove key1 on attributes.
+        run_test_success(
+            "project-away body, key1",
+            vec![
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Remove(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
+                        )),
+                        vec![ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        ))],
+                    ),
+                )),
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Remove(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new(),
+                        )),
+                        vec![ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "body"),
+                        ))],
+                    ),
+                )),
+            ],
+        );
+
+        // Note: In this test body is not present in the ReduceMap because it
+        // doesn't match the regex.
+        run_test_success(
+            "project-away ['namespace.*']",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
-                    vec![ScalarExpression::Static(StaticScalarExpression::Regex(
-                        RegexScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            Regex::new("key.*").unwrap(),
-                        ),
-                    ))],
-                ),
-            )),
+                    vec![MapSelector::ValueAccessor(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("^namespace\\..*").unwrap(),
+                                ),
+                            )),
+                        ]),
+                    )],
+                )),
+            )],
         );
 
+        // Note: In this test body is present in the ReduceMap because it
+        // matches the regex.
         run_test_success(
-            "project-away *key*value*, *, key1, attributes['key2'], source.attributes['key3']",
-            TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Remove(
-                MapKeyListExpression::new(
+            "project-away b*",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
                         ValueAccessor::new(),
                     )),
                     vec![
-                        ScalarExpression::Static(StaticScalarExpression::Regex(
-                            RegexScalarExpression::new(
+                        MapSelector::KeyOrKeyPattern(ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                Regex::new(".*key.*value.*").unwrap(),
-                            ),
+                                "body",
+                            )),
                         )),
-                        ScalarExpression::Static(StaticScalarExpression::Regex(
-                            RegexScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                Regex::new(".*").unwrap(),
-                            ),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
-                        )),
+                        MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("^b.*").unwrap(),
+                                ),
+                            )),
+                        ])),
                     ],
-                ),
-            )),
+                )),
+            )],
         );
 
+        // In this test we understand attributes is removed by the regex so
+        // everything else gets dropped.
+        run_test_success(
+            "project-away *key*value*, *, key1, attributes['key2']",
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                    QueryLocation::new_fake(),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                    vec![
+                        MapSelector::KeyOrKeyPattern(ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "attributes",
+                            )),
+                        )),
+                        MapSelector::KeyOrKeyPattern(ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "body",
+                            )),
+                        )),
+                    ],
+                )),
+            )],
+        );
+
+        // Test a more complex reduction on the body.
         run_test_success(
             "project-away source.body.map['some_attr'], body.nested[0], body[variable]",
-            TransformExpression::ReduceMap(ReduceMapTransformExpression::Remove(
-                MapSelectionExpression::new_with_selectors(
+            vec![TransformExpression::ReduceMap(
+                ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
                     QueryLocation::new_fake(),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -1458,8 +1986,8 @@ mod tests {
                             )),
                         ])),
                     ],
-                ),
-            )),
+                )),
+            )],
         );
 
         run_test_failure(

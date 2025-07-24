@@ -46,7 +46,7 @@ impl ScalarExpression {
         pipeline: &PipelineExpression,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
-            ScalarExpression::Source(_) => Ok(None),
+            ScalarExpression::Source(s) => Ok(s.get_value_type()),
             ScalarExpression::Attached(_) => Ok(None),
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
@@ -110,18 +110,38 @@ impl Expression for ScalarExpression {
 pub struct SourceScalarExpression {
     query_location: QueryLocation,
     accessor: ValueAccessor,
+    value_type: Option<ValueType>,
 }
 
 impl SourceScalarExpression {
     pub fn new(query_location: QueryLocation, accessor: ValueAccessor) -> SourceScalarExpression {
+        let mut value_type = None;
+        if !accessor.has_selectors() {
+            // Note: The root source it is always a map value so we can
+            // automatically set the type when no selectors are present.
+            value_type = Some(ValueType::Map);
+        }
+        Self::new_with_value_type(query_location, accessor, value_type)
+    }
+
+    pub fn new_with_value_type(
+        query_location: QueryLocation,
+        accessor: ValueAccessor,
+        value_type: Option<ValueType>,
+    ) -> SourceScalarExpression {
         Self {
             query_location,
             accessor,
+            value_type,
         }
     }
 
     pub fn get_value_accessor(&self) -> &ValueAccessor {
         &self.accessor
+    }
+
+    pub fn get_value_type(&self) -> Option<ValueType> {
+        self.value_type.clone()
     }
 }
 
@@ -586,7 +606,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 ValueAccessor::new(),
             )),
-            None,
+            Some(ValueType::Map),
         );
 
         run_test_success(
