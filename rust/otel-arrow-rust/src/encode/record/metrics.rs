@@ -261,6 +261,12 @@ pub struct NumberDataPointsRecordBatchBuilder {
     flags: UInt32ArrayBuilder,
 }
 
+impl Default for NumberDataPointsRecordBatchBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NumberDataPointsRecordBatchBuilder {
     /// Create a new instance of `NumberDataPoints`
     #[must_use]
@@ -1383,6 +1389,12 @@ pub struct BucketsRecordBatchBuilder {
     offset: Int32ArrayBuilder,
     bucket_counts: LargeListBuilder<PrimitiveBuilder<UInt64Type>>,
     nulls: NullBufferBuilder,
+}
+
+impl Default for BucketsRecordBatchBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// `NullBufferBuilder` will only allocate when it sees a `false` value and when it allocates, it
