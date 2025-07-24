@@ -83,15 +83,10 @@ where
                 .map(|r| r.dropped_attributes_count())
                 .unwrap_or(0);
             let resource = &mut spans.resource;
-            // FIXME: Arrow's array builders support a `append_value_n` method that adds repeats, so
-            // consider adding that functionality to `encode::record::array`. At the very least we
-            // should dispatch to `append_value_n` or `append_nulls` after matching against an
-            // `Option` only once.
-            (0..span_count).for_each(|_| resource.append_id(Some(curr_resource_id)));
-            (0..span_count).for_each(|_| resource.append_schema_url(resource_schema_url));
-            (0..span_count).for_each(|_| {
-                resource.append_dropped_attributes_count(resource_dropped_attributes_count)
-            });
+            resource.append_id_n(curr_resource_id, span_count);
+            resource.append_schema_url_n(resource_schema_url, span_count);
+            resource
+                .append_dropped_attributes_count_n(resource_dropped_attributes_count, span_count);
         }
 
         for scope_spans in resource_spans.scopes() {
@@ -692,14 +687,14 @@ where
         for scope_metric in resource_metric.scopes() {
             let metric_count = scope_metric.metrics().count();
             let scope_schema_url = scope_metric.schema_url();
-            (0..metric_count).for_each(|_| metrics.append_scope_schema_url(scope_schema_url));
+            metrics.append_scope_schema_url_n(scope_schema_url, metric_count);
 
             let scope = scope_metric.scope();
             let scope_name = scope.as_ref().and_then(|s| s.name());
             let scope_version = scope.as_ref().and_then(|s| s.version());
-            (0..metric_count).for_each(|_| metrics.scope.append_id(Some(curr_scope_id)));
-            (0..metric_count).for_each(|_| metrics.scope.append_name(scope_name));
-            (0..metric_count).for_each(|_| metrics.scope.append_version(scope_version));
+            metrics.scope.append_id_n(curr_scope_id, metric_count);
+            metrics.scope.append_name_n(scope_name, metric_count);
+            metrics.scope.append_version_n(scope_version, metric_count);
             if let Some(scope) = scope {
                 for kv in scope.attributes() {
                     scope_attrs.append_parent_id(&curr_scope_id);

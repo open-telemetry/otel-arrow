@@ -123,6 +123,11 @@ impl MetricsRecordBatchBuilder {
         self.scope_schema_url.append_str(val);
     }
 
+    /// Append a value to the `scope_schema_url` array `count` times.
+    pub fn append_scope_schema_url_n(&mut self, val: &str, count: usize) {
+        self.scope_schema_url.append_str_n(val, count);
+    }
+
     /// Append a value to the `metric_type` array.
     pub fn append_metric_type(&mut self, val: u8) {
         self.metric_type.append_value(&val);
