@@ -24,7 +24,6 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use crate::fake_signal_receiver::config::OTLPSignal;
 use crate::grpc::OTLPData;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
