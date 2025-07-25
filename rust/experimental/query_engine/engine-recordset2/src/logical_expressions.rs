@@ -13,13 +13,11 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             let value = execute_scalar_expression(execution_context, s)?;
 
             if let Some(b) = value.to_value().convert_to_bool() {
-                if execution_context.is_enabled(LogLevel::Verbose) {
-                    execution_context.log(LogMessage::new(
-                        LogLevel::Verbose,
-                        logical_expression,
-                        format!("Evaluated as: {b}"),
-                    ));
-                }
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    logical_expression,
+                    || format!("Evaluated as: {b}"),
+                );
                 Ok(b)
             } else {
                 Err(ExpressionError::TypeMismatch(
@@ -43,13 +41,11 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 false,
             ) {
                 Ok(b) => {
-                    if execution_context.is_enabled(LogLevel::Verbose) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
-                            logical_expression,
-                            format!("Evaluated as: {b}"),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        logical_expression,
+                        || format!("Evaluated as: {b}"),
+                    );
                     Ok(b)
                 }
                 Err(e) => Err(e),
@@ -64,13 +60,11 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             {
                 Ok(v) => {
                     let r = v > 0;
-                    if execution_context.is_enabled(LogLevel::Verbose) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
-                            logical_expression,
-                            format!("Evaluated as: {r}"),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        logical_expression,
+                        || format!("Evaluated as: {r}"),
+                    );
                     Ok(r)
                 }
                 Err(e) => Err(e),
@@ -85,13 +79,11 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             {
                 Ok(v) => {
                     let r = v >= 0;
-                    if execution_context.is_enabled(LogLevel::Verbose) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
-                            logical_expression,
-                            format!("Evaluated as: {r}"),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        logical_expression,
+                        || format!("Evaluated as: {r}"),
+                    );
                     Ok(r)
                 }
                 Err(e) => Err(e),
@@ -101,13 +93,11 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             match execute_logical_expression(execution_context, n.get_inner_expression()) {
                 Ok(mut b) => {
                     b = !b;
-                    if execution_context.is_enabled(LogLevel::Verbose) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
-                            logical_expression,
-                            format!("Evaluated as: {b}"),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        logical_expression,
+                        || format!("Evaluated as: {b}"),
+                    );
                     Ok(b)
                 }
                 Err(e) => Err(e),
@@ -122,14 +112,14 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 match c {
                     ChainedLogicalExpression::Or(or) => {
                         if result {
-                            if execution_context.is_enabled(LogLevel::Verbose) {
-                                execution_context.log(LogMessage::new(
-                                    LogLevel::Verbose,
-                                    or,
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                or,
+                                || {
                                     "Short-circuiting chain because left-hand side of OR is true"
-                                        .into(),
-                                ));
-                            }
+                                        .into()
+                                },
+                            );
                             break;
                         }
 
@@ -137,14 +127,14 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                     }
                     ChainedLogicalExpression::And(and) => {
                         if !result {
-                            if execution_context.is_enabled(LogLevel::Verbose) {
-                                execution_context.log(LogMessage::new(
-                                    LogLevel::Verbose,
-                                    and,
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                and,
+                                || {
                                     "Short-circuiting chain because left-hand side of AND is false"
-                                        .into(),
-                                ));
-                            }
+                                        .into()
+                                },
+                            );
                             break;
                         }
 
@@ -153,13 +143,11 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 }
             }
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    logical_expression,
-                    format!("Evaluated as: {result}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                logical_expression,
+                || format!("Evaluated as: {result}"),
+            );
 
             Ok(result)
         }
@@ -177,8 +165,12 @@ mod tests {
         let run_test = |logical_expression, expected_value: bool| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -208,8 +200,12 @@ mod tests {
         let run_test = |logical_expression, expected_value: bool| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -251,8 +247,12 @@ mod tests {
         let run_test = |logical_expression, expected_value: bool| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -294,8 +294,12 @@ mod tests {
         let run_test = |logical_expression, expected_value: bool| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -350,8 +354,12 @@ mod tests {
         let run_test = |logical_expression, expected_value: bool| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -393,8 +401,12 @@ mod tests {
         let run_test = |logical_expression, expected_value: bool| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();

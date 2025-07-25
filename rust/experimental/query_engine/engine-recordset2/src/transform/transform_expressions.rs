@@ -1,4 +1,8 @@
-use std::{cell::RefMut, collections::HashSet};
+use std::{
+    cell::RefMut,
+    collections::HashSet,
+    fmt::{Display, Write},
+};
 
 use data_engine_expressions::*;
 
@@ -25,103 +29,83 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
             match destination {
                 Some(d) => match d {
                     ResolvedValueMut::Map(_) => {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Warn,
-                                s,
-                                "Cannot set root map".into(),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            s,
+                            || "Cannot set root map".into(),
+                        );
                     }
                     ResolvedValueMut::MapKey { mut map, key } => {
                         match map.set(key.get_value(), source) {
                             ValueMutWriteResult::NotFound => {
-                                if execution_context.is_enabled(LogLevel::Warn) {
-                                    execution_context.log(LogMessage::new(
-                                        LogLevel::Warn,
-                                        s,
-                                        format!("Map key '{key}' could not be found on target map"),
-                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    s,
+                                    || format!("Map key '{key}' could not be found on target map"),
+                                );
                             }
                             ValueMutWriteResult::Created => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                        LogLevel::Verbose,
-                                        s,
-                                        format!("Map key '{key}' created on target map"),
-                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                    s,
+                                    || format!("Map key '{key}' created on target map"),
+                                );
                             }
                             ValueMutWriteResult::Updated(old) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                                        LogLevel::Verbose,
-                                                        s,
-                                                        format!("Map key '{key}' updated on target map replacing old value: {}", old.to_value()),
-                                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                                    s,
+                                                    || format!("Map key '{key}' updated on target map replacing old value: {}", old.to_value()),
+                                                );
                             }
                             ValueMutWriteResult::NotSupported(e) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                                        LogLevel::Verbose,
-                                                        s,
-                                                        format!("Map key '{key}' could not be updated on target map: {e}"),
-                                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                                    s,
+                                                    || format!("Map key '{key}' could not be updated on target map: {e}"),
+                                                );
                             }
                         }
                     }
                     ResolvedValueMut::ArrayIndex { mut array, index } => {
                         match array.set(index, source) {
                             ValueMutWriteResult::NotFound => {
-                                if execution_context.is_enabled(LogLevel::Warn) {
-                                    execution_context.log(LogMessage::new(
-                                                        LogLevel::Warn,
-                                                        s,
-                                                        format!("Array index '{index}' could not be found on target array"),
-                                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                    RecordSetEngineDiagnosticLevel::Warn,
+                                                    s,
+                                                    || format!("Array index '{index}' could not be found on target array"),
+                                                );
                             }
                             ValueMutWriteResult::Created => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                        LogLevel::Verbose,
-                                        s,
-                                        format!("Array index '{index}' created on target array"),
-                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                    s,
+                                    || format!("Array index '{index}' created on target array"),
+                                );
                             }
                             ValueMutWriteResult::Updated(old) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                                        LogLevel::Verbose,
-                                                        s,
-                                                        format!("Array index '{index}' updated on target array replacing old value: {}", old.to_value()),
-                                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                                    s,
+                                                    || format!("Array index '{index}' updated on target array replacing old value: {}", old.to_value()),
+                                                );
                             }
                             ValueMutWriteResult::NotSupported(e) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                                        LogLevel::Verbose,
-                                                        s,
-                                                        format!("Array index '{index}' could not be updated on target array: {e}"),
-                                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                                    s,
+                                                    || format!("Array index '{index}' could not be updated on target array: {e}"),
+                                                );
                             }
                         }
                     }
                 },
                 None => {
-                    if execution_context.is_enabled(LogLevel::Warn) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Warn,
-                            s,
-                            "Destination could not be resolved".into(),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        s,
+                        || "Destination could not be resolved".into(),
+                    );
                 }
             }
 
@@ -133,70 +117,60 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
             match target {
                 Some(d) => match d {
                     ResolvedValueMut::Map(_) => {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Warn,
-                                r,
-                                "Cannot remove root map".into(),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            r,
+                            || "Cannot remove root map".into(),
+                        );
                     }
                     ResolvedValueMut::MapKey { mut map, key } => {
                         match map.remove(key.get_value()) {
                             ValueMutRemoveResult::NotFound => {
-                                if execution_context.is_enabled(LogLevel::Warn) {
-                                    execution_context.log(LogMessage::new(
-                                        LogLevel::Warn,
-                                        r,
-                                        format!("Map key '{key}' could not be found on target map"),
-                                    ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    r,
+                                    || format!("Map key '{key}' could not be found on target map"),
+                                );
                             }
                             ValueMutRemoveResult::Removed(old) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                        LogLevel::Verbose,
-                                        r,
+                                execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                    r,
+                                    || {
                                         format!(
                                             "Removed map key '{key}' on target with value: {}",
                                             old.to_value()
-                                        ),
-                                    ));
-                                }
+                                        )
+                                    },
+                                );
                             }
                         }
                     }
                     ResolvedValueMut::ArrayIndex { mut array, index } => {
                         match array.remove(index) {
                             ValueMutRemoveResult::NotFound => {
-                                if execution_context.is_enabled(LogLevel::Warn) {
-                                    execution_context.log(LogMessage::new(
-                                                                LogLevel::Warn,
-                                                                r,
-                                                                format!("Array index '{index}' could not be found on target array"),
-                                                            ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                            RecordSetEngineDiagnosticLevel::Warn,
+                                                            r,
+                                                            || format!("Array index '{index}' could not be found on target array"),
+                                                        );
                             }
                             ValueMutRemoveResult::Removed(old) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                                                LogLevel::Verbose,
-                                                                r,
-                                                                format!("Removed array index '{index}' on target with value: {}", old.to_value()),
-                                                            ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                            RecordSetEngineDiagnosticLevel::Verbose,
+                                                            r,
+                                                            || format!("Removed array index '{index}' on target with value: {}", old.to_value()),
+                                                        );
                             }
                         }
                     }
                 },
                 None => {
-                    if execution_context.is_enabled(LogLevel::Warn) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Warn,
-                            r,
-                            "Destination could not be resolved".into(),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        r,
+                        || "Destination could not be resolved".into(),
+                    );
                 }
             }
 
@@ -207,62 +181,68 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
         }
         TransformExpression::RemoveMapKeys(r) => match r {
             RemoveMapKeysTransformExpression::Remove(m) => {
-                let keys = resolve_map_keys(execution_context, m)?;
+                let map_keys = resolve_map_keys(execution_context, m)?;
+
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    r,
+                    || format!("Resolved map keys: {map_keys}"),
+                );
 
                 let target = execute_mutable_value_expression(execution_context, m.get_target())?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
-                        for key in keys {
+                        for key in map_keys.keys {
                             key.to_value().convert_to_string(&mut |k| {
                                 match target_map.remove(k) {
                                     ValueMutRemoveResult::NotFound => {
-                                        if execution_context.is_enabled(LogLevel::Warn) {
-                                            execution_context.log(LogMessage::new(
-                                                    LogLevel::Warn,
-                                                    r,
-                                                    format!("Map key '{key}' could not be found on target map"),
-                                                ));
-                                        }
+                                        execution_context.add_diagnostic_if_enabled(
+                                                RecordSetEngineDiagnosticLevel::Warn,
+                                                r,
+                                                || format!("Map key '{key}' could not be found on target map"),
+                                            );
                                     }
                                     ValueMutRemoveResult::Removed(old) => {
-                                        if execution_context.is_enabled(LogLevel::Verbose) {
-                                            execution_context.log(LogMessage::new(
-                                                    LogLevel::Verbose,
-                                                    r,
-                                                    format!(
-                                                        "Removed map key '{key}' on target with value: {}",
-                                                        old.to_value()
-                                                    ),
-                                                ));
-                                        }
+                                        execution_context.add_diagnostic_if_enabled(
+                                                RecordSetEngineDiagnosticLevel::Verbose,
+                                                r,
+                                                || format!(
+                                                    "Removed map key '{key}' on target with value: {}",
+                                                    old.to_value()
+                                                ),
+                                            );
                                     }
                                 }
                             });
                         }
                     }
                     None => {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Warn,
-                                r,
-                                "Destination map could not be resolved".into(),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            r,
+                            || "Destination map could not be resolved".into(),
+                        );
                     }
                 }
 
                 Ok(())
             }
             RemoveMapKeysTransformExpression::Retain(m) => {
-                let keys = resolve_map_keys(execution_context, m)?;
+                let map_keys = resolve_map_keys(execution_context, m)?;
+
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    r,
+                    || format!("Resolved map keys: {map_keys}"),
+                );
 
                 let target = execute_mutable_value_expression(execution_context, m.get_target())?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
                         let mut key_map: HashSet<Box<str>> = HashSet::new();
-                        for key in keys {
+                        for key in map_keys.keys {
                             key.to_value().convert_to_string(&mut |s| {
                                 key_map.insert(s.into());
                             });
@@ -272,27 +252,25 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                                 return true;
                             }
 
-                            if execution_context.is_enabled(LogLevel::Verbose) {
-                                execution_context.log(LogMessage::new(
-                                    LogLevel::Verbose,
-                                    r,
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                r,
+                                || {
                                     format!(
                                         "Removing map key '{k}' from target with value: {}",
                                         v.to_value(),
-                                    ),
-                                ));
-                            }
+                                    )
+                                },
+                            );
                             false
                         }));
                     }
                     None => {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Warn,
-                                r,
-                                "Destination map could not be resolved".into(),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            r,
+                            || "Destination map could not be resolved".into(),
+                        );
                     }
                 }
 
@@ -302,10 +280,33 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
     }
 }
 
+struct MapKeys<'a> {
+    pub keys: Vec<ResolvedValue<'a>>,
+}
+
+impl Display for MapKeys<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('[')?;
+
+        let mut first = true;
+        for key in &self.keys {
+            if first {
+                first = false;
+            } else {
+                f.write_str(", ")?;
+            }
+
+            key.to_value().fmt(f)?;
+        }
+
+        f.write_char(']')
+    }
+}
+
 fn resolve_map_keys<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
     key_list: &'a MapKeyListExpression,
-) -> Result<Vec<ResolvedValue<'c>>, ExpressionError>
+) -> Result<MapKeys<'c>, ExpressionError>
 where
     'a: 'c,
     'b: 'c,
@@ -318,7 +319,7 @@ where
         keys.push(value);
     }
 
-    Ok(keys)
+    Ok(MapKeys { keys })
 }
 
 fn resolve_map_destination<'a>(
@@ -380,8 +381,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
                 execute_transform_expression(&execution_context, t).unwrap();
@@ -519,8 +524,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             execution_context.get_variables().borrow_mut().set(
                 "var1",
@@ -635,8 +644,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
                 execute_transform_expression(&execution_context, t).unwrap();
@@ -722,8 +735,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             execution_context.get_variables().borrow_mut().set(
                 "var1",
@@ -779,8 +796,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
                 execute_transform_expression(&execution_context, t).unwrap();
