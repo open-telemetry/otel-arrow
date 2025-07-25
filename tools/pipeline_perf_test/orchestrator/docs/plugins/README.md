@@ -18,12 +18,14 @@ This directory contains auto-generated documentation for all plugin registries.
 | Type | Plugin Name | Module | Class | Config Class | Description |
 |------|-------------|--------|-------|--------------|-------------|
 | `docker` | `docker` | `lib.impl.strategies.deployment.docker` | `DockerDeployment` | `DockerDeploymentConfig` | Deployment strategy to manage the lifecycle of components using Docker containers |
+| `process` | `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components as a sub-process |
 
 ## Plugin Summary: `monitoring_strategies`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
 |------|-------------|--------|-------|--------------|-------------|
 | `docker_component` | `docker_component` | `lib.impl.strategies.monitoring.docker_component` | `DockerComponentMonitoringStrategy` | `DockerComponentMonitoringConfig` | Strategy for monitoring a docker container resource mentrics via the python docker API client |
+| `process_component` | `process_component` | `lib.impl.strategies.monitoring.process_component` | `ProcessComponentMonitoringStrategy` | `ProcessComponentMonitoringConfig` | Strategy for monitoring a Process via the python psutil library |
 | `prometheus` | `prometheus` | `lib.impl.strategies.monitoring.prometheus` | `PrometheusMonitoringStrategy` | `PrometheusMonitoringConfig` | Strategy for monitoring a prometheus endpoint for a component |
 
 ## Plugin Summary: `execution_strategies`
@@ -38,7 +40,6 @@ This directory contains auto-generated documentation for all plugin registries.
 |------|-------------|--------|-------|--------------|-------------|
 | `build_docker_images` | `build_docker_images` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImages` | `BuildDockerImagesConfig` | Hook strategy to build Docker images for multiple components locally |
 | `build_docker_image` | `build_docker_image` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImage` | `BuildDockerImageConfig` | Hook strategy implementation for building a single Docker image |
-| `get_docker_logs` | `get_docker_logs` | `lib.impl.strategies.hooks.docker.logs` | `GetDockerLogs` | `GetDockerLogsConfig` | Hook strategy to retrieve logs and store them in the component's process_runtime |
 | `create_docker_network` | `create_docker_network` | `lib.impl.strategies.hooks.docker.network` | `CreateDockerNetwork` | `CreateDockerNetworkConfig` | Hook strategy to create a Docker network for a component if it does not already exist |
 | `delete_docker_network` | `delete_docker_network` | `lib.impl.strategies.hooks.docker.network` | `DeleteDockerNetwork` | `DeleteDockerNetworkConfig` | Hook strategy to delete a Docker network associated with a component |
 | `tidy_existing_container` | `tidy_existing_container` | `lib.impl.strategies.hooks.docker.tidy_existing_container` | `TidyExistingContainer` | `TidyExistingContainerConfig` | Hook strategy to remove an existing Docker container with the same name as the current component |

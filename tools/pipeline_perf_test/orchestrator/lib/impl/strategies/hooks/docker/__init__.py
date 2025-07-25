@@ -6,7 +6,6 @@ from .build_docker_image import (
     BuildDockerImages,
     BuildDockerImagesConfig,
 )
-from .logs import GetDockerLogs, GetDockerLogsConfig
 from .network import (
     CreateDockerNetwork,
     CreateDockerNetworkConfig,
@@ -21,8 +20,6 @@ __all__ = [
     "BuildDockerImageConfig",
     "BuildDockerImages",
     "BuildDockerImagesConfig",
-    "GetDockerLogs",
-    "GetDockerLogsConfig",
     "CreateDockerNetwork",
     "CreateDockerNetworkConfig",
     "DeleteDockerNetwork",

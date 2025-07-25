@@ -158,7 +158,7 @@ def test_stop_successful(
     )
 
     logger = mock_context.get_logger.return_value
-    logger.debug.assert_called_once_with(
+    logger.debug.assert_any_call(
         f"Stopping Docker container for {mock_component.name}, with ID: abc123"
     )
 
