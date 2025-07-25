@@ -26,7 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 1
           fetch-tags: true
+          ref: ${{ github.ref }}
 
       - name: Validate inputs
         run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
@@ -34,7 +36,7 @@ jobs:
       - name: Get last released version
         id: last_version
         run: |
-          LAST_VERSION=$(./.github/workflows/scripts/get-last-version.sh --quiet)
+          LAST_VERSION=$(./.github/workflows/scripts/get-last-version.sh)
           echo "last_version=$LAST_VERSION" >> $GITHUB_OUTPUT
           echo "Last released version: $LAST_VERSION"
           echo "New version: ${{ inputs.version }}"
@@ -94,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Create PR body content
-          cat > /tmp/pr_body.md << 'EOF'
+          cat > /tmp/pr_body.md << EOF
           ## Release v${{ inputs.version }}
 
           This PR prepares the repository for release v${{ inputs.version }}.
