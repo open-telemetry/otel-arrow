@@ -1,7 +1,6 @@
 # Releasing
 
-This document describes the unified release process for both Go and Rust
-components in the OTel Arrow repository.
+This document describes the release process for Go components in the OTel Arrow repository.
 
 ## Overview
 
@@ -54,14 +53,13 @@ Before making actual changes, run the workflow in dry-run mode:
 1. Set "Dry run mode" to `true`
 2. Review the output to ensure all planned changes are correct
 3. Verify that the version increment makes sense
-4. Check that all Cargo.toml files will be updated properly
+4. Check that the CHANGELOG.md will be updated properly
 
 ### Step 4: Execute Release Preparation
 
 1. Run the workflow again with "Dry run mode" set to `false`
 2. The workflow will:
    - Validate the version format and increment
-   - Update all Cargo.toml files with the new version
    - Move unreleased content from CHANGELOG.md to a new release section
    - Create a release branch (`otelbot/release-vX.Y.Z`)
    - Open a pull request with all changes
@@ -70,7 +68,6 @@ Before making actual changes, run the workflow in dry-run mode:
 
 1. Review the automatically created pull request
 2. Verify that:
-   - All Cargo.toml files have been updated correctly
    - CHANGELOG.md formatting is correct
    - Version numbers are consistent
 3. Ensure all CI checks pass
@@ -117,20 +114,6 @@ The release process handles:
 - `github.com/open-telemetry/otel-arrow/go`
 - `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol`
 
-**Rust Crates:**
-
-- All crates under the `rust/` directory
-- Workspace and individual crate versions are updated consistently
-
-### TODO: Cargo publish to crates.io
-
-Currently the `push-release` workflow only updates Cargo.toml versions but does
-not publish to crates.io. We should consult with the OpenTelemetry-Rust owners
-about the best approach for publishing Rust crates. There is a [recommended
-pattern](https://docs.github.com/en/actions/how-tos/writing-workflows/building-and-testing/building-and-testing-rust#publishing-your-package-or-library-to-cratesio)
-from GitHub documentation that may require working with OpenTelemetry admins to
-add a `CRATES_IO_TOKEN` secret to be used in this workflow.
-
 ## Troubleshooting
 
 ### Common Issues
@@ -149,10 +132,9 @@ add a `CRATES_IO_TOKEN` secret to be used in this workflow.
   current version
 - Check existing releases to see the current version
 
-#### "Workflow failed during Cargo.toml updates"**
+#### "Workflow failed during version updates"**
 
-- Verify that all Cargo.toml files in the rust/ directory are properly formatted
-- Check for any syntax errors in Cargo.toml files
+- Check for any syntax errors in CHANGELOG.md files
 
 ### Manual Recovery
 
@@ -172,22 +154,21 @@ If the workflow fails partway through:
 
 In case the automated workflow cannot be used, you can create a manual release:
 
-1. Update all Cargo.toml files manually
-2. Update CHANGELOG.md
-3. Create and push appropriate git tags:
+1. Update CHANGELOG.md manually
+2. Create and push appropriate git tags:
 
    ```bash
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
-   git push origin vX.Y.Z
+   git tag -a go/vX.Y.Z -m "Release go/vX.Y.Z"
+   git tag -a collector/cmd/otelarrowcol/vX.Y.Z -m "Release collector/cmd/otelarrowcol/vX.Y.Z"
+   git push origin vX.Y.Z go/vX.Y.Z collector/cmd/otelarrowcol/vX.Y.Z
    ```
 
-4. Create a GitHub release manually
-5. <!-- TODO: Add step for manual cargo publish once implemented -->
-   Manually publish Rust crates to crates.io (once cargo publish is implemented)
+3. Create a GitHub release manually
 
 ## Version Strategy
 
-- All components (Go modules and Rust crates) use the same version number
+- All Go components use the same version number
 - Versions follow [Semantic Versioning](https://semver.org/)
 - Pre-release versions are not currently supported through the automated
   workflow

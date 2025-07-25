@@ -93,32 +93,6 @@ jobs:
           echo "Found changelog content:"
           cat /tmp/changelog_content.txt
 
-      - name: Find all Cargo.toml files
-        id: cargo_files
-        run: |
-          # Find all Cargo.toml files in rust/ directory
-          CARGO_FILES=$(find rust/ -name "Cargo.toml" -type f | sort)
-          echo "Found Cargo.toml files:"
-          echo "$CARGO_FILES"
-          echo "$CARGO_FILES" > /tmp/cargo_files.txt
-
-      - name: Update Cargo.toml versions
-        run: |
-          # Update all Cargo.toml files
-          while IFS= read -r file; do
-            echo "Updating $file"
-            # Update version in [package] section
-            sed -i.bak "s/^version = \"[^\"]*\"/version = \"${{ inputs.version }}\"/" "$file"
-
-            # Also update workspace version if it exists
-            sed -i.bak "s/^version = \"[^\"]*\"/version = \"${{ inputs.version }}\"/" "$file"
-
-            # Clean up backup files
-            rm -f "$file.bak"
-
-            echo "Updated $file to version ${{ inputs.version }}"
-          done < /tmp/cargo_files.txt
-
       - name: Update CHANGELOG.md
         run: |
           # Create new changelog with release section
@@ -191,7 +165,6 @@ jobs:
           # Commit changes
           git commit -m "Prepare release v${{ inputs.version }}
 
-          - Update all Cargo.toml files to version ${{ inputs.version }}
           - Update CHANGELOG.md with release notes for v${{ inputs.version }}
 
           This commit prepares the repository for release v${{ inputs.version }}."
@@ -211,7 +184,6 @@ jobs:
           This PR prepares the repository for release v${{ inputs.version }}.
 
           ### Changes included:
-          - Updated all Cargo.toml files to version ${{ inputs.version }}
           - Updated CHANGELOG.md with release notes
 
           ### Release Notes:
@@ -220,7 +192,6 @@ jobs:
           ```
 
           ### Checklist:
-          - [ ] Review version updates in all Cargo.toml files
           - [ ] Verify CHANGELOG.md formatting and content
           - [ ] Confirm all tests pass
           - [ ] Ready to merge and tag release

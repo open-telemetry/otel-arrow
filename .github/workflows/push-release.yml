@@ -181,10 +181,6 @@ jobs:
           This release includes the following Go modules:
           - `github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}`
           - `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}`
-
-          ## Rust Crates
-
-          All Rust crates under the `rust/` directory have been updated to version `${{ inputs.version }}`.
           EOF
 
           # Create the GitHub release using GitHub CLI
