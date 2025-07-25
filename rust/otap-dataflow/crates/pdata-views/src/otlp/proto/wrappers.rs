@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! To ensure design flexibility, we want to introduce a layer of abstraction over access to OTLP
 //! data. That's a bit tricky beacuse OTLP structures are object trees with iterators for different
 //! child structures. This module gives you some convenient tools to create indirection types. For

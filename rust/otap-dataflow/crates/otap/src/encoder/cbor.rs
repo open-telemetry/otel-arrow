@@ -117,6 +117,7 @@ where
 mod test {
     use super::*;
     use otap_df_pdata_views::otlp::proto::common::{ObjAny, ObjKeyValue};
+    use otap_df_pdata_views::otlp::proto::wrappers::Wraps;
     use otel_arrow_rust::{
         otlp::attributes::cbor::decode_pcommon_val,
         proto::opentelemetry::common::v1::{
@@ -178,7 +179,8 @@ mod test {
 
         for (source, expected) in test_cases {
             let mut serialized_val = vec![];
-            serialize_any_values(vec![ObjAny(&source)].into_iter(), &mut serialized_val).unwrap();
+            serialize_any_values(vec![ObjAny::new(&source)].into_iter(), &mut serialized_val)
+                .unwrap();
 
             let result = decode_pcommon_val(&serialized_val).unwrap();
             assert_eq!(
@@ -241,9 +243,9 @@ mod test {
         for (source, expected) in test_cases {
             let mut serialized_val = vec![];
             serialize_kv_list(
-                source
-                    .iter()
-                    .map(|kv| ObjKeyValue::new(kv.key.as_str(), kv.value.as_ref().map(ObjAny))),
+                source.iter().map(|kv| {
+                    ObjKeyValue::new(kv.key.as_str(), kv.value.as_ref().map(ObjAny::new))
+                }),
                 &mut serialized_val,
             )
             .unwrap();
