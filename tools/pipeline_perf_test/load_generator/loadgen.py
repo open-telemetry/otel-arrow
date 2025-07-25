@@ -9,6 +9,7 @@ OTLP collector endpoint over gRPC.
 Features:
 - Generates OTLP log records with random content for testing or benchmarking.
 - Runs multiple worker threads to simulate concurrent load.
+- Supports optional rate targeting for message throughput (or max achievable).
 - Provides a Flask-based HTTP API to start, stop, and monitor the load
     generator.
 - Can run either as a one-off command line tool or as a long-running server.
@@ -30,17 +31,19 @@ Environment Variables:
 - OTLP_ENDPOINT: Target OTLP gRPC endpoint (default: localhost:4317).
 """
 
-import os
-import grpc  # type: ignore
-import time
 import argparse
+import concurrent.futures
+import os
 import random
 import signal
 import string
 import sys
 import threading
+import time
+from typing import Optional
+
+import grpc  # type: ignore
 from flask import Flask, jsonify, request
-import concurrent.futures
 from opentelemetry.proto.collector.logs.v1 import (
     logs_service_pb2_grpc,
     logs_service_pb2,
@@ -68,6 +71,9 @@ class LoadGenConfig(BaseModel):
     )
     batch_size: int = Field(5000, gt=0, description="Number of logs per batch")
     threads: int = Field(4, gt=0, description="Number of worker threads to run")
+    target_rate: Optional[int] = Field(
+        None, gt=0, description="Optional target messages per second"
+    )
 
     @field_validator(
         "body_size", "num_attributes", "attribute_value_size", "batch_size", "threads"
@@ -85,7 +91,7 @@ class LoadGenerator:
         self.stop_event = threading.Event()
         self.current_config = {}
         self.lock = threading.Lock()
-        self.metrics = {"sent": 0, "failed": 0, "bytes_sent": 0}
+        self.metrics = {"sent": 0, "failed": 0, "bytes_sent": 0, "late_batches": 0}
 
     def generate_random_string(self, length: int) -> str:
         """
@@ -122,7 +128,7 @@ class LoadGenerator:
             attributes=attributes,
         )
 
-    def update_metrics(self, key: str, amount: int = 1) -> None:
+    def increment_metric(self, key: str, amount: int = 1) -> None:
         with self.lock:
             self.metrics[key] += amount
 
@@ -134,13 +140,28 @@ class LoadGenerator:
         channel = grpc.insecure_channel(endpoint)
         stub = logs_service_pb2_grpc.LogsServiceStub(channel)
 
+        batch_size = args["batch_size"]
+        thread_count = args["threads"]
+        target_rate = args.get("target_rate")
+
+        if target_rate:
+            thread_rate = target_rate / thread_count
+            batch_interval = batch_size / thread_rate
+            print(
+                f"Thread {thread_id} started with rate limit: {thread_rate} "
+                f"logs/sec (interval: {batch_interval:.4f}s)"
+            )
+        else:
+            batch_interval = None
+            print(f"Thread {thread_id} started with no rate limit")
+
         log_batch = [
             self.create_log_record(
                 body_size=args["body_size"],
                 num_attributes=args["num_attributes"],
                 attribute_value_size=args["attribute_value_size"],
             )
-            for _ in range(args["batch_size"])
+            for _ in range(batch_size)
         ]
 
         scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
@@ -149,15 +170,29 @@ class LoadGenerator:
             resource_logs=[resource_logs]
         )
 
-        print(f"Thread {thread_id} started, sending logs to {endpoint}")
+        next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
                 stub.Export(logs_request)
-                self.update_metrics("sent", args["batch_size"])
-                self.update_metrics("bytes_sent", logs_request.ByteSize())
+                self.increment_metric("sent", args["batch_size"])
+                self.increment_metric("bytes_sent", logs_request.ByteSize())
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send log batch: {e}")
-                self.update_metrics("failed", args["batch_size"])
+                self.increment_metric("failed", args["batch_size"])
+
+            # If we're targeting a specific rate we do additional calculations
+            # to ensure we're not exceeding it via sleep. If we're not reaching
+            # the target rate (e.g. we're sending without sleep and it's
+            # still too slow), we increment a metric to inform observers.
+            if batch_interval:
+                now = time.perf_counter()
+                sleep_time = next_send_time - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif now - next_send_time > batch_interval:
+                    # More than 1 interval behind
+                    self.increment_metric("late_batches")
+                next_send_time += batch_interval
 
     def run_loadgen(self, args_dict):
         """
@@ -314,6 +349,15 @@ def main():
         default=get_default_value("threads"),
         help=f"Number of worker threads (default {get_default_value('threads')})",
     )
+    parser.add_argument(
+        "--target-rate",
+        type=int,
+        default=get_default_value("target_rate"),
+        help=(
+            "Optional message rate to target "
+            f"(default {get_default_value('target_rate')})"
+        ),
+    )
     args = parser.parse_args()
 
     if args.serve:
@@ -324,6 +368,7 @@ def main():
     print(f"- Duration: {args.duration} seconds")
     print(f"- Batch size: {args.batch_size} logs")
     print(f"- Threads: {args.threads}")
+    print(f"- Target Rate: {args.target_rate}")
     print(f"- Log body size: {args.body_size} characters")
     print(f"- Attributes per log: {args.num_attributes}")
     print(f"- Attribute value size: {args.attribute_value_size} characters")
@@ -334,6 +379,7 @@ def main():
         attribute_value_size=args.attribute_value_size,
         batch_size=args.batch_size,
         threads=args.threads,
+        target_rate=args.target_rate,
     )
 
     loadgen.start(config=config)
