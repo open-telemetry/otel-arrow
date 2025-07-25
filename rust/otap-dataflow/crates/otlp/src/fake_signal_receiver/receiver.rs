@@ -66,6 +66,7 @@ impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
         mut ctrl_msg_recv: local::ControlChannel,
         effect_handler: local::EffectHandler<OTLPSignal>,
     ) -> Result<(), Error<OTLPSignal>> {
+        println!("Starting fake signal_receiver");
         //start event loop
         loop {
             tokio::select! {

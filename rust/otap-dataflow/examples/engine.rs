@@ -5,8 +5,11 @@ use otap_df_otlp::OTLP_PIPELINE_FACTORY;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use otap_df_otlp::otlp_receiver::OTLP_RECEIVER_URN;
 use serde_json::json;
+use otap_df_otlp::debug_exporter::exporter::DEBUG_EXPORTER_URN;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    //console_subscriber::init();
+    
     // Configure the pipeline with an OTLP receiver and debug exporter
     let config = PipelineConfigBuilder::new()
         .add_receiver(
@@ -17,13 +20,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })),
         )
         .add_exporter(
-            "otlp_exp",
+            "debug",
+            DEBUG_EXPORTER_URN,
+            Some(json!({
+                "verbosity": "normal"
+            })),
+        )
+        // .add_exporter(
+        //     "otlp_exporter2",
+        //     OTLP_EXPORTER_URN,
+        //     Some(json!({
+        //         "grpc_endpoint": "http://127.0.0.1:1235"
+        //     })),
+        // )
+        .add_exporter(
+            "otlp_exporter",
             OTLP_EXPORTER_URN,
             Some(json!({
                 "grpc_endpoint": "http://127.0.0.1:1235"
             })),
         )
-        .round_robin("otlp_receiver", "out_port", ["otlp_exp"])
+        .round_robin("otlp_receiver", "out_port", ["otlp_exporter", "debug"])
         .build(PipelineType::Otlp, "namespace", "pipeline")?;
 
     println!(
