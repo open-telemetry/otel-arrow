@@ -3,7 +3,7 @@
 This document outlines best practices for writing async-safe code in the OTAP
 Dataflow project.
 
-## ⚠️ Common Blocking Operations to Avoid
+## Common Blocking Operations to Avoid
 
 ### 1. Synchronous I/O Operations
 
@@ -112,7 +112,7 @@ This script checks for:
 - Blocking `File::open/create` calls
 - `thread::sleep` usage
 
-## 💡 When You Must Use Blocking Operations
+## When You Must Use Blocking Operations
 
 Sometimes you need to use libraries that don't have async versions. Use
 `spawn_blocking`:
@@ -130,7 +130,7 @@ async fn use_blocking_library() -> Result<String, Box<dyn std::error::Error>> {
 }
 ```
 
-## 🔍 Code Review Checklist
+## Code Review Checklist
 
 When reviewing async code, check for:
 
