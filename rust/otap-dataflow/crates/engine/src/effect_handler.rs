@@ -3,6 +3,7 @@
 //! Common foundation of all effect handlers.
 
 use crate::error::Error;
+use otap_df_config::NodeId;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, UdpSocket};
@@ -12,14 +13,14 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
-    pub(crate) node_name: Cow<'static, str>,
+    pub(crate) node_id: NodeId,
 }
 
 impl EffectHandlerCore {
-    /// Returns the name of the node associated with this effect handler.
+    /// Returns the id of the node associated with this effect handler.
     #[must_use]
-    pub(crate) fn node_name(&self) -> Cow<'static, str> {
-        self.node_name.clone()
+    pub(crate) fn node_id(&self) -> NodeId {
+        self.node_id.clone()
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

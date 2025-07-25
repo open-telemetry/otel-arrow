@@ -1,36 +1,48 @@
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+pub use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use async_trait::async_trait;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::{ControlMsg, Message};
+use otap_df_engine::message::Message;
 use prost::Message as ProstMessage;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
+const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
+
 /// Trait for a batch type (e.g., ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServiceRequest)
 pub trait Batch: Sized {
+    /// The resource group type for this batch
     type Resource: ResourceGroup;
+    /// Returns a mutable reference to the vector of resources in this batch
     fn resources_mut(&mut self) -> &mut Vec<Self::Resource>;
+    /// Creates a new empty batch of this type
     fn new_empty() -> Self;
 }
 
 /// Trait for a resource group (e.g., ResourceSpans, ResourceMetrics, ResourceLogs)
 pub trait ResourceGroup: Sized {
+    /// The scope group type for this resource group
     type Scope: ScopeGroup;
+    /// Returns a mutable reference to the vector of scopes in this resource group
     fn scopes_mut(&mut self) -> &mut Vec<Self::Scope>;
+    /// Creates a new instance with only the resource fields, clearing scopes
     fn take_resource_fields(&mut self) -> Self;
 }
 
 /// Trait for a scope group (e.g., ScopeSpans, ScopeMetrics, ScopeLogs)
 pub trait ScopeGroup: Sized {
+    /// The leaf item type for this scope group (spans, metrics, or log records)
     type Leaf;
+    /// Returns a mutable reference to the vector of leaf items in this scope group
     fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf>;
+    /// Creates a new instance with only the scope fields, clearing leaf items
     fn take_scope_fields(&mut self) -> Self;
 }
 
@@ -125,6 +137,16 @@ pub fn split_into_batches<B: Batch>(mut batch: B, max_batch_size: usize) -> Vec<
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
+    /// Splits a batch into a vector of smaller batches, each with at most `max_batch_size` leaf items,
+    /// preserving all resource/scope/leaf (span/metric/logrecord) structure.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_batch_size` - The maximum number of leaf items (spans, metrics, or log records) per batch.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of batches, or an error if the batch size is zero.
     fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
 }
 
@@ -365,6 +387,7 @@ impl GenericBatcher {
 impl GenericBatcher {
     /// Creates a new `GenericBatcher` with the given configuration.
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
         Self {
@@ -665,17 +688,23 @@ mod tests {
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::Span;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::control::ControlMsg;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
+    use std::rc::Rc;
 
     /// Wraps a processor in a local test wrapper.
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
+        let node_config = Rc::new(NodeUserConfig::new_processor_config(
+            _OTLP_BATCH_PROCESSOR_URN,
+        ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, &config)
+        ProcessorWrapper::local(processor, node_config, &config)
     }
 
     #[test]
@@ -1775,19 +1804,25 @@ mod integration_tests {
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::trace::v1::Span;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::control::ControlMsg;
     use otap_df_engine::local::processor::Processor;
     use otap_df_engine::processor::ProcessorWrapper;
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::rc::Rc;
     use std::time::Duration;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
+        let node_config = Rc::new(NodeUserConfig::new_processor_config(
+            _OTLP_BATCH_PROCESSOR_URN,
+        ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, &config)
+        ProcessorWrapper::local(processor, node_config, &config)
     }
 
     // Helper: Write string to a file

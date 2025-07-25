@@ -2,6 +2,9 @@
 
 //! Message definitions for the pipeline engine.
 
+use crate::control::ControlMsg;
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
 use std::pin::Pin;
@@ -19,57 +22,6 @@ pub enum Message<PData> {
 
     /// A control message.
     Control(ControlMsg),
-}
-
-/// Control messages used for managing pipeline operations and node behaviors.
-#[derive(Debug, Clone)]
-pub enum ControlMsg {
-    /// Indicates that a downstream component (either internal or external) has reliably received
-    /// and processed telemetry data.
-    Ack {
-        /// The ID of the message being acknowledged.
-        id: u64,
-    },
-
-    /// Indicates that a downstream component (either internal or external) failed to process or
-    /// deliver telemetry data. The NACK signal includes a reason, such as exceeding a deadline,
-    /// downstream system unavailability, or other conditions preventing successful processing.
-    Nack {
-        /// The ID of the message not being acknowledged.
-        id: u64,
-        /// The reason for the NACK.
-        reason: String,
-    },
-
-    /// Indicates a change in the configuration of a node. For example, a config message can
-    /// instruct a Filter Processor to include or exclude certain attributes, or notify a Retry
-    /// Processor to adjust backoff settings.
-    Config {
-        /// The new configuration.
-        config: serde_json::Value,
-    },
-
-    /// Emitted upon timer expiration, used to trigger scheduled tasks (e.g., batch emissions).
-    TimerTick {
-        // TBD
-    },
-
-    /// A graceful shutdown message requiring the node to finish processing messages and release
-    /// resources by a specified deadline. A deadline of 0 indicates an immediate shutdown.
-    Shutdown {
-        /// The deadline for the shutdown.
-        deadline: Duration,
-        /// The reason for the shutdown.
-        reason: String,
-    },
-}
-
-impl ControlMsg {
-    /// Checks if this control message is a shutdown message.
-    #[must_use]
-    pub fn is_shutdown(&self) -> bool {
-        matches!(self, ControlMsg::Shutdown { .. })
-    }
 }
 
 impl<Data> Message<Data> {
@@ -135,11 +87,12 @@ impl<Data> Message<Data> {
 }
 
 /// A generic channel Sender supporting both local and shared semantic (i.e. !Send and Send).
+#[must_use = "A `Sender` is requested but not used."]
 pub enum Sender<T> {
-    /// Local channel sender.
-    Local(mpsc::Sender<T>),
-    /// Shared channel sender.
-    Shared(tokio::sync::mpsc::Sender<T>),
+    /// Sender of a local channel.
+    Local(LocalSender<T>),
+    /// Sender of a shared channel.
+    Shared(SharedSender<T>),
 }
 
 impl<T> Clone for Sender<T> {
@@ -152,29 +105,40 @@ impl<T> Clone for Sender<T> {
 }
 
 impl<T> Sender<T> {
+    /// Creates a new local MPSC sender.
+    pub fn new_local_mpsc_sender(mpsc_sender: mpsc::Sender<T>) -> Self {
+        Sender::Local(LocalSender::MpscSender(mpsc_sender))
+    }
+
     /// Sends a message to the channel.
     pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
         match self {
-            Sender::Local(sender) => sender.send_async(msg).await,
-            Sender::Shared(sender) => sender.send(msg).await.map_err(|e| SendError::Closed(e.0)),
+            Sender::Local(sender) => sender.send(msg).await,
+            Sender::Shared(sender) => sender.send(msg).await,
         }
     }
 }
 
 /// A generic channel Receiver supporting both local and shared semantic (i.e. !Send and Send).
 pub enum Receiver<T> {
-    /// Local channel receiver.
-    Local(mpsc::Receiver<T>),
-    /// Shared channel receiver.
-    Shared(tokio::sync::mpsc::Receiver<T>),
+    /// Receiver of a local channel.
+    Local(LocalReceiver<T>),
+    /// Receiver of a shared channel.
+    Shared(SharedReceiver<T>),
 }
 
 impl<T> Receiver<T> {
+    /// Creates a new local MPMC receiver.
+    #[must_use]
+    pub fn new_local_mpsc_receiver(mpsc_receiver: mpsc::Receiver<T>) -> Self {
+        Receiver::Local(LocalReceiver::MpscReceiver(mpsc_receiver))
+    }
+
     /// Receives a message from the channel.
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         match self {
             Receiver::Local(receiver) => receiver.recv().await,
-            Receiver::Shared(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
+            Receiver::Shared(receiver) => receiver.recv().await,
         }
     }
 
@@ -182,7 +146,7 @@ impl<T> Receiver<T> {
     pub fn try_recv(&mut self) -> Result<T, RecvError> {
         match self {
             Receiver::Local(receiver) => receiver.try_recv(),
-            Receiver::Shared(receiver) => receiver.try_recv().map_err(|_| RecvError::Closed),
+            Receiver::Shared(receiver) => receiver.try_recv(),
         }
     }
 }
