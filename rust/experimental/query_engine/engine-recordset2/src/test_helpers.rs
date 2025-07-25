@@ -115,7 +115,7 @@ impl Record for TestRecord {
         }
     }
 
-    fn get_log_level(&self) -> Option<LogLevel> {
+    fn get_diagnostic_level(&self) -> Option<RecordSetEngineDiagnosticLevel> {
         None
     }
 }
