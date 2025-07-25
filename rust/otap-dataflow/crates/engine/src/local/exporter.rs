@@ -36,8 +36,9 @@ use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
 use crate::message::MessageChannel;
 use async_trait::async_trait;
-use std::borrow::Cow;
+use otap_df_config::NodeId;
 use std::marker::PhantomData;
+
 /// A trait for egress exporters (!Send definition).
 #[async_trait( ? Send)]
 pub trait Exporter<PData> {
@@ -96,17 +97,17 @@ pub struct EffectHandler<PData> {
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: EffectHandlerCore { node_id },
             _pd: PhantomData,
         }
     }
 
-    /// Returns the name of the exporter associated with this handler.
+    /// Returns the id of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn exporter_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     // More methods will be added in the future as needed.
