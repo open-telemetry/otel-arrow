@@ -2,7 +2,6 @@
 
 use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
 use otap_df_otlp::OTLP_PIPELINE_FACTORY;
-use otap_df_otlp::debug_exporter::exporter::DEBUG_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use otap_df_otlp::otlp_receiver::OTLP_RECEIVER_URN;
 use serde_json::json;

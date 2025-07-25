@@ -61,7 +61,7 @@ impl OutputWriter {
             .await
             .map_err(|e| Error::ExporterError {
                 exporter: self.exporter_id.clone(),
-                error: format!("Write error: {}", e),
+                error: format!("Write error: {e}"),
             })
     }
 }
@@ -288,13 +288,13 @@ async fn push_metric(
     }
 
     writer
-        .write(&format!("Received {} resource metrics\n", resource_metrics))
+        .write(&format!("Received {resource_metrics} resource metrics\n"))
         .await?;
     writer
-        .write(&format!("Received {} metrics\n", metrics))
+        .write(&format!("Received {metrics} metrics\n"))
         .await?;
     writer
-        .write(&format!("Received {} data points\n", data_points))
+        .write(&format!("Received {data_points} data points\n"))
         .await?;
     counter.update_metric_data(resource_metrics as u64, metrics as u64, data_points as u64);
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
@@ -303,7 +303,7 @@ async fn push_metric(
     }
 
     let report = marshaler.marshal_metrics(metric_request);
-    writer.write(&format!("{}\n", report)).await?;
+    writer.write(&format!("{report}\n")).await?;
     Ok(())
 }
 
@@ -331,13 +331,11 @@ async fn push_trace(
     }
 
     writer
-        .write(&format!("Received {} resource spans\n", resource_spans))
+        .write(&format!("Received {resource_spans} resource spans\n"))
         .await?;
-    writer.write(&format!("Received {} spans\n", spans)).await?;
-    writer
-        .write(&format!("Received {} events\n", events))
-        .await?;
-    writer.write(&format!("Received {} links\n", links)).await?;
+    writer.write(&format!("Received {spans} spans\n")).await?;
+    writer.write(&format!("Received {events} events\n")).await?;
+    writer.write(&format!("Received {links} links\n")).await?;
     counter.update_span_data(
         resource_spans as u64,
         spans as u64,
@@ -350,7 +348,7 @@ async fn push_trace(
     }
 
     let report = marshaler.marshal_traces(trace_request);
-    writer.write(&format!("{}\n", report)).await?;
+    writer.write(&format!("{report}\n")).await?;
     Ok(())
 }
 
@@ -375,21 +373,19 @@ async fn push_log(
         }
     }
     writer
-        .write(&format!("Received {} resource logs\n", resource_logs))
+        .write(&format!("Received {resource_logs} resource logs\n"))
         .await?;
     writer
-        .write(&format!("Received {} log records\n", log_records))
+        .write(&format!("Received {log_records} log records\n"))
         .await?;
-    writer
-        .write(&format!("Received {} events\n", events))
-        .await?;
+    writer.write(&format!("Received {events} events\n")).await?;
     counter.update_log_data(resource_logs as u64, log_records as u64, events as u64);
     if *verbosity == Verbosity::Basic {
         return Ok(());
     }
 
     let report = marshaler.marshal_logs(log_request);
-    writer.write(&format!("{}\n", report)).await?;
+    writer.write(&format!("{report}\n")).await?;
     Ok(())
 }
 
@@ -413,13 +409,10 @@ async fn push_profile(
     }
 
     writer
-        .write(&format!(
-            "Received {} resource profiles\n",
-            resource_profiles
-        ))
+        .write(&format!("Received {resource_profiles} resource profiles\n"))
         .await?;
     writer
-        .write(&format!("Received {} samples\n", samples))
+        .write(&format!("Received {samples} samples\n"))
         .await?;
     counter.update_profile_data(resource_profiles as u64, samples as u64);
     if *verbosity == Verbosity::Basic {
@@ -427,7 +420,7 @@ async fn push_profile(
     }
 
     let report = marshaler.marshal_profiles(profile_request);
-    writer.write(&format!("{}\n", report)).await?;
+    writer.write(&format!("{report}\n")).await?;
     Ok(())
 }
 
