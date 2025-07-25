@@ -95,12 +95,22 @@ where
             let variable = variable.unwrap();
             let mut selectors = selectors.iter();
 
-            select_from_as_value_mut(
+            let value = select_from_as_value_mut(
                 execution_context,
                 variable,
                 selectors.next().unwrap(),
                 &mut selectors,
-            )
+            )?;
+
+            if execution_context.is_enabled(LogLevel::Verbose) {
+                log_mutable_value_expression_evaluated(
+                    execution_context,
+                    mutable_value_expression,
+                    &value,
+                );
+            }
+
+            Ok(value)
         }
     }
 }
