@@ -1,4 +1,8 @@
-use std::{cell::RefMut, collections::HashSet};
+use std::{
+    cell::RefMut,
+    collections::HashSet,
+    fmt::{Display, Write},
+};
 
 use data_engine_expressions::*;
 
@@ -6,6 +10,7 @@ use crate::{
     execution_context::ExecutionContext,
     resolved_value_mut::*,
     scalar_expressions::execute_scalar_expression,
+    transform::reduce_map_transform_expression::execute_map_reduce_transform_expression,
     value_expressions::{execute_immutable_value_expression, execute_mutable_value_expression},
     *,
 };
@@ -201,16 +206,26 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
 
             Ok(())
         }
-        TransformExpression::ReduceMap(_) => todo!(),
+        TransformExpression::ReduceMap(r) => {
+            execute_map_reduce_transform_expression(execution_context, r)
+        }
         TransformExpression::RemoveMapKeys(r) => match r {
             RemoveMapKeysTransformExpression::Remove(m) => {
-                let keys = resolve_map_keys(execution_context, m)?;
+                let map_keys = resolve_map_keys(execution_context, m)?;
+
+                if execution_context.is_enabled(LogLevel::Verbose) {
+                    execution_context.log(LogMessage::new(
+                        LogLevel::Verbose,
+                        r,
+                        format!("Resolved map keys: {map_keys}"),
+                    ));
+                }
 
                 let target = execute_mutable_value_expression(execution_context, m.get_target())?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
-                        for key in keys {
+                        for key in map_keys.keys {
                             key.to_value().convert_to_string(&mut |k| {
                                 match target_map.remove(k) {
                                     ValueMutRemoveResult::NotFound => {
@@ -252,14 +267,22 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                 Ok(())
             }
             RemoveMapKeysTransformExpression::Retain(m) => {
-                let keys = resolve_map_keys(execution_context, m)?;
+                let map_keys = resolve_map_keys(execution_context, m)?;
+
+                if execution_context.is_enabled(LogLevel::Verbose) {
+                    execution_context.log(LogMessage::new(
+                        LogLevel::Verbose,
+                        r,
+                        format!("Resolved map keys: {map_keys}"),
+                    ));
+                }
 
                 let target = execute_mutable_value_expression(execution_context, m.get_target())?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
                         let mut key_map: HashSet<Box<str>> = HashSet::new();
-                        for key in keys {
+                        for key in map_keys.keys {
                             key.to_value().convert_to_string(&mut |s| {
                                 key_map.insert(s.into());
                             });
@@ -299,10 +322,33 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
     }
 }
 
+struct MapKeys<'a> {
+    pub keys: Vec<ResolvedValue<'a>>,
+}
+
+impl Display for MapKeys<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('[')?;
+
+        let mut first = true;
+        for key in &self.keys {
+            if first {
+                first = false;
+            } else {
+                f.write_str(", ")?;
+            }
+
+            key.to_value().fmt(f)?;
+        }
+
+        f.write_char(']')
+    }
+}
+
 fn resolve_map_keys<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
     key_list: &'a MapKeyListExpression,
-) -> Result<Vec<ResolvedValue<'c>>, ExpressionError>
+) -> Result<MapKeys<'c>, ExpressionError>
 where
     'a: 'c,
     'b: 'c,
@@ -315,7 +361,7 @@ where
         keys.push(value);
     }
 
-    Ok(keys)
+    Ok(MapKeys { keys })
 }
 
 fn resolve_map_destination<'a>(
