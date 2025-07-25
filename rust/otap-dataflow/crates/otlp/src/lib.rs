@@ -90,7 +90,7 @@ mod tests {
                 "out_port",
                 ["otlp_exporter1", "otlp_exporter2"],
             )
-            .build(PipelineType::Otlp, "namespace", "pipeline")
+            .build(PipelineType::Otlp, "pgroup", "pipeline")
             .expect("Failed to build pipeline config");
         let result = OTLP_PIPELINE_FACTORY.build(config);
         assert!(

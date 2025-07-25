@@ -1,6 +1,6 @@
 # Pipeline Engine Config Model
 
-This crate defines the configuration model for a multi-namespace, multi-pipeline
+This crate defines the configuration model for a multi-pipeline-group, multi-pipeline
 observability engine embeddable within the OpenTelemetry ecosystem.
 
 ## Overview
@@ -9,8 +9,8 @@ The configuration model is structured in 4 main components, each representing a
 distinct layer of the configuration hierarchy:
 
 - **EngineConfig**: The root configuration, containing global engine settings
-  and all namespaces.
-- **NamespaceConfig**: Represents an individual namespace, including its own
+  and all pipeline groups.
+- **PipelineGroupConfig**: Represents an individual pipeline group, including its own
   settings and pipelines.
 - **PipelineConfig**: Describes a pipeline as a directed-acyclic-hypergraph of
   interconnected nodes, with pipeline-level settings.
@@ -53,7 +53,7 @@ This configuration model is intended to be easily integrable with systems like
 
 This configuration model is intended to be a **superset of the current OTEL Go
 Collector configuration**. It introduces advanced concepts, such as
-multi-tenancy (based on namespace) and configurable dispatch strategies, that
+multi-tenancy (based on pipeline group) and configurable dispatch strategies, that
 are not present in the upstream Collector.
 
 A translation mechanism will be developed to **automatically convert any OTEL
@@ -78,8 +78,8 @@ at once and increasing overall productivity.
 - An API will be introduced to allow for **dynamic management** of
   configuration:
 
-  - Add, update, get, and delete namespaces
-  - Add, update, get, and delete pipelines within namespaces
+  - Add, update, get, and delete pipeline groups
+  - Add, update, get, and delete pipelines within pipeline groups
   - Add, update, get, and delete nodes within pipelines
 
 - **Transactional updates:** Updates can target multiple nodes as part of a
@@ -92,4 +92,4 @@ at once and increasing overall productivity.
   via this API.
 
 - An **authorization framework** will be introduced to manage access and
-  permissions at the level of namespaces, pipelines, and potentially nodes.
+  permissions at the level of pipeline groups, pipelines, and potentially nodes.

@@ -109,7 +109,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
         let mut listener_stream = TcpListenerStream::new(listener);
 
         println!("Listening on {} for OTLP data", self.listening_addr);
-        
+
         //start event loop
         loop {
             //create services for the grpc server and clone the effect handler to pass message

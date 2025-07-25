@@ -59,7 +59,7 @@ mod tests {
             )
             // ToDo(LQ): Check the validity of the outport.
             .broadcast("receiver", "out_port", ["exporter"])
-            .build(PipelineType::Otap, "namespace", "pipeline")
+            .build(PipelineType::Otap, "pgroup", "pipeline")
             .expect("Failed to build pipeline config");
 
         let runtime_pipeline = OTAP_PIPELINE_FACTORY

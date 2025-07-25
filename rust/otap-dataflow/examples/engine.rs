@@ -2,10 +2,9 @@
 
 use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
 use otap_df_otlp::OTLP_PIPELINE_FACTORY;
-use otap_df_otlp::debug_exporter::exporter::DEBUG_EXPORTER_URN;
+use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use otap_df_otlp::otlp_receiver::OTLP_RECEIVER_URN;
 use serde_json::json;
-use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure the pipeline with an OTLP receiver and debug exporter
@@ -21,19 +20,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "otlp_exp",
             OTLP_EXPORTER_URN,
             Some(json!({
-                    "grpc_endpoint": "http://127.0.0.1:1235"
-                })),
+                "grpc_endpoint": "http://127.0.0.1:1235"
+            })),
         )
         .round_robin("otlp_receiver", "out_port", ["otlp_exp"])
         .build(PipelineType::Otlp, "namespace", "pipeline")?;
 
-    println!("Pipeline configuration:\n{}", serde_json::to_string_pretty(&config)?);
-    
+    println!(
+        "Pipeline configuration:\n{}",
+        serde_json::to_string_pretty(&config)?
+    );
+
     // Build and start the runtime pipeline
     let runtime_pipeline = OTLP_PIPELINE_FACTORY.build(config)?;
 
     println!("Press Ctrl+C to stop");
-    
+
     runtime_pipeline.start()?;
 
     // Keep the pipeline running

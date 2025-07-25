@@ -4,7 +4,7 @@
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
-use crate::{Description, NamespaceId, NodeId, PipelineId, PortName, Urn};
+use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -81,32 +81,32 @@ impl Default for PipelineSettings {
 impl PipelineConfig {
     /// Create a new PipelineSpec from a JSON string.
     pub fn from_json(
-        namespace_id: NamespaceId,
+        pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         json_str: &str,
     ) -> Result<Self, Error> {
         let spec: PipelineConfig =
             serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
-                context: Context::new(namespace_id.clone(), pipeline_id.clone()),
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 format: "JSON".to_string(),
                 details: e.to_string(),
             })?;
 
-        spec.validate(&namespace_id, &pipeline_id)?;
+        spec.validate(&pipeline_group_id, &pipeline_id)?;
         Ok(spec)
     }
 
     /// Load a PipelineSpec from a JSON file.
     pub fn from_json_file<P: AsRef<Path>>(
-        namespace_id: NamespaceId,
+        pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         path: P,
     ) -> Result<Self, Error> {
         let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::new(namespace_id.clone(), pipeline_id.clone()),
+            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
             details: e.to_string(),
         })?;
-        Self::from_json(namespace_id, pipeline_id, &contents)
+        Self::from_json(pipeline_group_id, pipeline_id, &contents)
     }
 
     /// Returns an iterator visiting all nodes in the pipeline.
@@ -128,7 +128,7 @@ impl PipelineConfig {
     /// - Cycles in the DAG
     pub fn validate(
         &self,
-        namespace_id: &NamespaceId,
+        pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         let mut errors = Vec::new();
@@ -146,7 +146,7 @@ impl PipelineConfig {
 
                 if !missing_targets.is_empty() {
                     errors.push(Error::InvalidHyperEdgeSpec {
-                        context: Context::new(namespace_id.clone(), pipeline_id.clone()),
+                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                         source_node: node_id.clone(),
                         missing_source: false, // source exists since we're iterating over nodes
                         details: Box::new(HyperEdgeSpecDetails {
@@ -164,7 +164,7 @@ impl PipelineConfig {
             let cycles = self.detect_cycles();
             for cycle in cycles {
                 errors.push(Error::CycleDetected {
-                    context: Context::new(namespace_id.clone(), pipeline_id.clone()),
+                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                     nodes: cycle,
                 });
             }
@@ -407,21 +407,21 @@ impl PipelineConfigBuilder {
     pub fn build<T, P>(
         mut self,
         pipeline_type: PipelineType,
-        namespace_id: T,
+        pipeline_group_id: T,
         pipeline_id: P,
     ) -> Result<PipelineConfig, Error>
     where
-        T: Into<NamespaceId>,
+        T: Into<PipelineGroupId>,
         P: Into<PipelineId>,
     {
         let mut errors = Vec::new();
-        let namespace_id = namespace_id.into();
+        let pipeline_group_id = pipeline_group_id.into();
         let pipeline_id = pipeline_id.into();
 
         // Report duplicated nodes
         for node_id in &self.duplicate_nodes {
             errors.push(Error::DuplicateNode {
-                context: Context::new(namespace_id.clone(), pipeline_id.clone()),
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 node_id: node_id.clone(),
             });
         }
@@ -433,7 +433,7 @@ impl PipelineConfigBuilder {
                 let key = (conn.src.clone(), conn.out_port.clone());
                 if !seen_ports.insert(key.clone()) {
                     errors.push(Error::DuplicateOutPort {
-                        context: Context::new(namespace_id.clone(), pipeline_id.clone()),
+                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                         source_node: conn.src.clone(),
                         port: conn.out_port.clone(),
                     });
@@ -462,7 +462,7 @@ impl PipelineConfigBuilder {
             // if anything is missing, record as InvalidHyperEdgeSpec
             if !src_exists || !missing.is_empty() {
                 errors.push(Error::InvalidHyperEdgeSpec {
-                    context: Context::new(namespace_id.clone(), pipeline_id.clone()),
+                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                     source_node: conn.src.clone(),
                     missing_source: !src_exists,
                     details: Box::new(HyperEdgeSpecDetails {
@@ -501,7 +501,7 @@ impl PipelineConfigBuilder {
                 r#type: pipeline_type,
             };
 
-            spec.validate(&namespace_id, &pipeline_id)?;
+            spec.validate(&pipeline_group_id, &pipeline_id)?;
             Ok(spec)
         }
     }
@@ -525,7 +525,7 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .add_processor("A", "urn:test:processor", None) // duplicate
-            .build(PipelineType::Otap, "namespace", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -547,7 +547,7 @@ mod tests {
             .add_exporter("B", "urn:test:exporter", None)
             .round_robin("A", "p", ["B"])
             .round_robin("A", "p", ["B"]) // duplicate port on A
-            .build(PipelineType::Otap, "namespace", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -569,7 +569,7 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_receiver("B", "urn:test:receiver", None)
             .connect("X", "out", ["B"], DispatchStrategy::Broadcast) // X does not exist
-            .build(PipelineType::Otap, "namespace", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -595,7 +595,7 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .connect("A", "out", ["Y"], DispatchStrategy::Broadcast) // Y does not exist
-            .build(PipelineType::Otap, "namespace", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -624,7 +624,7 @@ mod tests {
             .add_processor("B", "urn:test:processor", None)
             .round_robin("A", "p", ["B"])
             .round_robin("B", "p", ["A"])
-            .build(PipelineType::Otap, "namespace", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -650,7 +650,7 @@ mod tests {
             .add_receiver("Start", "urn:test:receiver", Some(json!({"foo": 1})))
             .add_exporter("End", "urn:test:exporter", None)
             .broadcast("Start", "out", ["End"])
-            .build(PipelineType::Otap, "namespace", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match dag {
             Ok(pipeline_spec) => {
@@ -808,7 +808,7 @@ mod tests {
                 ["processor_enrich_events"],
             )
             // Finalize build
-            .build(PipelineType::Otap, "namespace", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         // Assert the DAG is valid and acyclic
         match dag {

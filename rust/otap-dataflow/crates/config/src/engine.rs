@@ -2,22 +2,22 @@
 
 //! The configuration for the dataflow engine.
 
-use crate::NamespaceId;
+use crate::PipelineGroupId;
 use crate::error::Error;
-use crate::namespace::NamespaceConfig;
+use crate::pipeline_group::PipelineGroupConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Root configuration for the pipeline engine.
-/// Contains engine-level settings and all namespaces.
+/// Contains engine-level settings and all pipeline groups.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EngineConfig {
     /// Settings that apply to the entire engine instance.
     settings: EngineSettings,
 
-    /// All namespaces managed by this engine, keyed by namespace ID.
-    namespaces: HashMap<NamespaceId, NamespaceConfig>,
+    /// All pipeline group managed by this engine, keyed by pipeline group ID.
+    pipeline_groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
 }
 
 /// Global settings for the engine.
@@ -40,12 +40,12 @@ impl EngineConfig {
     }
 
     /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error
-    /// containing all validation errors found in the namespaces.
+    /// containing all validation errors found in the pipeline groups.
     pub fn validate(&self) -> Result<(), Error> {
         let mut errors = Vec::new();
 
-        for (namespace_id, namespace) in &self.namespaces {
-            if let Err(e) = namespace.validate(namespace_id) {
+        for (pipeline_group_id, pipeline_group) in &self.pipeline_groups {
+            if let Err(e) = pipeline_group.validate(pipeline_group_id) {
                 errors.push(e);
             }
         }

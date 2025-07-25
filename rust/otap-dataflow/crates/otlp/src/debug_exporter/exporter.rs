@@ -105,9 +105,9 @@ impl local::Exporter<OTLPData> for DebugExporter {
         } else {
             Box::new(DetailedOTLPMarshaler)
         };
-        
+
         println!("Starting Debug Exporter");
-        
+
         // get a writer to write to stdout or to a file
         let mut writer = get_writer(self.output);
         // Loop until a Shutdown event is received.

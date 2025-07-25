@@ -3,7 +3,7 @@
 //! Errors for the config crate.
 
 use crate::node::DispatchStrategy;
-use crate::{NamespaceId, NodeId, PipelineId, PortName};
+use crate::{NodeId, PipelineGroupId, PipelineId, PortName};
 use miette::Diagnostic;
 use std::fmt::Display;
 
@@ -18,10 +18,10 @@ pub struct HyperEdgeSpecDetails {
     pub missing_targets: Vec<NodeId>,
 }
 
-/// Errors that can occur while processing the configuration of a data plane, a namespace, a pipeline,
-/// or a node.
+/// Errors that can occur while processing the configuration of a data plane, a pipeline group, a
+/// pipeline, or a node.
 ///
-/// Note: All errors are contextualized with the namespace and pipeline ids, if applicable.
+/// Note: All errors are contextualized with the pipeline group and pipeline ids, if applicable.
 #[derive(thiserror::Error, Debug, Diagnostic)]
 pub enum Error {
     /// A collection of errors that occurred during parsing or validating the configuration.
@@ -116,18 +116,18 @@ pub enum Error {
 /// the context in which they occurred.
 #[derive(Debug, Default)]
 pub struct Context {
-    /// The namespace id, if applicable.
-    pub namespace_id: Option<NamespaceId>,
+    /// The pipeline group id, if applicable.
+    pub pipeline_group_id: Option<PipelineGroupId>,
     /// The pipeline id, if applicable.
     pub pipeline_id: Option<PipelineId>,
 }
 
 impl Context {
-    /// Creates a new context with the given namespace and pipeline ids.
+    /// Creates a new context with the given pipeline group and pipeline ids.
     #[must_use]
-    pub fn new(namespace_id: NamespaceId, pipeline_id: PipelineId) -> Self {
+    pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
         Self {
-            namespace_id: Some(namespace_id),
+            pipeline_group_id: Some(pipeline_group_id),
             pipeline_id: Some(pipeline_id),
         }
     }
@@ -135,8 +135,8 @@ impl Context {
 
 impl Display for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(namespace_id) = &self.namespace_id {
-            write!(f, "Namespace: '{namespace_id}'")?;
+        if let Some(pipeline_group_id) = &self.pipeline_group_id {
+            write!(f, "Pipeline group: '{pipeline_group_id}'")?;
         }
         if let Some(pipeline_id) = &self.pipeline_id {
             write!(f, " Pipeline: '{pipeline_id}'")?;
