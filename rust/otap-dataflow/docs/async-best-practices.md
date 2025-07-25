@@ -97,7 +97,7 @@ async fn good_network() {
 }
 ```
 
-## 🛠️ Script To Detect Issues
+## Script To Detect Issues
 
 Run our custom script to detect blocking operations:
 
@@ -140,7 +140,7 @@ When reviewing async code, check for:
 - [ ] Blocking operations are wrapped in `spawn_blocking`
 - [ ] No locks held across `.await` points
 
-## ⚡ Quick Reference
+## Quick Reference
 
 | Blocking              | Async Alternative       |
 |-----------------------|-------------------------|
