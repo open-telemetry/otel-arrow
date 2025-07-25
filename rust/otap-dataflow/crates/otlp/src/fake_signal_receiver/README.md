@@ -21,9 +21,48 @@ step will describe a batch of signals to send
                 "resource_count": 1,
                 "scope_count": 1,
                 "metric_count": 1,
-                "datapoint_count": 1,
-                "datapoint_type": "gauge",
-                "attribute_count": 1
+                "datapoints": {
+                    "datapoint_count": 3,
+                    "datapoint_type": [
+                        "gauge",
+                        "histogram"
+                    ],
+                    "attributes": {
+                        "cpu_mhz": [
+                            "2.4",
+                            "4.2"
+                        ],
+                        "cpu": [
+                            0
+                        ],
+                        "cpu_cores": [
+                            "4",
+                            "8",
+                            "16"
+                        ],
+                        "cpu_vendor": [
+                            "intel"
+                        ],
+                        "cpu_id": [
+                            "cpu-0",
+                            "cpu-1",
+                            "cpu-2",
+                            "cpu-3"
+                        ],
+                        "cpu_arch": [
+                            "x86-64"
+                        ],
+                        "cpu_model": [
+                            "i7",
+                            "i5"
+                        ],
+                        "cpu_logical_processors": [
+                            "8"
+                        ]
+                    },
+                    "top_value": 50.0,
+                    "bottom_value": 0.0
+                }
             }
         },
         {
@@ -34,9 +73,46 @@ step will describe a batch of signals to send
                 "resource_count": 1,
                 "scope_count": 1,
                 "span_count": 1,
-                "event_count": 1,
-                "link_count": 1,
-                "attribute_count": 1
+                "attributes": {
+                    "hostname": [
+                        "host3.thedomain.edu",
+                        "host1.mydomain.com",
+                        "host4.gov",
+                        "host2.org"
+                    ],
+                    "up": [
+                        true,
+                        false
+                    ],
+                    "version": [
+                        "2.0.0",
+                        "1.0.0",
+                        "1.5.2"
+                    ],
+                    "status": [
+                        400,
+                        404,
+                        200
+                    ]
+                },
+                "span_names": [
+                    "dns-lookup",
+                    "message-send",
+                    "http-close",
+                    "unknown",
+                    "http-send",
+                    "http-close"
+                ],
+                "events": {
+                    "event_count": 0,
+                    "event_names": [],
+                    "attributes": {}
+                },
+                "links": {
+                    "link_count": 0,
+                    "trace_states": [],
+                    "attributes": {}
+                }
             }
         },
         {
@@ -47,7 +123,35 @@ step will describe a batch of signals to send
                 "resource_count": 1,
                 "scope_count": 1,
                 "log_count": 1,
-                "attribute_count": 1
+                "attributes": {
+                    "hostname": [
+                        "host3.thedomain.edu",
+                        "host1.mydomain.com",
+                        "host4.gov",
+                        "host2.org"
+                    ],
+                    "up": [
+                        true,
+                        false
+                    ],
+                    "version": [
+                        "2.0.0",
+                        "1.0.0",
+                        "1.5.2"
+                    ],
+                    "status": [
+                        400,
+                        404,
+                        200
+                    ]
+                },
+                "event_names": [
+                    "unknown",
+                    "message-receive",
+                    "message-send",
+                    "http-receive",
+                    "http-send"
+                ]
             }
         }
     ]

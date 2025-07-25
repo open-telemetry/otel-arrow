@@ -5,7 +5,7 @@
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 
-use crate::fake_signal_receiver::config::MetricType;
+use crate::fake_signal_receiver::config::{AttributeValue, EventConfig, LinkConfig, DatapointType};
 use crate::fake_signal_receiver::fake_data::*;
 use otel_arrow_rust::proto::opentelemetry::{
     common::v1::InstrumentationScope,
@@ -21,6 +21,7 @@ use otel_arrow_rust::proto::opentelemetry::{
         span::{Event, Link},
     },
 };
+use std::collections::HashMap;
 
 /// Genererates MetricsData based on the provided count for resource, scope, metric, datapoint count
 #[must_use]
@@ -29,8 +30,8 @@ pub fn fake_otlp_metrics(
     scope_metrics_count: usize,
     metric_count: usize,
     datapoint_count: usize,
-    datapoint_type: MetricType,
-    attribute_count: usize,
+    datapoint_type: DatapointType,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
 ) -> MetricsData {
     let mut resource_metrics: Vec<ResourceMetrics> = vec![];
 
@@ -40,17 +41,12 @@ pub fn fake_otlp_metrics(
             // create some fake metrics based on the metric_count value provided
             let mut metrics: Vec<Metric> = vec![];
             for _ in 0..metric_count {
-                metrics.push(fake_metric(
-                    datapoint_type,
-                    datapoint_count,
-                    attribute_count,
-                ));
+                metrics.push(fake_metric(datapoint_type, datapoint_count, attributes));
             }
             scope_metrics.push(
                 ScopeMetrics::build(
                     InstrumentationScope::build(get_scope_name())
                         .version(get_scope_version())
-                        .attributes(get_attributes(attribute_count))
                         .finish(),
                 )
                 .metrics(metrics)
@@ -74,9 +70,10 @@ pub fn fake_otlp_traces(
     resource_spans_count: usize,
     scope_spans_count: usize,
     span_count: usize,
-    event_count: usize,
-    link_count: usize,
-    attribute_count: usize,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
+    span_names: &Vec<String>,
+    events: &EventConfig,
+    links: &LinkConfig,
 ) -> TracesData {
     let mut resource_spans: Vec<ResourceSpans> = vec![];
 
@@ -85,13 +82,12 @@ pub fn fake_otlp_traces(
         for _ in 0..scope_spans_count {
             let mut spans: Vec<Span> = vec![];
             for _ in 0..span_count {
-                spans.push(fake_span(event_count, link_count, attribute_count));
+                spans.push(fake_span(events, links, attributes, span_names));
             }
             scope_spans.push(
                 ScopeSpans::build(
                     InstrumentationScope::build(get_scope_name())
                         .version(get_scope_version())
-                        .attributes(get_attributes(attribute_count))
                         .finish(),
                 )
                 .spans(spans)
@@ -115,7 +111,8 @@ pub fn fake_otlp_logs(
     resource_logs_count: usize,
     scope_logs_count: usize,
     log_records_count: usize,
-    attribute_count: usize,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
+    event_names: &Vec<String>,
 ) -> LogsData {
     let mut resource_logs: Vec<ResourceLogs> = vec![];
 
@@ -124,13 +121,12 @@ pub fn fake_otlp_logs(
         for _ in 0..scope_logs_count {
             let mut log_records: Vec<LogRecord> = vec![];
             for _ in 0..log_records_count {
-                log_records.push(fake_log_records(attribute_count));
+                log_records.push(fake_log_records(attributes, event_names));
             }
             scope_logs.push(
                 ScopeLogs::build(
                     InstrumentationScope::build(get_scope_name())
                         .version(get_scope_version())
-                        .attributes(get_attributes(attribute_count))
                         .finish(),
                 )
                 .log_records(log_records)
@@ -149,26 +145,48 @@ pub fn fake_otlp_logs(
 }
 
 #[must_use]
-fn fake_span(event_count: usize, link_count: usize, attribute_count: usize) -> Span {
+fn fake_span(
+    event_config: &EventConfig,
+    link_config: &LinkConfig,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
+    span_names: &Vec<String>,
+) -> Span {
     let mut links: Vec<Link> = vec![];
+    let link_attributes = link_config.get_attributes();
+    let link_trace_states = link_config.get_trace_states();
+    let link_count = link_config.get_count();
     for _ in 0..link_count {
-        links.push(Link::new(get_trace_id(), get_span_id()));
+        links.push(
+            Link::build(get_trace_id(), get_span_id())
+                .attributes(get_attributes(link_attributes))
+                .trace_state(get_random_string_from_vec(link_trace_states))
+                .finish(),
+        );
     }
     let mut events: Vec<Event> = vec![];
+    let event_attributes = event_config.get_attributes();
+    let event_names = event_config.get_event_names();
+    let event_count = event_config.get_count();
     for _ in 0..event_count {
-        events.push(Event::new(get_event_name(), get_time_unix_nano()));
+        events.push(
+            Event::build(
+                get_random_string_from_vec(event_names),
+                get_time_unix_nano(),
+            )
+            .attributes(get_attributes(event_attributes))
+            .finish(),
+        );
     }
 
     Span::build(
         get_trace_id(),
         get_span_id(),
-        get_span_name(),
+        get_random_string_from_vec(span_names),
         get_start_time_unix_nano(),
     )
-    .attributes(get_attributes(attribute_count))
+    .attributes(get_attributes(attributes))
     .flags(get_span_flag())
     .kind(get_span_kind())
-    .trace_state(get_trace_state())
     .links(links)
     .events(events)
     .end_time_unix_nano(get_end_time_unix_nano())
@@ -180,65 +198,75 @@ fn fake_span(event_count: usize, link_count: usize, attribute_count: usize) -> S
 }
 #[must_use]
 fn fake_metric(
-    datapoint_type: MetricType,
+    datapoint_type: DatapointType,
     datapoint_count: usize,
-    attribute_count: usize,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
 ) -> Metric {
     match datapoint_type {
-        MetricType::Gauge => {
-            let datapoints = fake_number_datapoints(datapoint_count, attribute_count);
+        DatapointType::Gauge => {
+            let datapoints = fake_number_datapoints(datapoint_count, attributes);
             Metric::new_gauge("metric_gauge", Gauge::new(datapoints))
         }
-        MetricType::Sum => {
-            let datapoints = fake_number_datapoints(datapoint_count, attribute_count);
+        DatapointType::Sum => {
+            let datapoints = fake_number_datapoints(datapoint_count, attributes);
             Metric::new_sum("metric_sum", Sum::new(get_aggregation(), true, datapoints))
         }
-        MetricType::Histogram => {
-            let datapoints = fake_histogram_datapoints(datapoint_count, attribute_count);
+        DatapointType::Histogram => {
+            let datapoints = fake_histogram_datapoints(datapoint_count, attributes);
             Metric::new_histogram(
                 "metric_histogram",
                 Histogram::new(get_aggregation(), datapoints),
             )
         }
-        MetricType::ExponentialHistogram => {
-            let datapoints = fake_exp_histogram_datapoints(datapoint_count, attribute_count);
+        DatapointType::ExponentialHistogram => {
+            let datapoints = fake_exp_histogram_datapoints(datapoint_count, attributes);
             Metric::new_exponential_histogram(
                 "metric_exponential_histogram",
                 ExponentialHistogram::new(get_aggregation(), datapoints),
             )
         }
-        MetricType::Summary => {
-            let datapoints = fake_summary_datapoints(datapoint_count, attribute_count);
+        DatapointType::Summary => {
+            let datapoints = fake_summary_datapoints(datapoint_count, attributes);
             Metric::new_summary("metric_summary", Summary::new(datapoints))
         }
     }
 }
 
 #[must_use]
-fn fake_log_records(attribute_count: usize) -> LogRecord {
+fn fake_log_records(
+    attributes: &HashMap<String, Vec<AttributeValue>>,
+    event_names: &Vec<String>,
+) -> LogRecord {
     let severity_number = get_severity_number();
     let severity_text = get_severity_text(severity_number);
-    LogRecord::build(get_time_unix_nano(), severity_number, get_event_name())
-        .observed_time_unix_nano(get_time_unix_nano())
-        .trace_id(get_trace_id())
-        .span_id(get_span_id())
-        .severity_text(severity_text)
-        .attributes(get_attributes(attribute_count))
-        .dropped_attributes_count(0u32)
-        .flags(get_log_record_flag())
-        .body(get_body_text())
-        .finish()
+    LogRecord::build(
+        get_time_unix_nano(),
+        severity_number,
+        get_random_string_from_vec(event_names),
+    )
+    .observed_time_unix_nano(get_time_unix_nano())
+    .trace_id(get_trace_id())
+    .span_id(get_span_id())
+    .severity_text(severity_text)
+    .attributes(get_attributes(attributes))
+    .dropped_attributes_count(0u32)
+    .flags(get_log_record_flag())
+    .body(get_body_text())
+    .finish()
 }
 
 /// generate gauge datapoints
 #[must_use]
-fn fake_number_datapoints(datapoint_count: usize, attribute_count: usize) -> Vec<NumberDataPoint> {
+fn fake_number_datapoints(
+    datapoint_count: usize,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
+) -> Vec<NumberDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
         datapoints.push(
             NumberDataPoint::build_double(get_time_unix_nano(), get_double_value())
                 .start_time_unix_nano(get_start_time_unix_nano())
-                .attributes(get_attributes(attribute_count))
+                .attributes(get_attributes(attributes))
                 .finish(),
         );
     }
@@ -250,7 +278,7 @@ fn fake_number_datapoints(datapoint_count: usize, attribute_count: usize) -> Vec
 #[must_use]
 fn fake_histogram_datapoints(
     datapoint_count: usize,
-    attribute_count: usize,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
 ) -> Vec<HistogramDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
@@ -261,7 +289,7 @@ fn fake_histogram_datapoints(
                 get_explicit_bounds(),
             )
             .start_time_unix_nano(get_start_time_unix_nano())
-            .attributes(get_attributes(attribute_count))
+            .attributes(get_attributes(attributes))
             .finish(),
         )
     }
@@ -273,14 +301,14 @@ fn fake_histogram_datapoints(
 #[must_use]
 fn fake_exp_histogram_datapoints(
     datapoint_count: usize,
-    attribute_count: usize,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
 ) -> Vec<ExponentialHistogramDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
         datapoints.push(
             ExponentialHistogramDataPoint::build(get_time_unix_nano(), 1, get_buckets())
                 .start_time_unix_nano(get_start_time_unix_nano())
-                .attributes(get_attributes(attribute_count))
+                .attributes(get_attributes(attributes))
                 .count(get_int_value())
                 .zero_count(get_int_value())
                 .negative(get_buckets())
@@ -295,18 +323,32 @@ fn fake_exp_histogram_datapoints(
 #[must_use]
 fn fake_summary_datapoints(
     datapoint_count: usize,
-    attribute_count: usize,
+    attributes: &HashMap<String, Vec<AttributeValue>>,
 ) -> Vec<SummaryDataPoint> {
     let mut datapoints = vec![];
     for _ in 0..datapoint_count {
         datapoints.push(
             SummaryDataPoint::build(get_time_unix_nano(), get_quantiles())
                 .start_time_unix_nano(get_start_time_unix_nano())
-                .attributes(get_attributes(attribute_count))
+                .attributes(get_attributes(attributes))
                 .count(get_int_value())
                 .sum(get_double_value())
                 .finish(),
         );
     }
     datapoints
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fake_signal_receiver::fake_signal::*;
+
+    #[test]
+    fn test_fake_metric() {}
+
+    #[test]
+    fn test_fake_trace() {}
+
+    #[test]
+    fn test_fake_log() {}
 }

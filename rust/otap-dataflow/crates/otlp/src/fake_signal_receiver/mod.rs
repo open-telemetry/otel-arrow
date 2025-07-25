@@ -11,3 +11,5 @@ pub mod fake_data;
 pub mod fake_signal;
 /// fake signal receiver implementation
 pub mod receiver;
+
+pub mod config_defaults;

@@ -4,6 +4,7 @@
 //! provides fake data to use for various fields in a OTLP signal
 //!
 
+use crate::fake_signal_receiver::config::AttributeValue;
 use otel_arrow_rust::proto::opentelemetry::{
     common::v1::{AnyValue, KeyValue},
     logs::v1::LogRecordFlags,
@@ -15,6 +16,8 @@ use otel_arrow_rust::proto::opentelemetry::{
 };
 use rand::Rng;
 use rand::distr::{Alphabetic, Alphanumeric};
+use rand::seq::IndexedRandom;
+use std::collections::HashMap;
 
 /// default scope name to use for fake signals
 const SCOPE_NAME: &str = "fake_signal";
@@ -22,23 +25,8 @@ const SCOPE_NAME: &str = "fake_signal";
 const SCOPE_VERSION: &str = "1.0.0";
 
 /// arrays containing values to choose from
-const TRACE_STATES: [&str; 3] = ["started", "ended", "unknown"];
 const SEVERITY_TEXT: [&str; 6] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
-const SPAN_NAMES: [&str; 6] = [
-    "dns-lookup",
-    "message-send",
-    "http-close",
-    "unknown",
-    "http-send",
-    "http-close",
-];
-const EVENT_NAMES: [&str; 5] = [
-    "unknown",
-    "message-receive",
-    "message-send",
-    "http-receive",
-    "http-send",
-];
+
 const SPAN_KIND: [SpanKind; 6] = [
     SpanKind::Unspecified,
     SpanKind::Internal,
@@ -64,22 +52,24 @@ const AGGREGATION_TEMPORALITY: [AggregationTemporality; 3] = [
 
 /// provide attributes for fake signals, attribute field
 #[must_use]
-pub fn get_attributes(attribute_count: usize) -> Vec<KeyValue> {
-    let mut attributes = vec![];
-    for attribute_index in 0..attribute_count {
-        let rng = rand::rng();
-        let attribute_value: String = rng
-            .sample_iter(&Alphanumeric)
-            .take(5)
-            .map(char::from)
-            .collect();
-        attributes.push(KeyValue::new(
-            format!("attribute.{attribute_index}"),
-            AnyValue::new_string(attribute_value),
-        ));
+pub fn get_attributes(attributes: &HashMap<String, Vec<AttributeValue>>) -> Vec<KeyValue> {
+    let mut generated_attributes = vec![];
+
+    for (key, values) in attributes.iter() {
+        let mut rng = rand::rng();
+        // select possible value for attribute key and push onto the generated attributes vector
+        match values.choose(&mut rng) {
+            Some(value) => {
+                generated_attributes.push(KeyValue::new(key, value.convert_anyvalue()));
+            }
+            None => {
+                generated_attributes.push(KeyValue::new(key, AnyValue { value: None }));
+            }
+        }
     }
-    attributes
+    generated_attributes
 }
+
 /// provide data for the serverity_text field based on severity number
 #[must_use]
 pub fn get_severity_text(severity_number: i32) -> String {
@@ -150,20 +140,15 @@ pub fn get_body_text() -> AnyValue {
     AnyValue::new_string(body)
 }
 
-/// provide data for the trace_state field
-#[must_use]
-pub fn get_trace_state() -> String {
-    let mut rng = rand::rng();
-    let option: usize = rng.random_range(0..TRACE_STATES.len());
-    TRACE_STATES[option].to_string()
-}
 
-/// provide data for the span name field
+/// select random string from provided vector, if empty then return empty string
 #[must_use]
-pub fn get_span_name() -> String {
+pub fn get_random_string_from_vec(strings: &Vec<String>) -> String {
     let mut rng = rand::rng();
-    let option: usize = rng.random_range(0..SPAN_NAMES.len());
-    SPAN_NAMES[option].to_string()
+    match strings.choose(&mut rng) {
+        Some(string) => string.to_string(),
+        None => "".to_string(),
+    }
 }
 
 /// provide data for the status field
@@ -173,14 +158,6 @@ pub fn get_status() -> Status {
     let option: usize = rng.random_range(0..STATUS_CODES.len());
     let status = STATUS_CODES[option];
     Status::new(status.as_str_name(), status)
-}
-
-/// provide data for the event_name field for spans, can be an empty stream
-#[must_use]
-pub fn get_event_name() -> String {
-    let mut rng = rand::rng();
-    let option: usize = rng.random_range(0..EVENT_NAMES.len());
-    EVENT_NAMES[option].to_string()
 }
 
 /// provide data for the time_unix_nano field
