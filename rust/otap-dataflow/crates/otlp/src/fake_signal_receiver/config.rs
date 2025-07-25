@@ -6,8 +6,9 @@
 use crate::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
-use otel_arrow_rust::proto::opentelemetry::{
-    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
+use crate::proto::opentelemetry::collector::{
+    logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+    trace::v1::ExportTraceServiceRequest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -164,7 +165,7 @@ impl MetricConfig {
     }
     /// Take the metric config and generate the corresponding metric signal
     #[must_use]
-    pub fn get_signal(&self) -> MetricsData {
+    pub fn get_signal(&self) -> ExportMetricsServiceRequest {
         // check datapoint type
         fake_otlp_metrics(
             self.resource_count,
@@ -195,7 +196,7 @@ impl LogConfig {
     }
     /// Take the log config and generate the corresponding log signal
     #[must_use]
-    pub fn get_signal(&self) -> LogsData {
+    pub fn get_signal(&self) -> ExportLogsServiceRequest {
         fake_otlp_logs(
             self.resource_count,
             self.scope_count,
@@ -227,7 +228,7 @@ impl SpanConfig {
     }
     /// Take the traces config and generate the corresponding traces signal
     #[must_use]
-    pub fn get_signal(&self) -> TracesData {
+    pub fn get_signal(&self) -> ExportTraceServiceRequest {
         fake_otlp_traces(
             self.resource_count,
             self.scope_count,
@@ -243,11 +244,11 @@ impl SpanConfig {
 #[derive(Debug, Clone)]
 pub enum OTLPSignal {
     /// Logs signal
-    Log(LogsData),
+    Log(ExportLogsServiceRequest),
     /// Metrics signal
-    Metric(MetricsData),
+    Metric(ExportMetricsServiceRequest),
     /// Traces signal
-    Span(TracesData),
+    Span(ExportTraceServiceRequest),
 }
 
 #[cfg(test)]

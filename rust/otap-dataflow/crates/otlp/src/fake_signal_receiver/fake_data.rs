@@ -4,13 +4,10 @@
 //! provides fake data to use for various fields in a OTLP signal
 //!
 
-use otel_arrow_rust::proto::opentelemetry::{
-    common::v1::{AnyValue, KeyValue},
+use crate::proto::opentelemetry::{
+    common::v1::{AnyValue, KeyValue, any_value::Value},
     logs::v1::LogRecordFlags,
-    metrics::v1::{
-        AggregationTemporality, exponential_histogram_data_point::Buckets,
-        summary_data_point::ValueAtQuantile,
-    },
+    metrics::v1::AggregationTemporality,
     trace::v1::{SpanFlags, Status, span::SpanKind, status::StatusCode},
 };
 use rand::Rng;
@@ -73,10 +70,12 @@ pub fn get_attributes(attribute_count: usize) -> Vec<KeyValue> {
             .take(5)
             .map(char::from)
             .collect();
-        attributes.push(KeyValue::new(
-            format!("attribute.{attribute_index}"),
-            AnyValue::new_string(attribute_value),
-        ));
+        attributes.push(KeyValue {
+            key: format!("attribute.{attribute_index}"),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(attribute_value)),
+            }),
+        });
     }
     attributes
 }
@@ -147,7 +146,9 @@ pub fn get_body_text() -> AnyValue {
         .map(char::from)
         .collect();
 
-    AnyValue::new_string(body)
+    AnyValue {
+        value: Some(Value::StringValue(body)),
+    }
 }
 
 /// provide data for the trace_state field
@@ -172,7 +173,11 @@ pub fn get_status() -> Status {
     let mut rng = rand::rng();
     let option: usize = rng.random_range(0..STATUS_CODES.len());
     let status = STATUS_CODES[option];
-    Status::new(status.as_str_name(), status)
+
+    Status {
+        code: status as i32,
+        message: status.as_str_name().to_string(),
+    }
 }
 
 /// provide data for the event_name field for spans, can be an empty stream
@@ -250,30 +255,6 @@ pub fn get_aggregation() -> AggregationTemporality {
     let mut rng = rand::rng();
     let option: usize = rng.random_range(0..AGGREGATION_TEMPORALITY.len());
     AGGREGATION_TEMPORALITY[option]
-}
-
-/// provides a vector of quantiles
-#[must_use]
-pub fn get_quantiles() -> Vec<ValueAtQuantile> {
-    let mut rng = rand::rng();
-    let count: usize = rng.random_range(0..4);
-    let mut qunatiles = vec![];
-    for _ in 0..count {
-        qunatiles.push(ValueAtQuantile::new(
-            rng.random_range(1.5..10.5),
-            rng.random_range(1.5..10.5),
-        ));
-    }
-    qunatiles
-}
-
-/// provides buckets for metric datapoint
-#[must_use]
-pub fn get_buckets() -> Buckets {
-    let mut rng = rand::rng();
-    let count: usize = rng.random_range(0..4);
-    let buckets: Vec<u64> = rand::random_iter().take(count).collect();
-    Buckets::new(rng.random_range(0..4), buckets)
 }
 
 /// provides random u64 value for various fields
