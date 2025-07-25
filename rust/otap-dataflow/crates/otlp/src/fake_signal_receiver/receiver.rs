@@ -6,32 +6,39 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::FAKE_SIGNAL_RECEIVERS;
-
 use crate::fake_signal_receiver::config::{Config, OTLPSignal, ScenarioStep, SignalConfig};
 use async_trait::async_trait;
-use linkme::distributed_slice;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{LocalReceiverFactory, receiver as local};
-use otap_df_engine::message::ControlMsg;
+use otap_df_engine::local::receiver as local;
 use serde_json::Value;
 use tokio::time::{Duration, sleep};
+
+/// The URN for the fake signal receiver
+pub const FAKE_SIGNAL_RECEIVER_URN: &str = "urn:otel:fake:signal:receiver";
 
 /// A Receiver that listens for OTLP messages
 pub struct FakeSignalReceiver {
     config: Config,
 }
 
-/// Declares the Fake Signal receiver as a local receiver factory
-///
-/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
-/// This macro is part of the `linkme` crate which is considered safe and well maintained.
-#[allow(unsafe_code)]
-#[distributed_slice(FAKE_SIGNAL_RECEIVERS)]
-pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPSignal> = LocalReceiverFactory {
-    name: "urn:otel:fake:signal:receiver",
-    create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
-};
+// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPData type. We must unify this in the future.
+// Declares the Fake Signal receiver as a local receiver factory
+//
+// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+// This macro is part of the `linkme` crate which is considered safe and well maintained.
+// #[allow(unsafe_code)]
+// #[distributed_slice(OTLP_RECEIVER_FACTORIES)]
+// pub static FAKE_SIGNAL_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
+//     name: FAKE_SIGNAL_RECEIVER_URN,
+//     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+//         Ok(ReceiverWrapper::shared(
+//             FakeSignalReceiver::from_config(&node_config.config)?,
+//             node_config,
+//             receiver_config,
+//         ))
+//     },
+// };
 
 impl FakeSignalReceiver {
     /// creates a new FakeSignalReceiver
@@ -41,11 +48,13 @@ impl FakeSignalReceiver {
     }
 
     /// Creates a new FakeSignalReceiver from a configuration object
-    #[must_use]
-    pub fn from_config(config: &Value) -> Self {
-        let config: Config =
-            serde_json::from_value(config.clone()).unwrap_or_else(|_| Config::new(vec![]));
-        FakeSignalReceiver { config }
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(FakeSignalReceiver { config })
     }
 }
 
@@ -110,6 +119,7 @@ async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHa
 
 #[cfg(test)]
 mod tests {
+    use crate::fake_signal_receiver::receiver::FAKE_SIGNAL_RECEIVER_URN;
     use crate::fake_signal_receiver::{
         config::{
             Config, LogConfig, MetricConfig, MetricType, OTLPSignal, ScenarioStep, SignalConfig,
@@ -117,11 +127,13 @@ mod tests {
         },
         receiver::FakeSignalReceiver,
     };
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
     use std::future::Future;
     use std::pin::Pin;
+    use std::rc::Rc;
     use tokio::time::{Duration, sleep, timeout};
 
     const RESOURCE_COUNT: usize = 1;
@@ -292,8 +304,14 @@ mod tests {
         let config = Config::new(steps);
 
         // create our receiver
-        let receiver =
-            ReceiverWrapper::local(FakeSignalReceiver::new(config), test_runtime.config());
+        let node_config = Rc::new(NodeUserConfig::new_receiver_config(
+            FAKE_SIGNAL_RECEIVER_URN,
+        ));
+        let receiver = ReceiverWrapper::local(
+            FakeSignalReceiver::new(config),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime

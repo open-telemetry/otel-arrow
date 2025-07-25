@@ -7,9 +7,5 @@
 pub enum Error {
     /// A wrapper for the config errors.
     #[error("A config error occurred: {0}")]
-    ConfigError(#[from] crates::config::Error),
-
-    /// A wrapper for the pipeline engine errors.
-    #[error("A pipeline engine error occurred: {0}")]
-    EngineError(#[from] crates::engine::Error),
+    ConfigError(#[from] otap_df_config::error::Error),
 }

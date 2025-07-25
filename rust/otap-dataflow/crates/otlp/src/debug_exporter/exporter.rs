@@ -8,7 +8,7 @@
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 //!
 
-use crate::LOCAL_EXPORTERS;
+use crate::OTLP_EXPORTER_FACTORIES;
 use crate::debug_exporter::{
     config::{Config, Verbosity},
     counter::DebugCounter,
@@ -27,12 +27,21 @@ use crate::proto::opentelemetry::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ExporterFactory;
+use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{LocalExporterFactory, exporter as local};
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::local::exporter as local;
+use otap_df_engine::message::{Message, MessageChannel};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::rc::Rc;
+
+/// The URN for the debug exporter
+pub const DEBUG_EXPORTER_URN: &str = "urn:otel:debug:exporter";
 
 /// Exporter that outputs all data received to stdout
 pub struct DebugExporter {
@@ -40,15 +49,21 @@ pub struct DebugExporter {
     output: Option<String>,
 }
 
-/// Declares the Debug exporter as a local exporter factory
+/// Declares the OTLP exporter as a local exporter factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(LOCAL_EXPORTERS)]
-pub static DEBUG_EXPORTER: LocalExporterFactory<OTLPData> = LocalExporterFactory {
-    name: "urn:otel:debug:exporter",
-    create: |config: &Value| Box::new(DebugExporter::from_config(config)),
+#[distributed_slice(OTLP_EXPORTER_FACTORIES)]
+pub static DEBUG_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
+    name: DEBUG_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        Ok(ExporterWrapper::local(
+            DebugExporter::from_config(&node_config.config)?,
+            node_config,
+            exporter_config,
+        ))
+    },
 };
 
 impl DebugExporter {
@@ -60,14 +75,16 @@ impl DebugExporter {
     }
 
     /// Creates a new DebugExporter from a configuration object
-    #[must_use]
-    pub fn from_config(config: &Value) -> Self {
-        let config: Config = serde_json::from_value(config.clone())
-            .unwrap_or_else(|_| Config::new(Verbosity::Normal));
-        DebugExporter {
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(DebugExporter {
             config,
             output: None,
-        }
+        })
     }
 }
 
@@ -88,6 +105,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
         } else {
             Box::new(DetailedOTLPMarshaler)
         };
+
+        println!("Starting Debug Exporter");
 
         // get a writer to write to stdout or to a file
         let mut writer = get_writer(self.output);
@@ -166,7 +185,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
+                        exporter: effect_handler.exporter_id(),
                         error: "Unknown control message".to_owned(),
                     });
                 }
@@ -353,7 +372,7 @@ fn push_profile(
 mod tests {
 
     use crate::debug_exporter::config::{Config, Verbosity};
-    use crate::debug_exporter::exporter::DebugExporter;
+    use crate::debug_exporter::exporter::{DEBUG_EXPORTER_URN, DebugExporter};
     use crate::grpc::OTLPData;
     use crate::mock::{
         create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
@@ -364,8 +383,10 @@ mod tests {
     use otap_df_engine::testing::exporter::TestRuntime;
     use tokio::time::{Duration, sleep};
 
+    use otap_df_config::node::NodeUserConfig;
     use std::fs::{File, remove_file};
     use std::io::{BufReader, read_to_string};
+    use std::rc::Rc;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -446,8 +467,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let output_file = "debug_output_basic.txt".to_string();
         let config = Config::new(Verbosity::Basic);
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            node_config,
             test_runtime.config(),
         );
 
@@ -465,8 +488,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let output_file = "debug_output_normal.txt".to_string();
         let config = Config::new(Verbosity::Normal);
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            node_config,
             test_runtime.config(),
         );
 
@@ -484,8 +509,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let output_file = "debug_output_detailed.txt".to_string();
         let config = Config::new(Verbosity::Detailed);
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            node_config,
             test_runtime.config(),
         );
 

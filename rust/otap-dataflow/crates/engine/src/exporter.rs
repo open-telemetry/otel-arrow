@@ -7,12 +7,20 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::local::exporter as local;
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
-use crate::message::ControlMsg;
-use crate::message::Receiver;
+use crate::message::{Receiver, Sender};
+use crate::node::{Node, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
+use crate::shared::message::{SharedReceiver, SharedSender};
+use otap_df_channel::error::SendError;
+use otap_df_channel::mpsc;
+use otap_df_config::NodeId;
+use otap_df_config::node::NodeUserConfig;
+use std::rc::Rc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -21,85 +29,199 @@ use crate::shared::exporter as shared;
 pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Rc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
         /// The effect handler instance for the exporter.
         effect_handler: local::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: LocalSender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Option<LocalReceiver<ControlMsg>>,
+        /// Receiver for PData messages.
+        pdata_receiver: Option<Receiver<PData>>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Rc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
         /// The effect handler instance for the exporter.
         effect_handler: shared::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: SharedSender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Option<SharedReceiver<ControlMsg>>,
+        /// Receiver for PData messages.
+        pdata_receiver: Option<SharedReceiver<PData>>,
     },
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ExporterWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        self.control_sender().send(msg).await
+    }
+
+    /// Returns the control message sender for the exporter.
+    fn control_sender(&self) -> Sender<ControlMsg> {
+        match self {
+            ExporterWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ExporterWrapper::Shared { control_sender, .. } => {
+                Sender::Shared(control_sender.clone())
+            }
+        }
+    }
 }
 
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new local `ExporterWrapper` with the given exporter and configuration (!Send
     /// implementation).
-    pub fn local<E>(exporter: E, config: &ExporterConfig) -> Self
+    pub fn local<E>(exporter: E, user_config: Rc<NodeUserConfig>, config: &ExporterConfig) -> Self
     where
         E: local::Exporter<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            mpsc::Channel::new(config.control_channel.capacity);
+
         ExporterWrapper::Local {
+            user_config,
             effect_handler: local::EffectHandler::new(config.name.clone()),
             exporter: Box::new(exporter),
+            control_sender: LocalSender::MpscSender(control_sender),
+            control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
+            pdata_receiver: None, // This will be set later
         }
     }
 
     /// Creates a new shared `ExporterWrapper` with the given exporter and configuration (Send
     /// implementation).
-    pub fn shared<E>(exporter: E, config: &ExporterConfig) -> Self
+    pub fn shared<E>(exporter: E, user_config: Rc<NodeUserConfig>, config: &ExporterConfig) -> Self
     where
         E: shared::Exporter<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            tokio::sync::mpsc::channel(config.control_channel.capacity);
+
         ExporterWrapper::Shared {
+            user_config,
             effect_handler: shared::EffectHandler::new(config.name.clone()),
             exporter: Box::new(exporter),
+            control_sender: SharedSender::MpscSender(control_sender),
+            control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
+            pdata_receiver: None, // This will be set later
         }
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(
-        self,
-        control_rx: Receiver<ControlMsg>,
-        pdata_rx: Receiver<PData>,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self) -> Result<(), Error<PData>> {
         match self {
             ExporterWrapper::Local {
                 effect_handler,
                 exporter,
+                control_receiver,
+                pdata_receiver,
+                ..
             } => {
-                let message_channel = message::MessageChannel::new(control_rx, pdata_rx);
+                let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "Control receiver not initialized".to_owned(),
+                })?;
+                let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "PData receiver not initialized".to_owned(),
+                })?;
+                let message_channel =
+                    message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             ExporterWrapper::Shared {
                 effect_handler,
                 exporter,
+                control_receiver,
+                pdata_receiver,
+                ..
             } => {
-                if let (Receiver::Shared(control_rx), Receiver::Shared(pdata_rx)) =
-                    (control_rx, pdata_rx)
-                {
-                    let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
-                    exporter.start(message_channel, effect_handler).await
-                } else {
-                    Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
-                        error: "Shared ExporterWrapper requires shared channels".to_owned(),
-                    })
-                }
+                let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "Control receiver not initialized".to_owned(),
+                })?;
+                let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "PData receiver not initialized".to_owned(),
+                })?;
+                let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
+                exporter.start(message_channel, effect_handler).await
             }
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Node for ExporterWrapper<PData> {
+    fn is_shared(&self) -> bool {
+        match self {
+            ExporterWrapper::Local { .. } => false,
+            ExporterWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn user_config(&self) -> Rc<NodeUserConfig> {
+        match self {
+            ExporterWrapper::Local {
+                user_config: config,
+                ..
+            } => config.clone(),
+            ExporterWrapper::Shared {
+                user_config: config,
+                ..
+            } => config.clone(),
+        }
+    }
+
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        match self {
+            ExporterWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
+            ExporterWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
+        }
+    }
+}
+
+impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
+    fn set_pdata_receiver(
+        &mut self,
+        node_id: NodeId,
+        receiver: Receiver<PData>,
+    ) -> Result<(), Error<PData>> {
+        match (self, receiver) {
+            (ExporterWrapper::Local { pdata_receiver, .. }, receiver) => {
+                *pdata_receiver = Some(receiver);
+                Ok(())
+            }
+            (ExporterWrapper::Shared { pdata_receiver, .. }, Receiver::Shared(receiver)) => {
+                *pdata_receiver = Some(receiver);
+                Ok(())
+            }
+            (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
+                exporter: node_id,
+                error: "Expected a shared sender for PData".to_owned(),
+            }),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::control::ControlMsg;
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
+    use crate::local::message::LocalReceiver;
     use crate::message;
-    use crate::message::{ControlMsg, Message};
+    use crate::message::Message;
     use crate::shared::exporter as shared;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
@@ -107,8 +229,10 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
+    use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
+    use std::rc::Rc;
     use std::time::Duration;
     use tokio::time::sleep;
 
@@ -151,7 +275,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: "Unknown control message".to_owned(),
                         });
                     }
@@ -186,7 +310,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: "Unknown control message".to_owned(),
                         });
                     }
@@ -246,8 +370,10 @@ mod tests {
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
+        let user_config = Rc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::local(
             TestExporter::new(test_runtime.counters()),
+            user_config,
             test_runtime.config(),
         );
 
@@ -260,8 +386,10 @@ mod tests {
     #[test]
     fn test_exporter_shared() {
         let test_runtime = TestRuntime::new();
+        let user_config = Rc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::shared(
             TestExporter::new(test_runtime.counters()),
+            user_config,
             test_runtime.config(),
         );
 
@@ -282,8 +410,8 @@ mod tests {
             control_tx,
             pdata_tx,
             message::MessageChannel::new(
-                message::Receiver::Local(control_rx),
-                message::Receiver::Local(pdata_rx),
+                message::Receiver::Local(LocalReceiver::MpscReceiver(control_rx)),
+                message::Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx)),
             ),
         )
     }
@@ -324,7 +452,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Send more pdata after shutdown is sent, but before receiver likely gets it
+        // Send more pdata after shutdown is sent, but before the receiver likely gets it
         pdata_tx.send_async("pdata3".to_string()).await.unwrap();
         pdata_tx
             .send_async("pdata4_during_drain".to_string())
@@ -389,7 +517,7 @@ mod tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(10)).await; // Give receiver a chance
+        sleep(Duration::from_millis(10)).await; // Give the receiver a chance
 
         // --- Start Receiving ---
 
