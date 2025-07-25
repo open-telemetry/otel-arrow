@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "grpc_endpoint": "http://127.0.0.1:1235"
             })),
         )
-        .round_robin("otlp_receiver", "out_port", ["exporter"])
+        .round_robin("otlp_receiver", "out_port", ["otlp_exporter"])
         .build(PipelineType::Otlp, "namespace", "pipeline")?;
 
     println!(
