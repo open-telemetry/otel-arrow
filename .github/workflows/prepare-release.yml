@@ -14,11 +14,13 @@ on:
         default: true
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   prepare-release:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-latest
     environment: release
     steps:

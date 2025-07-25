@@ -14,10 +14,12 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   push-release:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     environment: release
     steps:
