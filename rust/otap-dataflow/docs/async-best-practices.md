@@ -7,7 +7,7 @@ Dataflow project.
 
 ### 1. Synchronous I/O Operations
 
-**❌ Don't use:**
+**Don't use:**
 
 ```rust
 use std::io::Write;
@@ -19,7 +19,7 @@ async fn bad_example() {
 }
 ```
 
-**✅ Use instead:**
+**Use instead:**
 
 ```rust
 use tokio::fs::File;
@@ -33,7 +33,7 @@ async fn good_example() {
 
 ### 2. File System Operations
 
-**❌ Don't use:**
+**Don't use:**
 
 ```rust
 use std::fs;
@@ -44,7 +44,7 @@ async fn bad_fs_operations() {
 }
 ```
 
-**✅ Use instead:**
+**Use instead:**
 
 ```rust
 use tokio::fs;
@@ -57,7 +57,7 @@ async fn good_fs_operations() {
 
 ### 3. Thread Sleep
 
-**❌ Don't use:**
+**Don't use:**
 
 ```rust
 async fn bad_sleep() {
@@ -65,7 +65,7 @@ async fn bad_sleep() {
 }
 ```
 
-**✅ Use instead:**
+**Use instead:**
 
 ```rust
 use tokio::time::{sleep, Duration};
@@ -77,7 +77,7 @@ async fn good_sleep() {
 
 ### 4. Synchronous Network Operations
 
-**❌ Don't use:**
+**Don't use:**
 
 ```rust
 use std::net::TcpStream;
@@ -87,7 +87,7 @@ async fn bad_network() {
 }
 ```
 
-**✅ Use instead:**
+**Use instead:**
 
 ```rust
 use tokio::net::TcpStream;
