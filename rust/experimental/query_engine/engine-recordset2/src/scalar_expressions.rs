@@ -23,13 +23,11 @@ where
 
             let value = select_from_borrowed_value(execution_context, record, &mut selectors)?;
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    scalar_expression,
-                    format!("Evaluated as: {value}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {value}"),
+            );
 
             Ok(value)
         }
@@ -43,23 +41,19 @@ where
                 let value =
                     select_from_value(execution_context, Value::Map(record), &mut selectors)?;
 
-                if execution_context.is_enabled(LogLevel::Verbose) {
-                    execution_context.log(LogMessage::new(
-                        LogLevel::Verbose,
-                        scalar_expression,
-                        format!("Evaluated as: {value}"),
-                    ));
-                }
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    scalar_expression,
+                    || format!("Evaluated as: {value}"),
+                );
 
                 Ok(value)
             } else {
-                if execution_context.is_enabled(LogLevel::Warn) {
-                    execution_context.log(LogMessage::new(
-                        LogLevel::Warn,
-                        scalar_expression,
-                        format!("Evaluated as 'null' because attached record matching name '{}' could not be found", a.get_name().get_value()),
-                    ));
-                }
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    scalar_expression,
+                    || format!("Evaluated as 'null' because attached record matching name '{}' could not be found", a.get_name().get_value()),
+                );
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
             }
         }
@@ -69,16 +63,16 @@ where
             });
 
             if variable.is_err() {
-                if execution_context.is_enabled(LogLevel::Verbose) {
-                    execution_context.log(LogMessage::new(
-                        LogLevel::Verbose,
-                        scalar_expression,
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    scalar_expression,
+                    || {
                         format!(
                             "Variable with name '{}' was not found",
                             v.get_name().get_value()
-                        ),
-                    ));
-                }
+                        )
+                    },
+                );
                 return Ok(ResolvedValue::Computed(OwnedValue::Null));
             }
 
@@ -87,26 +81,22 @@ where
             let value =
                 select_from_borrowed_value(execution_context, variable.unwrap(), &mut selectors)?;
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    scalar_expression,
-                    format!("Evaluated as: {value}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {value}"),
+            );
 
             Ok(value)
         }
         ScalarExpression::Static(s) => {
             let value = s.to_value();
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    scalar_expression,
-                    format!("Evaluated as: {value}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {value}"),
+            );
 
             Ok(ResolvedValue::Value(value))
         }
@@ -123,11 +113,13 @@ where
 
                 let value = constant.to_value();
 
-                if execution_context.is_enabled(LogLevel::Verbose) {
+                if execution_context
+                    .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
+                {
                     let (line, column) =
                         constant.get_query_location().get_line_and_column_numbers();
-                    execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
+                    execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
+                            RecordSetEngineDiagnosticLevel::Verbose,
                             scalar_expression,
                             format!("Resolved constant with id '{constant_id}' on line {line} at column {column} as: {value}"),
                         ));
@@ -142,12 +134,14 @@ where
 
                 let value = constant_copy.to_value();
 
-                if execution_context.is_enabled(LogLevel::Verbose) {
+                if execution_context
+                    .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
+                {
                     let (line, column) = constant_copy
                         .get_query_location()
                         .get_line_and_column_numbers();
-                    execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
+                    execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
+                            RecordSetEngineDiagnosticLevel::Verbose,
                             scalar_expression,
                             format!("Resolved constant with id '{constant_id}' from copy of value on line {line} at column {column} as: {value}"),
                         ));
@@ -177,26 +171,22 @@ where
                 }
             };
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    scalar_expression,
-                    format!("Evaluated as: {v}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {v}"),
+            );
 
             Ok(v)
         }
         ScalarExpression::Logical(l) => {
             let value = execute_logical_expression(execution_context, l)?;
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    scalar_expression,
-                    format!("Evaluated as: {value}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {value}"),
+            );
 
             Ok(ResolvedValue::Computed(OwnedValue::Boolean(
                 ValueStorage::new(value),
@@ -211,13 +201,11 @@ where
 
             let inner_value = execute_scalar_expression(execution_context, inner_scalar)?;
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    scalar_expression,
-                    format!("Evaluated as: {inner_value}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {inner_value}"),
+            );
 
             Ok(inner_value)
         }
@@ -241,34 +229,28 @@ where
                     if let Value::Map(m) = v.to_value() {
                         match m.get(map_key.get_value()) {
                             Some(v) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                                    LogLevel::Verbose,
-                                                    s,
-                                                    format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
-                                                ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                                RecordSetEngineDiagnosticLevel::Verbose,
+                                                s,
+                                                || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                            );
                                 Some(v)
                             }
                             None => {
-                                if execution_context.is_enabled(LogLevel::Warn) {
-                                    execution_context.log(LogMessage::new(
-                                                LogLevel::Warn,
-                                                s,
-                                                format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
-                                            ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                            RecordSetEngineDiagnosticLevel::Warn,
+                                            s,
+                                            || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
+                                        );
                                 None
                             }
                         }
                     } else {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                        LogLevel::Warn,
-                                        s,
-                                        format!("Could not search for map key '{}' specified in accessor expression because current node is a '{:?}' value", map_key.get_value(), v.get_value_type()),
-                                    ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    s,
+                                    || format!("Could not search for map key '{}' specified in accessor expression because current node is a '{:?}' value", map_key.get_value(), v.get_value_type()),
+                                );
 
                         None
                     }
@@ -280,60 +262,47 @@ where
                             index += a.len() as i64;
                         }
                         if index < 0 {
-                            if execution_context.is_enabled(LogLevel::Warn) {
-                                execution_context.log(LogMessage::new(
-                                            LogLevel::Warn,
-                                            s,
-                                            format!("Array index '{index}' specified in accessor expression is invalid"),
-                                        ));
-                            }
+                            execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Warn,
+                                        s,
+                                        || format!("Array index '{index}' specified in accessor expression is invalid"),
+                                    );
                             None
                         } else {
                             match a.get(index as usize) {
                                 Some(v) => {
-                                    if execution_context.is_enabled(LogLevel::Verbose) {
-                                        execution_context.log(LogMessage::new(
-                                                        LogLevel::Verbose,
-                                                        s,
-                                                        format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
-                                                    ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                                    RecordSetEngineDiagnosticLevel::Verbose,
+                                                    s,
+                                                    || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                                );
                                     Some(v)
                                 }
                                 None => {
-                                    if execution_context.is_enabled(LogLevel::Warn) {
-                                        execution_context.log(LogMessage::new(
-                                                    LogLevel::Warn,
-                                                    s,
-                                                    format!("Could not find array index '{index}' specified in accessor expression"),
-                                                ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                                RecordSetEngineDiagnosticLevel::Warn,
+                                                s,
+                                                || format!("Could not find array index '{index}' specified in accessor expression"),
+                                            );
                                     None
                                 }
                             }
                         }
                     } else {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                        LogLevel::Warn,
-                                        s,
-                                        format!("Could not search for array index '{}' specified in accessor expression because current node is a '{:?}' value", array_index.get_value(), v.get_value_type()),
-                                    ));
-                        }
-
+                        execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    s,
+                                    || format!("Could not search for array index '{}' specified in accessor expression because current node is a '{:?}' value", array_index.get_value(), v.get_value_type()),
+                                );
                         None
                     }
                 }),
                 _ => {
-                    if execution_context.is_enabled(LogLevel::Warn) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Warn,
-                            s,
-                            "Unexpected scalar expression encountered in accessor expression"
-                                .into(),
-                        ));
-                    }
-
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        s,
+                        || "Unexpected scalar expression encountered in accessor expression".into(),
+                    );
                     return Ok(ResolvedValue::Computed(OwnedValue::Null));
                 }
             };
@@ -362,35 +331,28 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                     if let Value::Map(m) = root {
                         match m.get(map_key.get_value()) {
                             Some(v) => {
-                                if execution_context.is_enabled(LogLevel::Verbose) {
-                                    execution_context.log(LogMessage::new(
-                                                LogLevel::Verbose,
-                                                s,
-                                                format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
-                                            ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                            RecordSetEngineDiagnosticLevel::Verbose,
+                                            s,
+                                            || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                        );
                                 Some(v.to_value())
                             }
                             None => {
-                                if execution_context.is_enabled(LogLevel::Warn) {
-                                    execution_context.log(LogMessage::new(
-                                            LogLevel::Warn,
-                                            s,
-                                            format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
-                                        ));
-                                }
+                                execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Warn,
+                                        s,
+                                        || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
+                                    );
                                 None
                             }
                         }
                     } else {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                    LogLevel::Warn,
-                                    s,
-                                    format!("Could not search for map key '{}' specified in accessor expression because current node is a '{:?}' value", map_key.get_value(), root.get_value_type()),
-                                ));
-                        }
-
+                        execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Warn,
+                                s,
+                                || format!("Could not search for map key '{}' specified in accessor expression because current node is a '{:?}' value", map_key.get_value(), root.get_value_type()),
+                            );
                         None
                     }
                 }
@@ -401,59 +363,48 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                             index += a.len() as i64;
                         }
                         if index < 0 {
-                            if execution_context.is_enabled(LogLevel::Warn) {
-                                execution_context.log(LogMessage::new(
-                                        LogLevel::Warn,
-                                        s,
-                                        format!("Array index '{index}' specified in accessor expression is invalid"),
-                                    ));
-                            }
+                            execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    s,
+                                    || format!("Array index '{index}' specified in accessor expression is invalid"),
+                                );
                             None
                         } else {
                             match a.get(index as usize) {
                                 Some(v) => {
-                                    if execution_context.is_enabled(LogLevel::Verbose) {
-                                        execution_context.log(LogMessage::new(
-                                                    LogLevel::Verbose,
-                                                    s,
-                                                    format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
-                                                ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                                RecordSetEngineDiagnosticLevel::Verbose,
+                                                s,
+                                                || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                            );
                                     Some(v.to_value())
                                 }
                                 None => {
-                                    if execution_context.is_enabled(LogLevel::Warn) {
-                                        execution_context.log(LogMessage::new(
-                                                LogLevel::Warn,
-                                                s,
-                                                format!("Could not find array index '{index}' specified in accessor expression"),
-                                            ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                            RecordSetEngineDiagnosticLevel::Warn,
+                                            s,
+                                            || format!("Could not find array index '{index}' specified in accessor expression"),
+                                        );
                                     None
                                 }
                             }
                         }
                     } else {
-                        if execution_context.is_enabled(LogLevel::Warn) {
-                            execution_context.log(LogMessage::new(
-                                    LogLevel::Warn,
-                                    s,
-                                    format!("Could not search for array index '{}' specified in accessor expression because current node is a '{:?}' value", array_index.get_value(), root.get_value_type()),
-                                ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Warn,
+                                s,
+                                || format!("Could not search for array index '{}' specified in accessor expression because current node is a '{:?}' value", array_index.get_value(), root.get_value_type()),
+                            );
 
                         None
                     }
                 }
                 _ => {
-                    if execution_context.is_enabled(LogLevel::Warn) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Warn,
-                            s,
-                            "Unexpected scalar expression encountered in accessor expression"
-                                .into(),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        s,
+                        || "Unexpected scalar expression encountered in accessor expression".into(),
+                    );
 
                     None
                 }
@@ -494,8 +445,12 @@ mod tests {
         let run_test = |scalar_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -606,7 +561,7 @@ mod tests {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
             let execution_context = ExecutionContext::new(
-                LogLevel::Verbose,
+                RecordSetEngineDiagnosticLevel::Verbose,
                 &pipeline,
                 Some(&attached_records),
                 record.clone(),
@@ -650,8 +605,12 @@ mod tests {
         let run_test = |scalar_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             execution_context.get_variables().borrow_mut().set(
                 "var1",
@@ -720,8 +679,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -761,8 +724,12 @@ mod tests {
         let run_test = |scalar_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -797,8 +764,12 @@ mod tests {
         let run_test = |scalar_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -829,8 +800,12 @@ mod tests {
         let run_test = |scalar_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
