@@ -24,24 +24,6 @@ const SCOPE_NAME: &str = "fake_signal";
 /// default scope version to use for fake signals
 const SCOPE_VERSION: &str = "1.0.0";
 
-/// arrays containing values to choose from
-const SEVERITY_TEXT: [&str; 6] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
-
-const SPAN_KIND: [SpanKind; 6] = [
-    SpanKind::Unspecified,
-    SpanKind::Internal,
-    SpanKind::Server,
-    SpanKind::Client,
-    SpanKind::Producer,
-    SpanKind::Consumer,
-];
-const SPAN_FLAGS: [SpanFlags; 4] = [
-    SpanFlags::DoNotUse,
-    SpanFlags::TraceFlagsMask,
-    SpanFlags::ContextHasIsRemoteMask,
-    SpanFlags::ContextIsRemoteMask,
-];
-const STATUS_CODES: [StatusCode; 3] = [StatusCode::Unset, StatusCode::Error, StatusCode::Ok];
 const LOG_RECORD_FLAGS: [LogRecordFlags; 2] =
     [LogRecordFlags::DoNotUse, LogRecordFlags::TraceFlagsMask];
 const AGGREGATION_TEMPORALITY: [AggregationTemporality; 3] = [
@@ -50,46 +32,7 @@ const AGGREGATION_TEMPORALITY: [AggregationTemporality; 3] = [
     AggregationTemporality::Cumulative,
 ];
 
-/// provide attributes for fake signals, attribute field
-#[must_use]
-pub fn get_attributes(attributes: &HashMap<String, Vec<AttributeValue>>) -> Vec<KeyValue> {
-    let mut generated_attributes = vec![];
 
-    for (key, values) in attributes.iter() {
-        let mut rng = rand::rng();
-        // select possible value for attribute key and push onto the generated attributes vector
-        match values.choose(&mut rng) {
-            Some(value) => {
-                generated_attributes.push(KeyValue::new(key, value.convert_anyvalue()));
-            }
-            None => {
-                generated_attributes.push(KeyValue::new(key, AnyValue { value: None }));
-            }
-        }
-    }
-    generated_attributes
-}
-
-/// provide data for the serverity_text field based on severity number
-#[must_use]
-pub fn get_severity_text(severity_number: i32) -> String {
-    match severity_number {
-        1..=4 => SEVERITY_TEXT[0].to_string(),
-        5..=8 => SEVERITY_TEXT[1].to_string(),
-        9..=12 => SEVERITY_TEXT[2].to_string(),
-        13..=16 => SEVERITY_TEXT[3].to_string(),
-        17..=20 => SEVERITY_TEXT[4].to_string(),
-        _ => SEVERITY_TEXT[5].to_string(),
-    }
-}
-
-/// generate a random severity_number within [1, 25)
-#[must_use]
-pub fn get_severity_number() -> i32 {
-    let mut rng = rand::rng();
-    let severity_number: i32 = rng.random_range(1..25);
-    severity_number
-}
 
 /// generate a random trace_id
 #[must_use]
@@ -125,30 +68,6 @@ pub fn get_scope_name() -> String {
 #[must_use]
 pub fn get_scope_version() -> String {
     SCOPE_VERSION.to_string()
-}
-/// provide data for the body field
-#[must_use]
-pub fn get_body_text() -> AnyValue {
-    let rng = rand::rng();
-
-    let body: String = rng
-        .sample_iter(&Alphabetic)
-        .take(32)
-        .map(char::from)
-        .collect();
-
-    AnyValue::new_string(body)
-}
-
-
-/// select random string from provided vector, if empty then return empty string
-#[must_use]
-pub fn get_random_string_from_vec(strings: &Vec<String>) -> String {
-    let mut rng = rand::rng();
-    match strings.choose(&mut rng) {
-        Some(string) => string.to_string(),
-        None => "".to_string(),
-    }
 }
 
 /// provide data for the status field
@@ -213,13 +132,6 @@ pub fn get_span_flag() -> SpanFlags {
     SPAN_FLAGS[option]
 }
 
-/// provide data for the span kind field
-#[must_use]
-pub fn get_span_kind() -> SpanKind {
-    let mut rng = rand::rng();
-    let option: usize = rng.random_range(0..SPAN_KIND.len());
-    SPAN_KIND[option]
-}
 
 /// provide data for the span kind field
 #[must_use]
@@ -229,48 +141,9 @@ pub fn get_aggregation() -> AggregationTemporality {
     AGGREGATION_TEMPORALITY[option]
 }
 
-/// provides a vector of quantiles
-#[must_use]
-pub fn get_quantiles() -> Vec<ValueAtQuantile> {
-    let mut rng = rand::rng();
-    let count: usize = rng.random_range(0..4);
-    let mut qunatiles = vec![];
-    for _ in 0..count {
-        qunatiles.push(ValueAtQuantile::new(
-            rng.random_range(1.5..10.5),
-            rng.random_range(1.5..10.5),
-        ));
-    }
-    qunatiles
-}
-
-/// provides buckets for metric datapoint
-#[must_use]
-pub fn get_buckets() -> Buckets {
-    let mut rng = rand::rng();
-    let count: usize = rng.random_range(0..4);
-    let buckets: Vec<u64> = rand::random_iter().take(count).collect();
-    Buckets::new(rng.random_range(0..4), buckets)
-}
 
 /// provides random u64 value for various fields
 #[must_use]
 pub fn get_int_value() -> u64 {
     rand::random()
-}
-
-/// provides vec of f64 for the buckets count
-#[must_use]
-pub fn get_explicit_bounds() -> Vec<f64> {
-    let mut rng = rand::rng();
-    let count: usize = rng.random_range(1..3);
-    rand::random_iter().take(count).collect()
-}
-
-/// provides vec of u64 for the buckets count
-#[must_use]
-pub fn get_buckets_count() -> Vec<u64> {
-    let mut rng = rand::rng();
-    let count: usize = rng.random_range(1..4);
-    rand::random_iter().take(count).collect()
 }

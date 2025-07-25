@@ -15,7 +15,9 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine", features = ["testing"] }
 otap-df-channel = { path = "../channel" }
-
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git" }
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git" }
 # gRPC and Protocol Buffers
 tonic = { version = "0.13.1", default-features = false, features = [
     "server", "channel", "router", "transport", "codegen", 
@@ -25,11 +27,11 @@ prost = "0.13.5"
 prost-types = "0.13.5"
 hex = "0.4.3"
 linkme = "0.3.33"
-serde = {version="1", features=["derive"]}
 rand = "0.9.1"
 # Workspace dependencies
 thiserror.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 futures.workspace = true

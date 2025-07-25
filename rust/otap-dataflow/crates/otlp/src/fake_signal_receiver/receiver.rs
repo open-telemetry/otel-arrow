@@ -8,7 +8,8 @@
 
 use crate::FAKE_SIGNAL_RECEIVERS;
 
-use crate::fake_signal_receiver::config::{Config, OTLPSignal, ScenarioStep, SignalConfig};
+use crate::fake_signal_receiver::config::{Config, ScenarioStep, SignalConfig};
+use crate::grpc::OTLPData;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_engine::error::Error;
@@ -27,8 +28,8 @@ pub struct FakeSignalReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(FAKE_SIGNAL_RECEIVERS)]
-pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPSignal> = LocalReceiverFactory {
+#[distributed_slice(LOCAL_RECEIVERS)]
+pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPData> = LocalReceiverFactory {
     name: "urn:otel:fake:signal:receiver",
     create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
 };
@@ -51,12 +52,12 @@ impl FakeSignalReceiver {
 
 // We use the local version of the receiver here since we don't need to worry about Send and Sync traits
 #[async_trait( ? Send)]
-impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
+impl local::Receiver<OTLPData> for FakeSignalReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel,
-        effect_handler: local::EffectHandler<OTLPSignal>,
-    ) -> Result<(), Error<OTLPSignal>> {
+        effect_handler: local::EffectHandler<OTLPData>,
+    ) -> Result<(), Error<OTLPData>> {
         //start event loop
         loop {
             tokio::select! {
@@ -89,21 +90,21 @@ impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
 }
 
 /// Run the configured scenario steps
-async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHandler<OTLPSignal>) {
+async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHandler<OTLPData>) {
     // loop through each step
 
     for step in steps {
         // create batches if specified
         let batches = step.get_batches_to_generate() as usize;
         for _ in 0..batches {
-            let signal = match step.get_config() {
-                SignalConfig::Metric(config) => OTLPSignal::Metric(config.get_signal()),
-                SignalConfig::Log(config) => OTLPSignal::Log(config.get_signal()),
-                SignalConfig::Span(config) => OTLPSignal::Span(config.get_signal()),
-            };
-            _ = effect_handler.send_message(signal).await;
-            // if there is a delay set between batches sleep for that amount before created the next signal in the batch
-            sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
+            // let signal = match step.get_config() {
+            //     SignalConfig::Metric(config) => OTLPData::Metric(config.get_signal()),
+            //     SignalConfig::Log(config) => OTLPData::Log(config.get_signal()),
+            //     SignalConfig::Span(config) => OTLPData::Span(config.get_signal()),
+            // };
+            // _ = effect_handler.send_message(signal).await;
+            // // if there is a delay set between batches sleep for that amount before created the next signal in the batch
+            // sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
         }
     }
 }
@@ -112,7 +113,7 @@ async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHa
 // mod tests {
 //     use crate::fake_signal_receiver::{
 //         config::{
-//             Config, LogConfig, MetricConfig, MetricType, OTLPSignal, ScenarioStep, SignalConfig,
+//             Config, LogConfig, MetricConfig, MetricType, OTLPData, ScenarioStep, SignalConfig,
 //             SpanConfig,
 //         },
 //         receiver::FakeSignalReceiver,
@@ -153,7 +154,7 @@ async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHa
 
 //     /// Validation closure that checks the received message and counters (!Send context).
 //     fn validation_procedure()
-//     -> impl FnOnce(NotSendValidateContext<OTLPSignal>) -> Pin<Box<dyn Future<Output = ()>>> {
+//     -> impl FnOnce(NotSendValidateContext<OTLPData>) -> Pin<Box<dyn Future<Output = ()>>> {
 //         |mut ctx| {
 //             Box::pin(async move {
 //                 // check that messages have been sent through the effect_handler
@@ -174,7 +175,7 @@ async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHa
 
 //                 // Assert that the message received is what the test client sent.
 //                 match metric_received {
-//                     OTLPSignal::Metric(metric) => {
+//                     OTLPData::Metric(metric) => {
 //                         // loop and check count
 //                         let resource_count = metric.resource_metrics.len();
 //                         assert!(resource_count == RESOURCE_COUNT);
@@ -207,7 +208,7 @@ async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHa
 //                 }
 
 //                 match trace_received {
-//                     OTLPSignal::Span(span) => {
+//                     OTLPData::Span(span) => {
 //                         let resource_count = span.resource_spans.len();
 //                         assert!(resource_count == RESOURCE_COUNT);
 //                         for resource in span.resource_spans.iter() {
@@ -231,7 +232,7 @@ async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHa
 //                 }
 
 //                 match log_received {
-//                     OTLPSignal::Log(log) => {
+//                     OTLPData::Log(log) => {
 //                         let resource_count = log.resource_logs.len();
 //                         assert!(resource_count == RESOURCE_COUNT);
 //                         for resource in log.resource_logs.iter() {

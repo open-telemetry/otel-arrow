@@ -24,7 +24,6 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use crate::fake_signal_receiver::config::OTLPSignal;
 use crate::grpc::OTLPData;
 use linkme::distributed_slice;
 use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
@@ -55,9 +54,6 @@ pub mod proto;
 #[cfg(test)]
 mod mock;
 
-/// A slice of local receiver factories for OTLP data.
-#[distributed_slice]
-pub static FAKE_SIGNAL_RECEIVERS: [LocalReceiverFactory<OTLPSignal>] = [..];
 
 /// A slice of local receiver factories for OTLP data.
 #[distributed_slice]
