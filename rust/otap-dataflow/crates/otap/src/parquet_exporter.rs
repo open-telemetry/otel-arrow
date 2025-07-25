@@ -17,27 +17,30 @@
 //! - support for acknowledgements and nack messages
 //! - handle periodically flushing batches after some time threshold
 //! - dynamic configuration updates
-//! See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
+//!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use std::io::ErrorKind;
-
-use async_trait::async_trait;
-use futures::{FutureExt, pin_mut};
-use futures_timer::Delay;
-use otap_df_engine::error::Error;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
-use otel_arrow_rust::otap::OtapBatch;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
 use self::writer::WriteBatch;
+use async_trait::async_trait;
+use futures::{FutureExt, pin_mut};
+use futures_timer::Delay;
+use otap_df_engine::control::ControlMsg;
+use otap_df_engine::error::Error;
+use otap_df_engine::local::exporter::{EffectHandler, Exporter};
+use otap_df_engine::message::{Message, MessageChannel};
+use otel_arrow_rust::otap::OtapBatch;
 
 mod config;
 mod idgen;
 mod object_store;
 mod partition;
 mod writer;
+
+#[allow(dead_code)]
+const OTAP_PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
@@ -64,8 +67,8 @@ where
     ) -> Result<(), Error<T>> {
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
-                error: format!("error initializing object store {}", e),
+                exporter: effect_handler.exporter_id(),
+                error: format!("error initializing object store {e}"),
             })?;
 
         let mut writer =
@@ -95,7 +98,7 @@ where
                     return futures::select! {
                         _timeout = timeout =>
                             Err(Error::IoError {
-                                node: effect_handler.exporter_name(),
+                                node: effect_handler.exporter_id(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             })
                         ,
@@ -114,8 +117,8 @@ where
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
-                            error: format!("ID Generation failed: {}", e),
+                            exporter: effect_handler.exporter_id(),
+                            error: format!("ID Generation failed: {e}"),
                         });
                     }
 
@@ -146,8 +149,8 @@ where
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
-                            error: format!("Parquet write failed: {}", e),
+                            exporter: effect_handler.exporter_id(),
+                            error: format!("Parquet write failed: {e}"),
                         });
                     };
                 }
@@ -166,9 +169,11 @@ mod test {
 
     use std::fs::File;
     use std::pin::Pin;
+    use std::rc::Rc;
     use std::time::Duration;
 
-    use datagen::SimpleLogDataGenOptions;
+    use datagen::SimpleDataGenOptions;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
     use otel_arrow_rust::Consumer;
@@ -200,21 +205,29 @@ mod test {
                     batch_id,
                     OtapBatch::Logs(from_record_messages(record_messages)),
                 )),
-                _ => {
-                    todo!("handle other payload types in TestPDataInput.try_into")
+                ArrowPayloadType::Spans => Ok((
+                    batch_id,
+                    OtapBatch::Traces(from_record_messages(record_messages)),
+                )),
+                ArrowPayloadType::UnivariateMetrics => Ok((
+                    batch_id,
+                    OtapBatch::Metrics(from_record_messages(record_messages)),
+                )),
+                payload_type => {
+                    panic!("unexpected payload type in TestPDataInput.try_into: {payload_type:?}")
                 }
             }
         }
     }
 
-    fn scenario(
+    fn logs_scenario(
         num_rows: usize,
         shutdown_timeout: Duration,
     ) -> impl FnOnce(TestContext<TestPDataInput>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 ctx.send_pdata(TestPDataInput {
-                    batch: datagen::create_single_arrow_record_batch(SimpleLogDataGenOptions {
+                    batch: datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                         num_rows,
                         ..Default::default()
                     }),
@@ -229,6 +242,28 @@ mod test {
         }
     }
 
+    fn assert_parquet_file_has_rows(
+        base_dir: &str,
+        payload_type: ArrowPayloadType,
+        num_rows: usize,
+    ) {
+        let table_name = payload_type.as_str_name().to_lowercase();
+        let file_path = std::fs::read_dir(format!("{base_dir}/{table_name}"))
+            .unwrap_or_else(|_| panic!("expect to have found table for {payload_type:?}"))
+            .next()
+            .unwrap_or_else(|| {
+                panic!("expect at least one parquet file file for type {payload_type:?}")
+            })
+            .unwrap()
+            .path();
+
+        let file = File::open(file_path).unwrap();
+        let reader_builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let mut reader = reader_builder.build().unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert_eq!(batch.num_rows(), num_rows);
+    }
+
     #[test]
     fn test_with_partitioning() {
         let test_runtime = TestRuntime::<TestPDataInput>::new();
@@ -241,15 +276,19 @@ mod test {
             )]),
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
 
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx| {
                 Box::pin(async move {
                     // simply ensure there is a parquet file for each type we should have
@@ -265,10 +304,16 @@ mod test {
                         // ensure we have files partitioned and that the partition starts
                         // with the expected key
                         let partition_path =
-                            std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                                .unwrap()
+                            std::fs::read_dir(format!("{base_dir}/{table_name}"))
+                                .unwrap_or_else(|_| {
+                                    panic!("expect to have found table for {payload_type:?}")
+                                })
                                 .next()
-                                .unwrap()
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "expect at least one partition directory for type {payload_type:?}"
+                                    )
+                                })
                                 .unwrap()
                                 .path();
 
@@ -282,7 +327,11 @@ mod test {
                         let file_path = std::fs::read_dir(partition_path)
                             .unwrap()
                             .next()
-                            .unwrap()
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "expect at least one parquet file for type {payload_type:?}"
+                                )
+                            })
                             .unwrap()
                             .path();
 
@@ -307,14 +356,18 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx| {
                 Box::pin(async move {
                     // simply ensure there is a parquet file for each type we should have
@@ -325,20 +378,7 @@ mod test {
                         ArrowPayloadType::ResourceAttrs,
                         ArrowPayloadType::ScopeAttrs,
                     ] {
-                        let table_name = payload_type.as_str_name().to_lowercase();
-                        let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                            .unwrap()
-                            .next()
-                            .unwrap()
-                            .unwrap()
-                            .path();
-
-                        let file = File::open(file_path).unwrap();
-                        let reader_builder =
-                            ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-                        let mut reader = reader_builder.build().unwrap();
-                        let batch = reader.next().unwrap().unwrap();
-                        assert_eq!(batch.num_rows(), num_rows);
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
                     }
                 })
             });
@@ -354,14 +394,19 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
         let num_rows = 1000;
+
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(num_rows, Duration::ZERO))
+            .run_test(logs_scenario(num_rows, Duration::ZERO))
             .run_validation(move |_ctx| {
                 Box::pin(async move {
                     // assert we didn't write because the timeout
@@ -372,9 +417,140 @@ mod test {
                         ArrowPayloadType::ScopeAttrs,
                     ] {
                         let table_name = payload_type.as_str_name().to_lowercase();
-                        let result = std::fs::read_dir(format!("{}/{}", base_dir, table_name));
+                        let result = std::fs::read_dir(format!("{base_dir}/{table_name}"));
                         let error = result.unwrap_err();
                         assert_eq!(error.kind(), ErrorKind::NotFound);
+                    }
+                })
+            });
+    }
+
+    #[test]
+    fn test_traces() {
+        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
+        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+            exporter,
+            node_config,
+            test_runtime.config(),
+        );
+
+        let num_rows = 100;
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(TestPDataInput {
+                        batch: datagen::create_simple_trace_arrow_record_batches(
+                            SimpleDataGenOptions {
+                                num_rows,
+                                traces_options: Some(Default::default()),
+                                ..Default::default()
+                            },
+                        ),
+                    })
+                    .await
+                    .expect("Failed to send  logs message");
+
+                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(move |_ctx| {
+                Box::pin(async move {
+                    // simply ensure there is a parquet file for each type we should have
+                    // written and that it has the expected number of rows
+                    for payload_type in [
+                        ArrowPayloadType::Spans,
+                        ArrowPayloadType::SpanAttrs,
+                        ArrowPayloadType::ResourceAttrs,
+                        ArrowPayloadType::ScopeAttrs,
+                        ArrowPayloadType::SpanEvents,
+                        ArrowPayloadType::SpanEventAttrs,
+                        ArrowPayloadType::SpanLinks,
+                        ArrowPayloadType::SpanLinkAttrs,
+                    ] {
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
+                    }
+                })
+            });
+    }
+
+    #[test]
+    fn test_metrics() {
+        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
+        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+            exporter,
+            node_config,
+            test_runtime.config(),
+        );
+
+        let num_rows = 100;
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(TestPDataInput {
+                        batch: datagen::create_simple_metrics_arrow_record_batches(
+                            SimpleDataGenOptions {
+                                num_rows,
+                                metrics_options: Some(Default::default()),
+                                ..Default::default()
+                            },
+                        ),
+                    })
+                    .await
+                    .expect("Failed to send  logs message");
+
+                    ctx.send_shutdown(Duration::from_millis(1000), "test completed")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(move |_ctx| {
+                Box::pin(async move {
+                    // simply ensure there is a parquet file for each type we should have
+                    // written and that it has the expected number of rows
+                    for payload_type in [
+                        ArrowPayloadType::UnivariateMetrics,
+                        ArrowPayloadType::ResourceAttrs,
+                        ArrowPayloadType::ScopeAttrs,
+                        ArrowPayloadType::SummaryDataPoints,
+                        ArrowPayloadType::SummaryDpAttrs,
+                        ArrowPayloadType::NumberDataPoints,
+                        ArrowPayloadType::NumberDpAttrs,
+                        ArrowPayloadType::NumberDpExemplars,
+                        ArrowPayloadType::NumberDpExemplarAttrs,
+                        ArrowPayloadType::HistogramDataPoints,
+                        ArrowPayloadType::HistogramDpAttrs,
+                        ArrowPayloadType::HistogramDpExemplars,
+                        ArrowPayloadType::HistogramDpExemplarAttrs,
+                        ArrowPayloadType::ExpHistogramDataPoints,
+                        ArrowPayloadType::ExpHistogramDpAttrs,
+                        ArrowPayloadType::ExpHistogramDpExemplars,
+                        ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                    ] {
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
                     }
                 })
             });

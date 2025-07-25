@@ -1,0 +1,18 @@
+[package]
+name = "otap-df-pdata-views"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+otel-arrow-rust = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+bench = []

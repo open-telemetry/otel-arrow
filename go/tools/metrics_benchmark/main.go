@@ -22,11 +22,11 @@ import (
 
 	"github.com/dustin/go-humanize"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/dataset"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/profileable/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/profileable/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/arrow_record"
 )
 
 var help = flag.Bool("help", false, "Show help")

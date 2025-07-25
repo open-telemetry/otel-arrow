@@ -27,8 +27,8 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/stats"
 )
 
 // RealLogsDataset represents a dataset of real logs read from a Logs serialized to a binary file.

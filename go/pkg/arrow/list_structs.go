@@ -24,7 +24,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // ListOfStructs is a wrapper around an Arrow list of structs used to expose utility functions.

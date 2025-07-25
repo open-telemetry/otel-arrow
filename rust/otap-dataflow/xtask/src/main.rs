@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
             "structure-check" => structure_check::run(),
             "help" => print_help(),
             _ => {
-                eprintln!("Unknown task: {}", task);
+                eprintln!("Unknown task: {task}");
                 print_help()
             }
         },
@@ -70,7 +70,17 @@ fn format_all() -> anyhow::Result<()> {
 
 fn clippy_all() -> anyhow::Result<()> {
     println!("🚀 Linting workspace with cargo clippy...");
-    run("cargo", &["clippy", "--workspace", "--", "-D", "warnings"])?;
+    run(
+        "cargo",
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
     println!("✅ Clippy linting passed without warnings.\n");
     Ok(())
 }
@@ -99,7 +109,7 @@ fn compile_proto_otlp() -> anyhow::Result<()> {
                 "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
                 "opentelemetry/proto/collector/profiles/v1development/profiles_service.proto",
             ],
-            &[format!("{}/../../../proto/opentelemetry-proto", base)],
+            &[format!("{base}/../../../proto/opentelemetry-proto")],
         )
         .expect("Failed to compile OTLP protos.");
     Ok(())
@@ -111,7 +121,7 @@ fn compile_proto_otap() -> anyhow::Result<()> {
         .out_dir("crates/otap/src/proto")
         .compile_protos(
             &["proto/experimental/arrow/v1/arrow_service.proto"],
-            &[format!("{}/../../../proto/opentelemetry", base)],
+            &[format!("{base}/../../../proto/opentelemetry")],
         )
         .expect("Failed to compile OTLP protos.");
     Ok(())

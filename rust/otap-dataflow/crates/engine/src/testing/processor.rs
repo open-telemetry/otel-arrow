@@ -7,8 +7,11 @@
 
 use crate::config::ProcessorConfig;
 use crate::error::Error;
-use crate::message::Message;
-use crate::processor::ProcessorWrapper;
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::message::{Message, Receiver, Sender};
+use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
+use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use std::fmt::Debug;
 use std::future::Future;
@@ -19,7 +22,8 @@ use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
 pub struct TestContext<PData> {
-    processor: ProcessorWrapper<PData>,
+    runtime: ProcessorWrapperRuntime<PData>,
+    output_receiver: Option<Receiver<PData>>,
 }
 
 /// Context used during the validation phase of a test.
@@ -28,32 +32,44 @@ pub struct ValidateContext {
 }
 
 impl<PData> TestContext<PData> {
-    /// Creates a new NotSendTestContext.
+    /// Creates a new TestContext from a ProcessorWrapperRuntime.
     #[must_use]
-    pub fn new(processor: ProcessorWrapper<PData>) -> Self {
-        Self { processor }
+    pub fn new(runtime: ProcessorWrapperRuntime<PData>) -> Self {
+        Self {
+            runtime,
+            output_receiver: None,
+        }
     }
 
     /// Processes a new message.
     pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
-        self.processor.process(msg).await
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local {
+                processor,
+                effect_handler,
+                ..
+            } => processor.process(msg, effect_handler).await,
+            ProcessorWrapperRuntime::Shared {
+                processor,
+                effect_handler,
+                ..
+            } => processor.process(msg, effect_handler).await,
+        }
     }
 
-    /// Drains and returns all messages from the pdata receiver.
+    /// Drains and returns all messages from the test output receiver.
     pub async fn drain_pdata(&mut self) -> Vec<PData> {
         let mut emitted = Vec::new();
 
-        match &mut self.processor {
-            ProcessorWrapper::Local { pdata_receiver, .. } => {
-                if let Some(pdata_receiver) = pdata_receiver {
-                    while let Ok(msg) = pdata_receiver.try_recv() {
+        if let Some(receiver) = &mut self.output_receiver {
+            match receiver {
+                Receiver::Local(local_receiver) => {
+                    while let Ok(msg) = local_receiver.try_recv() {
                         emitted.push(msg);
                     }
                 }
-            }
-            ProcessorWrapper::Shared { pdata_receiver, .. } => {
-                if let Some(pdata_receiver) = pdata_receiver {
-                    while let Ok(msg) = pdata_receiver.try_recv() {
+                Receiver::Shared(shared_receiver) => {
+                    while let Ok(msg) = shared_receiver.try_recv() {
                         emitted.push(msg);
                     }
                 }
@@ -102,6 +118,7 @@ pub struct TestPhase<PData> {
     local_tasks: LocalSet,
     processor: ProcessorWrapper<PData>,
     counters: CtrlMsgCounters,
+    output_receiver: Option<Receiver<PData>>,
 }
 
 /// Data and operations for the validation phase of a processor.
@@ -138,12 +155,47 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Initializes the test runtime with a processor using a non-sendable effect handler.
-    pub fn set_processor(self, processor: ProcessorWrapper<PData>) -> TestPhase<PData> {
+    pub fn set_processor(self, mut processor: ProcessorWrapper<PData>) -> TestPhase<PData> {
+        // Set up test channels for the processor
+        let (pdata_sender, pdata_receiver) = match &processor {
+            ProcessorWrapper::Local { .. } => {
+                let (sender, receiver) = otap_df_channel::mpsc::Channel::new(100);
+                (
+                    Sender::Local(LocalSender::MpscSender(sender)),
+                    Receiver::Local(LocalReceiver::MpscReceiver(receiver)),
+                )
+            }
+            ProcessorWrapper::Shared { .. } => {
+                let (sender, receiver) = tokio::sync::mpsc::channel(100);
+                (
+                    Sender::Shared(SharedSender::MpscSender(sender)),
+                    Receiver::Shared(SharedReceiver::MpscReceiver(receiver)),
+                )
+            }
+        };
+
+        // Set the output sender for the processor
+        let _ = processor.set_pdata_sender("test_processor".into(), "output".into(), pdata_sender);
+        // Set a dummy input receiver (not used in these tests since we call process directly)
+        // We need this because prepare_runtime expects both to be set
+        let dummy_receiver = match &processor {
+            ProcessorWrapper::Local { .. } => {
+                let (_, receiver) = otap_df_channel::mpsc::Channel::new(1);
+                Receiver::Local(LocalReceiver::MpscReceiver(receiver))
+            }
+            ProcessorWrapper::Shared { .. } => {
+                let (_, receiver) = tokio::sync::mpsc::channel(1);
+                Receiver::Shared(SharedReceiver::MpscReceiver(receiver))
+            }
+        };
+        let _ = processor.set_pdata_receiver("test_processor".into(), dummy_receiver);
+
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             processor,
             counters: self.counter,
+            output_receiver: Some(pdata_receiver),
         }
     }
 }
@@ -162,8 +214,14 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         Fut: Future<Output = ()> + 'static,
     {
         // The entire scenario is run to completion before the validation phase
-        let context = TestContext::new(self.processor);
         self.rt.block_on(async move {
+            let runtime = self
+                .processor
+                .prepare_runtime()
+                .await
+                .expect("Failed to prepare runtime");
+            let mut context = TestContext::new(runtime);
+            context.output_receiver = self.output_receiver;
             f(context).await;
         });
 

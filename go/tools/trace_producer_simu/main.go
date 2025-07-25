@@ -26,14 +26,14 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
-	parrow "github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	arrowpb "github.com/open-telemetry/otel-arrow/go/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/dataset"
+	parrow "github.com/open-telemetry/otel-arrow/go/pkg/benchmark/profileable/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/profileable/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
 )
 
 var help = flag.Bool("help", false, "Show help")

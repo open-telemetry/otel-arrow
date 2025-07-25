@@ -3,7 +3,7 @@ use intermediate_language::{
     grammar_objects::*,
     query_processor::{QueryError, QueryProcessor, QueryResult},
 };
-use pest::{iterators::Pair, Parser};
+use pest::{Parser, iterators::Pair};
 
 /// `OttlPlugin` implements the `QueryProcessor` trait for OTTL (OpenTelemetry Transform Language)
 pub struct OttlPlugin;
@@ -31,7 +31,7 @@ impl QueryProcessor for OttlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'query'",
                         query_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -62,7 +62,7 @@ impl OttlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'filter_query'",
                         filter_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -90,7 +90,7 @@ impl OttlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'transform_query'",
                         transform_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -111,9 +111,9 @@ impl OttlPlugin {
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'filter_statement'",
-                    filter_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'filter_statement'",
+                        filter_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -145,9 +145,9 @@ impl OttlPlugin {
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'extend_statement'",
-                    extend_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'extend_statement'",
+                        extend_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -169,7 +169,7 @@ impl OttlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'set_with_paren'",
                         set_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -197,7 +197,7 @@ impl OttlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'set_tuple'",
                         set_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -231,7 +231,7 @@ impl OttlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'predicate'",
                         predicate_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -260,10 +260,12 @@ impl OttlPlugin {
                             }
                             Rule::and_token => boolean_operator = BooleanOperator::And,
                             Rule::or_token => boolean_operator = BooleanOperator::Or,
-                            _ => return Err(QueryError::ProcessingError(format!(
-                                "Unexpected rule: '{:?}' found processing parent object: 'logical_expression'",
-                                logical_piece.as_rule()
-                            ))),
+                            _ => {
+                                return Err(QueryError::ProcessingError(format!(
+                                    "Unexpected rule: '{:?}' found processing parent object: 'logical_expression'",
+                                    logical_piece.as_rule()
+                                )));
+                            }
                         }
                     }
                     return Ok(BinaryLogicalExpression {
@@ -272,10 +274,12 @@ impl OttlPlugin {
                         right: Box::new(right),
                     });
                 }
-                _ => return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'binary_logical_expression'",
-                    expression_piece.as_rule()
-                ))),
+                _ => {
+                    return Err(QueryError::ProcessingError(format!(
+                        "Unexpected rule: '{:?}' found processing parent object: 'binary_logical_expression'",
+                        expression_piece.as_rule()
+                    )));
+                }
             }
         }
         Err(QueryError::ProcessingError(
@@ -322,10 +326,12 @@ impl OttlPlugin {
                             Rule::less_than_or_equal_to_token => {
                                 comparison_operator = ComparisonOperator::LessThanOrEqual
                             }
-                            _ => return Err(QueryError::ProcessingError(format!(
-                                "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
-                                comparison_piece.as_rule()
-                            ))),
+                            _ => {
+                                return Err(QueryError::ProcessingError(format!(
+                                    "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
+                                    comparison_piece.as_rule()
+                                )));
+                            }
                         }
                     }
                     return Ok(ComparisonExpression {
@@ -334,10 +340,12 @@ impl OttlPlugin {
                         right: Box::new(right),
                     });
                 }
-                _ => return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
-                    expression_piece.as_rule()
-                ))),
+                _ => {
+                    return Err(QueryError::ProcessingError(format!(
+                        "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
+                        expression_piece.as_rule()
+                    )));
+                }
             }
         }
         Err(QueryError::ProcessingError(
@@ -350,13 +358,13 @@ impl OttlPlugin {
             match negated_piece.as_rule() {
                 Rule::not_token => continue,
                 Rule::enclosed_expression => {
-                    return Self::process_enclosed_expression(negated_piece)
+                    return Self::process_enclosed_expression(negated_piece);
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'negated_expression'",
-                    negated_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'negated_expression'",
+                        negated_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -374,9 +382,9 @@ impl OttlPlugin {
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'enclosed_expression'",
-                    enclosed_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'enclosed_expression'",
+                        enclosed_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -410,7 +418,7 @@ impl OttlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'expression'",
                         expression_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -857,7 +865,7 @@ mod tests {
 
         for input in invalid_inputs {
             let result = OttlPlugin::process_query(input);
-            assert!(result.is_err(), "Expected error for input: {}", input);
+            assert!(result.is_err(), "Expected error for input: {input}");
             assert!(matches!(result, Err(QueryError::ParseError(_))));
         }
     }
