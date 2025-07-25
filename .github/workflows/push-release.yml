@@ -128,7 +128,7 @@ jobs:
 
       - name: Create GitHub App token
         if: '!inputs.dry_run'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         id: app-token
         with:
           app-id: ${{ vars.OTELBOT_APP_ID }}
