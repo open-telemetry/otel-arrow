@@ -79,9 +79,9 @@ at once and increasing overall productivity.
 - An API will be introduced to allow for **dynamic management** of
   configuration:
 
-    - Add, update, get, and delete pipeline groups
-    - Add, update, get, and delete pipelines within pipeline groups
-    - Add, update, get, and delete nodes within pipelines
+  - Add, update, get, and delete pipeline groups
+  - Add, update, get, and delete pipelines within pipeline groups
+  - Add, update, get, and delete nodes within pipelines
 
 - **Transactional updates:** Updates can target multiple nodes as part of a
   single, consistent transaction. A consistent transaction is an operation
