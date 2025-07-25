@@ -1,7 +1,8 @@
 # Pipeline Engine Config Model
 
-This crate defines the configuration model for a multi-pipeline-group, multi-pipeline
-observability engine embeddable within the OpenTelemetry ecosystem.
+This crate defines the configuration model for a multi-pipeline-group,
+multi-pipeline observability engine embeddable within the OpenTelemetry
+ecosystem.
 
 ## Overview
 
@@ -10,8 +11,8 @@ distinct layer of the configuration hierarchy:
 
 - **EngineConfig**: The root configuration, containing global engine settings
   and all pipeline groups.
-- **PipelineGroupConfig**: Represents an individual pipeline group, including its own
-  settings and pipelines.
+- **PipelineGroupConfig**: Represents an individual pipeline group, including
+  its own settings and pipelines.
 - **PipelineConfig**: Describes a pipeline as a directed-acyclic-hypergraph of
   interconnected nodes, with pipeline-level settings.
 - **NodeConfig**: Defines a node (receiver, processor, exporter, or connector)
@@ -53,8 +54,8 @@ This configuration model is intended to be easily integrable with systems like
 
 This configuration model is intended to be a **superset of the current OTEL Go
 Collector configuration**. It introduces advanced concepts, such as
-multi-tenancy (based on pipeline group) and configurable dispatch strategies, that
-are not present in the upstream Collector.
+multi-tenancy (based on pipeline group) and configurable dispatch strategies,
+that are not present in the upstream Collector.
 
 A translation mechanism will be developed to **automatically convert any OTEL
 Collector YAML configuration file into this new config model**. Some aspects of
@@ -78,9 +79,9 @@ at once and increasing overall productivity.
 - An API will be introduced to allow for **dynamic management** of
   configuration:
 
-  - Add, update, get, and delete pipeline groups
-  - Add, update, get, and delete pipelines within pipeline groups
-  - Add, update, get, and delete nodes within pipelines
+    - Add, update, get, and delete pipeline groups
+    - Add, update, get, and delete pipelines within pipeline groups
+    - Add, update, get, and delete nodes within pipelines
 
 - **Transactional updates:** Updates can target multiple nodes as part of a
   single, consistent transaction. A consistent transaction is an operation
