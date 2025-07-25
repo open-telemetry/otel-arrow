@@ -195,8 +195,8 @@ impl Expression for ReduceMapTransformExpression {
 
     fn get_name(&self) -> &'static str {
         match self {
-            ReduceMapTransformExpression::Remove(_) => "ReduceTransform(Remove)",
-            ReduceMapTransformExpression::Retain(_) => "ReduceTransform(Retain)",
+            ReduceMapTransformExpression::Remove(_) => "ReduceMapTransform(Remove)",
+            ReduceMapTransformExpression::Retain(_) => "ReduceMapTransform(Retain)",
         }
     }
 }
