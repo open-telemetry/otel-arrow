@@ -19,13 +19,11 @@ where
         ImmutableValueExpression::Scalar(scalar_expression) => {
             let value = execute_scalar_expression(execution_context, scalar_expression)?;
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    immutable_value_expression,
-                    format!("Evaluated as: {value}"),
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                immutable_value_expression,
+                || format!("Evaluated as: {value}"),
+            );
 
             Ok(value)
         }
@@ -48,13 +46,11 @@ where
             let value =
                 select_from_borrowed_root_map(execution_context, s, record, &mut selectors)?;
 
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                log_mutable_value_expression_evaluated(
-                    execution_context,
-                    mutable_value_expression,
-                    &value,
-                );
-            }
+            log_mutable_value_expression_evaluated(
+                execution_context,
+                mutable_value_expression,
+                &value,
+            );
 
             Ok(value)
         }
@@ -79,28 +75,36 @@ where
             );
 
             if variable.is_err() {
-                if execution_context.is_enabled(LogLevel::Verbose) {
-                    execution_context.log(LogMessage::new(
-                        LogLevel::Verbose,
-                        v,
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    v,
+                    || {
                         format!(
                             "Variable with name '{}' was not found",
                             v.get_name().get_value()
-                        ),
-                    ));
-                }
+                        )
+                    },
+                );
                 return Ok(None);
             }
 
             let variable = variable.unwrap();
             let mut selectors = selectors.iter();
 
-            select_from_as_value_mut(
+            let value = select_from_as_value_mut(
                 execution_context,
                 variable,
                 selectors.next().unwrap(),
                 &mut selectors,
-            )
+            )?;
+
+            log_mutable_value_expression_evaluated(
+                execution_context,
+                mutable_value_expression,
+                &value,
+            );
+
+            Ok(value)
         }
     }
 }
@@ -110,24 +114,26 @@ fn log_mutable_value_expression_evaluated<'a, TRecord: Record>(
     mutable_value_expression: &'a MutableValueExpression,
     value: &Option<ResolvedValueMut<'_, '_>>,
 ) {
-    execution_context.log(LogMessage::new(
-        LogLevel::Verbose,
+    execution_context.add_diagnostic_if_enabled(
+        RecordSetEngineDiagnosticLevel::Verbose,
         mutable_value_expression,
-        format!(
-            "Evaluated as: {}",
-            match value.as_ref() {
-                None => "NotFound".into(),
-                Some(v) => match v {
-                    ResolvedValueMut::Map(_) => "Root write".into(),
-                    ResolvedValueMut::MapKey { map: _, key } => {
-                        format!("Map write for '{key}' key")
-                    }
-                    ResolvedValueMut::ArrayIndex { array: _, index } =>
-                        format!("Array write for '{index}' index"),
-                },
-            }
-        ),
-    ));
+        || {
+            format!(
+                "Evaluated as: {}",
+                match value.as_ref() {
+                    None => "NotFound".into(),
+                    Some(v) => match v {
+                        ResolvedValueMut::Map(_) => "Root write".into(),
+                        ResolvedValueMut::MapKey { map: _, key } => {
+                            format!("Map write for '{key}' key")
+                        }
+                        ResolvedValueMut::ArrayIndex { array: _, index } =>
+                            format!("Array write for '{index}' index"),
+                    },
+                }
+            )
+        },
+    );
 }
 
 fn select_from_borrowed_root_map<'a, 'b, 'c, TRecord: Record>(
@@ -143,14 +149,11 @@ where
     match selectors.next() {
         Some(s) => select_from_map_value_mut(execution_context, root, s, selectors),
         None => {
-            if execution_context.is_enabled(LogLevel::Verbose) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
-                    root_expression,
-                    "Resolved root map for accessor expression".into(),
-                ));
-            }
-
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                root_expression,
+                || "Resolved root map for accessor expression".into(),
+            );
             Ok(Some(ResolvedValueMut::Map(root)))
         }
     }
@@ -174,26 +177,22 @@ where
                 let next_borrow = RefMut::filter_map(current_borrow, |v| {
                     match v.get_mut(map_key.get_value()) {
                         ValueMutGetResult::Found(v) => {
-                            if execution_context.is_enabled(LogLevel::Verbose) {
-                                execution_context.log(LogMessage::new(
-                                            LogLevel::Verbose,
-                                            current_scalar,
-                                            format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
-                                        ));
-                            }
+                            execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Verbose,
+                                        current_scalar,
+                                        || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                    );
                             Some(v)
                         }
                         _ => {
-                            if execution_context.is_enabled(LogLevel::Warn) {
-                                execution_context.log(LogMessage::new(
-                                    LogLevel::Warn,
-                                    current_scalar,
-                                    format!(
-                                        "Could not find map key '{}' specified in accessor expression",
-                                        map_key.get_value()
-                                    ),
-                                ));
-                            }
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Warn,
+                                current_scalar,
+                                || format!(
+                                    "Could not find map key '{}' specified in accessor expression",
+                                    map_key.get_value()
+                                ),
+                            );
                             None
                         }
                     }
@@ -216,13 +215,11 @@ where
             }
         }
         Err(v) => {
-            if execution_context.is_enabled(LogLevel::Warn) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Warn,
-                    current_scalar,
-                    format!("Unexpected scalar expression with '{:?}' value encountered when expecting string in accessor expression", v.get_value_type())
-                ));
-            }
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Warn,
+                current_scalar,
+                || format!("Unexpected scalar expression with '{:?}' value encountered when expecting string in accessor expression", v.get_value_type())
+            );
             Ok(None)
         }
     }
@@ -251,23 +248,19 @@ where
                 ) {
                     Some(i) => match v.get_mut(i) {
                         ValueMutGetResult::Found(v) => {
-                            if execution_context.is_enabled(LogLevel::Verbose) {
-                                execution_context.log(LogMessage::new(
-                                                LogLevel::Verbose,
-                                                current_scalar,
-                                                format!("Resolved '{:?}' value for array index '{}' specified in accessor expression", v.get_value_type(), array_index.get_value()),
-                                            ));
-                            }
+                            execution_context.add_diagnostic_if_enabled(
+                                            RecordSetEngineDiagnosticLevel::Verbose,
+                                            current_scalar,
+                                            || format!("Resolved '{:?}' value for array index '{}' specified in accessor expression", v.get_value_type(), array_index.get_value()),
+                                        );
                             Some(v)
                         }
                         _ => {
-                            if execution_context.is_enabled(LogLevel::Warn) {
-                                execution_context.log(LogMessage::new(
-                                                LogLevel::Warn,
-                                                current_scalar,
-                                                format!("Could not find array index '{}' specified in accessor expression", array_index.get_value()),
-                                            ));
-                            }
+                            execution_context.add_diagnostic_if_enabled(
+                                            RecordSetEngineDiagnosticLevel::Warn,
+                                            current_scalar,
+                                            || format!("Could not find array index '{}' specified in accessor expression", array_index.get_value()),
+                                        );
                             None
                         }
                     },
@@ -296,13 +289,11 @@ where
             }
         }
     } else {
-        if execution_context.is_enabled(LogLevel::Warn) {
-            execution_context.log(LogMessage::new(
-                LogLevel::Warn,
-                current_scalar,
-                format!("Unexpected scalar expression with '{:?}' value encountered when expecting integer in accessor expression", value.get_value_type())
-            ));
-        }
+        execution_context.add_diagnostic_if_enabled(
+            RecordSetEngineDiagnosticLevel::Warn,
+            current_scalar,
+            || format!("Unexpected scalar expression with '{:?}' value encountered when expecting integer in accessor expression", value.get_value_type())
+        );
         Ok(None)
     }
 }
@@ -320,14 +311,11 @@ fn validate_array_index<'a, TRecord: Record>(
     }
 
     if index < 0 || index >= length {
-        if execution_context.is_enabled(LogLevel::Warn) {
-            execution_context.log(LogMessage::new(
-                LogLevel::Warn,
-                expression,
-                format!("Array index '{index}' specified in accessor expression is invalid"),
-            ));
-        }
-
+        execution_context.add_diagnostic_if_enabled(
+            RecordSetEngineDiagnosticLevel::Warn,
+            expression,
+            || format!("Array index '{index}' specified in accessor expression is invalid"),
+        );
         None
     } else {
         Some(index as usize)
@@ -378,14 +366,11 @@ where
             )
         }
         _ => {
-            if execution_context.is_enabled(LogLevel::Warn) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Warn,
-                    current_scalar,
-                    format!("Unexpected '{:?}' value encountered when expecting an array or map in accessor expression", current_borrow.get_value_type())
-                ));
-            }
-
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Warn,
+                current_scalar,
+                || format!("Unexpected '{:?}' value encountered when expecting an array or map in accessor expression", current_borrow.get_value_type())
+            );
             Ok(None)
         }
     }
@@ -404,8 +389,12 @@ mod tests {
         let run_test = |immutable_value_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_immutable_value_expression(&execution_context, &immutable_value_expression)
@@ -448,8 +437,12 @@ mod tests {
         let run_test = |scalar_expression, validate: &dyn Fn(Option<ResolvedValueMut>)| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_mutable_value_expression(&execution_context, &scalar_expression).unwrap();
@@ -568,8 +561,12 @@ mod tests {
         let run_test = |scalar_expression, validate: &dyn Fn(Option<ResolvedValueMut>)| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             {
                 let mut variables = execution_context.get_variables().borrow_mut();

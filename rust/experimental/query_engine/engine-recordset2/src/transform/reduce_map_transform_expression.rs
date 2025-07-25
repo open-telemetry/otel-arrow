@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::{Display, Write},
     hash::Hash,
     slice::Iter,
 };
@@ -20,20 +21,23 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
         ReduceMapTransformExpression::Remove(r) => {
             let reduction = resolve_map_reduction(execution_context, r)?;
 
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                reduce_map_transform_expression,
+                || format!("Resolved map reduction: {reduction}"),
+            );
+
             let target = execute_mutable_value_expression(execution_context, r.get_target())?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
                 m.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
                     for p in &reduction.key_patterns {
                         if p.get_value().is_match(k) {
-                            if execution_context.is_enabled(LogLevel::Verbose) {
-                                execution_context.log(LogMessage::new(
-                                    LogLevel::Verbose,
-                                    r,
-                                    format!("Removing key '{k}' due to pattern match"),
-                                ));
-                            }
-
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                r,
+                                || format!("Removing key '{k}' due to pattern match"),
+                            );
                             return false;
                         }
                     }
@@ -43,13 +47,11 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                         let remove = match v {
                             Some(ValueMut::Map(m)) => {
                                 if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
-                                    if execution_context.is_enabled(LogLevel::Verbose) {
-                                        execution_context.log(LogMessage::new(
-                                            LogLevel::Verbose,
-                                            r,
-                                            format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
-                                        ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Verbose,
+                                        r,
+                                        || format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
+                                    );
                                     remove_from_map(execution_context, r, m, inner_reduction);
                                     false
                                 }
@@ -59,13 +61,11 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                             }
                             Some(ValueMut::Array(a)) => {
                                 if !inner_reduction.indices.is_empty() {
-                                    if execution_context.is_enabled(LogLevel::Verbose) {
-                                        execution_context.log(LogMessage::new(
-                                            LogLevel::Verbose,
-                                            r,
-                                            format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
-                                        ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Verbose,
+                                        r,
+                                        || format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
+                                    );
                                     remove_from_array(execution_context, r, a, inner_reduction);
                                     false
                                 }
@@ -77,31 +77,35 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                         };
 
                         if remove {
-                            if execution_context.is_enabled(LogLevel::Verbose) {
-                                execution_context.log(LogMessage::new(
-                                    LogLevel::Verbose,
-                                    r,
-                                    format!("Removing '{k}' due to key match"),
-                                ));
-                            }
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                r,
+                                || format!("Removing '{k}' due to key match"),
+                            );
                             return false;
                         }
                     }
 
                     true
                 }));
-            } else if execution_context.is_enabled(LogLevel::Warn) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Warn,
+            } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
                     r,
-                    "Map reduction target was not a map".into(),
-                ));
+                    || "Map reduction target was not a map".into(),
+                );
             }
 
             Ok(())
         }
         ReduceMapTransformExpression::Retain(r) => {
             let reduction = resolve_map_reduction(execution_context, r)?;
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                reduce_map_transform_expression,
+                || format!("Resolved map reduction: {reduction}"),
+            );
 
             let target = execute_mutable_value_expression(execution_context, r.get_target())?;
 
@@ -118,25 +122,21 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                         match v {
                             Some(ValueMut::Map(m)) => {
                                 if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
-                                    if execution_context.is_enabled(LogLevel::Verbose) {
-                                        execution_context.log(LogMessage::new(
-                                            LogLevel::Verbose,
-                                            r,
-                                            format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
-                                        ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Verbose,
+                                        r,
+                                        || format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
+                                    );
                                     keep_in_map(execution_context, r, m, inner_reduction);
                                 }
                             }
                             Some(ValueMut::Array(a)) => {
                                 if !inner_reduction.indices.is_empty() {
-                                    if execution_context.is_enabled(LogLevel::Verbose) {
-                                        execution_context.log(LogMessage::new(
-                                            LogLevel::Verbose,
-                                            r,
-                                            format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
-                                        ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Verbose,
+                                        r,
+                                        || format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
+                                    );
                                     keep_in_array(execution_context, r, a, inner_reduction);
                                 }
                             }
@@ -146,22 +146,20 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                         return true;
                     }
 
-                    if execution_context.is_enabled(LogLevel::Verbose) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
-                            r,
-                            format!("Removing key '{k}' because no rules matched"),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        r,
+                        || format!("Removing key '{k}' because no rules matched"),
+                    );
 
                     false
                 }));
-            } else if execution_context.is_enabled(LogLevel::Warn) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Warn,
+            } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
                     r,
-                    "Map reduction target was not a map".into(),
-                ));
+                    || "Map reduction target was not a map".into(),
+                );
             }
 
             Ok(())
@@ -183,6 +181,73 @@ impl<'a> MapReduction<'a> {
             key_patterns: Vec::new(),
             indices: HashMap::new(),
         }
+    }
+}
+
+impl Display for MapReduction<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('{')?;
+
+        if !self.keys.is_empty() {
+            f.write_str(" keys: [ ")?;
+
+            let mut first = true;
+            for (k, r) in &self.keys {
+                if first {
+                    first = false;
+                } else {
+                    f.write_str(", ")?;
+                }
+
+                f.write_str("{ name: ")?;
+                f.write_str(k.get_value())?;
+                f.write_str(", reduction: ")?;
+                r.fmt(f)?;
+                f.write_str(" }")?;
+            }
+
+            f.write_str(" ] ")?;
+        }
+
+        if !self.key_patterns.is_empty() {
+            f.write_str(" key_patterns: [ ")?;
+
+            let mut first = true;
+            for r in &self.key_patterns {
+                if first {
+                    first = false;
+                } else {
+                    f.write_str(", ")?;
+                }
+
+                r.get_value().fmt(f)?;
+            }
+
+            f.write_str(" ] ")?;
+        }
+
+        if !self.indices.is_empty() {
+            f.write_str(" indices: [ ")?;
+
+            let mut first = true;
+            for (i, r) in &self.indices {
+                if first {
+                    first = false;
+                } else {
+                    f.write_str(", ")?;
+                }
+
+                f.write_str("{ index: ")?;
+                i.fmt(f)?;
+                f.write_str(", reduction: ")?;
+                r.fmt(f)?;
+                f.write_str(" }")?;
+            }
+
+            f.write_str(" ] ")?;
+        }
+
+        f.write_char('}')
     }
 }
 
@@ -245,12 +310,12 @@ where
                         .indices
                         .entry(index)
                         .or_insert_with(MapReduction::new);
-                } else if execution_context.is_enabled(LogLevel::Warn) {
-                    execution_context.log(LogMessage::new(
-                            LogLevel::Warn,
+                } else {
+                    execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
                             s,
-                            format!("Key or pattern specified in map reduction expression with '{value_type:?}' type is not supported"),
-                        ));
+                            || format!("Key or pattern specified in map reduction expression with '{value_type:?}' type is not supported"),
+                        );
                 }
             }
             MapSelector::ValueAccessor(a) => process_map_reduction_accessor(
@@ -304,12 +369,12 @@ where
             current_reduction
                 .key_patterns
                 .push(value.try_resolve_regex().unwrap());
-        } else if execution_context.is_enabled(LogLevel::Warn) {
-            execution_context.log(LogMessage::new(
-                    LogLevel::Warn,
+        } else {
+            execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
                     selector,
-                    format!("Value with '{value_type:?}' type specified in map reduction accessor expression is not supported"),
-                ));
+                    || format!("Value with '{value_type:?}' type specified in map reduction accessor expression is not supported"),
+                );
         }
     }
 
@@ -326,13 +391,11 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
         if !reduction.key_patterns.is_empty() {
             for p in &reduction.key_patterns {
                 if p.get_value().is_match(k) {
-                    if execution_context.is_enabled(LogLevel::Verbose) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Verbose,
-                            expression,
-                            format!("Removing '{k}' due to pattern match"),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        expression,
+                        || format!("Removing '{k}' due to pattern match"),
+                    );
                     return false;
                 }
             }
@@ -343,13 +406,11 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
             let remove = match v {
                 Some(ValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
+                        );
                         remove_from_map(execution_context, expression, m, inner_reduction);
                         false
                     }
@@ -359,13 +420,11 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
                 }
                 Some(ValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
+                        );
                         remove_from_array(execution_context, expression, a, inner_reduction);
                         false
                     }
@@ -377,13 +436,11 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
             };
 
             if remove {
-                if execution_context.is_enabled(LogLevel::Verbose) {
-                    execution_context.log(LogMessage::new(
-                        LogLevel::Verbose,
-                        expression,
-                        format!("Removing '{k}' due to key match"),
-                    ));
-                }
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    expression,
+                    || format!("Removing '{k}' due to key match"),
+                );
                 return false;
             }
         }
@@ -411,12 +468,12 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
             let final_index = index as usize;
             if let std::collections::btree_map::Entry::Vacant(e) = elements.entry(final_index) {
                 e.insert(r);
-            } else if execution_context.is_enabled(LogLevel::Warn) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Warn,
+            } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
                     expression,
-                    format!("Duplicate rules for index '{i}' were specified and ignored"),
-                ));
+                    || format!("Duplicate rules for index '{i}' were specified and ignored"),
+                );
             }
         }
     }
@@ -427,13 +484,11 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
             let remove = match v {
                 Some(ValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-keys of '{i}' because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-keys of '{i}' because inner reduction rules were specified"),
+                        );
                         remove_from_map(execution_context, expression, m, inner_reduction);
                         false
                     }
@@ -443,13 +498,11 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
                 }
                 Some(ValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-items of '{i}' because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-items of '{i}' because inner reduction rules were specified"),
+                        );
                         remove_from_array(execution_context, expression, a, inner_reduction);
                         false
                     }
@@ -461,13 +514,11 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
             };
 
             if remove {
-                if execution_context.is_enabled(LogLevel::Verbose) {
-                    execution_context.log(LogMessage::new(
-                        LogLevel::Verbose,
-                        expression,
-                        format!("Removing '{i}' due to index match"),
-                    ));
-                }
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    expression,
+                    || format!("Removing '{i}' due to index match"),
+                );
                 return false;
             }
         }
@@ -496,25 +547,21 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
             match v {
                 Some(ValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-keys of '{k}' map because inner reduction rules were specified"),
+                        );
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
                 }
                 Some(ValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-items of '{k}' array because inner reduction rules were specified"),
+                        );
                         keep_in_array(execution_context, expression, a, inner_reduction);
                     }
                 }
@@ -524,13 +571,11 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
             return true;
         }
 
-        if execution_context.is_enabled(LogLevel::Verbose) {
-            execution_context.log(LogMessage::new(
-                LogLevel::Verbose,
-                expression,
-                format!("Removing key '{k}' because no rules matched"),
-            ));
-        }
+        execution_context.add_diagnostic_if_enabled(
+            RecordSetEngineDiagnosticLevel::Verbose,
+            expression,
+            || format!("Removing key '{k}' because no rules matched"),
+        );
 
         false
     }));
@@ -556,12 +601,12 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
             let final_index = index as usize;
             if let std::collections::btree_map::Entry::Vacant(e) = elements.entry(final_index) {
                 e.insert(r);
-            } else if execution_context.is_enabled(LogLevel::Warn) {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Warn,
+            } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
                     expression,
-                    format!("Duplicate rules for index '{i}' were specified and ignored"),
-                ));
+                    || format!("Duplicate rules for index '{i}' were specified and ignored"),
+                );
             }
         }
     }
@@ -572,25 +617,21 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
             match v {
                 Some(ValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-keys of '{i}' because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-keys of '{i}' because inner reduction rules were specified"),
+                        );
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
                 }
                 Some(ValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
-                        if execution_context.is_enabled(LogLevel::Verbose) {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Verbose,
-                                expression,
-                                format!("Processing sub-items of '{i}' because inner reduction rules were specified"),
-                            ));
-                        }
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            expression,
+                            || format!("Processing sub-items of '{i}' because inner reduction rules were specified"),
+                        );
                         keep_in_array(execution_context, expression, a, inner_reduction);
                     }
                 }
@@ -600,13 +641,11 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
             return true;
         }
 
-        if execution_context.is_enabled(LogLevel::Verbose) {
-            execution_context.log(LogMessage::new(
-                LogLevel::Verbose,
-                expression,
-                format!("Removing '{i}' because no rules matched"),
-            ));
-        }
+        execution_context.add_diagnostic_if_enabled(
+            RecordSetEngineDiagnosticLevel::Verbose,
+            expression,
+            || format!("Removing '{i}' because no rules matched"),
+        );
 
         false
     }));
@@ -655,8 +694,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
                 execute_transform_expression(&execution_context, t).unwrap();
@@ -894,8 +937,12 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
                 execute_transform_expression(&execution_context, t).unwrap();
