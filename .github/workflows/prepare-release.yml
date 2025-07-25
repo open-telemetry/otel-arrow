@@ -93,7 +93,8 @@ jobs:
       - name: Create pull request
         if: '!inputs.dry_run'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Create PR body content
           cat > /tmp/pr_body.md << EOF
