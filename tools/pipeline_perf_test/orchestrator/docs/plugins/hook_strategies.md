@@ -6,7 +6,6 @@
 |-----------|--------|-------|--------------|----------------------|
 | `build_docker_images` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImages` | `BuildDockerImagesConfig` | Hook strategy to build Docker images for multiple components locally |
 | `build_docker_image` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImage` | `BuildDockerImageConfig` | Hook strategy implementation for building a single Docker image |
-| `get_docker_logs` | `lib.impl.strategies.hooks.docker.logs` | `GetDockerLogs` | `GetDockerLogsConfig` | Hook strategy to retrieve logs and store them in the component's process_runtime |
 | `create_docker_network` | `lib.impl.strategies.hooks.docker.network` | `CreateDockerNetwork` | `CreateDockerNetworkConfig` | Hook strategy to create a Docker network for a component if it does not already exist |
 | `delete_docker_network` | `lib.impl.strategies.hooks.docker.network` | `DeleteDockerNetwork` | `DeleteDockerNetworkConfig` | Hook strategy to delete a Docker network associated with a component |
 | `tidy_existing_container` | `lib.impl.strategies.hooks.docker.tidy_existing_container` | `TidyExistingContainer` | `TidyExistingContainerConfig` | Hook strategy to remove an existing Docker container with the same name as the current component |
@@ -107,49 +106,6 @@ hooks:
           # Omit components to build any docker component with a build section.
           component: load-generator
           log_build: false
-```
-
-## `get_docker_logs`
-
-**Class**: `lib.impl.strategies.hooks.docker.logs.GetDockerLogs`
-
-**Config Class**: `lib.impl.strategies.hooks.docker.logs.GetDockerLogsConfig`
-
-**Supported Contexts:**
-
-- ComponentHookContext
-
-**Description:**
-
-```python
-"""
-Hook strategy to retrieve logs and store them in the component's process_runtime.
-
-This hook is intended to be used as part of a pipeline or test framework where
-container logs are collected for debugging, auditing, or analysis. When executed,
-it locates the Docker container associated with the current component and stores
-the logs in the component's `ProcessRuntime`, making them accessible for later inspection.
-
-Typical usage:
-    - Collect logs before or after component execution (e.g., in pre/post hooks)
-    - Enhance observability in test pipelines using Docker-based deployments
-
-Attributes:
-    config (GetDockerLogsConfig): Configuration for the log retrieval behavior.
-"""
-```
-
-**Example YAML:**
-
-```yaml
-components:
-  otel-collector:
-    deployment:
-      docker: ...
-    hooks:
-        destroy:
-            pre:
-            - get_docker_logs: {}
 ```
 
 ## `create_docker_network`
