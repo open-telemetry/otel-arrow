@@ -12,13 +12,11 @@ This module does the following:
 Intended for testing or development purposes where a mock OTLP log collector is needed.
 """
 
+import asyncio
 import signal
 import sys
-from concurrent import futures
 import grpc  # type: ignore
 from flask import Flask, jsonify
-from threading import Thread
-
 from opentelemetry.proto.collector.logs.v1 import logs_service_pb2_grpc
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
     ExportLogsServiceResponse,
@@ -30,6 +28,7 @@ GRPC_PORT = 5317
 
 app = Flask(__name__)
 received_logs = 0
+received_logs_lock = asyncio.Lock()  # Async lock to guard the received_logs
 grpc_server = None
 
 
@@ -41,54 +40,72 @@ def handle_signal(signal, frame):
 
 
 class FakeLogsExporter(logs_service_pb2_grpc.LogsServiceServicer):
-    def Export(self, request, context):
+    async def Export(self, request, context):
         global received_logs
         count = sum(
             len(ss.log_records) for rs in request.resource_logs for ss in rs.scope_logs
         )
-        received_logs += count
-        if received_logs % 10000 == 0:
-            print(f"Total received logs: {received_logs}")
+        # Acquire the lock before modifying the global received_logs
+        async with received_logs_lock:
+            received_logs += count
+            if received_logs % 10000 == 0:
+                print(f"Total received logs: {received_logs}")
         return ExportLogsServiceResponse()
 
 
 @app.route("/metrics")
-def metrics():
-    print("Metrics endpoint called. Returning: {received_logs}")
-    return jsonify({"received_logs": received_logs})
+async def metrics():
+    async with received_logs_lock:
+        print(f"Metrics endpoint called. Returning: {received_logs}")
+        return jsonify({"received_logs": received_logs})
 
 
 @app.route("/prom_metrics")
-def prom_metrics():
-    print("Metrics endpoint called. Returning: {received_logs}")
-    return f"received_logs {received_logs}"
+async def prom_metrics():
+    async with received_logs_lock:
+        print(f"Metrics endpoint called. Returning: {received_logs}")
+        return f"received_logs {received_logs}"
 
 
-def start_flask():
-    app.run(host="0.0.0.0", port=FLASK_PORT, use_reloader=False)
+async def start_flask():
+    # Run Flask app asynchronously
+    from threading import Thread
+
+    flask_thread = Thread(
+        target=lambda: app.run(host="0.0.0.0", port=FLASK_PORT, use_reloader=False)
+    )
+    flask_thread.daemon = True
+    flask_thread.start()
+    await asyncio.sleep(0)
 
 
-def serve():
+async def serve():
     global grpc_server
     try:
-        grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        grpc_server = grpc.aio.server()
         logs_service_pb2_grpc.add_LogsServiceServicer_to_server(
             FakeLogsExporter(), grpc_server
         )
         grpc_server.add_insecure_port(f"[::]:{GRPC_PORT}")
-        grpc_server.start()
+        await grpc_server.start()
         print(f"Fake OTLP gRPC server started on port {GRPC_PORT}")
-        grpc_server.wait_for_termination()
+        await grpc_server.wait_for_termination()
     except Exception as e:
         print(f"Error starting gRPC server: {e}")
         raise
 
 
-if __name__ == "__main__":
+async def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
-    flask_thread = Thread(target=start_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    print("About to start gRPC server")
-    serve()
+
+    # Start both Flask and gRPC servers
+    flask_task = asyncio.create_task(start_flask())
+    grpc_task = asyncio.create_task(serve())
+
+    # Run both tasks concurrently
+    await asyncio.gather(flask_task, grpc_task)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
