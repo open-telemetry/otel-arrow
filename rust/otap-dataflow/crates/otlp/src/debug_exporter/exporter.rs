@@ -58,13 +58,6 @@ impl OutputWriter {
             error: format!("Write error: {}", e),
         })
     }
-
-    async fn write_bytes(&mut self, data: &[u8]) -> Result<(), Error<OTLPData>> {
-        self.writer.write_all(data).await.map_err(|e| Error::ExporterError {
-            exporter: self.exporter_id.clone(),
-            error: format!("Write error: {}", e),
-        })
-    }
 }
 
 /// The URN for the debug exporter
@@ -144,7 +137,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
             match msg_chan.recv().await? {
                 // handle control messages
                 Message::Control(ControlMsg::TimerTick { .. }) => {
-                    writer.write_bytes(b"Timer tick received\n").await?;
+                    writer.write("Timer tick received\n").await?;
 
                     // output count of messages received since last timertick
                     let report = counter.signals_count_report();
@@ -154,12 +147,12 @@ impl local::Exporter<OTLPData> for DebugExporter {
                     counter.reset_signal_count();
                 }
                 Message::Control(ControlMsg::Config { .. }) => {
-                    writer.write_bytes(b"Config message received\n").await?;
+                    writer.write("Config message received\n").await?;
                 }
                 // shutdown the exporter
                 Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
-                    writer.write_bytes(b"Shutdown message received\n").await?;
+                    writer.write("Shutdown message received\n").await?;
                     let report = counter.debug_report();
                     writer.write(&report).await?;
                     break;
