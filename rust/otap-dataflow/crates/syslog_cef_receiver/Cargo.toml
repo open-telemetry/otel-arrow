@@ -14,7 +14,8 @@ workspace = true
 
 [dependencies]
 otap-df-engine = { path = "../engine", features = ["testing"] }
-otap-df-channel = { path = "../channel" }
+otap-df-engine-macros = { path = "../engine-macros" }
+otap-df-config = { path = "../config" }
 
 # Workspace dependencies
 async-trait.workspace = true

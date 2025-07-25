@@ -8,16 +8,25 @@
 //! ToDo: track memory allocation per thread
 //! ToDo: calculate average latency of otlp signals
 
+use crate::OTAP_EXPORTER_FACTORIES;
+use crate::grpc::OTAPData;
 use crate::perf_exporter::config::Config;
 use crate::proto::opentelemetry::experimental::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use async_trait::async_trait;
 use byte_unit::Byte;
 use fluke_hpack::Decoder;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::{ExporterFactory, distributed_slice};
+use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
     CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
@@ -25,11 +34,31 @@ use sysinfo::{
 };
 use tokio::time::{Duration, Instant};
 
+/// The URN for the OTAP Perf exporter
+pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
+
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
     config: Config,
     output: Option<String>,
 }
+
+/// Declares the OTAP Perf exporter as a local exporter factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
+    name: OTAP_PERF_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        Ok(ExporterWrapper::local(
+            PerfExporter::from_config(&node_config.config)?,
+            node_config,
+            exporter_config,
+        ))
+    },
+};
 
 impl PerfExporter {
     /// creates a perf exporter with the provided config
@@ -37,15 +66,27 @@ impl PerfExporter {
     pub fn new(config: Config, output: Option<String>) -> Self {
         PerfExporter { config, output }
     }
+
+    /// Creates a new PerfExporter from a configuration object
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        Ok(PerfExporter {
+            config: serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
+            output: None,
+        })
+    }
 }
 
 #[async_trait(?Send)]
-impl local::Exporter<BatchArrowRecords> for PerfExporter {
+impl local::Exporter<OTAPData> for PerfExporter {
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<BatchArrowRecords>,
-        effect_handler: local::EffectHandler<BatchArrowRecords>,
-    ) -> Result<(), Error<BatchArrowRecords>> {
+        mut msg_chan: MessageChannel<OTAPData>,
+        effect_handler: local::EffectHandler<OTAPData>,
+    ) -> Result<(), Error<OTAPData>> {
         // init variables for tracking
         let mut average_pipeline_latency: f64 = 0.0;
         let mut received_arrow_records_count: u64 = 0;
@@ -56,7 +97,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
         let mut total_received_pdata_batch_count: u64 = 0;
         let mut last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
-            exporter: effect_handler.exporter_name(),
+            exporter: effect_handler.exporter_id(),
             error: format!("Failed to get process pid: {e}"),
         })?;
         let mut system = System::new();
@@ -64,28 +105,91 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
         let mut writer = get_writer(self.output);
 
         let sys_refresh_list = sys_refresh_list(&self.config);
+
+        // Helper function to generate performance report
+        let generate_report = |received_arrow_records_count: u64,
+                               received_otlp_signal_count: u64,
+                               received_pdata_batch_count: u64,
+                               total_received_arrow_records_count: u128,
+                               total_received_otlp_signal_count: u128,
+                               total_received_pdata_batch_count: u64,
+                               average_pipeline_latency: f64,
+                               last_perf_time: Instant,
+                               system: &mut System,
+                               config: &Config,
+                               writer: &mut Box<dyn Write>,
+                               process_pid: sysinfo::Pid|
+         -> Result<(), Error<OTAPData>> {
+            let now = Instant::now();
+            let duration = now - last_perf_time;
+
+            // display pipeline report
+            _ = writeln!(
+                writer,
+                "====================Pipeline Report===================="
+            );
+            display_report_pipeline(
+                received_arrow_records_count,
+                received_otlp_signal_count,
+                received_pdata_batch_count,
+                total_received_arrow_records_count,
+                total_received_otlp_signal_count,
+                total_received_pdata_batch_count,
+                average_pipeline_latency,
+                duration,
+                writer,
+            );
+
+            // update sysinfo data
+            system.refresh_specifics(sys_refresh_list);
+            let process = system.process(process_pid).ok_or(Error::ExporterError {
+                exporter: effect_handler.exporter_id(),
+                error: "Failed to get process".to_owned(),
+            })?;
+
+            // check configuration and display data accordingly
+            if config.mem_usage() {
+                _ = writeln!(
+                    writer,
+                    "=====================Memory Usage======================"
+                );
+                display_mem_usage(process, writer);
+            }
+            if config.cpu_usage() {
+                _ = writeln!(
+                    writer,
+                    "=======================Cpu Usage======================="
+                );
+                display_cpu_usage(process, system, writer);
+            }
+            if config.disk_usage() {
+                _ = writeln!(
+                    writer,
+                    "======================Disk Usage======================="
+                );
+                let disk_usage = process.disk_usage();
+                display_disk_usage(disk_usage, duration, writer);
+            }
+            if config.io_usage() {
+                let networks = Networks::new_with_refreshed_list();
+                _ = writeln!(
+                    writer,
+                    "=====================Network Usage====================="
+                );
+                for (interface_name, network) in &networks {
+                    display_io_usage(interface_name, network, duration, writer);
+                }
+            }
+
+            Ok(())
+        };
+
         // Loop until a Shutdown event is received.
         loop {
-            match msg_chan.recv().await? {
+            let msg = msg_chan.recv().await?;
+            match msg {
                 Message::Control(ControlMsg::TimerTick { .. }) => {
-                    /*
-                    Calculates the time elapsed since the last report
-                    Computes message and event throughput (items per second)
-                    Formats performance statistics
-                    If the meter is enabled, collects system resource usage
-                    Prints all metrics to the console
-                    Resets counters for the next interval
-                    */
-                    // get delta time
-                    let now = Instant::now();
-                    let duration = now - last_perf_time;
-
-                    // display pipeline report
-                    _ = writeln!(
-                        writer,
-                        "====================Pipeline Report===================="
-                    );
-                    display_report_pipeline(
+                    generate_report(
                         received_arrow_records_count,
                         received_otlp_signal_count,
                         received_pdata_batch_count,
@@ -93,65 +197,42 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         total_received_otlp_signal_count,
                         total_received_pdata_batch_count,
                         average_pipeline_latency,
-                        duration,
+                        last_perf_time,
+                        &mut system,
+                        &self.config,
                         &mut writer,
-                    );
+                        process_pid,
+                    )?;
 
-                    // update sysinfo data
-                    system.refresh_specifics(sys_refresh_list);
-                    let process = system.process(process_pid).ok_or(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
-                        error: "Failed to get process".to_owned(),
-                    })?;
-
-                    // check configuration and display data accordingly
-                    if self.config.mem_usage() {
-                        // get process
-                        _ = writeln!(
-                            writer,
-                            "=====================Memory Usage======================"
-                        );
-                        display_mem_usage(process, &mut writer);
-                    }
-                    if self.config.cpu_usage() {
-                        _ = writeln!(
-                            writer,
-                            "=======================Cpu Usage======================="
-                        );
-                        display_cpu_usage(process, &system, &mut writer);
-                    }
-                    if self.config.disk_usage() {
-                        _ = writeln!(
-                            writer,
-                            "======================Disk Usage======================="
-                        );
-                        let disk_usage = process.disk_usage();
-                        display_disk_usage(disk_usage, duration, &mut writer);
-                    }
-                    if self.config.io_usage() {
-                        let networks = Networks::new_with_refreshed_list();
-                        _ = writeln!(
-                            writer,
-                            "=====================Network Usage====================="
-                        );
-                        for (interface_name, network) in &networks {
-                            display_io_usage(interface_name, network, duration, &mut writer);
-                        }
-                    }
-
-                    // reset received counters
-                    // update last_perf_time
+                    // reset received counters and update last_perf_time
                     received_arrow_records_count = 0;
                     received_otlp_signal_count = 0;
                     received_pdata_batch_count = 0;
-                    last_perf_time = now;
+                    last_perf_time = Instant::now();
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(ControlMsg::Config { .. }) => {}
                 Message::Control(ControlMsg::Shutdown { .. }) => {
+                    // Generate final performance report before shutting down
+                    generate_report(
+                        received_arrow_records_count,
+                        received_otlp_signal_count,
+                        received_pdata_batch_count,
+                        total_received_arrow_records_count,
+                        total_received_otlp_signal_count,
+                        total_received_pdata_batch_count,
+                        average_pipeline_latency,
+                        last_perf_time,
+                        &mut system,
+                        &self.config,
+                        &mut writer,
+                        process_pid,
+                    )?;
                     break;
                 }
-                Message::PData(batch) => {
+                Message::PData(OTAPData::ArrowMetrics(batch))
+                | Message::PData(OTAPData::ArrowLogs(batch))
+                | Message::PData(OTAPData::ArrowTraces(batch)) => {
                     // keep track of batches received
                     received_pdata_batch_count += 1;
                     total_received_pdata_batch_count += 1;
@@ -164,7 +245,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         decoder
                             .decode(&batch.headers)
                             .map_err(|_| Error::ExporterError {
-                                exporter: effect_handler.exporter_name(),
+                                exporter: effect_handler.exporter_id(),
                                 error: "Failed to decode batch headers".to_owned(),
                             })?;
                     // find the timestamp header and parse it
@@ -173,13 +254,13 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     if let Some((_, value)) = timestamp_pair {
                         let timestamp =
                             decode_timestamp(value).map_err(|error| Error::ExporterError {
-                                exporter: effect_handler.exporter_name(),
+                                exporter: effect_handler.exporter_id(),
                                 error,
                             })?;
                         let current_unix_time = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map_err(|error| Error::ExporterError {
-                                exporter: effect_handler.exporter_name(),
+                                exporter: effect_handler.exporter_id(),
                                 error: error.to_string(),
                             })?;
                         let latency = (current_unix_time - timestamp).as_secs_f64();
@@ -224,7 +305,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
+                        exporter: effect_handler.exporter_id(),
                         error: "Unknown control message".to_owned(),
                     });
                 }
@@ -509,7 +590,7 @@ fn display_report_pipeline(
 mod tests {
 
     use crate::perf_exporter::config::Config;
-    use crate::perf_exporter::exporter::PerfExporter;
+    use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
     use crate::proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
@@ -519,8 +600,11 @@ mod tests {
     use otap_df_engine::testing::exporter::TestRuntime;
     use tokio::time::{Duration, sleep};
 
+    use crate::grpc::OTAPData;
+    use otap_df_config::node::NodeUserConfig;
     use std::fs::{File, remove_file};
     use std::io::{BufReader, prelude::*};
+    use std::rc::Rc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const TRACES_BATCH_ID: i64 = 0;
@@ -574,8 +658,7 @@ mod tests {
     /// data message, and shutdown control messages.
     ///
     fn scenario()
-    -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
-    {
+    -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 // send some messages to the exporter to calculate pipeline statistics
@@ -599,13 +682,13 @@ mod tests {
                         ROW_SIZE,
                     );
                     // // Send a data message
-                    ctx.send_pdata(traces_batch_data)
+                    ctx.send_pdata(OTAPData::ArrowTraces(traces_batch_data))
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(logs_batch_data)
+                    ctx.send_pdata(OTAPData::ArrowLogs(logs_batch_data))
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(metrics_batch_data)
+                    ctx.send_pdata(OTAPData::ArrowMetrics(metrics_batch_data))
                         .await
                         .expect("Failed to send data message");
                 }
@@ -629,8 +712,7 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         output_file: String,
-    ) -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
-    {
+    ) -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
                 // get a file to read and validate the output
@@ -706,8 +788,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let config = Config::new(1000, 0.3, true, true, true, true, true);
         let output_file = "perf_output.txt".to_string();
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             PerfExporter::new(config, Some(output_file.clone())),
+            node_config,
             test_runtime.config(),
         );
 
