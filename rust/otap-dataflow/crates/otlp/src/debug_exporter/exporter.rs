@@ -36,10 +36,10 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use serde_json::Value;
-use std::rc::Rc;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
-use tokio::fs::File;
 use std::borrow::Cow;
+use std::rc::Rc;
+use tokio::fs::File;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -49,14 +49,20 @@ struct OutputWriter {
 
 impl OutputWriter {
     fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: Cow<'static, str>) -> Self {
-        Self { writer, exporter_id }
+        Self {
+            writer,
+            exporter_id,
+        }
     }
 
     async fn write(&mut self, data: &str) -> Result<(), Error<OTLPData>> {
-        self.writer.write_all(data.as_bytes()).await.map_err(|e| Error::ExporterError {
-            exporter: self.exporter_id.clone(),
-            error: format!("Write error: {}", e),
-        })
+        self.writer
+            .write_all(data.as_bytes())
+            .await
+            .map_err(|e| Error::ExporterError {
+                exporter: self.exporter_id.clone(),
+                error: format!("Write error: {}", e),
+            })
     }
 }
 
@@ -131,7 +137,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
         // get a writer to write to stdout or to a file
         let raw_writer = get_writer(self.output).await;
         let mut writer = OutputWriter::new(raw_writer, effect_handler.exporter_id());
-        
+
         // Loop until a Shutdown event is received.
         loop {
             match msg_chan.recv().await? {
@@ -172,7 +178,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            ).await?;
+                            )
+                            .await?;
                             counter.increment_metric_signal_count();
                         }
                         OTLPData::Logs(req) => {
@@ -182,7 +189,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            ).await?;
+                            )
+                            .await?;
                             counter.increment_log_signal_count();
                         }
                         OTLPData::Traces(req) => {
@@ -192,7 +200,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            ).await?;
+                            )
+                            .await?;
                             counter.increment_span_signal_count();
                         }
                         OTLPData::Profiles(req) => {
@@ -202,7 +211,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            ).await?;
+                            )
+                            .await?;
                             counter.increment_profile_signal_count();
                         }
                     }
@@ -231,7 +241,7 @@ async fn get_writer(output_file: Option<String>) -> Box<dyn AsyncWrite + Unpin> 
                 .await
                 .expect("could not open output file");
             Box::new(file)
-        },
+        }
         None => Box::new(tokio::io::stdout()),
     }
 }
@@ -277,9 +287,15 @@ async fn push_metric(
         }
     }
 
-    writer.write(&format!("Received {} resource metrics\n", resource_metrics)).await?;
-    writer.write(&format!("Received {} metrics\n", metrics)).await?;
-    writer.write(&format!("Received {} data points\n", data_points)).await?;
+    writer
+        .write(&format!("Received {} resource metrics\n", resource_metrics))
+        .await?;
+    writer
+        .write(&format!("Received {} metrics\n", metrics))
+        .await?;
+    writer
+        .write(&format!("Received {} data points\n", data_points))
+        .await?;
     counter.update_metric_data(resource_metrics as u64, metrics as u64, data_points as u64);
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
@@ -314,9 +330,13 @@ async fn push_trace(
         }
     }
 
-    writer.write(&format!("Received {} resource spans\n", resource_spans)).await?;
+    writer
+        .write(&format!("Received {} resource spans\n", resource_spans))
+        .await?;
     writer.write(&format!("Received {} spans\n", spans)).await?;
-    writer.write(&format!("Received {} events\n", events)).await?;
+    writer
+        .write(&format!("Received {} events\n", events))
+        .await?;
     writer.write(&format!("Received {} links\n", links)).await?;
     counter.update_span_data(
         resource_spans as u64,
@@ -354,9 +374,15 @@ async fn push_log(
             }
         }
     }
-    writer.write(&format!("Received {} resource logs\n", resource_logs)).await?;
-    writer.write(&format!("Received {} log records\n", log_records)).await?;
-    writer.write(&format!("Received {} events\n", events)).await?;
+    writer
+        .write(&format!("Received {} resource logs\n", resource_logs))
+        .await?;
+    writer
+        .write(&format!("Received {} log records\n", log_records))
+        .await?;
+    writer
+        .write(&format!("Received {} events\n", events))
+        .await?;
     counter.update_log_data(resource_logs as u64, log_records as u64, events as u64);
     if *verbosity == Verbosity::Basic {
         return Ok(());
@@ -386,8 +412,15 @@ async fn push_profile(
         }
     }
 
-    writer.write(&format!("Received {} resource profiles\n", resource_profiles)).await?;
-    writer.write(&format!("Received {} samples\n", samples)).await?;
+    writer
+        .write(&format!(
+            "Received {} resource profiles\n",
+            resource_profiles
+        ))
+        .await?;
+    writer
+        .write(&format!("Received {} samples\n", samples))
+        .await?;
     counter.update_profile_data(resource_profiles as u64, samples as u64);
     if *verbosity == Verbosity::Basic {
         return Ok(());
@@ -415,9 +448,9 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
     use std::fs::{File, remove_file};
+    use std::future::Future;
     use std::io::{BufReader, read_to_string};
     use std::rc::Rc;
-    use std::future::Future;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
