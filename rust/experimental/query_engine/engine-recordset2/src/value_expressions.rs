@@ -389,8 +389,12 @@ mod tests {
         let run_test = |immutable_value_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_immutable_value_expression(&execution_context, &immutable_value_expression)
@@ -433,8 +437,12 @@ mod tests {
         let run_test = |scalar_expression, validate: &dyn Fn(Option<ResolvedValueMut>)| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             let value =
                 execute_mutable_value_expression(&execution_context, &scalar_expression).unwrap();
@@ -553,8 +561,12 @@ mod tests {
         let run_test = |scalar_expression, validate: &dyn Fn(Option<ResolvedValueMut>)| {
             let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
 
-            let execution_context =
-                ExecutionContext::new(LogLevel::Verbose, &pipeline, None, record.clone());
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
 
             {
                 let mut variables = execution_context.get_variables().borrow_mut();
