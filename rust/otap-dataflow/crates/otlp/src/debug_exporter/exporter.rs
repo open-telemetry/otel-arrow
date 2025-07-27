@@ -132,7 +132,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
             Box::new(DetailedOTLPMarshaler)
         };
 
-        println!("Starting Debug Exporter");
+        effect_handler.info("Starting Debug Exporter").await;
 
         // get a writer to write to stdout or to a file
         let raw_writer = get_writer(self.output).await;
