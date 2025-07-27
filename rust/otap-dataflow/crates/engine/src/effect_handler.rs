@@ -30,7 +30,7 @@ impl EffectHandlerCore {
     pub(crate) async fn info(&self, message: &str) {
         use tokio::io::{AsyncWriteExt, stdout};
         let mut out = stdout();
-        let formatted_message = format!("{}\n", message);
+        let formatted_message = format!("{message}\n");
         // Ignore write errors as they're typically not recoverable for stdout
         let _ = out.write_all(formatted_message.as_bytes()).await;
         let _ = out.flush().await;

@@ -35,8 +35,6 @@ otap-df-config = { path = "crates/config" }
 otap-df-otlp = { path = "crates/otlp" }
 thiserror.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-console-subscriber = "0.2"
 
 [workspace.dependencies]
 arrow = "55.2"
