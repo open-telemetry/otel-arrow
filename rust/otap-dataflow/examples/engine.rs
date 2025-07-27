@@ -5,6 +5,7 @@ use otap_df_otlp::OTLP_PIPELINE_FACTORY;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use otap_df_otlp::otlp_receiver::OTLP_RECEIVER_URN;
 use serde_json::json;
+use otap_df_otlp::fake_signal_receiver::receiver::FAKE_SIGNAL_RECEIVER_URN;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     //console_subscriber::init();
