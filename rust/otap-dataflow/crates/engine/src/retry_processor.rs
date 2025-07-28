@@ -173,6 +173,8 @@ impl<PData: Clone + Send + 'static> RetryProcessor<PData> {
                     pending.last_error
                 );
             }
+        } else {
+            log::warn!("Attempted to handle nack for non-existent message with ID: {id}");
         }
         Ok(())
     }
