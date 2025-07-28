@@ -132,7 +132,7 @@ pub enum Error<T> {
         /// The error that occurred
         error: String,
     },
-  
+
     /// Unknown exporter plugin.
     #[error("Unknown exporter plugin `{plugin_urn}`")]
     UnknownExporter {
