@@ -24,6 +24,10 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.ref }}
 
       - name: Validate inputs
         run: |
@@ -87,22 +91,7 @@ jobs:
       - name: Extract changelog content for this release
         id: changelog
         run: |
-          # Extract content for the specific release
-          RELEASE_CONTENT=$(awk "/^## \[${{ inputs.version }}\]/,/^## \[/ {
-            if (/^## \[${{ inputs.version }}\]/) next
-            if (/^## \[/) exit
-            print
-          }" CHANGELOG.md | sed '/^$/d')
-
-          if [ -z "$RELEASE_CONTENT" ]; then
-            echo "Error: No release content found for version ${{ inputs.version }} in CHANGELOG.md"
-            exit 1
-          fi
-
-          # Save to file for later use
-          echo "$RELEASE_CONTENT" > /tmp/release_content.txt
-          echo "Found release content:"
-          cat /tmp/release_content.txt
+          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}"
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
@@ -112,17 +101,17 @@ jobs:
           echo "Planned operations:"
           echo "- Version to tag: v${{ inputs.version }}"
           echo "- Last version: v${{ steps.last_version.outputs.last_version }}"
-          echo ""
+          echo "--------------------------------"
           echo "Git tags that would be created:"
           echo "  - v${{ inputs.version }} (main release tag)"
           echo "  - go/v${{ inputs.version }} (Go module tag)"
           echo "  - collector/cmd/otelarrowcol/v${{ inputs.version }} (collector module tag)"
-          echo ""
+          echo "--------------------------------"
           echo "GitHub release that would be created:"
           echo "  - Title: Release v${{ inputs.version }}"
           echo "  - Tag: v${{ inputs.version }}"
           echo "  - Release notes from CHANGELOG.md"
-          echo ""
+          echo "--------------------------------"
           echo "Release content preview:"
           cat /tmp/release_content.txt
 
@@ -170,11 +159,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Read changelog content into a variable
+          RELEASE_CONTENT=$(cat /tmp/release_content.txt)
+
           # Create release body content
           cat > /tmp/release_body.md << 'EOF'
           ## What's Changed
 
-          $(cat /tmp/release_content.txt)
+          ${RELEASE_CONTENT}
 
           **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${{ steps.last_version.outputs.last_version }}...v${{ inputs.version }}
 
