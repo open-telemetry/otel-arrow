@@ -13,8 +13,8 @@ use crate::{
 };
 use serde_json::Value;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
 use std::{collections::HashMap, sync::OnceLock};
+use std::sync::Arc;
 
 pub mod error;
 pub mod exporter;
@@ -55,7 +55,7 @@ pub struct ReceiverFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new receiver instance.
     pub create: fn(
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
 }
@@ -109,7 +109,7 @@ pub struct ExporterFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new exporter instance.
     pub create: fn(
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
 }
@@ -426,7 +426,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         &self,
         receivers: &mut HashMap<NodeId, ReceiverWrapper<PData>>,
         receiver_id: NodeId,
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self
             .get_receiver_factory_map()
@@ -454,7 +454,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         &self,
         nodes: &mut HashMap<NodeId, ProcessorWrapper<PData>>,
         processor_id: NodeId,
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self
             .get_processor_factory_map()
@@ -482,7 +482,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         &self,
         nodes: &mut HashMap<NodeId, ExporterWrapper<PData>>,
         exporter_id: NodeId,
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self
             .get_exporter_factory_map()

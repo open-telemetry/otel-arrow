@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -27,16 +27,15 @@ pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
     r#type: PipelineType,
 
-    /// Optional description of the pipeline’s purpose.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<Description>,
-
     /// Settings for this pipeline.
     #[serde(default)]
     settings: PipelineSettings,
 
     /// All nodes in this pipeline, keyed by node ID.
-    nodes: HashMap<NodeId, Rc<NodeUserConfig>>,
+    /// 
+    /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
+    /// across multiple threads without cloning the entire configuration.
+    nodes: HashMap<NodeId, Arc<NodeUserConfig>>,
 }
 
 fn default_control_channel_size() -> usize {
@@ -110,12 +109,12 @@ impl PipelineConfig {
     }
 
     /// Returns an iterator visiting all nodes in the pipeline.
-    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Rc<NodeUserConfig>)> {
+    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.nodes.iter()
     }
 
     /// Creates a consuming iterator over the nodes in the pipeline.
-    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Rc<NodeUserConfig>)> {
+    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
         self.nodes.into_iter()
     }
 
@@ -180,7 +179,7 @@ impl PipelineConfig {
     fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
         fn visit(
             node: &NodeId,
-            nodes: &HashMap<NodeId, Rc<NodeUserConfig>>,
+            nodes: &HashMap<NodeId, Arc<NodeUserConfig>>,
             visiting: &mut HashSet<NodeId>,
             visited: &mut HashSet<NodeId>,
             current_path: &mut Vec<NodeId>,
@@ -491,11 +490,10 @@ impl PipelineConfigBuilder {
         } else {
             // Build the spec and validate it
             let spec = PipelineConfig {
-                description: self.description,
                 nodes: self
                     .nodes
                     .into_iter()
-                    .map(|(id, node)| (id, Rc::new(node)))
+                    .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
                 settings: PipelineSettings::default(),
                 r#type: pipeline_type,

@@ -16,7 +16,7 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::receiver::ReceiverWrapper;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
@@ -42,7 +42,7 @@ pub struct FakeGeneratorReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OTAPData> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
-    create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
             FakeGeneratorReceiver::from_config(&node_config.config)?,
             node_config,

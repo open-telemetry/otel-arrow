@@ -26,7 +26,7 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
 use serde_json::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
@@ -45,7 +45,7 @@ pub struct OTAPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
-    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTAPExporter::from_config(&node_config.config)?,
             node_config,
@@ -205,7 +205,7 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -336,7 +336,7 @@ mod tests {
             .block_on(ready_receiver)
             .expect("Server failed to start");
 
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTAPExporter::new(grpc_endpoint, None),
             node_config,

@@ -36,7 +36,7 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::rc::Rc;
+use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -82,7 +82,7 @@ pub struct DebugExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static DEBUG_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: DEBUG_EXPORTER_URN,
-    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             DebugExporter::from_config(&node_config.config)?,
             node_config,
@@ -442,7 +442,7 @@ mod tests {
     use std::fs::{File, remove_file};
     use std::future::Future;
     use std::io::{BufReader, read_to_string};
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -523,7 +523,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let output_file = "debug_output_basic.txt".to_string();
         let config = Config::new(Verbosity::Basic);
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
             node_config,
@@ -544,7 +544,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let output_file = "debug_output_normal.txt".to_string();
         let config = Config::new(Verbosity::Normal);
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
             node_config,
@@ -565,7 +565,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let output_file = "debug_output_detailed.txt".to_string();
         let config = Config::new(Verbosity::Detailed);
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
             node_config,

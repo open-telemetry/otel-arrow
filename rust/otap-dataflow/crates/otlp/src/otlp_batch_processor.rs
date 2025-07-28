@@ -693,14 +693,14 @@ mod tests {
     use otap_df_engine::control::ControlMsg;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     /// Wraps a processor in a local test wrapper.
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
-        let node_config = Rc::new(NodeUserConfig::new_processor_config(
+        let node_config = Arc::new(NodeUserConfig::new_processor_config(
             _OTLP_BATCH_PROCESSOR_URN,
         ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
@@ -1811,14 +1811,14 @@ mod integration_tests {
     use otap_df_engine::processor::ProcessorWrapper;
     use std::fs::OpenOptions;
     use std::io::Write;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::Duration;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
-        let node_config = Rc::new(NodeUserConfig::new_processor_config(
+        let node_config = Arc::new(NodeUserConfig::new_processor_config(
             _OTLP_BATCH_PROCESSOR_URN,
         ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");

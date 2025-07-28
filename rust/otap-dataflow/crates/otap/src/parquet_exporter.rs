@@ -168,7 +168,7 @@ mod test {
     use super::*;
 
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use datagen::SimpleDataGenOptions;
@@ -279,7 +279,7 @@ mod test {
             )]),
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
@@ -362,7 +362,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
@@ -400,7 +400,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
@@ -441,7 +441,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
@@ -502,7 +502,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(

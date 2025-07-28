@@ -19,7 +19,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
@@ -29,7 +29,7 @@ pub enum ReceiverWrapper<PData> {
     /// A receiver with a `!Send` implementation.
     Local {
         /// The user configuration for the node, including its name and channel settings.
-        user_config: Rc<NodeUserConfig>,
+        user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
         runtime_config: ReceiverConfig,
         /// The receiver instance.
@@ -47,7 +47,7 @@ pub enum ReceiverWrapper<PData> {
     /// A receiver with a `Send` implementation.
     Shared {
         /// The user configuration for the node, including its name and channel settings.
-        user_config: Rc<NodeUserConfig>,
+        user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
         runtime_config: ReceiverConfig,
         /// The receiver instance.
@@ -84,7 +84,7 @@ impl<PData> Controllable for ReceiverWrapper<PData> {
 
 impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
-    pub fn local<R>(receiver: R, user_config: Rc<NodeUserConfig>, config: &ReceiverConfig) -> Self
+    pub fn local<R>(receiver: R, user_config: Arc<NodeUserConfig>, config: &ReceiverConfig) -> Self
     where
         R: local::Receiver<PData> + 'static,
     {
@@ -103,7 +103,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
-    pub fn shared<R>(receiver: R, user_config: Rc<NodeUserConfig>, config: &ReceiverConfig) -> Self
+    pub fn shared<R>(receiver: R, user_config: Arc<NodeUserConfig>, config: &ReceiverConfig) -> Self
     where
         R: shared::Receiver<PData> + 'static,
     {
@@ -191,7 +191,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
         }
     }
 
-    fn user_config(&self) -> Rc<NodeUserConfig> {
+    fn user_config(&self) -> Arc<NodeUserConfig> {
         match self {
             ReceiverWrapper::Local {
                 user_config: config,
@@ -255,7 +255,7 @@ mod tests {
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn test_receiver_local() {
         let test_runtime = TestRuntime::new();
-        let user_config = Rc::new(NodeUserConfig::new_receiver_config("test_receiver"));
+        let user_config = Arc::new(NodeUserConfig::new_receiver_config("test_receiver"));
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn test_receiver_shared() {
         let test_runtime = TestRuntime::new();
-        let user_config = Rc::new(NodeUserConfig::new_receiver_config("test_receiver"));
+        let user_config = Arc::new(NodeUserConfig::new_receiver_config("test_receiver"));
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();

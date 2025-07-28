@@ -20,7 +20,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::NodeId;
 use otap_df_config::node::NodeUserConfig;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -30,7 +30,7 @@ pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
         /// The user configuration for the node, including its name and channel settings.
-        user_config: Rc<NodeUserConfig>,
+        user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
         /// The effect handler instance for the exporter.
@@ -45,7 +45,7 @@ pub enum ExporterWrapper<PData> {
     /// An exporter with a `Send` implementation.
     Shared {
         /// The user configuration for the node, including its name and channel settings.
-        user_config: Rc<NodeUserConfig>,
+        user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
         /// The effect handler instance for the exporter.
@@ -80,7 +80,7 @@ impl<PData> Controllable for ExporterWrapper<PData> {
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new local `ExporterWrapper` with the given exporter and configuration (!Send
     /// implementation).
-    pub fn local<E>(exporter: E, user_config: Rc<NodeUserConfig>, config: &ExporterConfig) -> Self
+    pub fn local<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
     where
         E: local::Exporter<PData> + 'static,
     {
@@ -99,7 +99,7 @@ impl<PData> ExporterWrapper<PData> {
 
     /// Creates a new shared `ExporterWrapper` with the given exporter and configuration (Send
     /// implementation).
-    pub fn shared<E>(exporter: E, user_config: Rc<NodeUserConfig>, config: &ExporterConfig) -> Self
+    pub fn shared<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
     where
         E: shared::Exporter<PData> + 'static,
     {
@@ -169,7 +169,7 @@ impl<PData> Node for ExporterWrapper<PData> {
         }
     }
 
-    fn user_config(&self) -> Rc<NodeUserConfig> {
+    fn user_config(&self) -> Arc<NodeUserConfig> {
         match self {
             ExporterWrapper::Local {
                 user_config: config,
@@ -232,7 +232,7 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::sleep;
 
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
-        let user_config = Rc::new(NodeUserConfig::new_exporter_config("test_exporter"));
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::local(
             TestExporter::new(test_runtime.counters()),
             user_config,
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn test_exporter_shared() {
         let test_runtime = TestRuntime::new();
-        let user_config = Rc::new(NodeUserConfig::new_exporter_config("test_exporter"));
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::shared(
             TestExporter::new(test_runtime.counters()),
             user_config,

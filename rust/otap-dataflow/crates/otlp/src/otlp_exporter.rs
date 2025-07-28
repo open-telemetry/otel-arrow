@@ -27,7 +27,7 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -55,7 +55,7 @@ pub struct OTLPExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTLPExporter::from_config(&node_config.config)?,
             node_config,
@@ -230,7 +230,7 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -357,7 +357,7 @@ mod tests {
             .block_on(ready_receiver)
             .expect("Server failed to start");
 
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTLPExporter::new(grpc_endpoint, None),
             node_config,

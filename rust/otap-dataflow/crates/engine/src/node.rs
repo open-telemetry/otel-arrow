@@ -12,7 +12,7 @@ use crate::message::{Receiver, Sender};
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Common trait for nodes in the pipeline.
 #[async_trait::async_trait(?Send)]
@@ -23,7 +23,7 @@ pub trait Node {
 
     /// Returns a reference to the node's user configuration.
     #[must_use]
-    fn user_config(&self) -> Rc<NodeUserConfig>;
+    fn user_config(&self) -> Arc<NodeUserConfig>;
 
     /// Sends a control message to the node.
     async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>>;
