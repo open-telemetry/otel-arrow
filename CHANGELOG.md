@@ -9,6 +9,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.40.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.40.0) - 2025-07-28
+
 - Upgrade to v0.130.0 / v1.36.0 of collector dependencies.
   [#718](https://github.com/open-telemetry/otel-arrow/pull/718)
 - Use `replaces` directive to builder config to use dependencies from
