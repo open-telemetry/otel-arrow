@@ -108,7 +108,12 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
 
-        println!("Listening on {} for OTLP data", self.listening_addr);
+        effect_handler
+            .info(&format!(
+                "Listening on {} for OTLP data",
+                self.listening_addr
+            ))
+            .await;
 
         //start event loop
         loop {
