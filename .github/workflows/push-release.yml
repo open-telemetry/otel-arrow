@@ -159,11 +159,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Read changelog content into a variable
+          RELEASE_CONTENT=$(cat /tmp/release_content.txt)
+
           # Create release body content
           cat > /tmp/release_body.md << 'EOF'
           ## What's Changed
 
-          $(cat /tmp/release_content.txt)
+          ${RELEASE_CONTENT}
 
           **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${{ steps.last_version.outputs.last_version }}...v${{ inputs.version }}
 
