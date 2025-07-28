@@ -44,12 +44,15 @@ jobs:
       - name: Validate version increment
         run: ./.github/workflows/scripts/validate-version-increment.sh "${{ steps.last_version.outputs.last_version }}" "${{ inputs.version }}"
 
-      - name: Extract changelog content
+      - name: Extract unreleased changelog content
         id: changelog
         run: ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
 
       - name: Update CHANGELOG.md
         run: ./.github/workflows/scripts/update-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
+
+      - name: Extract updated changelog content for PR
+        run: ./.github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
@@ -59,12 +62,12 @@ jobs:
           echo "Planned changes:"
           echo "- New version: ${{ inputs.version }}"
           echo "- Last version: ${{ steps.last_version.outputs.last_version }}"
-          echo ""
+          echo "--------------------------------"
           echo "Git diff:"
 
           git diff
 
-          echo ""
+          echo "--------------------------------"
           echo "Git operations that would occur:"
           echo "  - Create branch: otelbot/release-v${{ inputs.version }}"
           echo "  - Commit version updates"

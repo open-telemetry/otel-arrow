@@ -87,22 +87,7 @@ jobs:
       - name: Extract changelog content for this release
         id: changelog
         run: |
-          # Extract content for the specific release
-          RELEASE_CONTENT=$(awk "/^## \[${{ inputs.version }}\]/,/^## \[/ {
-            if (/^## \[${{ inputs.version }}\]/) next
-            if (/^## \[/) exit
-            print
-          }" CHANGELOG.md | sed '/^$/d')
-
-          if [ -z "$RELEASE_CONTENT" ]; then
-            echo "Error: No release content found for version ${{ inputs.version }} in CHANGELOG.md"
-            exit 1
-          fi
-
-          # Save to file for later use
-          echo "$RELEASE_CONTENT" > /tmp/release_content.txt
-          echo "Found release content:"
-          cat /tmp/release_content.txt
+          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}"
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
