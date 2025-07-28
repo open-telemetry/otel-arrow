@@ -2,13 +2,14 @@
 
 //! Translations from Weaver to Otel for attributes.
 
-use use otel_arrow_rust::proto::opentelemetry::
-    common::v1::{AnyValue, KeyValue};
+use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use weaver_resolved_schema::attribute::Attribute;
 use weaver_semconv::attribute::ValueSpec;
 use weaver_semconv::attribute::{
     AttributeType, Examples, PrimitiveOrArrayTypeSpec, TemplateTypeSpec,
 };
+
+//ToDo: choose random attribute value for each attribute instead of the first
 
 /// For the given attribute, return a name/value pair.
 /// Values are generated based on the attribute type and examples where possible.
@@ -62,14 +63,16 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                     Some(Examples::Doubles(doubles)) => {
                         AnyValue::new_double(f64::from(*doubles.first().unwrap_or((&3.13).into())))
                     }
-                    Some(Examples::ListOfDoubles(list_of_doubles)) => AnyValue::new_array(Array::F64(
-                        list_of_doubles
-                            .first()
-                            .unwrap_or(&vec![(3.13).into(), (3.15).into()])
-                            .iter()
-                            .map(|d| f64::from(*d))
-                            .collect(),
-                    )),
+                    Some(Examples::ListOfDoubles(list_of_doubles)) => {
+                        AnyValue::new_array(Array::F64(
+                            list_of_doubles
+                                .first()
+                                .unwrap_or(&vec![(3.13).into(), (3.15).into()])
+                                .iter()
+                                .map(|d| f64::from(*d))
+                                .collect(),
+                        ))
+                    }
                     // String-based examples
                     Some(Examples::String(s)) => AnyValue::new_string(s.clone().into()),
                     Some(Examples::Strings(strings)) => AnyValue::new_string(
@@ -79,14 +82,16 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                             .clone()
                             .into(),
                     ),
-                    Some(Examples::ListOfStrings(list_of_strings)) => AnyValue::new_array(Array::String(
-                        list_of_strings
-                            .first()
-                            .unwrap_or(&vec!["value1".to_owned(), "value2".to_owned()])
-                            .iter()
-                            .map(|s| s.clone().into())
-                            .collect(),
-                    )),
+                    Some(Examples::ListOfStrings(list_of_strings)) => {
+                        AnyValue::new_array(Array::String(
+                            list_of_strings
+                                .first()
+                                .unwrap_or(&vec!["value1".to_owned(), "value2".to_owned()])
+                                .iter()
+                                .map(|s| s.clone().into())
+                                .collect(),
+                        ))
+                    }
                     Some(Examples::Any(any)) => match any {
                         ValueSpec::Int(v) => AnyValue::new_int(*v),
                         ValueSpec::Double(v) => AnyValue::new_double(f64::from(*v)),
@@ -105,7 +110,9 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                     // Fallback to a default value
                     _ => AnyValue::new_string("value".into()),
                 },
-                PrimitiveOrArrayTypeSpec::Booleans => AnyValue::new_array(Array::Bool(vec![true, false])),
+                PrimitiveOrArrayTypeSpec::Booleans => {
+                    AnyValue::new_array(Array::Bool(vec![true, false]))
+                }
                 PrimitiveOrArrayTypeSpec::Ints => match &attribute.examples {
                     Some(Examples::Ints(ints)) => AnyValue::new_array(Array::I64(ints.to_vec())),
                     Some(Examples::ListOfInts(list_of_ints)) => AnyValue::new_array(Array::I64(
@@ -114,31 +121,35 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                     _ => AnyValue::new_array(Array::I64(vec![42, 43])),
                 },
                 PrimitiveOrArrayTypeSpec::Doubles => match &attribute.examples {
-                    Some(Examples::Doubles(doubles)) => {
-                        AnyValue::new_array(Array::F64(doubles.iter().map(|d| f64::from(*d)).collect()))
-                    }
-                    Some(Examples::ListOfDoubles(list_of_doubles)) => AnyValue::new_array(Array::F64(
-                        list_of_doubles
-                            .first()
-                            .unwrap_or(&vec![(3.13).into(), (3.15).into()])
-                            .iter()
-                            .map(|d| f64::from(*d))
-                            .collect(),
+                    Some(Examples::Doubles(doubles)) => AnyValue::new_array(Array::F64(
+                        doubles.iter().map(|d| f64::from(*d)).collect(),
                     )),
+                    Some(Examples::ListOfDoubles(list_of_doubles)) => {
+                        AnyValue::new_array(Array::F64(
+                            list_of_doubles
+                                .first()
+                                .unwrap_or(&vec![(3.13).into(), (3.15).into()])
+                                .iter()
+                                .map(|d| f64::from(*d))
+                                .collect(),
+                        ))
+                    }
                     _ => AnyValue::new_array(Array::F64(vec![3.13, 3.15])),
                 },
                 PrimitiveOrArrayTypeSpec::Strings => match &attribute.examples {
                     Some(Examples::Strings(strings)) => AnyValue::new_array(Array::String(
                         strings.iter().map(|s| s.clone().into()).collect(),
                     )),
-                    Some(Examples::ListOfStrings(list_of_strings)) => AnyValue::new_array(Array::String(
-                        list_of_strings
-                            .first()
-                            .unwrap_or(&vec!["value1".to_owned(), "value2".to_owned()])
-                            .iter()
-                            .map(|s| s.clone().into())
-                            .collect(),
-                    )),
+                    Some(Examples::ListOfStrings(list_of_strings)) => {
+                        AnyValue::new_array(Array::String(
+                            list_of_strings
+                                .first()
+                                .unwrap_or(&vec!["value1".to_owned(), "value2".to_owned()])
+                                .iter()
+                                .map(|s| s.clone().into())
+                                .collect(),
+                        ))
+                    }
                     _ => AnyValue::new_array(Array::String(vec!["value1".into(), "value2".into()])),
                 },
             };

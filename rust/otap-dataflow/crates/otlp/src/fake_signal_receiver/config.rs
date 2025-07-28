@@ -6,6 +6,7 @@
 use crate::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
+
 use otel_arrow_rust::proto::opentelemetry::{
     common::v1::AnyValue, logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
@@ -19,21 +20,24 @@ use weaver_forge::registry::ResolvedRegistry;
 pub struct Config {
     // A ordered list of steps defining various signals to emit
     steps: Vec<ScenarioStep>,
-    resolved_registry: ResolvedRegistry
+
+    resolved_registry: ResolvedRegistry,
 }
 
 impl Config {
     /// Create a new config given a name and a vector of scenario steps
     #[must_use]
     pub fn new(steps: Vec<ScenarioStep>, resolved_registry: ResolvedRegistry) -> Self {
-        Self { steps, resolved_registry }
+        Self {
+            steps,
+            resolved_registry,
+        }
     }
     /// Provide a reference to the vector of scenario steps
     #[must_use]
     pub fn get_steps(&self) -> &Vec<ScenarioStep> {
         &self.steps
     }
-
 
     pub fn get_registry(&self) -> &Registry {
         &self.resolved_registry
@@ -92,37 +96,8 @@ impl ScenarioStep {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::fake_signal_receiver::config::*;
-
-//     #[test]
-//     fn test_config() {
-//         let mut steps = vec![];
-//         let metric_attributes = default_metric_attributes();
-//         let default_attributes = default_attributes();
-//         let datapoint_config = DatapointConfig::new(3, vec![DatapointType::Gauge, DatapointType::Histogram], metric_attributes, 50.0, 0.0);
-//         let metric_config =
-//             MetricConfig::new(1, 1, 1, datapoint_config);
-//         let trace_config = SpanConfig::new(
-//             1,
-//             1,
-//             1,
-//             default_attributes.clone(),
-//             default_span_names(),
-//             default_event_config(),
-//             default_link_config(),
-//         );
-
-//         let log_config = LogConfig::new(1, 1, 1, default_attributes.clone(), default_event_names());
-
-//         steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
-//         steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
-//         steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
-
-//         let config = Config::new(steps);
-//         // Convert the Point to a JSON string.
-//         let serialized = serde_json::to_string(&config).unwrap();
-//         println!("{serialized}");
-//     }
-// }
+pub enum SignalConfig {
+    Metrics,
+    Logs,
+    Traces,
+}

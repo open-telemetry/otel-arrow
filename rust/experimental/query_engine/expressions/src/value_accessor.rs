@@ -44,6 +44,14 @@ impl ValueAccessor {
     pub fn push_selector(&mut self, selector: ScalarExpression) {
         self.selectors.push(selector)
     }
+
+    pub fn remove_selector(&mut self, index: usize) -> Option<ScalarExpression> {
+        if index >= self.selectors.len() {
+            return None;
+        }
+
+        Some(self.selectors.remove(index))
+    }
 }
 
 impl Default for ValueAccessor {

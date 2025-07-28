@@ -7,22 +7,20 @@
 
 use otel_arrow_rust::proto::opentelemetry::{
     common::v1::InstrumentationScope,
-    logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+    logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
     metrics::v1::{
         ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint,
-        Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary,
-        SummaryDataPoint,
+        Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
+        metric::Data, number_data_point::Value,
     },
-    resource::v1::Resource,
-    trace::v1::{
-        ResourceSpans, ScopeSpans, Span, TracesData,
-        span::SpanKind
-    },
+    trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData, span::SpanKind},
 };
-use std::collections::HashMap;
-use weaver_forge::ResolvedRegistry;
-use weaver_semconv::group::{GroupType, SpanKindSpec, InstrumentSpec};
 
+use crate::fake_signal_receiver::*;
+use weaver_forge::ResolvedRegistry;
+use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
+
+/// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]
 pub fn fake_otlp_traces(
     resource_count: usize,
@@ -55,7 +53,7 @@ pub fn fake_otlp_traces(
     TracesData::new(resources)
 }
 
-
+/// Generates LogsData with the specified resource/scope count and defined events (structured logs) in the registry
 #[must_use]
 pub fn fake_otlp_logs(
     resource_count: usize,
@@ -88,7 +86,7 @@ pub fn fake_otlp_logs(
     LogsData::new(resources)
 }
 
-
+/// Generates MetricsData with the specified resource/scope count and defined metrics in the registry
 #[must_use]
 pub fn fake_otlp_metrics(
     resource_count: usize,
@@ -121,30 +119,36 @@ pub fn fake_otlp_metrics(
     MetricsData::new(resources)
 }
 
-
+/// generate each span defined in the resolved registry
+#[must_use]
 fn spans(registry: &ResolvedRegistry) -> Vec<Span> {
-// Emit each span to the OTLP receiver.
+    // Emit each span to the OTLP receiver.
     let spans = vec![];
     for group in registry.groups.iter() {
         if group.r#type == GroupType::Span {
-            let start_time = 1619712000000000000u64;
-            let end_time = 1619712001000000000u64;
-            let trace_id = TraceID::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-            let span_id = SpanID::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
-            spans.push(Span::build(trace_id, span_id, group.id.clone(), start_time).attributes(group.attributes.iter().map(get_attribute_name_value)).kind(group.span_kind.as_ref()).finish())
-            // group.event 
-                /// List of strings that specify the ids of event semantic conventions
-    /// associated with this span semantic convention.
-    /// Note: only valid if type is span
+            let start_time = current_time();
+            let end_time = start_time + delay();
+
+            // group.event_names has list of events
+            spans.push(
+                Span::build(gen_trace_id(), gen_span_id(), group.id.clone(), start_time)
+                    .attributes(group.attributes.iter().map(get_attribute_name_value))
+                    .kind(group.span_kind.as_ref())
+                    .end_time_unix_nano(end_time)
+                    .finish(),
+            );
+            // group.event
+            // List of strings that specify the ids of event semantic conventions
+            // associated with this span semantic convention.
+            // Note: only valid if type is span
         }
     }
     spans
 }
 
-
-
-
-fn metrics(registry: &ReolvedRegistry) -> {
+/// generate each metric defined in the resolved registry
+#[must_use]
+fn metrics(registry: &ReolvedRegistry) -> Vec<Metric> {
     let metrics = vec![];
     for group in registry.groups.iter() {
         if group.r#type == GroupType::Metric {
@@ -162,36 +166,55 @@ fn metrics(registry: &ReolvedRegistry) -> {
                 // build the metrics here
                 match instrument {
                     InstrumentSpec::UpDownCounter => {
-                        let up_down_counter = Metric::new_
-                            .f64_up_down_counter(metric_name)
-                            .with_unit(unit)
-                            .with_description(description)
-                            .build();
-                        up_down_counter.add(1.0, &attributes);
+
+                        for _ in 0..4 {
+                            datapoints.push(NumberDataPoint::build_double(insert timestmap, 1.0)
+            .start_time_unix_nano()
+            .attributes(attributes)
+            .finish());
+                        }
+                        // is not monotonic
+                        metrics.push(Metric::new_sum(metric_name, Sum::new(datapoints)).description(description).unit(unit));
                     }
                     InstrumentSpec::Counter => {
-                        let counter = meter
-                            .f64_counter(metric_name)
-                            .with_unit(unit)
-                            .with_description(description)
-                            .build();
-                        counter.add(1.0, &attributes);
+                        let datapoints = vec![];
+                        for _ in 0..4 {
+                            datapoints.push(NumberDataPoint::build_double(insert timestmap, 1.0)
+            .start_time_unix_nano()
+            .attributes(attributes)
+            .finish());
+                        }
+                        -> sum
+                        // is monotonic
+                        metrics.push(Metric::new_sum(metric_name, Sum::new(datapoints)).description(description).unit(unit));
                     }
                     InstrumentSpec::Gauge => {
-                        let gauge = meter
-                            .f64_gauge(metric_name)
-                            .with_unit(unit)
-                            .with_description(description)
-                            .build();
-                        gauge.record(1.0, &attributes);
+                        for _ in 0..4 {
+                            datapoints.push(NumberDataPoint::build_double(insert timestmap, 1.0)
+                            .start_time_unix_nano()
+                            .attributes(attributes)
+                            .finish());
+                        }
+
+                        metrics.push(Metric::new_gauge(metric_name, Gauge::new(datapoints)).description(description).unit(unit));
                     }
                     InstrumentSpec::Histogram => {
-                        let histogram = meter
-                            .f64_histogram(metric_name)
-                            .with_unit(unit)
-                            .with_description(description)
-                            .build();
-                        histogram.record(1.0, &attributes);
+
+                             let mut datapoints = vec![];
+                            for _ in 0..datapoint_count {
+                                datapoints.push(
+                                    HistogramDataPoint::build(
+                                        get_time_unix_nano(),
+                                        get_buckets_count(),
+                                        get_explicit_bounds(),
+                                    )
+                                    .start_time_unix_nano(get_start_time_unix_nano())
+                                    .attributes(attributes)
+                                    .finish(),
+                                )
+                            }
+                        metrics.push(Metric::new_histogram(metric_name, Histogram::new(datapoints)).description(description).unit(unit));
+
                     }
                 }
             }
@@ -200,21 +223,30 @@ fn metrics(registry: &ReolvedRegistry) -> {
     metrics
 }
 
-fn logs(registry: &ResolvedRegistry) -> Vec<LogRecord>{
+/// generate each span defined in the resolved registry
+#[must_use]
+fn logs(registry: &ResolvedRegistry) -> Vec<LogRecord> {
     let log_records = vec![];
-        for group in registry.groups.iter() {
-            if group.r#type == GroupType::Event {
-                let start_time = 1619712000000000000u64;
-                let end_time = 1619712001000000000u64;
-                let trace_id = TraceID::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-                let span_id = SpanID::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
-                LogRecord::build(2_000_000_000u64, , group.name.clone().unwrap_or("".to_owned)).attributes(group.attributes.iter().map(get_attribute_name_value)).body(common.)finish();
-                log_records.push();
-            }
+    for group in registry.groups.iter() {
+        // events are structured logs
+        if group.r#type == GroupType::Event {
+            // update body here
+            let timestamp = gen_current_time();
+            LogRecord::build(
+                0u64,
+                SeverityNumber::Unspecified,
+                group.name.clone().unwrap_or("".to_owned),
+            )
+            .attributes(group.attributes.iter().map(get_attribute_name_value))
+            .body(common).observed_time_unix_nano(timestamp).time_unix_nano(timestamp)
+            .finish();
+            log_records.push();
         }
+    }
     log_records
 }
 
+/// map a SpanKindSpec to a SpanKind
 #[must_use]
 fn otel_span_kind(span_kind: Option<&SpanKindSpec>) -> SpanKind {
     match span_kind {
@@ -231,3 +263,85 @@ fn otel_any_value(any_value: Option<&AnyValueSpec>) -> AnyValue {
         Some(AnyValueSpec::Bool)
     }
 }
+
+
+/ generate gauge datapoints
+ #[must_use]
+ fn fake_number_datapoints(datapoint_count: usize, attribute_count: usize) -> Vec<NumberDataPoint> {
+     let mut datapoints = vec![];
+     for _ in 0..datapoint_count {
+         datapoints.push(
+             NumberDataPoint::build_double(get_time_unix_nano(), get_double_value())
+                 .start_time_unix_nano(get_start_time_unix_nano())
+                 .attributes(get_attributes(attribute_count))
+                 .finish(),
+         );
+     }
+
+     datapoints
+ }
+
+ /// generate histogram datapoints
+ #[must_use]
+ fn fake_histogram_datapoints(
+     datapoint_count: usize,
+     attribute_count: usize,
+ ) -> Vec<HistogramDataPoint> {
+     let mut datapoints = vec![];
+     for _ in 0..datapoint_count {
+         datapoints.push(
+             HistogramDataPoint::build(
+                 get_time_unix_nano(),
+                 get_buckets_count(),
+                 get_explicit_bounds(),
+             )
+             .start_time_unix_nano(get_start_time_unix_nano())
+             .attributes(get_attributes(attribute_count))
+             .finish(),
+         )
+     }
+
+     datapoints
+ }
+
+ /// generate exponential histogram datapoints
+ #[must_use]
+ fn fake_exp_histogram_datapoints(
+     datapoint_count: usize,
+     attribute_count: usize,
+ ) -> Vec<ExponentialHistogramDataPoint> {
+     let mut datapoints = vec![];
+     for _ in 0..datapoint_count {
+         datapoints.push(
+             ExponentialHistogramDataPoint::build(get_time_unix_nano(), 1, get_buckets())
+                 .start_time_unix_nano(get_start_time_unix_nano())
+                 .attributes(get_attributes(attribute_count))
+                 .count(get_int_value())
+                 .zero_count(get_int_value())
+                 .negative(get_buckets())
+                 .finish(),
+         );
+     }
+
+     datapoints
+ }
+
+ /// generate summary datapoints
+ #[must_use]
+ fn fake_summary_datapoints(
+     datapoint_count: usize,
+     attribute_count: usize,
+ ) -> Vec<SummaryDataPoint> {
+     let mut datapoints = vec![];
+     for _ in 0..datapoint_count {
+         datapoints.push(
+             SummaryDataPoint::build(get_time_unix_nano(), get_quantiles())
+                 .start_time_unix_nano(get_start_time_unix_nano())
+                 .attributes(get_attributes(attribute_count))
+                 .count(get_int_value())
+                 .sum(get_double_value())
+                 .finish(),
+         );
+     }
+     datapoints
+ }

@@ -1,0 +1,141 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.40.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run mode (just show what would happen)'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-release:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-tags: true
+
+      - name: Validate inputs
+        run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
+
+      - name: Get last released version
+        id: last_version
+        run: |
+          LAST_VERSION=$(./.github/workflows/scripts/get-last-version.sh --quiet)
+          echo "last_version=$LAST_VERSION" >> $GITHUB_OUTPUT
+          echo "Last released version: $LAST_VERSION"
+          echo "New version: ${{ inputs.version }}"
+
+      - name: Validate version increment
+        run: ./.github/workflows/scripts/validate-version-increment.sh "${{ steps.last_version.outputs.last_version }}" "${{ inputs.version }}"
+
+      - name: Extract changelog content
+        id: changelog
+        run: ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
+
+      - name: Update CHANGELOG.md
+        run: ./.github/workflows/scripts/update-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
+
+      - name: Dry run - Show planned changes
+        if: inputs.dry_run
+        run: |
+          echo "=== DRY RUN MODE - No changes will be made ==="
+          echo ""
+          echo "Planned changes:"
+          echo "- New version: ${{ inputs.version }}"
+          echo "- Last version: ${{ steps.last_version.outputs.last_version }}"
+          echo ""
+          echo "Git diff:"
+
+          git diff
+
+          echo ""
+          echo "Git operations that would occur:"
+          echo "  - Create branch: otelbot/release-v${{ inputs.version }}"
+          echo "  - Commit version updates"
+          echo "  - Create pull request"
+          echo ""
+          echo "Note: After merging the PR, run the 'Push Release' workflow to create git tags and GitHub release"
+
+      - name: Create GitHub App token
+        if: '!inputs.dry_run'
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        id: app-token
+        with:
+          app-id: ${{ vars.OTELBOT_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+
+      - name: Create release branch and commit changes
+        if: '!inputs.dry_run'
+        run: |
+          # Configure git for otelbot
+          git config user.name otelbot
+          git config user.email 197425009+otelbot@users.noreply.github.com
+
+          # Use script to create branch and commit
+          ./.github/workflows/scripts/create-release-branch.sh "${{ inputs.version }}" --push
+
+      - name: Create pull request
+        if: '!inputs.dry_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create PR body content
+          cat > /tmp/pr_body.md << 'EOF'
+          ## Release v${{ inputs.version }}
+
+          This PR prepares the repository for release v${{ inputs.version }}.
+
+          ### Changes included:
+          - Updated CHANGELOG.md with release notes
+
+          ### Release Notes:
+          ```
+          $(cat /tmp/changelog_content.txt)
+          ```
+
+          ### Checklist:
+          - [ ] Verify CHANGELOG.md formatting and content
+          - [ ] Confirm all tests pass
+          - [ ] Ready to merge and tag release
+
+          After merging this PR, run the **Push Release** workflow to create git tags and publish the GitHub release.
+          EOF
+
+          # Create the pull request using GitHub CLI
+          gh pr create \
+            --title "Release v${{ inputs.version }}" \
+            --body-file /tmp/pr_body.md \
+            --head "otelbot/release-v${{ inputs.version }}" \
+            --base main \
+            --label release
+
+      - name: Summary
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo ":heavy_check_mark: Dry run completed successfully"
+            echo "No changes were made to the repository"
+            echo "Review the planned changes above and run again without dry-run when ready"
+          else
+            echo ":heavy_check_mark: Release preparation completed successfully"
+            echo ""
+            echo "Next steps:"
+            echo "1. Review and merge the pull request: https://github.com/open-telemetry/otel-arrow/pulls"
+            echo "2. After merging, run the 'Push Release' workflow to create git tags and GitHub release"
+            echo ""
+            echo "Release branch: otelbot/release-v${{ inputs.version }}"
+            echo "Release version: v${{ inputs.version }}"
+          fi

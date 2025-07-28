@@ -9,30 +9,42 @@
 use crate::FAKE_SIGNAL_RECEIVERS;
 
 use crate::fake_signal_receiver::config::{Config, ScenarioStep, SignalConfig};
-use crate::grpc::OTLPData;
+use crate::fake_signal_receiver::fake_signal::{
+    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
+};
+// use crate::grpc::OTLPData;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ReceiverFactory;
+use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{LocalReceiverFactory, receiver as local};
-use otap_df_engine::message::ControlMsg;
+use otap_df_engine::local::receiver as local;
+use otap_df_engine::receiver::ReceiverWrapper;
 use serde_json::Value;
+use std::rc::Rc;
 use tokio::time::{Duration, sleep};
+
+/// The URN for the fake signal receiver
+pub const FAKE_SIGNAL_RECEIVER_URN: &str = "urn:otel:fake:signal:receiver";
 
 /// A Receiver that listens for OTLP messages
 pub struct FakeSignalReceiver {
     config: Config,
 }
 
+// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPData type. We must unify this in the future.
 /// Declares the Fake Signal receiver as a local receiver factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
-#[allow(unsafe_code)]
-#[distributed_slice(LOCAL_RECEIVERS)]
-pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPData> = LocalReceiverFactory {
-    name: "urn:otel:fake:signal:receiver",
-    create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
-};
+// #[allow(unsafe_code)]
+// #[distributed_slice(LOCAL_RECEIVERS)]
+// pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPData> = LocalReceiverFactory {
+//     name: "urn:otel:fake:signal:receiver",
+//     create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
+// };
 
 impl FakeSignalReceiver {
     /// creates a new FakeSignalReceiver
@@ -42,11 +54,13 @@ impl FakeSignalReceiver {
     }
 
     /// Creates a new FakeSignalReceiver from a configuration object
-    #[must_use]
-    pub fn from_config(config: &Value) -> Self {
-        let config: Config =
-            serde_json::from_value(config.clone()).unwrap_or_else(|_| Config::new(vec![]));
-        FakeSignalReceiver { config }
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(FakeSignalReceiver { config })
     }
 }
 
@@ -78,7 +92,7 @@ impl local::Receiver<OTLPData> for FakeSignalReceiver {
                     }
                 }
                 // run scenario based on provided configuration
-                _ = run_scenario(self.config.get_steps(), effect_handler.clone()) => {
+                _ = run_scenario(&self.config, effect_handler.clone()) => {
                     // do nothing
                 }
 
@@ -90,21 +104,22 @@ impl local::Receiver<OTLPData> for FakeSignalReceiver {
 }
 
 /// Run the configured scenario steps
-async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHandler<OTLPData>) {
+async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLPData>) {
     // loop through each step
-
+    let steps = config.get_steps();
+    let registry = config.get_registry();
     for step in steps {
         // create batches if specified
         let batches = step.get_batches_to_generate() as usize;
         for _ in 0..batches {
-            // let signal = match step.get_config() {
-            //     SignalConfig::Metric(config) => OTLPData::Metric(config.get_signal()),
-            //     SignalConfig::Log(config) => OTLPData::Log(config.get_signal()),
-            //     SignalConfig::Span(config) => OTLPData::Span(config.get_signal()),
-            // };
-            // _ = effect_handler.send_message(signal).await;
-            // // if there is a delay set between batches sleep for that amount before created the next signal in the batch
-            // sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
+            let signal = match step.get_config() {
+                SignalConfig::Metric => OTLPData::Metric(fake_otlp_metrics(registry)),
+                SignalConfig::Log => OTLPData::Log(fake_otlp_logs(registry)),
+                SignalConfig::Span => OTLPData::Span(fake_otlp_traces(registry)),
+            };
+            _ = effect_handler.send_message(signal).await;
+            // if there is a delay set between batches sleep for that amount before created the next signal in the batch
+            sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
         }
     }
 }
