@@ -97,6 +97,9 @@ jobs:
           # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          # Read changelog content into a variable
+          CHANGELOG_CONTENT=$(cat /tmp/changelog_content.txt)
+
           # Create PR body content
           cat > /tmp/pr_body.md << EOF
           ## Release v${{ inputs.version }}
@@ -107,9 +110,7 @@ jobs:
           - Updated CHANGELOG.md with release notes
 
           ### Release Notes:
-          ```
-          $(cat /tmp/changelog_content.txt)
-          ```
+          ${CHANGELOG_CONTENT}
 
           ### Checklist:
           - [ ] Verify CHANGELOG.md formatting and content
