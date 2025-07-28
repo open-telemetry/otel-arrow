@@ -51,9 +51,6 @@ jobs:
       - name: Update CHANGELOG.md
         run: ./.github/workflows/scripts/update-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
 
-      - name: Extract updated changelog content for PR
-        run: ./.github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
-
       - name: Dry run - Show planned changes
         if: inputs.dry_run
         run: |
@@ -64,9 +61,10 @@ jobs:
           echo "- Last version: ${{ steps.last_version.outputs.last_version }}"
           echo "--------------------------------"
           echo "Git diff:"
-
           git diff
-
+          echo "--------------------------------"
+          echo "Unreleased content:"
+          cat /tmp/changelog_content.txt
           echo "--------------------------------"
           echo "Git operations that would occur:"
           echo "  - Create branch: otelbot/release-v${{ inputs.version }}"
