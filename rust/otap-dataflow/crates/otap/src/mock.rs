@@ -10,7 +10,7 @@
 //! ToDo: [LQ] Improve the pipeline test infrastructure to allow testing the tuple `pdata channel -> OTAP Exporter - grpc -> OTAP receiver -> pdata channel`
 //!
 
-use crate::{grpc::OTAPData, pdata::OtapPdata};
+use crate::{grpc::OtapArrowBytes, pdata::OtapPdata};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
     arrow_logs_service_server::ArrowLogsService, arrow_metrics_service_server::ArrowMetricsService,
@@ -81,7 +81,7 @@ impl ArrowLogsService for ArrowLogsServiceMock {
             while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(OTAPData::ArrowLogs(batch).into()).await
+                let status_result = match sender_clone.send(OtapArrowBytes::ArrowLogs(batch).into()).await
                 {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
@@ -123,7 +123,7 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone
-                    .send(OTAPData::ArrowMetrics(batch).into())
+                    .send(OtapArrowBytes::ArrowMetrics(batch).into())
                     .await
                 {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
@@ -165,7 +165,7 @@ impl ArrowTracesService for ArrowTracesServiceMock {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result =
-                    match sender_clone.send(OTAPData::ArrowTraces(batch).into()).await {
+                    match sender_clone.send(OtapArrowBytes::ArrowTraces(batch).into()).await {
                         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                         Err(error) => (StatusCode::Canceled, error.to_string()),
                     };

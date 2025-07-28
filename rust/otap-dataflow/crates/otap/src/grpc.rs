@@ -95,7 +95,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OTAPData::ArrowLogs, batch, &effect_handler_clone, &tx)
+                if accept_data(OtapArrowBytes::ArrowLogs, batch, &effect_handler_clone, &tx)
                     .await
                     .is_err()
                 {
@@ -129,7 +129,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OTAPData::ArrowMetrics, batch, &effect_handler_clone, &tx)
+                if accept_data(OtapArrowBytes::ArrowMetrics, batch, &effect_handler_clone, &tx)
                     .await
                     .is_err()
                 {
@@ -163,7 +163,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OTAPData::ArrowTraces, batch, &effect_handler_clone, &tx)
+                if accept_data(OtapArrowBytes::ArrowTraces, batch, &effect_handler_clone, &tx)
                     .await
                     .is_err()
                 {
@@ -185,7 +185,7 @@ async fn accept_data<OTAPDataType>(
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<(), ()>
 where
-    OTAPDataType: Fn(BatchArrowRecords) -> OTAPData,
+    OTAPDataType: Fn(BatchArrowRecords) -> OtapArrowBytes,
 {
     let batch_id = batch.batch_id;
     let status_result = match effect_handler.send_message(otap_data(batch).into()).await {
@@ -202,9 +202,12 @@ where
     .map_err(|_| ())
 }
 
-/// Enum to describe the Arrow data
+/// Enum to describe the Arrow data.
+/// 
+/// Within this type, the Arrow batches are serialized as Arrow IPC inside the
+/// `arrow_payloads` field on `[BatchArrowRecords]`
 #[derive(Debug, Clone)]
-pub enum OTAPData {
+pub enum OtapArrowBytes {
     /// Metrics object
     ArrowMetrics(BatchArrowRecords),
     /// Logs object

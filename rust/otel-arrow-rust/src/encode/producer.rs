@@ -13,7 +13,7 @@ use arrow::ipc::writer::StreamWriter;
 use snafu::ResultExt;
 
 use crate::error::{self, Result};
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 
@@ -71,7 +71,7 @@ impl Producer {
     }
 
     /// produce `BatchArrowRecords` protobuf message from `OtapBatch`
-    pub fn produce_bar(&mut self, otap_batch: &OtapBatch) -> Result<BatchArrowRecords> {
+    pub fn produce_bar(&mut self, otap_batch: &OtapArrowRecords) -> Result<BatchArrowRecords> {
         let allowed_payloads = otap_batch.allowed_payload_types();
         let mut arrow_payloads = Vec::<ArrowPayload>::with_capacity(allowed_payloads.len());
 
@@ -165,10 +165,10 @@ mod test {
         )
         .unwrap();
 
-        let mut input = OtapBatch::Logs(Logs::default());
+        let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
         let mut bar = producer.produce_bar(&input).unwrap();
-        let result = OtapBatch::Logs(from_record_messages(
+        let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);
@@ -189,10 +189,10 @@ mod test {
         )
         .unwrap();
 
-        let mut input = OtapBatch::Logs(Logs::default());
+        let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
         let mut bar = producer.produce_bar(&input).unwrap();
-        let result = OtapBatch::Logs(from_record_messages(
+        let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);
@@ -211,10 +211,10 @@ mod test {
         )
         .unwrap();
 
-        let mut input = OtapBatch::Logs(Logs::default());
+        let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
         let mut bar = producer.produce_bar(&input).unwrap();
-        let result = OtapBatch::Logs(from_record_messages(
+        let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);

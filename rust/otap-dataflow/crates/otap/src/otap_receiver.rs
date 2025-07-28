@@ -151,7 +151,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::grpc::OTAPData;
+    use crate::grpc::OtapArrowBytes;
     use crate::mock::create_batch_arrow_record;
     use crate::otap_receiver::OTAPReceiver;
     use crate::pdata::OtapPdata;
@@ -247,7 +247,7 @@ mod tests {
 
                 // read from the effect handler
                 for batch_id in 0..3 {
-                    let metrics_received: OTAPData = timeout(Duration::from_secs(3), ctx.recv())
+                    let metrics_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
@@ -261,7 +261,7 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    let logs_received: OTAPData = timeout(Duration::from_secs(3), ctx.recv())
+                    let logs_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")
@@ -275,7 +275,7 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    let traces_received: OTAPData = timeout(Duration::from_secs(3), ctx.recv())
+                    let traces_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
                         .await
                         .expect("Timed out waiting for message")
                         .expect("No message received")

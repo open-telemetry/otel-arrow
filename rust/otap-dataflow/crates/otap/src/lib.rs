@@ -21,7 +21,6 @@ pub mod otap_receiver;
 /// Generated protobuf files
 pub mod proto;
 
-/// Implementation of the pipeline data that is passed between pipeline components
 pub mod pdata;
 
 pub mod parquet_exporter;

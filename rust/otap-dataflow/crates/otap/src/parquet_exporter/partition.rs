@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use otel_arrow_rust::{
-    otap::OtapBatch, proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::get_schema_metadata,
+    otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::get_schema_metadata,
 };
 
 use super::config::PartitioningStrategy;
@@ -25,11 +25,11 @@ impl std::fmt::Display for PartitionAttributeValue {
 }
 
 pub struct Partition {
-    pub otap_batch: OtapBatch,
+    pub otap_batch: OtapArrowRecords,
     pub attributes: Option<Vec<PartitionAttribute>>,
 }
 
-pub fn partition(otap_batch: &OtapBatch, strategies: &[PartitioningStrategy]) -> Vec<Partition> {
+pub fn partition(otap_batch: &OtapArrowRecords, strategies: &[PartitioningStrategy]) -> Vec<Partition> {
     let mut attributes = vec![];
 
     // This is a fairly simply implementation for now. This will be refactored a lot when
@@ -49,16 +49,16 @@ pub fn partition(otap_batch: &OtapBatch, strategies: &[PartitioningStrategy]) ->
 }
 
 fn static_partitions_from_schema_metadata(
-    otap_batch: &OtapBatch,
+    otap_batch: &OtapArrowRecords,
     metadata_keys: &[String],
 ) -> Vec<PartitionAttribute> {
     let main_record_batch = match otap_batch {
-        OtapBatch::Logs(_) => otap_batch.get(ArrowPayloadType::Logs),
-        OtapBatch::Metrics(_) => match otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
+        OtapArrowRecords::Logs(_) => otap_batch.get(ArrowPayloadType::Logs),
+        OtapArrowRecords::Metrics(_) => match otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
             Some(rb) => Some(rb),
             None => otap_batch.get(ArrowPayloadType::MultivariateMetrics),
         },
-        OtapBatch::Traces(_) => otap_batch.get(ArrowPayloadType::Spans),
+        OtapArrowRecords::Traces(_) => otap_batch.get(ArrowPayloadType::Spans),
     };
     match main_record_batch {
         None => vec![],
@@ -86,18 +86,18 @@ pub mod test {
     use arrow::array::{ArrayRef, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use otel_arrow_rust::otap::Logs;
-    use otel_arrow_rust::{otap::OtapBatch, proto::opentelemetry::arrow::v1::ArrowPayloadType};
+    use otel_arrow_rust::{otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType};
     use std::sync::Arc;
 
     use crate::parquet_exporter::partition::PartitioningStrategy;
 
     // Helper to create a dummy OtapBatch with schema metadata
-    fn make_otap_batch_with_metadata(key: &str, value: &str) -> OtapBatch {
+    fn make_otap_batch_with_metadata(key: &str, value: &str) -> OtapArrowRecords {
         let schema = Schema::new(vec![Field::new("foo", DataType::Utf8, false)])
             .with_metadata([(key.to_string(), value.to_string())].into_iter().collect());
         let array: ArrayRef = Arc::new(StringArray::from(vec!["bar"]));
         let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap();
-        let mut otap_batch = OtapBatch::Logs(Logs::default());
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
         otap_batch.set(ArrowPayloadType::Logs, batch);
 
         otap_batch

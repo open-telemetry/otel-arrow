@@ -7,7 +7,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::LOCAL_EXPORTERS;
-use crate::grpc::OTAPData;
+use crate::grpc::OtapArrowBytes;
 use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -118,13 +118,13 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
                 //send data
                 Message::PData(message) => {
-                    let message: OTAPData = message.try_into()?;
+                    let message: OtapArrowBytes = message.try_into()?;
 
                     match message {
                         // match on OTAPData type and use the respective client to send message
                         // ToDo: Add Ack/Nack handling, send a signal that data has been exported
                         // check what message the data is
-                        OTAPData::ArrowMetrics(req) => {
+                        OtapArrowBytes::ArrowMetrics(req) => {
                             // handle stream differently here?
                             // ToDo: [LQ or someone else] Check if there is a better way to handle that.
                             let request_stream = stream! {
@@ -138,7 +138,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                     error: error.to_string(),
                                 })?;
                         }
-                        OTAPData::ArrowLogs(req) => {
+                        OtapArrowBytes::ArrowLogs(req) => {
                             let request_stream = stream! {
                                 yield req;
                             };
@@ -149,7 +149,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 },
                             )?;
                         }
-                        OTAPData::ArrowTraces(req) => {
+                        OtapArrowBytes::ArrowTraces(req) => {
                             let request_stream = stream! {
                                 yield req;
                             };
@@ -178,7 +178,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 #[cfg(test)]
 mod tests {
 
-    use crate::grpc::OTAPData;
+    use crate::grpc::OtapArrowBytes;
     use crate::mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
         create_batch_arrow_record,
@@ -211,7 +211,7 @@ mod tests {
         |ctx| {
             Box::pin(async move {
                 // Send a data message
-                let metric_message = OTAPData::ArrowMetrics(create_batch_arrow_record(
+                let metric_message = OtapArrowBytes::ArrowMetrics(create_batch_arrow_record(
                     METRIC_BATCH_ID,
                     ArrowPayloadType::MultivariateMetrics,
                 ));
@@ -219,7 +219,7 @@ mod tests {
                     .await
                     .expect("Failed to send metric message");
 
-                let log_message = OTAPData::ArrowLogs(create_batch_arrow_record(
+                let log_message = OtapArrowBytes::ArrowLogs(create_batch_arrow_record(
                     LOG_BATCH_ID,
                     ArrowPayloadType::Logs,
                 ));
@@ -227,7 +227,7 @@ mod tests {
                     .await
                     .expect("Failed to send log message");
 
-                let trace_message = OTAPData::ArrowTraces(create_batch_arrow_record(
+                let trace_message = OtapArrowBytes::ArrowTraces(create_batch_arrow_record(
                     TRACE_BATCH_ID,
                     ArrowPayloadType::Spans,
                 ));
@@ -250,7 +250,7 @@ mod tests {
         |_| {
             Box::pin(async move {
                 // check that the message was properly sent from the exporter
-                let metrics_received: OTAPData = timeout(Duration::from_secs(3), receiver.recv())
+                let metrics_received: OtapArrowBytes = timeout(Duration::from_secs(3), receiver.recv())
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
@@ -264,7 +264,7 @@ mod tests {
                 );
                 assert!(matches!(metrics_received, _expected_metrics_message));
 
-                let logs_received: OTAPData = timeout(Duration::from_secs(3), receiver.recv())
+                let logs_received: OtapArrowBytes = timeout(Duration::from_secs(3), receiver.recv())
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")
@@ -274,7 +274,7 @@ mod tests {
                     create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 assert!(matches!(logs_received, _expected_logs_message));
 
-                let traces_received: OTAPData = timeout(Duration::from_secs(3), receiver.recv())
+                let traces_received: OtapArrowBytes = timeout(Duration::from_secs(3), receiver.recv())
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received")

@@ -14,7 +14,7 @@ use otap_df_engine::{
     message::{ControlMsg, Receiver, Sender},
 };
 use otap_df_otap::{
-    grpc::OTAPData,
+    grpc::OtapArrowBytes,
     otap_exporter::OTAPExporter,
     perf_exporter::{config::Config, exporter::PerfExporter},
 };
@@ -387,9 +387,9 @@ fn bench_exporter(c: &mut Criterion) {
                 row_size,
             );
 
-            otap_signals.push(OTAPData::ArrowTraces(arrow_traces_batch_data));
-            otap_signals.push(OTAPData::ArrowLogs(arrow_logs_batch_data));
-            otap_signals.push(OTAPData::ArrowMetrics(arrow_metrics_batch_data));
+            otap_signals.push(OtapArrowBytes::ArrowTraces(arrow_traces_batch_data));
+            otap_signals.push(OtapArrowBytes::ArrowLogs(arrow_logs_batch_data));
+            otap_signals.push(OtapArrowBytes::ArrowMetrics(arrow_metrics_batch_data));
 
             let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
             let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
