@@ -28,8 +28,8 @@ impl EffectHandlerCore {
     /// This method provides a standardized way for all nodes in the pipeline
     /// to output informational messages without blocking the async runtime.
     pub(crate) async fn info(&self, message: &str) {
-        use tokio::io::{AsyncWriteExt, stdout};
-        let mut out = stdout();
+        use tokio::io::AsyncWriteExt;
+        let mut out = tokio::io::stdout();
         let formatted_message = format!("{message}\n");
         // Ignore write errors as they're typically not recoverable for stdout
         let _ = out.write_all(formatted_message.as_bytes()).await;
