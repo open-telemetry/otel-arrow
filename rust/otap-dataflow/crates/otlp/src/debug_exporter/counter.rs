@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Debug Counter which enables the debug exporter to keep track of stats to report on
-//!
 
 use std::fmt::Write;
 
