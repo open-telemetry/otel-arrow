@@ -8,11 +8,11 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::pdata::OtapPdata;
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl,
 };
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -177,20 +177,17 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 mod tests {
     use crate::grpc::OtapArrowBytes;
     use crate::mock::create_batch_arrow_record;
+    use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;
     use async_stream::stream;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
-    use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
-    use async_stream::stream;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -276,12 +273,13 @@ mod tests {
 
                 // read from the effect handler
                 for batch_id in 0..3 {
-                    let metrics_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received")
-                        .try_into()
-                        .expect("Could convert pdata to OTAPData");
+                    let metrics_received: OtapArrowBytes =
+                        timeout(Duration::from_secs(3), ctx.recv())
+                            .await
+                            .expect("Timed out waiting for message")
+                            .expect("No message received")
+                            .try_into()
+                            .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_metrics_message =
@@ -304,12 +302,13 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    let traces_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received")
-                        .try_into()
-                        .expect("Could convert pdata to OTAPData");
+                    let traces_received: OtapArrowBytes =
+                        timeout(Duration::from_secs(3), ctx.recv())
+                            .await
+                            .expect("Timed out waiting for message")
+                            .expect("No message received")
+                            .try_into()
+                            .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_traces_message =

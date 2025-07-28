@@ -129,9 +129,14 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OtapArrowBytes::ArrowMetrics, batch, &effect_handler_clone, &tx)
-                    .await
-                    .is_err()
+                if accept_data(
+                    OtapArrowBytes::ArrowMetrics,
+                    batch,
+                    &effect_handler_clone,
+                    &tx,
+                )
+                .await
+                .is_err()
                 {
                     // end loop if error occurs
                     break;
@@ -163,9 +168,14 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OtapArrowBytes::ArrowTraces, batch, &effect_handler_clone, &tx)
-                    .await
-                    .is_err()
+                if accept_data(
+                    OtapArrowBytes::ArrowTraces,
+                    batch,
+                    &effect_handler_clone,
+                    &tx,
+                )
+                .await
+                .is_err()
                 {
                     // end loop if error occurs
                     break;
@@ -203,7 +213,7 @@ where
 }
 
 /// Enum to describe the Arrow data.
-/// 
+///
 /// Within this type, the Arrow batches are serialized as Arrow IPC inside the
 /// `arrow_payloads` field on `[BatchArrowRecords]`
 #[derive(Debug, Clone)]

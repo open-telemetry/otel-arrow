@@ -417,7 +417,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone()).await;
+                        _ = pdata_sender.send(signal.clone().into()).await;
                     }
 
                     _ = control_sender.send(ControlMsg::TimerTick {}).await;
@@ -464,7 +464,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
+                        _ = pdata_sender.send(otap_signal.clone().into()).await;
                     }
 
                     _ = control_sender.send(ControlMsg::TimerTick {}).await;

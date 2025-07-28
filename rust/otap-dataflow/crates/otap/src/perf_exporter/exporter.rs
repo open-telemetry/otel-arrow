@@ -9,7 +9,8 @@
 //! ToDo: calculate average latency of otlp signals
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::grpc::OTAPData;
+use crate::grpc::OtapArrowBytes;
+use crate::pdata::OtapPdata;
 use crate::perf_exporter::config::Config;
 use async_trait::async_trait;
 use byte_unit::Byte;
@@ -20,9 +21,9 @@ use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -49,7 +50,7 @@ pub struct PerfExporter {
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
+pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
     create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
@@ -81,12 +82,12 @@ impl PerfExporter {
 }
 
 #[async_trait(?Send)]
-impl local::Exporter<OTAPData> for PerfExporter {
+impl local::Exporter<OtapPdata> for PerfExporter {
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<OTAPData>,
-        effect_handler: local::EffectHandler<OTAPData>,
-    ) -> Result<(), Error<OTAPData>> {
+        mut msg_chan: MessageChannel<OtapPdata>,
+        effect_handler: local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         // init variables for tracking
         let mut average_pipeline_latency: f64 = 0.0;
         let mut received_arrow_records_count: u64 = 0;
@@ -119,7 +120,7 @@ impl local::Exporter<OTAPData> for PerfExporter {
                                config: &Config,
                                writer: &mut Box<dyn Write>,
                                process_pid: sysinfo::Pid|
-         -> Result<(), Error<OTAPData>> {
+         -> Result<(), Error<OtapPdata>> {
             let now = Instant::now();
             let duration = now - last_perf_time;
 
@@ -230,9 +231,12 @@ impl local::Exporter<OTAPData> for PerfExporter {
                     )?;
                     break;
                 }
-                Message::PData(OTAPData::ArrowMetrics(batch))
-                | Message::PData(OTAPData::ArrowLogs(batch))
-                | Message::PData(OTAPData::ArrowTraces(batch)) => {
+                Message::PData(pdata) => {
+                    let batch = match OtapArrowBytes::try_from(pdata)? {
+                        OtapArrowBytes::ArrowLogs(batch) => batch,
+                        OtapArrowBytes::ArrowMetrics(batch) => batch,
+                        OtapArrowBytes::ArrowTraces(batch) => batch,
+                    };
                     // keep track of batches received
                     received_pdata_batch_count += 1;
                     total_received_pdata_batch_count += 1;
@@ -589,6 +593,7 @@ fn display_report_pipeline(
 #[cfg(test)]
 mod tests {
 
+    use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
     use fluke_hpack::Encoder;
@@ -600,7 +605,7 @@ mod tests {
     };
     use tokio::time::{Duration, sleep};
 
-    use crate::grpc::OTAPData;
+    use crate::grpc::OtapArrowBytes;
     use otap_df_config::node::NodeUserConfig;
     use std::fs::{File, remove_file};
     use std::io::{BufReader, prelude::*};
@@ -658,7 +663,7 @@ mod tests {
     /// data message, and shutdown control messages.
     ///
     fn scenario()
-    -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 // send some messages to the exporter to calculate pipeline statistics
@@ -682,13 +687,13 @@ mod tests {
                         ROW_SIZE,
                     );
                     // // Send a data message
-                    ctx.send_pdata(OTAPData::ArrowTraces(traces_batch_data))
+                    ctx.send_pdata(OtapArrowBytes::ArrowTraces(traces_batch_data).into())
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(OTAPData::ArrowLogs(logs_batch_data))
+                    ctx.send_pdata(OtapArrowBytes::ArrowLogs(logs_batch_data).into())
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(OTAPData::ArrowMetrics(metrics_batch_data))
+                    ctx.send_pdata(OtapArrowBytes::ArrowMetrics(metrics_batch_data).into())
                         .await
                         .expect("Failed to send data message");
                 }
@@ -712,7 +717,7 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         output_file: String,
-    ) -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
                 // get a file to read and validate the output

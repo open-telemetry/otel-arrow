@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the pipeline data that is passed between pipeline components.
-//! 
+//!
 //! Internally, the data can be represented in the following formats:
 //! - OTLP Bytes - contain the OTLP service request messages serialized as protobuf
 //! - OTAP Arrow Bytes - the data is contained in `BatchArrowRecords` type which
@@ -10,7 +10,7 @@
 //!   what we'd receive from the OTAP GRPC service.
 //! - OTAP Arrow Records - the data is contained in Arrow `[RecordBatch]`s organized by
 //!   for efficient access by the arrow payload type.
-//! 
+//!
 //! This module also contains conversions between the various types using the `From`
 //! and `TryFrom` traits. For example:
 //! ```
@@ -39,20 +39,20 @@
 //!                .finish(),
 //!        ])
 //!        .finish(),
-//!  ]); 
+//!  ]);
 //! let mut buf = Vec::new();
 //! otlp_service_req.encode(&mut buf).unwrap();
-//! 
+//!
 //! let otap_pdata = OtapPdata::from(OtlpProtoBytes::ExportLogsRequest(buf));
-//! 
+//!
 //! // convert to Otap Arrow Records
 //! let otap_arrow_records: OtapArrowRecords = otap_pdata.try_into().unwrap();
-//! 
+//!
 //! // convert to OTAP Arrow Bytes
 //! let otap_pdata: OtapPdata = otap_arrow_records.into();
 //! let otap_arrow_bytes: OtapArrowBytes = otap_pdata.try_into().unwrap();
 //! ```
-//! 
+//!
 //! Internally, conversions are happening using various utility functions:
 //! ```no_run
 //!                                      ┌───────────────────────┐                                            
@@ -64,7 +64,7 @@
 //!                                          │                 │                                              
 //!                                          │                 │                                              
 //!                                          ▼                 │                                              
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otel_arrow_rust::otlp::<signal>::<signal_>_from() 
+//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otel_arrow_rust::otlp::<signal>::<signal_>_from()
 //!                                          │                 ▲                                              
 //!                                          │                 │                                              
 //!                                          │                 │                                              

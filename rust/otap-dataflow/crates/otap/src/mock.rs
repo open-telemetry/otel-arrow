@@ -81,7 +81,9 @@ impl ArrowLogsService for ArrowLogsServiceMock {
             while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result = match sender_clone.send(OtapArrowBytes::ArrowLogs(batch).into()).await
+                let status_result = match sender_clone
+                    .send(OtapArrowBytes::ArrowLogs(batch).into())
+                    .await
                 {
                     Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
                     Err(error) => (StatusCode::Canceled, error.to_string()),
@@ -164,11 +166,13 @@ impl ArrowTracesService for ArrowTracesServiceMock {
             while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
-                let status_result =
-                    match sender_clone.send(OtapArrowBytes::ArrowTraces(batch).into()).await {
-                        Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
-                        Err(error) => (StatusCode::Canceled, error.to_string()),
-                    };
+                let status_result = match sender_clone
+                    .send(OtapArrowBytes::ArrowTraces(batch).into())
+                    .await
+                {
+                    Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
+                    Err(error) => (StatusCode::Canceled, error.to_string()),
+                };
                 _ = tx
                     .send(Ok(BatchStatus {
                         batch_id,

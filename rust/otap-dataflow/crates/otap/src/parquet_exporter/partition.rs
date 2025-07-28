@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use otel_arrow_rust::{
-    otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::get_schema_metadata,
+    otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType,
+    schema::get_schema_metadata,
 };
 
 use super::config::PartitioningStrategy;
@@ -29,7 +30,10 @@ pub struct Partition {
     pub attributes: Option<Vec<PartitionAttribute>>,
 }
 
-pub fn partition(otap_batch: &OtapArrowRecords, strategies: &[PartitioningStrategy]) -> Vec<Partition> {
+pub fn partition(
+    otap_batch: &OtapArrowRecords,
+    strategies: &[PartitioningStrategy],
+) -> Vec<Partition> {
     let mut attributes = vec![];
 
     // This is a fairly simply implementation for now. This will be refactored a lot when
@@ -86,7 +90,9 @@ pub mod test {
     use arrow::array::{ArrayRef, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use otel_arrow_rust::otap::Logs;
-    use otel_arrow_rust::{otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType};
+    use otel_arrow_rust::{
+        otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType,
+    };
     use std::sync::Arc;
 
     use crate::parquet_exporter::partition::PartitioningStrategy;

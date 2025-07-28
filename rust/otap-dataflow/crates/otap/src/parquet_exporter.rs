@@ -179,7 +179,9 @@ mod test {
     use otel_arrow_rust::Consumer;
     use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_rust::{otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::BatchArrowRecords};
+    use otel_arrow_rust::{
+        otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::BatchArrowRecords,
+    };
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     pub mod datagen;

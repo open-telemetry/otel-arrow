@@ -6,7 +6,7 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use crate::LOCAL_EXPORTERS;
+use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OtapArrowBytes;
 use crate::pdata::OtapPdata;
 use async_stream::stream;
@@ -197,18 +197,19 @@ mod tests {
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
         create_batch_arrow_record,
     };
+    use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
     use crate::pdata::OtapPdata;
-    use crate::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
-    use crate::proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
-        arrow_metrics_service_server::ArrowMetricsServiceServer,
-        arrow_traces_service_server::ArrowTracesServiceServer,
-    };
+
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+        ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
+        arrow_metrics_service_server::ArrowMetricsServiceServer,
+        arrow_traces_service_server::ArrowTracesServiceServer,
+    };
     use std::net::SocketAddr;
     use std::rc::Rc;
     use tokio::net::TcpListener;
@@ -267,12 +268,13 @@ mod tests {
         |_| {
             Box::pin(async move {
                 // check that the message was properly sent from the exporter
-                let metrics_received: OtapArrowBytes = timeout(Duration::from_secs(3), receiver.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
-                    .try_into()
-                    .expect("Could convert pdata to OTAPData");
+                let metrics_received: OtapArrowBytes =
+                    timeout(Duration::from_secs(3), receiver.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received")
+                        .try_into()
+                        .expect("Could convert pdata to OTAPData");
 
                 // Assert that the message received is what the exporter sent
                 let _expected_metrics_message = create_batch_arrow_record(
@@ -281,22 +283,24 @@ mod tests {
                 );
                 assert!(matches!(metrics_received, _expected_metrics_message));
 
-                let logs_received: OtapArrowBytes = timeout(Duration::from_secs(3), receiver.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
-                    .try_into()
-                    .expect("Could convert pdata to OTAPData");
+                let logs_received: OtapArrowBytes =
+                    timeout(Duration::from_secs(3), receiver.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received")
+                        .try_into()
+                        .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
                     create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 assert!(matches!(logs_received, _expected_logs_message));
 
-                let traces_received: OtapArrowBytes = timeout(Duration::from_secs(3), receiver.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
-                    .try_into()
-                    .expect("Could convert pdata to OTAPData");
+                let traces_received: OtapArrowBytes =
+                    timeout(Duration::from_secs(3), receiver.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received")
+                        .try_into()
+                        .expect("Could convert pdata to OTAPData");
 
                 let _expected_trace_message =
                     create_batch_arrow_record(TRACE_BATCH_ID, ArrowPayloadType::Spans);

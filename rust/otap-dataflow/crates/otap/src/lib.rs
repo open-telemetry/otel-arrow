@@ -3,7 +3,6 @@
 //! Implementation of the OTAP nodes (receiver, exporter, processor).
 //!
 
-
 use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
