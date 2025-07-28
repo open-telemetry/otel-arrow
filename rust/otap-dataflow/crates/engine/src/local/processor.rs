@@ -115,5 +115,13 @@ impl<PData> EffectHandler<PData> {
         Ok(())
     }
 
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for processors to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
     // More methods will be added in the future as needed.
 }

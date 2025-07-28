@@ -7,6 +7,8 @@ use otap_df_otlp::otlp_receiver::OTLP_RECEIVER_URN;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    //console_subscriber::init();
+
     // Configure the pipeline with an OTLP receiver and debug exporter
     let config = PipelineConfigBuilder::new()
         .add_receiver(
@@ -17,13 +19,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })),
         )
         .add_exporter(
-            "otlp_exp",
+            "otlp_exporter",
             OTLP_EXPORTER_URN,
             Some(json!({
                 "grpc_endpoint": "http://127.0.0.1:1235"
             })),
         )
-        .round_robin("otlp_receiver", "out_port", ["otlp_exp"])
+        .round_robin("otlp_receiver", "out_port", ["otlp_exporter"])
         .build(PipelineType::Otlp, "namespace", "pipeline")?;
 
     println!(

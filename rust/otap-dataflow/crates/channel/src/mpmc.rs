@@ -324,12 +324,11 @@ mod tests {
 
         let mut handles = vec![];
 
-        for i in 1..=3 {
+        for _i in 1..=3 {
             let received = all_received.clone();
             let rx = rx.clone();
             let handle = local.spawn_local(async move {
                 while let Ok(value) = rx.recv().await {
-                    println!("Receiver {i}: Received value {value}");
                     received.borrow_mut().push(value);
                 }
             });
