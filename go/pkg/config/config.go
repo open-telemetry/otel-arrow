@@ -24,7 +24,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
 )
 
 type OrderSpanBy int8

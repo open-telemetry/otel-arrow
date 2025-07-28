@@ -21,14 +21,16 @@ struct ChannelState<T> {
     sender_wakers: VecDeque<Waker>,
 }
 
-struct Channel<T> {
+/// A local MPMC channel.
+pub struct Channel<T> {
     state: RefCell<ChannelState<T>>,
 }
 
 impl<T> Channel<T> {
+    /// Creates a new MPMC channel with the specified capacity.
     #[allow(clippy::new_ret_no_self)]
-    #[allow(dead_code)]
-    fn new(capacity: NonZeroUsize) -> (Sender<T>, Receiver<T>) {
+    #[must_use]
+    pub fn new(capacity: NonZeroUsize) -> (Sender<T>, Receiver<T>) {
         let channel = Rc::new(Channel {
             state: RefCell::new(ChannelState {
                 buffer: VecDeque::with_capacity(capacity.get()),
@@ -49,13 +51,14 @@ impl<T> Channel<T> {
     }
 }
 
-#[derive(Clone)]
-struct Sender<T> {
+/// A MPMC channel sender.
+pub struct Sender<T> {
     channel: Rc<Channel<T>>,
 }
 
+/// A MPMC channel receiver.
 #[derive(Clone)]
-struct Receiver<T> {
+pub struct Receiver<T> {
     channel: Rc<Channel<T>>,
 }
 
@@ -92,6 +95,7 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T> Sender<T> {
+    /// Attempts to send a value to the channel (non async method).
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let mut state = self.channel.state.borrow_mut();
 
@@ -113,6 +117,7 @@ impl<T> Sender<T> {
         Ok(())
     }
 
+    /// Attempts to send a value to the channel (async method).
     #[allow(dead_code)]
     pub async fn send_async(&self, value: T) -> Result<(), SendError<T>> {
         SendFuture {
@@ -122,6 +127,7 @@ impl<T> Sender<T> {
         .await
     }
 
+    /// Closes the channel, preventing further sends.
     #[allow(dead_code)]
     pub fn close(&self) {
         let mut state = self.channel.state.borrow_mut();
@@ -131,9 +137,10 @@ impl<T> Sender<T> {
             waker.wake();
         }
     }
+}
 
-    #[allow(dead_code)]
-    pub fn clone(&self) -> Self {
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
         let mut state = self.channel.state.borrow_mut();
         state.senders += 1;
         Sender {
@@ -143,6 +150,7 @@ impl<T> Sender<T> {
 }
 
 impl<T> Receiver<T> {
+    /// Attempts to receive a value from the channel (non async method).
     pub fn try_recv(&self) -> Result<T, RecvError> {
         let mut state = self.channel.state.borrow_mut();
 
@@ -161,6 +169,7 @@ impl<T> Receiver<T> {
         }
     }
 
+    /// Attempts to receive a value from the channel (async method).
     #[allow(dead_code)]
     pub async fn recv(&self) -> Result<T, RecvError> {
         RecvFuture { receiver: self }.await
@@ -315,12 +324,11 @@ mod tests {
 
         let mut handles = vec![];
 
-        for i in 1..=3 {
+        for _i in 1..=3 {
             let received = all_received.clone();
             let rx = rx.clone();
             let handle = local.spawn_local(async move {
                 while let Ok(value) = rx.recv().await {
-                    println!("Receiver {i}: Received value {value}");
                     received.borrow_mut().push(value);
                 }
             });

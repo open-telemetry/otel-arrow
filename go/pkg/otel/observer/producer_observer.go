@@ -3,7 +3,7 @@ package observer
 import (
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
 )
 
 // ProducerObserver is an interface for observing the OTel Arrow producer.

@@ -14,23 +14,30 @@ workspace = true
 
 [dependencies]
 otap-df-engine = { path = "../engine" }
-otap-df-channel = { path = "../channel" }
+otap-df-engine-macros = { path = "../engine-macros" }
+otap-df-config = { path = "../config" }
+
+# gRPC and Protocol Buffers
 tonic = { version = "0.13.1", default-features = false, features = [
-    "server",
-    "channel",
-    "router",
-    "transport",
-    "codegen",
-    "prost",
-    "zstd",
-    "gzip",
-    "deflate",
+    "server", "channel", "router", "transport", "codegen", 
+    "prost", "zstd", "gzip", "deflate"
 ] }
 prost = "0.13.5"
-thiserror = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
-async-trait = { workspace = true }
+prost-types = "0.13.5"
+hex = "0.4.3"
+linkme = "0.3.33"
+serde = {version="1", features=["derive"]}
+rand = "0.9.1"
+# Workspace dependencies
+thiserror.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+log.workspace = true
+
+[build-dependencies]
+tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }
 linkme = { workspace = true }
 
 [dev-dependencies]

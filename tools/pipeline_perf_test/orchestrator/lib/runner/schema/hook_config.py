@@ -28,7 +28,6 @@ from pydantic import BaseModel, Field
 
 from ..wrappers import HookWrapper
 
-
 HookAddStrategy = Literal["append", "replace"]
 
 

@@ -2,7 +2,14 @@ name: Rust-CI
 permissions:
   contents: read
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,9 +26,9 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - beaubourg
           - otel-arrow-rust
           - experimental/query_abstraction
+          - experimental/query_engine
           - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -35,7 +42,7 @@ jobs:
         with:
           toolchain: stable
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@941e8a4d9d7cdb696bd4f017cf54aca281f8ffff # v2.51.2
+        uses: taiki-e/install-action@a416ddeedbd372e614cc1386e8b642692f66865e # v2.57.1
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
@@ -56,9 +63,9 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -82,9 +89,9 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -99,12 +106,9 @@ jobs:
           toolchain: stable
           components: clippy
       - name: cargo clippy ${{ matrix.folder }}
-        # To not block initial checkin of CI, removing build break on warnings for now
-        # TODO: re-enable '-- -D warnings' when we have fixed all clippy warnings
-        run: cargo clippy --all-targets --all-features
+        run: |
+          cargo clippy --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
-
-
 
   deny:
     strategy:
@@ -112,9 +116,9 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -129,25 +133,25 @@ jobs:
           toolchain: stable
       - name: advisories
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@34899fc7ba81ca6268d5947a7a16b4649013fea1 # v2.0.11
+        uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.0.12
         with:
           command: check advisories
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: licenses
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@34899fc7ba81ca6268d5947a7a16b4649013fea1 # v2.0.11
+        uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.0.12
         with:
           command: check licenses
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: bans
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@34899fc7ba81ca6268d5947a7a16b4649013fea1 # v2.0.11
+        uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.0.12
         with:
           command: check bans
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: sources
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@34899fc7ba81ca6268d5947a7a16b4649013fea1 # v2.0.11
+        uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.0.12
         with:
           command: check sources
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
@@ -158,9 +162,9 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
@@ -183,9 +187,9 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - beaubourg
         - otel-arrow-rust
         - experimental/query_abstraction
+        - experimental/query_engine
         - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:

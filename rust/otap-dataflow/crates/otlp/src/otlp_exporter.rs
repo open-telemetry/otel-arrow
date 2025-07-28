@@ -3,10 +3,10 @@
 //! Implementation of the OTLP exporter node
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
-//! ToDo: Handle configuratin changes
+//! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use crate::LOCAL_EXPORTERS;
+use crate::OTLP_EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::collector::{
@@ -17,13 +17,32 @@ use crate::proto::opentelemetry::collector::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ExporterFactory;
+use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{LocalExporterFactory, exporter as local};
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::local::exporter as local;
+use otap_df_engine::message::{Message, MessageChannel};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::rc::Rc;
+
+/// The URN for the OTLP exporter
+pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
+
+/// Configuration for the OTLP exporter
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// The gRPC endpoint to connect to
+    pub grpc_endpoint: String,
+    /// The compression method to use for the gRPC connection
+    pub compression_method: Option<CompressionMethod>,
+}
 
 /// Exporter that sends OTLP data via gRPC
-struct OTLPExporter {
+pub struct OTLPExporter {
     grpc_endpoint: String,
     compression_method: Option<CompressionMethod>,
 }
@@ -33,10 +52,16 @@ struct OTLPExporter {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(LOCAL_EXPORTERS)]
-pub static OTLP_EXPORTER: LocalExporterFactory<OTLPData> = LocalExporterFactory {
-    name: "urn:otel:otlp:exporter",
-    create: |config: &Value| Box::new(OTLPExporter::from_config(config)),
+#[distributed_slice(OTLP_EXPORTER_FACTORIES)]
+pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
+    name: OTLP_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        Ok(ExporterWrapper::local(
+            OTLPExporter::from_config(&node_config.config)?,
+            node_config,
+            exporter_config,
+        ))
+    },
 };
 
 impl OTLPExporter {
@@ -51,13 +76,17 @@ impl OTLPExporter {
     }
 
     /// Creates a new OTLPExporter from a configuration object
-    #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
-        OTLPExporter {
-            grpc_endpoint: "127.0.0.1:4317".to_owned(),
-            compression_method: None,
-        }
+    #[allow(clippy::result_large_err)]
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(OTLPExporter {
+            grpc_endpoint: config.grpc_endpoint,
+            compression_method: config.compression_method,
+        })
     }
 }
 
@@ -69,31 +98,38 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
+        effect_handler
+            .info(&format!(
+                "Exporting OTLP traffic to gRPC endpoint: {}",
+                self.grpc_endpoint
+            ))
+            .await;
+
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
         let mut logs_client = LogsServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
         let mut trace_client = TraceServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
         let mut profiles_client = ProfilesServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
@@ -132,7 +168,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Metrics(req) => {
                             _ = metrics_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -140,7 +176,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Logs(req) => {
                             _ = logs_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -148,7 +184,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Traces(req) => {
                             _ = trace_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -156,7 +192,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                         OTLPData::Profiles(req) => {
                             _ = profiles_client.export(req).await.map_err(|error| {
                                 Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 }
                             })?;
@@ -165,7 +201,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
+                        exporter: effect_handler.exporter_id(),
                         error: "Unknown control message".to_owned(),
                     });
                 }
@@ -180,7 +216,7 @@ mod tests {
 
     use crate::grpc::OTLPData;
     use crate::mock::{LogsServiceMock, MetricsServiceMock, ProfilesServiceMock, TraceServiceMock};
-    use crate::otlp_exporter::OTLPExporter;
+    use crate::otlp_exporter::{OTLP_EXPORTER_URN, OTLPExporter};
     use crate::proto::opentelemetry::collector::{
         logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
@@ -189,10 +225,12 @@ mod tests {
         },
         trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
+    use std::rc::Rc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -281,6 +319,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
@@ -291,6 +330,8 @@ mod tests {
         // run a gRPC concurrently to receive data from the exporter
         _ = tokio_rt.spawn(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            // Signal that the server is ready to accept connections
+            let _ = ready_sender.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
             let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
             let mock_metrics_service =
@@ -311,8 +352,15 @@ mod tests {
                 .expect("Test gRPC server has failed");
         });
 
+        // Wait for the server to be ready before creating the exporter
+        tokio_rt
+            .block_on(ready_receiver)
+            .expect("Server failed to start");
+
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTLPExporter::new(grpc_endpoint, None),
+            node_config,
             test_runtime.config(),
         );
 

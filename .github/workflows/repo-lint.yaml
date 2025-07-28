@@ -6,14 +6,17 @@ permissions: read-all
 
 on:
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+  merge_group:
 
 jobs:
   markdownlint:
     runs-on: ubuntu-latest
+
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
+      uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
       with:
         egress-policy: audit
 
@@ -21,7 +24,7 @@ jobs:
       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: run markdownlint
-      uses: DavidAnson/markdownlint-cli2-action@05f32210e84442804257b2a6f20b273450ec8265 # v19.1.0
+      uses: DavidAnson/markdownlint-cli2-action@992badcdf24e3b8eb7e87ff9287fe931bcb00c6e # v20.0.0
       with:
         globs: |
           **/*.md
@@ -35,3 +38,18 @@ jobs:
 
     - name: run sanitycheck.py
       run: python3 ./tools/sanitycheck.py
+
+  renovate-config-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: check out code
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: '24'
+
+    - name: Validate Renovate config
+      run: npx --yes --package renovate -- renovate-config-validator --strict

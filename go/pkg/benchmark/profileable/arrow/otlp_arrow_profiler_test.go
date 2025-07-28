@@ -18,8 +18,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/dataset"
 )
 
 func TestOtlpArrowMetricsProfiler(t *testing.T) {

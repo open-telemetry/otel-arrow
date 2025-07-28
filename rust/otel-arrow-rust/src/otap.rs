@@ -4,17 +4,26 @@
 //! This module contains various types and methods for interacting with and manipulating
 //! OTAP data / record batches
 
-use arrow::array::RecordBatch;
-
-use crate::{
-    decode::record_message::RecordMessage, proto::opentelemetry::arrow::v1::ArrowPayloadType,
+use arrow::{
+    array::RecordBatch,
+    datatypes::{UInt16Type, UInt32Type},
+};
+use transform::{
+    materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
+    materialize_parent_ids_by_columns, remove_delta_encoding,
 };
 
+use crate::{
+    decode::record_message::RecordMessage, error::Result,
+    proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts,
+};
+
+pub mod schema;
 #[allow(missing_docs)]
 pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum OtapBatch {
     /// Represents a batch of logs data.
@@ -51,11 +60,22 @@ impl OtapBatch {
     /// Get the list of possible payload types associated with the batch of this type.
     /// Note: It's not guaranteed that this batch will actual contain all these
     /// payload types
+    #[must_use]
     pub fn allowed_payload_types(&self) -> &'static [ArrowPayloadType] {
         match self {
             Self::Logs(_) => Logs::allowed_payload_types(),
             Self::Metrics(_) => Metrics::allowed_payload_types(),
             Self::Traces(_) => Traces::allowed_payload_types(),
+        }
+    }
+
+    /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs
+    /// on each Arrow Record Batch contained in this Otap Batch.
+    pub fn decode_transport_optimized_ids(&mut self) -> Result<()> {
+        match self {
+            Self::Logs(_) => Logs::decode_transport_optimized_ids(self),
+            Self::Metrics(_) => Metrics::decode_transport_optimized_ids(self),
+            Self::Traces(_) => Traces::decode_transport_optimized_ids(self),
         }
     }
 }
@@ -77,6 +97,12 @@ trait OtapBatchStore: Sized + Default + Clone {
 
     /// Return a list of the allowed payload types associated with this type of batch
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
+
+    /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs on each Arrow
+    /// Arrow Record Batch contained in this Otap Batch. Internally, implementers should
+    /// know which payloads use which types (u16 or u32) for ID/Parent ID fields as well
+    /// as how the IDs are encoded.
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()>;
 
     fn new() -> Self {
         Self::default()
@@ -174,7 +200,7 @@ const POSITION_LOOKUP: &[usize] = &[
 const UNUSED_INDEX: usize = 99;
 
 /// Store of record batches for a batch of OTAP logs data.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Logs {
     batches: [Option<RecordBatch>; 4],
 }
@@ -194,17 +220,37 @@ impl OtapBatchStore for Logs {
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
-        return &[
+        &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::Logs,
             ArrowPayloadType::LogAttrs,
-        ];
+        ]
+    }
+
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()> {
+        if let Some(logs_rb) = otap_batch.get(ArrowPayloadType::Logs) {
+            let rb = remove_delta_encoding::<UInt16Type>(logs_rb, consts::ID)?;
+            otap_batch.set(ArrowPayloadType::Logs, rb);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+        ] {
+            if let Some(attrs_rb) = otap_batch.get(payload_type) {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_rb)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        Ok(())
     }
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
     batches: [Option<RecordBatch>; 18],
 }
@@ -238,7 +284,7 @@ impl OtapBatchStore for Metrics {
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
-        return &[
+        &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::UnivariateMetrics,
@@ -257,12 +303,71 @@ impl OtapBatchStore for Metrics {
             ArrowPayloadType::HistogramDpExemplarAttrs,
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
             ArrowPayloadType::MultivariateMetrics,
-        ];
+        ]
+    }
+
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()> {
+        if let Some(metrics_rb) = otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
+            let rb = remove_delta_encoding::<UInt16Type>(metrics_rb, consts::ID)?;
+            otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+        ] {
+            if let Some(attrs_rb) = otap_batch.get(payload_type) {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_rb)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+        ] {
+            if let Some(rb) = otap_batch.get(payload_type) {
+                let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
+                let rb = remove_delta_encoding::<UInt16Type>(&rb, consts::PARENT_ID)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::SummaryDpAttrs,
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ] {
+            if let Some(attrs_rb) = otap_batch.get(payload_type) {
+                let rb = materialize_parent_id_for_attributes::<u32>(attrs_rb)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+        ] {
+            if let Some(rb) = otap_batch.get(payload_type) {
+                let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
+                let rb = materialize_parent_id_for_exemplars::<u32>(&rb)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        Ok(())
     }
 }
 
 /// Store of record batches for a batch of OTAP traces data.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Traces {
     batches: [Option<RecordBatch>; 8],
 }
@@ -286,7 +391,7 @@ impl OtapBatchStore for Traces {
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
-        return &[
+        &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::Spans,
@@ -295,7 +400,49 @@ impl OtapBatchStore for Traces {
             ArrowPayloadType::SpanLinks,
             ArrowPayloadType::SpanEventAttrs,
             ArrowPayloadType::SpanLinkAttrs,
-        ];
+        ]
+    }
+
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()> {
+        if let Some(spans_rb) = otap_batch.get(ArrowPayloadType::Spans) {
+            let rb = remove_delta_encoding::<UInt16Type>(spans_rb, consts::ID)?;
+            otap_batch.set(ArrowPayloadType::Spans, rb);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+        ] {
+            if let Some(attrs_rb) = otap_batch.get(payload_type) {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_rb)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::SpanEvents) {
+            let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
+            let rb = materialize_parent_ids_by_columns::<u16>(&rb, [consts::NAME])?;
+            otap_batch.set(ArrowPayloadType::SpanEvents, rb);
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::SpanLinks) {
+            let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
+            let rb = materialize_parent_ids_by_columns::<u16>(&rb, [consts::TRACE_ID])?;
+            otap_batch.set(ArrowPayloadType::SpanLinks, rb);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::SpanLinkAttrs,
+            ArrowPayloadType::SpanEventAttrs,
+        ] {
+            if let Some(attrs_rb) = otap_batch.get(payload_type) {
+                let rb = materialize_parent_id_for_attributes::<u32>(attrs_rb)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -330,7 +477,7 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
             ArrowPayloadType::NumberDpAttrs,
             ArrowPayloadType::NumberDpExemplars,
         ],
-        ArrowPayloadType::NumberDpExemplarAttrs => &[ArrowPayloadType::NumberDpExemplarAttrs],
+        ArrowPayloadType::NumberDpExemplars => &[ArrowPayloadType::NumberDpExemplarAttrs],
         ArrowPayloadType::SummaryDataPoints => &[ArrowPayloadType::SummaryDpAttrs],
         ArrowPayloadType::HistogramDataPoints => &[
             ArrowPayloadType::HistogramDpAttrs,
@@ -339,10 +486,10 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
         ArrowPayloadType::HistogramDpExemplars => &[ArrowPayloadType::HistogramDpExemplarAttrs],
         ArrowPayloadType::ExpHistogramDataPoints => &[
             ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplars,
         ],
 
-        ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
+        ArrowPayloadType::ExpHistogramDpExemplars => {
             &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
         }
         ArrowPayloadType::MultivariateMetrics => {
@@ -354,9 +501,14 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
 
 #[cfg(test)]
 mod test {
-    use arrow::array::{RecordBatch, UInt8Array};
+    use arrow::array::{
+        FixedSizeBinaryArray, Int64Array, RecordBatch, StringArray, UInt8Array, UInt16Array,
+        UInt32Array,
+    };
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
+
+    use crate::otlp::attributes::store::AttributeValueType;
 
     use super::*;
 
@@ -453,8 +605,7 @@ mod test {
             otap_batch.set(*metric_type, record_batch.clone());
             assert!(
                 otap_batch.get(*metric_type).is_some(),
-                "Failed for type: {:?}",
-                metric_type
+                "Failed for type: {metric_type:?}"
             );
         }
     }
@@ -487,9 +638,483 @@ mod test {
             otap_batch.set(*trace_type, record_batch.clone());
             assert!(
                 otap_batch.get(*trace_type).is_some(),
-                "Failed for type: {:?}",
-                trace_type
+                "Failed for type: {trace_type:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_log_decode_transport_optimized_ids() {
+        let logs_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ID,
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(UInt16Array::from_iter(vec![
+                Some(1),
+                Some(1),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let attrs_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    (0..4).map(|_| AttributeValueType::Str as u8),
+                )),
+                Arc::new(StringArray::from_iter_values((0..4).map(|_| "attr1"))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "b", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let mut batch = OtapBatch::Logs(Logs::default());
+        batch.set(ArrowPayloadType::Logs, logs_rb);
+        batch.set(ArrowPayloadType::LogAttrs, attrs_rb.clone());
+        batch.set(ArrowPayloadType::ResourceAttrs, attrs_rb.clone());
+        batch.set(ArrowPayloadType::ScopeAttrs, attrs_rb.clone());
+
+        batch.decode_transport_optimized_ids().unwrap();
+
+        // check log.ids
+        let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+        let logs_ids = logs_rb
+            .column_by_name(consts::ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        let expected = UInt16Array::from_iter(vec![Some(1), Some(2), None]);
+        assert_eq!(&expected, logs_ids);
+
+        // check the attributes IDs
+        for payload_type in [
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+        ] {
+            let attrs_rb = batch.get(payload_type).unwrap();
+            let attrs_parent_ids = attrs_rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt16Array::from_iter_values(vec![1, 2, 1, 2]);
+            assert_eq!(&expected, attrs_parent_ids);
+        }
+    }
+
+    #[test]
+    fn test_metrics_decode_transport_optimized_ids() {
+        let metrics_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ID,
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(UInt16Array::from_iter(vec![
+                Some(1),
+                Some(1),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let attrs_16_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    (0..4).map(|_| AttributeValueType::Str as u8),
+                )),
+                Arc::new(StringArray::from_iter_values((0..4).map(|_| "attr1"))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "b", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let data_points_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter(vec![
+                    Some(1),
+                    Some(1),
+                    None,
+                    Some(1),
+                ])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+            ],
+        )
+        .unwrap();
+
+        let attrs_32_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt32, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    (0..4).map(|_| AttributeValueType::Str as u8),
+                )),
+                Arc::new(StringArray::from_iter_values((0..4).map(|_| "attr1"))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "b", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let exemplar_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true),
+                Field::new(consts::PARENT_ID, DataType::UInt32, false),
+                Field::new(consts::INT_VALUE, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter(vec![
+                    Some(1),
+                    Some(1),
+                    None,
+                    Some(1),
+                ])),
+                Arc::new(UInt32Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(Int64Array::from_iter_values(vec![1, 1, 2, 2])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapBatch::Metrics(Metrics::default());
+        otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone());
+        otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_16_rb.clone());
+        otap_batch.set(ArrowPayloadType::NumberDataPoints, data_points_rb.clone());
+        otap_batch.set(ArrowPayloadType::NumberDpAttrs, attrs_32_rb.clone());
+        otap_batch.set(ArrowPayloadType::NumberDpExemplars, exemplar_rb.clone());
+        otap_batch.set(ArrowPayloadType::NumberDpExemplarAttrs, attrs_32_rb.clone());
+        otap_batch.set(ArrowPayloadType::SummaryDataPoints, data_points_rb.clone());
+        otap_batch.set(ArrowPayloadType::SummaryDpAttrs, attrs_32_rb.clone());
+        otap_batch.set(
+            ArrowPayloadType::HistogramDataPoints,
+            data_points_rb.clone(),
+        );
+        otap_batch.set(ArrowPayloadType::HistogramDpAttrs, attrs_32_rb.clone());
+        otap_batch.set(ArrowPayloadType::HistogramDpExemplars, exemplar_rb.clone());
+        otap_batch.set(
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            attrs_32_rb.clone(),
+        );
+        otap_batch.set(
+            ArrowPayloadType::ExpHistogramDataPoints,
+            data_points_rb.clone(),
+        );
+        otap_batch.set(ArrowPayloadType::ExpHistogramDpAttrs, attrs_32_rb.clone());
+        otap_batch.set(
+            ArrowPayloadType::ExpHistogramDpExemplars,
+            exemplar_rb.clone(),
+        );
+        otap_batch.set(
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            attrs_32_rb.clone(),
+        );
+
+        otap_batch.decode_transport_optimized_ids().unwrap();
+
+        let metrics_rb = otap_batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
+        let span_ids = metrics_rb
+            .column_by_name(consts::ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        let expected = UInt16Array::from_iter(vec![Some(1), Some(2), None]);
+        assert_eq!(&expected, span_ids);
+
+        // check the attributes parent IDs
+        for payload_type in [
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+        ] {
+            let attrs_rb = otap_batch.get(payload_type).unwrap();
+            let attrs_parent_ids = attrs_rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt16Array::from_iter_values(vec![1, 2, 1, 2]);
+            assert_eq!(&expected, attrs_parent_ids);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+        ] {
+            let data_points_rb = otap_batch.get(payload_type).unwrap();
+            let data_points_parent_ids = data_points_rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt16Array::from_iter_values(vec![1, 2, 3, 4]);
+            assert_eq!(&expected, data_points_parent_ids);
+
+            // check the data points IDs
+            let data_points_ids = data_points_rb
+                .column_by_name(consts::ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt32Array::from_iter(vec![Some(1), Some(2), None, Some(3)]);
+            assert_eq!(&expected, data_points_ids);
+        }
+
+        // check data point attributes
+        for payload_type in [
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::SummaryDpAttrs,
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ] {
+            let attrs_rb = otap_batch.get(payload_type).unwrap();
+            let attrs_parent_ids = attrs_rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt32Array::from_iter_values(vec![1, 2, 1, 2]);
+            assert_eq!(&expected, attrs_parent_ids);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+        ] {
+            let exemplar_rb = otap_batch.get(payload_type).unwrap();
+            let exemplar_parent_ids = exemplar_rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt32Array::from_iter_values(vec![1, 2, 1, 2]);
+            assert_eq!(&expected, exemplar_parent_ids);
+
+            // check the exemplar IDs
+            let exemplar_ids = exemplar_rb
+                .column_by_name(consts::ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt32Array::from_iter(vec![Some(1), Some(2), None, Some(3)]);
+            assert_eq!(&expected, exemplar_ids);
+        }
+    }
+
+    #[test]
+    fn test_trace_decode_transport_optimized_ids() {
+        let spans_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ID,
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(UInt16Array::from_iter(vec![
+                Some(1),
+                Some(1),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let attrs_16_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    (0..4).map(|_| AttributeValueType::Str as u8),
+                )),
+                Arc::new(StringArray::from_iter_values((0..4).map(|_| "attr1"))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "b", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let events_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::NAME, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter(vec![
+                    Some(1),
+                    Some(1),
+                    None,
+                    Some(1),
+                ])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "b", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let links_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter(vec![
+                    Some(1),
+                    Some(1),
+                    None,
+                    Some(1),
+                ])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![
+                            (0u8..16u8).collect::<Vec<u8>>(),
+                            (0u8..16u8).collect::<Vec<u8>>(),
+                            (16u8..32u8).collect::<Vec<u8>>(),
+                            (16u8..32u8).collect::<Vec<u8>>(),
+                        ]
+                        .into_iter(),
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let attrs_32_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt32, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    (0..4).map(|_| AttributeValueType::Str as u8),
+                )),
+                Arc::new(StringArray::from_iter_values((0..4).map(|_| "attr1"))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "b", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapBatch::Traces(Traces::default());
+        otap_batch.set(ArrowPayloadType::Spans, spans_rb);
+        otap_batch.set(ArrowPayloadType::SpanAttrs, attrs_16_rb.clone());
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone());
+        otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_16_rb.clone());
+        otap_batch.set(ArrowPayloadType::SpanEvents, events_rb);
+        otap_batch.set(ArrowPayloadType::SpanLinks, links_rb);
+        otap_batch.set(ArrowPayloadType::SpanEventAttrs, attrs_32_rb.clone());
+        otap_batch.set(ArrowPayloadType::SpanLinkAttrs, attrs_32_rb.clone());
+
+        otap_batch.decode_transport_optimized_ids().unwrap();
+
+        // check log.ids
+        let spans_rb = otap_batch.get(ArrowPayloadType::Spans).unwrap();
+        let span_ids = spans_rb
+            .column_by_name(consts::ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        let expected = UInt16Array::from_iter(vec![Some(1), Some(2), None]);
+        assert_eq!(&expected, span_ids);
+
+        // check the attributes parent IDs
+        for payload_type in [
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+        ] {
+            let attrs_rb = otap_batch.get(payload_type).unwrap();
+            let attrs_parent_ids = attrs_rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt16Array::from_iter_values(vec![1, 2, 1, 2]);
+            assert_eq!(&expected, attrs_parent_ids);
+        }
+
+        // check links & events
+        for payload_type in [ArrowPayloadType::SpanEvents, ArrowPayloadType::SpanLinks] {
+            let rb = otap_batch.get(payload_type).unwrap();
+            let ids = rb
+                .column_by_name(consts::ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected_ids = UInt32Array::from_iter(vec![Some(1), Some(2), None, Some(3)]);
+            assert_eq!(&expected_ids, ids);
+
+            let parent_ids = rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected_parent_ids = UInt16Array::from_iter_values(vec![1, 2, 1, 2]);
+            assert_eq!(&expected_parent_ids, parent_ids);
+        }
+        // check event & link attrs parent ids
+        for payload_type in [
+            ArrowPayloadType::SpanEventAttrs,
+            ArrowPayloadType::SpanLinkAttrs,
+        ] {
+            let attrs_rb = otap_batch.get(payload_type).unwrap();
+            let attrs_parent_ids = attrs_rb
+                .column_by_name(consts::PARENT_ID)
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            let expected = UInt32Array::from_iter_values(vec![1, 2, 1, 2]);
+            assert_eq!(&expected, attrs_parent_ids);
         }
     }
 }

@@ -27,8 +27,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
 )
 
 const (

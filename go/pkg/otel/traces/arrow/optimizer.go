@@ -27,8 +27,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/otlp"
 )
 
 type (

@@ -24,8 +24,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/arrow_record"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"

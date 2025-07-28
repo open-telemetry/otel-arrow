@@ -25,9 +25,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
 )
 
 // TestTracesWithNoDictionary

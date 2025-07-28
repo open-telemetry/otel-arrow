@@ -9,7 +9,49 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-- Remove `concurrentbatch` and `obfuscation` processors. [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
+## [0.40.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.40.0) - 2025-07-28
+
+- Upgrade to v0.130.0 / v1.36.0 of collector dependencies.
+  [#718](https://github.com/open-telemetry/otel-arrow/pull/718)
+- Use `replaces` directive to builder config to use dependencies from
+  `go` folder when referenced as `github.com/open-telemetry/otel-arrow/go`.
+  [#718](https://github.com/open-telemetry/otel-arrow/pull/718)
+
+## [0.39.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.39.0) - 2025-07-07
+
+- Upgrade to v0.129.0 / v1.35.0 of collector dependencies.
+  [#669](https://github.com/open-telemetry/otel-arrow/pull/669)
+- Change module name to `github.com/open-telemetry/otel-arrow/go`.
+  [#574](https://github.com/open-telemetry/otel-arrow/pull/574)
+
+## [0.38.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.38.0) - 2025-06-10
+
+- Downgrade Go to 1.23.0.
+  [#569](https://github.com/open-telemetry/otel-arrow/pull/569)
+- Mark terminal version of `github.com/open-telemetry/otel-arrow` module.
+  [#572](https://github.com/open-telemetry/otel-arrow/pull/572)
+- Retract `github.com/open-telemetry/otel-arrow v0.37.0`.
+  [#572](https://github.com/open-telemetry/otel-arrow/pull/572)
+
+## [0.37.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.37.0) - 2025-06-10
+
+> Note: v0.36.0 release was attempted on 2025-06-09, but had to be deleted per
+> problems mentioned in
+> [#566](https://github.com/open-telemetry/otel-arrow/issues/566).
+
+- Remove `concurrentbatch` and `obfuscation` processors.
+  [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
+- OTAP AttributeStore parent_id encoding cleanup.
+  [#431](https://github.com/open-telemetry/otel-arrow/pull/431)
+- Upgrade Go to 1.24.3.
+  [#440](https://github.com/open-telemetry/otel-arrow/pull/440),
+  [#508](https://github.com/open-telemetry/otel-arrow/pull/508)
+- Fix time unit of `DurationTimeUnixNano` to `Duration_ns` in Traces.
+  [#517](https://github.com/open-telemetry/otel-arrow/pull/517)
+- Upgrade to v0.127.0 / v1.33.0 of collector dependencies.
+  [#526](https://github.com/open-telemetry/otel-arrow/pull/526)
+- Retract `github.com/open-telemetry/otel-arrow v0.36.0`.
+  [#567](https://github.com/open-telemetry/otel-arrow/pull/567)
 
 ## [0.35.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.35.0) - 2025-04-07
 

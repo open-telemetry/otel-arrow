@@ -24,7 +24,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // The CBOR representation is used to serialize complex pcommon.Value types (e.g. maps and slices) in the attributes

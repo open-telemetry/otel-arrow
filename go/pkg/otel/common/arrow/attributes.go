@@ -26,9 +26,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // ToDo Standard attributes (i.e. AttributesDT) will be removed in the future. They are still used as shared attributes in the metrics.

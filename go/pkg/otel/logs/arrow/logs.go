@@ -24,14 +24,14 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	acommon "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 var (
