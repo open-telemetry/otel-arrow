@@ -137,23 +137,25 @@ impl local::Exporter<OTAPData> for PerfExporter {
 
         // Helper function to generate performance report
         let generate_report = async |received_arrow_records_count: u64,
-                                          received_otlp_signal_count: u64,
-                                          received_pdata_batch_count: u64,
-                                          total_received_arrow_records_count: u128,
-                                          total_received_otlp_signal_count: u128,
-                                          total_received_pdata_batch_count: u64,
-                                          average_pipeline_latency: f64,
-                                          last_perf_time: Instant,
-                                          system: &mut System,
-                                          config: &Config,
-                                          writer: &mut OutputWriter,
-                                          process_pid: sysinfo::Pid|
-                    -> Result<(), Error<OTAPData>> {
+                                     received_otlp_signal_count: u64,
+                                     received_pdata_batch_count: u64,
+                                     total_received_arrow_records_count: u128,
+                                     total_received_otlp_signal_count: u128,
+                                     total_received_pdata_batch_count: u64,
+                                     average_pipeline_latency: f64,
+                                     last_perf_time: Instant,
+                                     system: &mut System,
+                                     config: &Config,
+                                     writer: &mut OutputWriter,
+                                     process_pid: sysinfo::Pid|
+               -> Result<(), Error<OTAPData>> {
             let now = Instant::now();
             let duration = now - last_perf_time;
 
             // display pipeline report
-            writer.write("====================Pipeline Report====================\n").await?;
+            writer
+                .write("====================Pipeline Report====================\n")
+                .await?;
             display_report_pipeline(
                 received_arrow_records_count,
                 received_otlp_signal_count,
@@ -176,21 +178,29 @@ impl local::Exporter<OTAPData> for PerfExporter {
 
             // check configuration and display data accordingly
             if config.mem_usage() {
-                writer.write("=====================Memory Usage======================\n").await?;
+                writer
+                    .write("=====================Memory Usage======================\n")
+                    .await?;
                 display_mem_usage(process, writer).await?;
             }
             if config.cpu_usage() {
-                writer.write("=======================Cpu Usage=======================\n").await?;
+                writer
+                    .write("=======================Cpu Usage=======================\n")
+                    .await?;
                 display_cpu_usage(process, system, writer).await?;
             }
             if config.disk_usage() {
-                writer.write("======================Disk Usage=======================\n").await?;
+                writer
+                    .write("======================Disk Usage=======================\n")
+                    .await?;
                 let disk_usage = process.disk_usage();
                 display_disk_usage(disk_usage, duration, writer).await?;
             }
             if config.io_usage() {
                 let networks = Networks::new_with_refreshed_list();
-                writer.write("=====================Network Usage=====================\n").await?;
+                writer
+                    .write("=====================Network Usage=====================\n")
+                    .await?;
                 for (interface_name, network) in &networks {
                     display_io_usage(interface_name, network, duration, writer).await?;
                 }
@@ -267,7 +277,7 @@ impl local::Exporter<OTAPData> for PerfExporter {
                             })?;
                     // find the timestamp header and parse it
                     // timestamp will be added in the receiver to enable pipeline latency calculation
-                    let timestamp_pair = header_list.iter().find(|(name, _)| name == b"timestamp\n");
+                    let timestamp_pair = header_list.iter().find(|(name, _)| name == b"timestamp");
                     if let Some((_, value)) = timestamp_pair {
                         let timestamp =
                             decode_timestamp(value).map_err(|error| Error::ExporterError {
@@ -307,7 +317,6 @@ impl local::Exporter<OTAPData> for PerfExporter {
     }
 }
 
-/// determine if output goes to console or to a file
 /// determine if output goes to console or to a file
 async fn get_writer(output_file: Option<String>) -> Box<dyn AsyncWrite + Unpin> {
     match output_file {
@@ -353,7 +362,7 @@ fn update_average(new_value: f64, old_average: f64, smoothing_factor: f64) -> f6
 /// decodes the byte array from the timestamp header and gets the equivalent duration value
 fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     let timestamp_string = std::str::from_utf8(timestamp).map_err(|error| error.to_string())?;
-    let timestamp_parts: Vec<&str> = timestamp_string.split(":\n").collect();
+    let timestamp_parts: Vec<&str> = timestamp_string.split(":").collect();
     let secs = timestamp_parts[0]
         .parse::<u64>()
         .map_err(|error| error.to_string())?;
