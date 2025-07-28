@@ -24,6 +24,10 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.ref }}
 
       - name: Validate inputs
         run: |
@@ -97,17 +101,17 @@ jobs:
           echo "Planned operations:"
           echo "- Version to tag: v${{ inputs.version }}"
           echo "- Last version: v${{ steps.last_version.outputs.last_version }}"
-          echo ""
+          echo "--------------------------------"
           echo "Git tags that would be created:"
           echo "  - v${{ inputs.version }} (main release tag)"
           echo "  - go/v${{ inputs.version }} (Go module tag)"
           echo "  - collector/cmd/otelarrowcol/v${{ inputs.version }} (collector module tag)"
-          echo ""
+          echo "--------------------------------"
           echo "GitHub release that would be created:"
           echo "  - Title: Release v${{ inputs.version }}"
           echo "  - Tag: v${{ inputs.version }}"
           echo "  - Release notes from CHANGELOG.md"
-          echo ""
+          echo "--------------------------------"
           echo "Release content preview:"
           cat /tmp/release_content.txt
 
