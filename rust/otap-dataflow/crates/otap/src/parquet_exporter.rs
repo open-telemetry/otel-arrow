@@ -180,7 +180,7 @@ mod test {
     use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::{
-        otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::BatchArrowRecords
+        otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::BatchArrowRecords,
     };
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
