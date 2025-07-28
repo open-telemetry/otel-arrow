@@ -33,9 +33,10 @@
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
 use crate::message::Message;
+use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
-use std::borrow::Cow;
+use otap_df_config::NodeId;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -84,24 +85,24 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
+    msg_sender: SharedSender<PData>,
 }
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>, msg_sender: tokio::sync::mpsc::Sender<PData>) -> Self {
+    pub fn new(node_id: NodeId, msg_sender: SharedSender<PData>) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
+            core: EffectHandlerCore { node_id },
             msg_sender,
         }
     }
 
-    /// Returns the name of the processor associated with this handler.
+    /// Returns the id of the processor associated with this handler.
     #[must_use]
-    pub fn processor_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn processor_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -109,11 +110,8 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
-            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
+    pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
+        self.msg_sender.send(data).await
     }
 
     // More methods will be added in the future as needed.

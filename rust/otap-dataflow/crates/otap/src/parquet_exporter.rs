@@ -17,28 +17,30 @@
 //! - support for acknowledgements and nack messages
 //! - handle periodically flushing batches after some time threshold
 //! - dynamic configuration updates
-//!
-//! See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
+//!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use std::io::ErrorKind;
-
-use async_trait::async_trait;
-use futures::{FutureExt, pin_mut};
-use futures_timer::Delay;
-use otap_df_engine::error::Error;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
-use otel_arrow_rust::otap::OtapArrowRecords;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
 use self::writer::WriteBatch;
+use async_trait::async_trait;
+use futures::{FutureExt, pin_mut};
+use futures_timer::Delay;
+use otap_df_engine::control::ControlMsg;
+use otap_df_engine::error::Error;
+use otap_df_engine::local::exporter::{EffectHandler, Exporter};
+use otap_df_engine::message::{Message, MessageChannel};
+use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
 mod idgen;
 mod object_store;
 mod partition;
 mod writer;
+
+#[allow(dead_code)]
+const OTAP_PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
@@ -65,7 +67,7 @@ where
     ) -> Result<(), Error<T>> {
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: format!("error initializing object store {e}"),
             })?;
 
@@ -96,7 +98,7 @@ where
                     return futures::select! {
                         _timeout = timeout =>
                             Err(Error::IoError {
-                                node: effect_handler.exporter_name(),
+                                node: effect_handler.exporter_id(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             })
                         ,
@@ -115,7 +117,7 @@ where
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: format!("ID Generation failed: {e}"),
                         });
                     }
@@ -147,7 +149,7 @@ where
                         // use Nack message + a Retry processor to handle this gracefully
                         // https://github.com/open-telemetry/otel-arrow/issues/504
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: format!("Parquet write failed: {e}"),
                         });
                     };
@@ -167,9 +169,11 @@ mod test {
 
     use std::fs::File;
     use std::pin::Pin;
+    use std::rc::Rc;
     use std::time::Duration;
 
     use datagen::SimpleDataGenOptions;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
     use otel_arrow_rust::Consumer;
@@ -272,8 +276,12 @@ mod test {
             )]),
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
 
@@ -348,8 +356,12 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
         let num_rows = 100;
@@ -382,8 +394,12 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
         let num_rows = 1000;
@@ -419,8 +435,12 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
 
@@ -476,8 +496,12 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
+            OTAP_PARQUET_EXPORTER_URN,
+        ));
         let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
             exporter,
+            node_config,
             test_runtime.config(),
         );
 

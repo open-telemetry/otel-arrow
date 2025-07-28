@@ -12,9 +12,14 @@ use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ExporterFactory;
+use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{LocalExporterFactory, exporter as local};
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::local::exporter as local;
+use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
@@ -22,6 +27,10 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
 use serde_json::Value;
+use std::rc::Rc;
+
+/// The URN for the OTAP exporter
+pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
 
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
@@ -34,10 +43,16 @@ pub struct OTAPExporter {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(LOCAL_EXPORTERS)]
-pub static OTAP_EXPORTER: LocalExporterFactory<OtapPdata> = LocalExporterFactory {
-    name: "urn:otel:otap:exporter",
-    create: |config: &Value| Box::new(OTAPExporter::from_config(config)),
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: OTAP_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        Ok(ExporterWrapper::local(
+            OTAPExporter::from_config(&node_config.config)?,
+            node_config,
+            exporter_config,
+        ))
+    },
 };
 
 impl OTAPExporter {
@@ -52,13 +67,12 @@ impl OTAPExporter {
     }
 
     /// Creates a new OTAPExporter from a configuration object
-    #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
+    pub fn from_config(_config: &Value) -> Result<Self, otap_df_config::error::Error> {
         // ToDo: implement config parsing
-        OTAPExporter {
+        Ok(OTAPExporter {
             grpc_endpoint: "127.0.0.1:4317".to_owned(),
             compression_method: None,
-        }
+        })
     }
 }
 
@@ -75,21 +89,21 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             ArrowMetricsServiceClient::connect(self.grpc_endpoint.clone())
                 .await
                 .map_err(|error| Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
+                    exporter: effect_handler.exporter_id(),
                     error: error.to_string(),
                 })?;
 
         let mut arrow_logs_client = ArrowLogsServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
         let mut arrow_traces_client = ArrowTracesServiceClient::connect(self.grpc_endpoint.clone())
             .await
             .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_name(),
+                exporter: effect_handler.exporter_id(),
                 error: error.to_string(),
             })?;
 
@@ -134,7 +148,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 .arrow_metrics(request_stream)
                                 .await
                                 .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 })?;
                         }
@@ -144,7 +158,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             };
                             _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
                                 |error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 },
                             )?;
@@ -157,7 +171,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 .arrow_traces(request_stream)
                                 .await
                                 .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
+                                    exporter: effect_handler.exporter_id(),
                                     error: error.to_string(),
                                 })?;
                         }
@@ -165,7 +179,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
+                        exporter: effect_handler.exporter_id(),
                         error: "Unknown control message".to_owned(),
                     });
                 }
@@ -185,15 +199,18 @@ mod tests {
     };
     use crate::otap_exporter::OTAPExporter;
     use crate::pdata::OtapPdata;
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::TestContext;
-    use otap_df_engine::testing::exporter::TestRuntime;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    use crate::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
+    use crate::proto::opentelemetry::experimental::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::testing::exporter::TestContext;
+    use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
+    use std::rc::Rc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -330,8 +347,10 @@ mod tests {
             .block_on(ready_receiver)
             .expect("Server failed to start");
 
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTAPExporter::new(grpc_endpoint, None),
+            node_config,
             test_runtime.config(),
         );
 
