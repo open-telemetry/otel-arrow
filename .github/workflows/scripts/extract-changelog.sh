@@ -87,11 +87,7 @@ else
         exit 1
     fi
 
-    CONTENT=$(awk "/^## \[$VERSION\]/,/^## \[/ {
-        if (/^## \[$VERSION\]/) next
-        if (/^## \[/) exit
-        print
-    }" CHANGELOG.md | sed '/^$/d')
+    CONTENT=$(awk "BEGIN{found=0} /^## \[$VERSION\]/ {found=1; next} found && /^## \[/ {exit} found {print}" CHANGELOG.md | sed '/^$/d')
 
     if [ -z "$CONTENT" ]; then
         echo -e "${RED}Error: No release content found for version $VERSION in CHANGELOG.md${NC}"
