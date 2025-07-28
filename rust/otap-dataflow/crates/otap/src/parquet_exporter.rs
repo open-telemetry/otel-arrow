@@ -167,12 +167,12 @@ where
 mod test {
     use super::*;
 
-    use std::fs::File;
     use std::pin::Pin;
     use std::rc::Rc;
     use std::time::Duration;
 
     use datagen::SimpleDataGenOptions;
+    use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
@@ -180,7 +180,8 @@ mod test {
     use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_rust::{otap::OtapBatch, proto::opentelemetry::arrow::v1::BatchArrowRecords};
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
+    use tokio::fs::File;
 
     pub mod datagen;
 
@@ -242,25 +243,27 @@ mod test {
         }
     }
 
-    fn assert_parquet_file_has_rows(
+    async fn assert_parquet_file_has_rows(
         base_dir: &str,
         payload_type: ArrowPayloadType,
         num_rows: usize,
     ) {
         let table_name = payload_type.as_str_name().to_lowercase();
-        let file_path = std::fs::read_dir(format!("{base_dir}/{table_name}"))
+        let file_path = tokio::fs::read_dir(format!("{base_dir}/{table_name}"))
+            .await
             .unwrap_or_else(|_| panic!("expect to have found table for {payload_type:?}"))
-            .next()
-            .unwrap_or_else(|| {
+            .next_entry()
+            .await
+            .unwrap_or_else(|_| {
                 panic!("expect at least one parquet file file for type {payload_type:?}")
             })
             .unwrap()
             .path();
 
-        let file = File::open(file_path).unwrap();
-        let reader_builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let file = File::open(file_path).await.unwrap();
+        let reader_builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
         let mut reader = reader_builder.build().unwrap();
-        let batch = reader.next().unwrap().unwrap();
+        let batch = reader.next().await.unwrap().unwrap();
         assert_eq!(batch.num_rows(), num_rows);
     }
 
@@ -303,19 +306,22 @@ mod test {
 
                         // ensure we have files partitioned and that the partition starts
                         // with the expected key
-                        let partition_path =
-                            std::fs::read_dir(format!("{base_dir}/{table_name}"))
-                                .unwrap_or_else(|_| {
-                                    panic!("expect to have found table for {payload_type:?}")
-                                })
-                                .next()
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "expect at least one partition directory for type {payload_type:?}"
-                                    )
-                                })
-                                .unwrap()
-                                .path();
+                        let partition_path = tokio::fs::read_dir(format!(
+                            "{base_dir}/{table_name}"
+                        ))
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!("expect to have found table for {payload_type:?}")
+                        })
+                        .next_entry()
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "expect at least one partition directory for type {payload_type:?}"
+                            )
+                        })
+                        .unwrap()
+                        .path();
 
                         let last_segment = partition_path.iter().next_back().unwrap();
                         assert!(
@@ -324,22 +330,22 @@ mod test {
                                 .starts_with(idgen::PARTITION_METADATA_KEY)
                         );
 
-                        let file_path = std::fs::read_dir(partition_path)
+                        let file_path = tokio::fs::read_dir(partition_path)
+                            .await
                             .unwrap()
-                            .next()
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "expect at least one parquet file for type {payload_type:?}"
-                                )
+                            .next_entry()
+                            .await
+                            .unwrap_or_else(|_| {
+                                panic!("expect at least one parquet file for type {payload_type:?}")
                             })
                             .unwrap()
                             .path();
 
-                        let file = File::open(file_path).unwrap();
+                        let file = File::open(file_path).await.unwrap();
                         let reader_builder =
-                            ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+                            ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
                         let mut reader = reader_builder.build().unwrap();
-                        let batch = reader.next().unwrap().unwrap();
+                        let batch = reader.next().await.unwrap().unwrap();
                         assert_eq!(batch.num_rows(), num_rows);
                     }
                 })
@@ -378,7 +384,7 @@ mod test {
                         ArrowPayloadType::ResourceAttrs,
                         ArrowPayloadType::ScopeAttrs,
                     ] {
-                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows).await;
                     }
                 })
             });
@@ -417,7 +423,7 @@ mod test {
                         ArrowPayloadType::ScopeAttrs,
                     ] {
                         let table_name = payload_type.as_str_name().to_lowercase();
-                        let result = std::fs::read_dir(format!("{base_dir}/{table_name}"));
+                        let result = tokio::fs::read_dir(format!("{base_dir}/{table_name}")).await;
                         let error = result.unwrap_err();
                         assert_eq!(error.kind(), ErrorKind::NotFound);
                     }
@@ -480,7 +486,7 @@ mod test {
                         ArrowPayloadType::SpanLinks,
                         ArrowPayloadType::SpanLinkAttrs,
                     ] {
-                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows).await;
                     }
                 })
             });
@@ -550,7 +556,7 @@ mod test {
                         ArrowPayloadType::ExpHistogramDpExemplars,
                         ArrowPayloadType::ExpHistogramDpExemplarAttrs,
                     ] {
-                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows).await;
                     }
                 })
             });
