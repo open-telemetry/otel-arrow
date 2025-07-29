@@ -264,7 +264,7 @@ mod tests {
 
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
-        mut receiver: tokio::sync::mpsc::Receiver<OTAPData>,
+        mut receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
     ) -> impl FnOnce(
         TestContext<OtapPdata>,
         Result<(), Error<OtapPdata>>,
