@@ -202,6 +202,7 @@ mod tests {
     use crate::pdata::OtapPdata;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
@@ -264,9 +265,14 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         mut receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
-    ) -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |_| {
+    ) -> impl FnOnce(
+        TestContext<OtapPdata>,
+        Result<(), Error<OtapPdata>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_, exporter_result| {
             Box::pin(async move {
+                assert!(exporter_result.is_ok());
+
                 // check that the message was properly sent from the exporter
                 let metrics_received: OtapArrowBytes =
                     timeout(Duration::from_secs(3), receiver.recv())
