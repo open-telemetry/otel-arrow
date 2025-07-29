@@ -12,7 +12,7 @@
 
 use crate::decode::record_message::RecordMessage;
 use crate::error;
-use crate::otap::{OtapBatch, from_record_messages};
+use crate::otap::{OtapArrowRecords, from_record_messages};
 use crate::otlp::logs::logs_from;
 use crate::otlp::metrics::metrics_from;
 use crate::otlp::traces::traces_from;
@@ -122,7 +122,7 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapBatch::Metrics(from_record_messages(record_messages));
+                let otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages));
                 metrics_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
@@ -142,7 +142,7 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapBatch::Logs(from_record_messages(record_messages));
+                let otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
                 logs_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
@@ -160,7 +160,7 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Spans => {
                 let record_messages = self.consume_bar(records)?;
-                let otap_batch = OtapBatch::Traces(from_record_messages(record_messages));
+                let otap_batch = OtapArrowRecords::Traces(from_record_messages(record_messages));
                 traces_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
