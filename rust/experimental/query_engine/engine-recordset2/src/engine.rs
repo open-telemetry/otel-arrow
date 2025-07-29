@@ -230,12 +230,16 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineRecord<'a, 'b, TRecord> {
         }
     }
 
-    pub fn take_record(self) -> TRecord {
-        self.record
+    pub fn get_record(&self) -> &TRecord {
+        &self.record
     }
 
     pub fn get_diagnostics(&self) -> &Vec<RecordSetEngineDiagnostic<'b>> {
         &self.diagnostics
+    }
+
+    pub fn take_record(self) -> TRecord {
+        self.record
     }
 }
 
