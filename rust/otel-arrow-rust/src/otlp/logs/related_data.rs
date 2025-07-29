@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::error;
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::store::Attribute16Store;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -14,10 +14,10 @@ pub struct RelatedData {
     pub(crate) log_record_attr_map_store: Option<Attribute16Store>,
 }
 
-impl<'a> TryFrom<&'a OtapBatch> for RelatedData {
+impl<'a> TryFrom<&'a OtapArrowRecords> for RelatedData {
     type Error = error::Error;
 
-    fn try_from(otap_batch: &'a OtapBatch) -> error::Result<Self> {
+    fn try_from(otap_batch: &'a OtapArrowRecords) -> error::Result<Self> {
         Ok(Self {
             log_record_id: 0,
             res_attr_map_store: otap_batch
