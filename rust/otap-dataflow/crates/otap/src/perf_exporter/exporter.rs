@@ -50,7 +50,7 @@ impl OutputWriter {
         }
     }
 
-    async fn write(&mut self, data: &str) -> Result<(), Error<OTAPData>> {
+    async fn write(&mut self, data: &str) -> Result<(), Error<OtapPdata>> {
         self.writer
             .write_all(data.as_bytes())
             .await
@@ -149,8 +149,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                                      config: &Config,
                                      writer: &mut OutputWriter,
                                      process_pid: sysinfo::Pid|
-               -> Result<(), Error<OTAPData>> {
-
+               -> Result<(), Error<OtapPdata>> {
             let now = Instant::now();
             let duration = now - last_perf_time;
 
@@ -398,7 +397,7 @@ async fn display_cpu_usage(
     process: &Process,
     system: &System,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OTAPData>> {
+) -> Result<(), Error<OtapPdata>> {
     let process_cpu_usage = process.cpu_usage(); // as %
     let global_cpu_usage = system.global_cpu_usage(); // as %
     writer
@@ -418,7 +417,7 @@ async fn display_cpu_usage(
 async fn display_mem_usage(
     process: &Process,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OTAPData>> {
+) -> Result<(), Error<OtapPdata>> {
     let memory_rss = process.memory(); // as bytes
     let memory_virtual = process.virtual_memory(); // as bytes
     writer
@@ -441,7 +440,7 @@ async fn display_disk_usage(
     disk_usage: DiskUsage,
     duration: Duration,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OTAPData>> {
+) -> Result<(), Error<OtapPdata>> {
     let total_written_bytes = disk_usage.total_written_bytes;
     let total_read_bytes = disk_usage.total_read_bytes;
     let written_bytes = disk_usage.written_bytes;
@@ -481,7 +480,7 @@ async fn display_io_usage(
     network_data: &NetworkData,
     duration: Duration,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OTAPData>> {
+) -> Result<(), Error<OtapPdata>> {
     // per interface, get networkdata
     let bytes_received = network_data.received(); //as bytes u64
     let total_bytes_received = network_data.total_received(); // as bytes u64
@@ -595,7 +594,7 @@ async fn display_report_pipeline(
     average_pipeline_latency: f64,
     duration: Duration,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OTAPData>> {
+) -> Result<(), Error<OtapPdata>> {
     writer
         .write(&format!(
             "\t- arrow records throughput          : {:.2} arrow-records/s\n",
@@ -643,7 +642,7 @@ async fn display_report_pipeline(
 #[cfg(test)]
 mod tests {
 
-    use crate::grpc::OTAPData;
+    use crate::grpc::OtapArrowBytes;
     use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
@@ -652,12 +651,9 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
-    use crate::grpc::OtapArrowBytes;
-    use otap_df_config::node::NodeUserConfig;
     use std::fs::{File, remove_file};
     use std::future::Future;
     use std::io::{BufReader, prelude::*};
