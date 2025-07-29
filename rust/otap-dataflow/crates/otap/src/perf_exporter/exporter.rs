@@ -595,6 +595,7 @@ mod tests {
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
     use fluke_hpack::Encoder;
+    use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
@@ -712,9 +713,14 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         output_file: String,
-    ) -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |_| {
+    ) -> impl FnOnce(
+        TestContext<OTAPData>,
+        Result<(), Error<OTAPData>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_, exporter_result| {
             Box::pin(async move {
+                assert!(exporter_result.is_ok());
+
                 // get a file to read and validate the output
                 // open file
                 // read the output file

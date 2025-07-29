@@ -208,16 +208,6 @@ impl<PData> MessageChannel<PData> {
 
             // Draining mode: Shutdown pending
             if let Some(dl) = self.shutting_down_deadline {
-                // If the deadline has passed, emit the pending Shutdown now.
-                if Instant::now() >= dl {
-                    let shutdown = self
-                        .pending_shutdown
-                        .take()
-                        .expect("pending_shutdown must exist");
-                    self.shutdown();
-                    return Ok(Message::Control(shutdown));
-                }
-
                 if sleep_until_deadline.is_none() {
                     // Create a sleep timer for the deadline
                     sleep_until_deadline = Some(Box::pin(sleep_until(dl)));

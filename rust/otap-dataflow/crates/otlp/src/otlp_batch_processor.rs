@@ -1813,6 +1813,7 @@ mod integration_tests {
     use std::io::Write;
     use std::rc::Rc;
     use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
@@ -1826,13 +1827,25 @@ mod integration_tests {
     }
 
     // Helper: Write string to a file
-    fn log_to_file(s: &str) {
-        let mut f = OpenOptions::new()
+    async fn log_to_file(s: &str) {
+        let mut f = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open("/tmp/generic_batch_proc_test.json")
+            .await
             .expect("could not open /tmp file for writing");
-        writeln!(f, "{s}\n").expect("Write failed");
+
+        _ = f
+            .write(&format!("{s}\n").encode_to_vec())
+            .await
+            .expect("write failed");
+
+        // let mut f = OpenOptions::new()
+        //     .create(true)
+        //     .append(true)
+        //     .open("/tmp/generic_batch_proc_test.json")
+        //     .expect("could not open /tmp file for writing");
+        // writeln!(f, "{s}\n").expect("Write failed");
     }
 
     fn sample_trace() -> ExportTraceServiceRequest {

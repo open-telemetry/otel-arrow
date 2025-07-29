@@ -96,12 +96,10 @@ where
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
                     return futures::select! {
-                        _timeout = timeout =>
-                            Err(Error::IoError {
+                        _timeout = timeout => Err(Error::IoError {
                                 node: effect_handler.exporter_id(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
-                            })
-                        ,
+                            }),
                         _ = flush_all => Ok(()),
                     };
                 }
@@ -236,6 +234,12 @@ mod test {
                 .await
                 .expect("Failed to send  logs message");
 
+                // wait a little bit before sending the shutdown message because
+                // in most test cases here, we want the exporter to handle to write
+                // messages before shutdown
+                // tokio::time::sleep(Duration::from_millis(1000)).await;
+                tokio::task::yield_now().await;
+
                 ctx.send_shutdown(shutdown_timeout, "test completed")
                     .await
                     .unwrap();
@@ -292,8 +296,10 @@ mod test {
         test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [
@@ -374,8 +380,10 @@ mod test {
         test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [
@@ -412,20 +420,17 @@ mod test {
 
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(num_rows, Duration::ZERO))
-            .run_validation(move |_ctx| {
+            .run_test(logs_scenario(num_rows, Duration::from_nanos(1)))
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    // assert we didn't write because the timeout
-                    for payload_type in [
-                        ArrowPayloadType::Logs,
-                        ArrowPayloadType::LogAttrs,
-                        ArrowPayloadType::ResourceAttrs,
-                        ArrowPayloadType::ScopeAttrs,
-                    ] {
-                        let table_name = payload_type.as_str_name().to_lowercase();
-                        let result = tokio::fs::read_dir(format!("{base_dir}/{table_name}")).await;
-                        let error = result.unwrap_err();
-                        assert_eq!(error.kind(), ErrorKind::NotFound);
+                    // assert the exporter result is as expected
+                    match exporter_result {
+                        Ok(_) => panic!("expected exporter result to be error, received: Ok(())"),
+                        Err(Error::IoError { node, error }) => {
+                            assert_eq!(&node, "test_exporter");
+                            assert_eq!(error.kind(), ErrorKind::TimedOut);
+                        },
+                        Err(e) => panic!("{}", format!("received unexpected error: {:?}. Expected IoError caused by timeout", e))
                     }
                 })
             });
@@ -472,8 +477,10 @@ mod test {
                         .unwrap();
                 })
             })
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [
@@ -533,8 +540,10 @@ mod test {
                         .unwrap();
                 })
             })
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [
