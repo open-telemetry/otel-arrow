@@ -126,6 +126,13 @@ pub enum Error<T> {
         error: String,
     },
 
+    /// A Wrapper for the pdata conversion errors
+    #[error("Internal error occurred transforming pdata: {error}")]
+    PdataConversionError {
+        /// The error that occurred
+        error: String,
+    },
+
     /// Unknown exporter plugin.
     #[error("Unknown exporter plugin `{plugin_urn}`")]
     UnknownExporter {
