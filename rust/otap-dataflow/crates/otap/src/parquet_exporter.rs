@@ -31,7 +31,7 @@ use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
-use otel_arrow_rust::otap::OtapBatch;
+use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
 mod idgen;
@@ -58,7 +58,7 @@ impl ParquetExporter {
 #[async_trait(?Send)]
 impl<T> Exporter<T> for ParquetExporter
 where
-    T: TryInto<(i64, OtapBatch), Error = Error<T>> + 'static,
+    T: TryInto<(i64, OtapArrowRecords), Error = Error<T>> + 'static,
 {
     async fn start(
         self: Box<Self>,
@@ -107,7 +107,7 @@ where
                 }
 
                 Message::PData(pdata) => {
-                    let (batch_id, mut otap_batch): (i64, OtapBatch) = pdata.try_into()?;
+                    let (batch_id, mut otap_batch): (i64, OtapArrowRecords) = pdata.try_into()?;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
@@ -179,7 +179,9 @@ mod test {
     use otel_arrow_rust::Consumer;
     use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_rust::{otap::OtapBatch, proto::opentelemetry::arrow::v1::BatchArrowRecords};
+    use otel_arrow_rust::{
+        otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::BatchArrowRecords,
+    };
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
 
@@ -191,10 +193,10 @@ mod test {
         batch: BatchArrowRecords,
     }
 
-    impl TryInto<(i64, OtapBatch)> for TestPDataInput {
+    impl TryInto<(i64, OtapArrowRecords)> for TestPDataInput {
         type Error = Error<Self>;
 
-        fn try_into(mut self) -> Result<(i64, OtapBatch), Self::Error> {
+        fn try_into(mut self) -> Result<(i64, OtapArrowRecords), Self::Error> {
             let batch_id = self.batch.batch_id;
             let first_payload_type =
                 ArrowPayloadType::try_from(self.batch.arrow_payloads[0].r#type).unwrap();
@@ -204,15 +206,15 @@ mod test {
             match first_payload_type {
                 ArrowPayloadType::Logs => Ok((
                     batch_id,
-                    OtapBatch::Logs(from_record_messages(record_messages)),
+                    OtapArrowRecords::Logs(from_record_messages(record_messages)),
                 )),
                 ArrowPayloadType::Spans => Ok((
                     batch_id,
-                    OtapBatch::Traces(from_record_messages(record_messages)),
+                    OtapArrowRecords::Traces(from_record_messages(record_messages)),
                 )),
                 ArrowPayloadType::UnivariateMetrics => Ok((
                     batch_id,
-                    OtapBatch::Metrics(from_record_messages(record_messages)),
+                    OtapArrowRecords::Metrics(from_record_messages(record_messages)),
                 )),
                 payload_type => {
                     panic!("unexpected payload type in TestPDataInput.try_into: {payload_type:?}")
