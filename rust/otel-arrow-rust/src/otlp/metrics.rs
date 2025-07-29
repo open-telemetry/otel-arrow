@@ -15,7 +15,7 @@ use crate::arrays::{
     get_u8_array, get_u16_array,
 };
 use crate::error;
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::related_data::RelatedData;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -95,7 +95,9 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
 }
 
 /// Builds [ExportMetricsServiceRequest] from given record batch.
-pub fn metrics_from(metrics_otap_batch: OtapBatch) -> error::Result<ExportMetricsServiceRequest> {
+pub fn metrics_from(
+    metrics_otap_batch: OtapArrowRecords,
+) -> error::Result<ExportMetricsServiceRequest> {
     let mut metrics = ExportMetricsServiceRequest::default();
 
     let mut prev_res_id: Option<u16> = None;

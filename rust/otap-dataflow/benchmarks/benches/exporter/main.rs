@@ -15,15 +15,15 @@ use otap_df_engine::{
     message::{Receiver, Sender},
 };
 use otap_df_otap::{
-    grpc::OTAPData,
+    grpc::OtapArrowBytes,
     otap_exporter::OTAPExporter,
     perf_exporter::{config::Config, exporter::PerfExporter},
-    proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
-        arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
-        arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
-        arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
-    },
+};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+    arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
+    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
+    arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
 };
 
 use otap_df_otlp::{
@@ -371,9 +371,9 @@ fn bench_exporter(c: &mut Criterion) {
                 row_size,
             );
 
-            otap_signals.push(OTAPData::ArrowTraces(arrow_traces_batch_data));
-            otap_signals.push(OTAPData::ArrowLogs(arrow_logs_batch_data));
-            otap_signals.push(OTAPData::ArrowMetrics(arrow_metrics_batch_data));
+            otap_signals.push(OtapArrowBytes::ArrowTraces(arrow_traces_batch_data));
+            otap_signals.push(OtapArrowBytes::ArrowLogs(arrow_logs_batch_data));
+            otap_signals.push(OtapArrowBytes::ArrowMetrics(arrow_metrics_batch_data));
 
             let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
             let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
@@ -417,7 +417,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone()).await;
+                        _ = pdata_sender.send(signal.clone().into()).await;
                     }
 
                     _ = control_sender.send(ControlMsg::TimerTick {}).await;
@@ -464,7 +464,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
+                        _ = pdata_sender.send(otap_signal.clone().into()).await;
                     }
 
                     _ = control_sender.send(ControlMsg::TimerTick {}).await;
@@ -514,7 +514,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // send signals to the exporter
                     for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
+                        _ = pdata_sender.send(otap_signal.clone().into()).await;
                     }
 
                     _ = control_sender

@@ -11,7 +11,7 @@ use arrow::datatypes::SchemaRef;
 use futures::TryStreamExt;
 use futures::stream::FuturesUnordered;
 use object_store::ObjectStore;
-use otel_arrow_rust::otap::{OtapBatch, child_payload_types};
+use otel_arrow_rust::otap::{OtapArrowRecords, child_payload_types};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_writer::ParquetObjectWriter;
@@ -23,14 +23,14 @@ use super::partition::PartitionAttribute;
 
 pub struct WriteBatch<'a> {
     pub batch_id: i64,
-    pub otap_batch: &'a OtapBatch,
+    pub otap_batch: &'a OtapArrowRecords,
     pub partition_attributes: Option<&'a [PartitionAttribute]>,
 }
 
 impl<'a> WriteBatch<'a> {
     pub fn new(
         batch_id: i64,
-        otap_batch: &'a OtapBatch,
+        otap_batch: &'a OtapArrowRecords,
         partition_attributes: Option<&'a [PartitionAttribute]>,
     ) -> Self {
         Self {
@@ -390,10 +390,10 @@ mod test {
         test::datagen::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches},
     };
 
-    fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapBatch {
+    fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapArrowRecords {
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut bar).unwrap();
-        OtapBatch::Logs(from_record_messages(record_messages))
+        OtapArrowRecords::Logs(from_record_messages(record_messages))
     }
 
     #[tokio::test]

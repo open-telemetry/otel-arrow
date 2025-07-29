@@ -10,6 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Error and result types
+
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::metrics::MetricType;
 use arrow::datatypes::DataType;
@@ -18,8 +20,10 @@ use num_enum::TryFromPrimitiveError;
 use snafu::{Location, Snafu};
 use std::{backtrace::Backtrace, num::TryFromIntError};
 
+/// Result type
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[allow(missing_docs)]
 #[derive(Snafu, Debug)]
 #[snafu(visibility(pub))]
 pub enum Error {

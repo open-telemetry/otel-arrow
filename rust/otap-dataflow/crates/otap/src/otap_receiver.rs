@@ -9,14 +9,8 @@
 //!
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
-};
-use crate::proto::opentelemetry::experimental::arrow::v1::{
-    arrow_logs_service_server::ArrowLogsServiceServer,
-    arrow_metrics_service_server::ArrowMetricsServiceServer,
-    arrow_traces_service_server::ArrowTracesServiceServer,
-};
+use crate::grpc::{ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl};
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -27,6 +21,11 @@ use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+    arrow_logs_service_server::ArrowLogsServiceServer,
+    arrow_metrics_service_server::ArrowMetricsServiceServer,
+    arrow_traces_service_server::ArrowTracesServiceServer,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -55,7 +54,7 @@ pub struct OTAPReceiver {
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-pub static OTAP_RECEIVER: ReceiverFactory<OTAPData> = ReceiverFactory {
+pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
     create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
@@ -98,12 +97,12 @@ impl OTAPReceiver {
 // The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
 //
 #[async_trait]
-impl shared::Receiver<OTAPData> for OTAPReceiver {
+impl shared::Receiver<OtapPdata> for OTAPReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel,
-        effect_handler: shared::EffectHandler<OTAPData>,
-    ) -> Result<(), Error<OTAPData>> {
+        effect_handler: shared::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
@@ -174,18 +173,19 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::grpc::OTAPData;
+    use crate::grpc::OtapArrowBytes;
     use crate::mock::create_batch_arrow_record;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
-    use crate::proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
-        arrow_metrics_service_client::ArrowMetricsServiceClient,
-        arrow_traces_service_client::ArrowTracesServiceClient,
-    };
+    use crate::pdata::OtapPdata;
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+        ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
+        arrow_metrics_service_client::ArrowMetricsServiceClient,
+        arrow_traces_service_client::ArrowTracesServiceClient,
+    };
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -264,17 +264,20 @@ mod tests {
 
     /// Validation closure that checks the received message and counters (!Send context).
     fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<OTAPData>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
                 // check that messages have been sent through the effect_handler
 
                 // read from the effect handler
                 for batch_id in 0..3 {
-                    let metrics_received = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received");
+                    let metrics_received: OtapArrowBytes =
+                        timeout(Duration::from_secs(3), ctx.recv())
+                            .await
+                            .expect("Timed out waiting for message")
+                            .expect("No message received")
+                            .try_into()
+                            .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_metrics_message =
@@ -283,10 +286,12 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    let logs_received = timeout(Duration::from_secs(3), ctx.recv())
+                    let logs_received: OtapArrowBytes = timeout(Duration::from_secs(3), ctx.recv())
                         .await
                         .expect("Timed out waiting for message")
-                        .expect("No message received");
+                        .expect("No message received")
+                        .try_into()
+                        .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_logs_message =
@@ -295,10 +300,13 @@ mod tests {
                 }
 
                 for batch_id in 0..3 {
-                    let traces_received = timeout(Duration::from_secs(3), ctx.recv())
-                        .await
-                        .expect("Timed out waiting for message")
-                        .expect("No message received");
+                    let traces_received: OtapArrowBytes =
+                        timeout(Duration::from_secs(3), ctx.recv())
+                            .await
+                            .expect("Timed out waiting for message")
+                            .expect("No message received")
+                            .try_into()
+                            .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_traces_message =

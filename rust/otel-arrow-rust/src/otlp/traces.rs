@@ -6,7 +6,7 @@ use snafu::ensure;
 
 use crate::arrays::NullableArrayAccessor;
 use crate::error::{self, Result, SpanRecordNotFoundSnafu};
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::AppendAndGet;
 use crate::otlp::traces::spans_arrays::SpansArrays;
@@ -37,7 +37,7 @@ mod spans_status_arrays;
 ///
 /// # Returns
 /// - `Result<ExportTraceServiceRequest>`: Converted trace data in OTLP format
-pub fn traces_from(traces_otap_batch: OtapBatch) -> Result<ExportTraceServiceRequest> {
+pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceServiceRequest> {
     // Initialize empty trace export request
     let mut traces = ExportTraceServiceRequest::default();
 

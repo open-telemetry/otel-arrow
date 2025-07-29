@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::error;
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::store::{Attribute16Store, Attribute32Store};
 use crate::otlp::traces::span_event_store::{SpanEventsStore, span_events_store_from_record_batch};
 use crate::otlp::traces::span_links_store::{SpanLinksStore, span_links_store_from_record_batch};
@@ -28,10 +28,10 @@ impl RelatedData {
     }
 }
 
-impl TryFrom<&OtapBatch> for RelatedData {
+impl TryFrom<&OtapArrowRecords> for RelatedData {
     type Error = error::Error;
 
-    fn try_from(value: &OtapBatch) -> Result<Self, Self::Error> {
+    fn try_from(value: &OtapArrowRecords) -> Result<Self, Self::Error> {
         let res_attr_map_store = value
             .get(ArrowPayloadType::ResourceAttrs)
             .map(Attribute16Store::try_from)

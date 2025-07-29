@@ -5,10 +5,6 @@
 //!
 //! `BatchArrowRecords` is the protobuf type that contains the Arrow IPC serialized messages.
 
-// TODO we will eventually use this code as part of the implementation of PDATA for OTAP pipelines
-// https://github.com/open-telemetry/otel-arrow/issues/728
-#![allow(dead_code)]
-
 use std::{collections::HashMap, io::Cursor};
 
 use arrow::array::RecordBatch;
@@ -17,7 +13,7 @@ use arrow::ipc::writer::StreamWriter;
 use snafu::ResultExt;
 
 use crate::error::{self, Result};
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 
@@ -25,7 +21,6 @@ use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, Bat
 struct StreamProducer {
     payload_type: ArrowPayloadType,
     stream_writer: StreamWriter<Cursor<Vec<u8>>>,
-    schema: SchemaRef,
     schema_id: i64,
 }
 
@@ -39,7 +34,6 @@ impl StreamProducer {
         Ok(Self {
             payload_type,
             stream_writer,
-            schema,
             schema_id,
         })
     }
@@ -57,7 +51,7 @@ impl StreamProducer {
 }
 
 /// Produces OTAP `BatchArrowRecords` from OTAP Batches
-struct Producer {
+pub struct Producer {
     next_batch_id: i64,
     next_schema_id: i64,
     stream_producers: HashMap<String, StreamProducer>,
@@ -66,6 +60,7 @@ struct Producer {
 
 impl Producer {
     /// create a new instance of `Producer`
+    #[must_use]
     pub fn new() -> Self {
         Self {
             next_batch_id: 0,
@@ -76,7 +71,7 @@ impl Producer {
     }
 
     /// produce `BatchArrowRecords` protobuf message from `OtapBatch`
-    pub fn produce_bar(&mut self, otap_batch: &OtapBatch) -> Result<BatchArrowRecords> {
+    pub fn produce_bar(&mut self, otap_batch: &OtapArrowRecords) -> Result<BatchArrowRecords> {
         let allowed_payloads = otap_batch.allowed_payload_types();
         let mut arrow_payloads = Vec::<ArrowPayload>::with_capacity(allowed_payloads.len());
 
@@ -129,6 +124,12 @@ impl Producer {
     }
 }
 
+impl Default for Producer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::Consumer;
@@ -164,10 +165,10 @@ mod test {
         )
         .unwrap();
 
-        let mut input = OtapBatch::Logs(Logs::default());
+        let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
         let mut bar = producer.produce_bar(&input).unwrap();
-        let result = OtapBatch::Logs(from_record_messages(
+        let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);
@@ -188,10 +189,10 @@ mod test {
         )
         .unwrap();
 
-        let mut input = OtapBatch::Logs(Logs::default());
+        let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
         let mut bar = producer.produce_bar(&input).unwrap();
-        let result = OtapBatch::Logs(from_record_messages(
+        let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);
@@ -210,10 +211,10 @@ mod test {
         )
         .unwrap();
 
-        let mut input = OtapBatch::Logs(Logs::default());
+        let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
         let mut bar = producer.produce_bar(&input).unwrap();
-        let result = OtapBatch::Logs(from_record_messages(
+        let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);
