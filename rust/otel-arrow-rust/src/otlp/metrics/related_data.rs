@@ -11,7 +11,7 @@
 // limitations under the License.
 
 use crate::error;
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::store::{Attribute16Store, Attribute32Store};
 use crate::otlp::metrics::data_points::data_point_store::{
     EHistogramDataPointsStore, HistogramDataPointsStore, NumberDataPointsStore,
@@ -56,10 +56,10 @@ impl RelatedData {
     }
 }
 
-impl TryFrom<&OtapBatch> for RelatedData {
+impl TryFrom<&OtapArrowRecords> for RelatedData {
     type Error = error::Error;
 
-    fn try_from(otap_batch: &OtapBatch) -> error::Result<Self> {
+    fn try_from(otap_batch: &OtapArrowRecords) -> error::Result<Self> {
         let mut related_data = RelatedData::default();
 
         if let Some(rb) = otap_batch.get(ArrowPayloadType::ResourceAttrs) {
