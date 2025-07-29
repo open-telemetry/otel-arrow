@@ -19,6 +19,7 @@ async-trait.workspace = true
 ciborium.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
+http.workspace = true
 object_store.workspace = true
 otel-arrow-rust.workspace = true
 otap-df-engine = { path = "../engine" }
@@ -39,6 +40,7 @@ tonic = { version = "0.13.1", default-features = false, features = [
     "gzip",
     "deflate",
 ] }
+tower-service = "0.3"
 sysinfo = "0.36.0"
 byte-unit = "4"
 fluke-hpack = "0.3.1"

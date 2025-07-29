@@ -48,7 +48,7 @@ pub struct OTAPReceiver {
     config: Config,
 }
 
-/// Declares the OTAP exporter as a local exporter factory
+/// Declares the OTAP receiver as a shared receiver factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.

@@ -23,6 +23,8 @@ use tonic::{Request, Response, Status};
 
 use crate::pdata::OtapPdata;
 
+pub mod otlp;
+
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
