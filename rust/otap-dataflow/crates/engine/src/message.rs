@@ -217,7 +217,16 @@ impl<PData> MessageChannel<PData> {
                 tokio::select! {
                     biased;
 
-                    // 1) Any pdata?
+                    // 1) Deadline hit?
+                    _ = sleep_until_deadline.as_mut().expect("sleep_until_deadline must exist") => {
+                        let shutdown = self.pending_shutdown
+                            .take()
+                            .expect("pending_shutdown must exist");
+                        self.shutdown();
+                        return Ok(Message::Control(shutdown));
+                    }
+
+                    // 2) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
                         Ok(pdata) => return Ok(Message::PData(pdata)),
                         Err(_) => {
@@ -230,14 +239,7 @@ impl<PData> MessageChannel<PData> {
                         }
                     },
 
-                    // 2) Deadline hit?
-                    _ = sleep_until_deadline.as_mut().expect("sleep_until_deadline must exist") => {
-                        let shutdown = self.pending_shutdown
-                            .take()
-                            .expect("pending_shutdown must exist");
-                        self.shutdown();
-                        return Ok(Message::Control(shutdown));
-                    }
+
                 }
             }
 

@@ -424,7 +424,7 @@ mod test {
                             assert_eq!(&node, "test_exporter");
                             assert_eq!(error.kind(), ErrorKind::TimedOut);
                         },
-                        Err(e) => panic!("{}", format!("received unexpected error: {:?}. Expected IoError caused by timeout", e))
+                        Err(e) => panic!("{}", format!("received unexpected error: {e:?}. Expected IoError caused by timeout"))
                     }
                 })
             });
