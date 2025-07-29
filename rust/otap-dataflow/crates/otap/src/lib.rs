@@ -3,12 +3,9 @@
 //! Implementation of the OTAP nodes (receiver, exporter, processor).
 //!
 
-use crate::grpc::OTAPData;
-use linkme::distributed_slice;
-use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
-use otap_df_engine::shared::{
-    SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory,
-};
+use crate::pdata::OtapPdata;
+use otap_df_engine::{PipelineFactory, build_factory};
+use otap_df_engine_macros::pipeline_factory;
 
 /// Code for encoding OTAP batch from pdata view
 pub mod encoder;
@@ -25,34 +22,61 @@ pub mod otlp_receiver;
 /// Generated protobuf files
 pub mod proto;
 
+pub mod pdata;
+
 pub mod parquet_exporter;
 
 pub mod perf_exporter;
 
+pub mod fake_data_generator;
 /// testing utilities
 #[cfg(test)]
 mod mock;
 
-/// A slice of local receiver factories for OTAP data.
-#[distributed_slice]
-pub static LOCAL_RECEIVERS: [LocalReceiverFactory<OTAPData>] = [..];
+/// Factory for OTAP-based pipeline
+#[pipeline_factory(OTAP, OtapPdata)]
+static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
 
-/// A slice of local processor factories for OTAP data.
-#[distributed_slice]
-pub static LOCAL_PROCESSORS: [LocalProcessorFactory<OTAPData>] = [..];
+#[cfg(test)]
+mod tests {
+    use crate::OTAP_PIPELINE_FACTORY;
+    use crate::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
+    use crate::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
+    use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
+    use serde_json::json;
 
-/// A slice of local exporter factories for OTAP data.
-#[distributed_slice]
-pub static LOCAL_EXPORTERS: [LocalExporterFactory<OTAPData>] = [..];
+    #[test]
+    fn test_mini_pipeline() {
+        let config = PipelineConfigBuilder::new()
+            .add_receiver(
+                "receiver",
+                OTAP_FAKE_DATA_GENERATOR_URN,
+                Some(json!({
+                    "batch_count": 10000000
+                })),
+            )
+            .add_exporter(
+                "exporter",
+                OTAP_PERF_EXPORTER_URN,
+                Some(json!({
+                    "disk_usage": false,
+                    "io_usage": false
+                })),
+            )
+            // ToDo(LQ): Check the validity of the outport.
+            .broadcast("receiver", "out_port", ["exporter"])
+            .build(PipelineType::Otap, "pgroup", "pipeline")
+            .expect("Failed to build pipeline config");
 
-/// A slice of shared receiver factories for OTAP data.
-#[distributed_slice]
-pub static SHARED_RECEIVERS: [SharedReceiverFactory<OTAPData>] = [..];
+        let runtime_pipeline = OTAP_PIPELINE_FACTORY
+            .build(config)
+            .expect("Failed to create runtime pipeline");
+        assert_eq!(
+            runtime_pipeline.node_count(),
+            2,
+            "Expected 2 nodes in the pipeline"
+        );
 
-/// A slice of shared processor factories for OTAP data.
-#[distributed_slice]
-pub static SHARED_PROCESSORS: [SharedProcessorFactory<OTAPData>] = [..];
-
-/// A slice of shared exporter factories for OTAP data.
-#[distributed_slice]
-pub static SHARED_EXPORTERS: [SharedExporterFactory<OTAPData>] = [..];
+        runtime_pipeline.start().expect("Failed to start pipeline");
+    }
+}

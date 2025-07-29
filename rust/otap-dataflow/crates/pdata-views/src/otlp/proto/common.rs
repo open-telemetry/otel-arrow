@@ -8,18 +8,21 @@ use otel_arrow_rust::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value,
 };
 
-use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType};
+use crate::{
+    otlp::proto::wrappers::{GenericObj, Wraps},
+    views::common::{
+        AnyValueView, AttributeView, InstrumentationScopeView, SpanId, Str, TraceId, ValueType,
+    },
+};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 
 /// Lightweight wrapper so that `val()` can return `&Self::Val` without the
 /// double-reference gymnastics.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct ObjAny<'a>(pub &'a AnyValue);
+pub type ObjAny<'a> = GenericObj<'a, AnyValue>;
 
 /// Lightweight wrapper for a Key-Value pair that implements the `AttributeView` trait
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ObjKeyValue<'a> {
     key: &'a str,
     val: Option<ObjAny<'a>>,
@@ -72,7 +75,7 @@ impl<'a> Iterator for KeyValueIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         self.it.next().map(|kv| ObjKeyValue {
             key: &kv.key,
-            val: kv.value.as_ref().map(ObjAny),
+            val: kv.value.as_ref().map(ObjAny::new),
         })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -91,7 +94,7 @@ impl<'a> Iterator for AnyValueIter<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(ObjAny)
+        self.it.next().map(ObjAny::new)
     }
 }
 
@@ -112,7 +115,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn value_type(&self) -> ValueType {
-        match self.0.value.as_ref() {
+        match self.inner.value.as_ref() {
             Some(val) => val.into(),
             None => ValueType::Empty,
         }
@@ -120,7 +123,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn as_bool(&self) -> Option<bool> {
-        self.0.value.as_ref().and_then(|v| match v {
+        self.inner.value.as_ref().and_then(|v| match v {
             any_value::Value::BoolValue(b) => Some(*b),
             _ => None,
         })
@@ -128,7 +131,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn as_bytes(&self) -> Option<&[u8]> {
-        self.0.value.as_ref().and_then(|v| match v {
+        self.inner.value.as_ref().and_then(|v| match v {
             any_value::Value::BytesValue(b) => Some(b.as_slice()),
             _ => None,
         })
@@ -136,7 +139,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn as_double(&self) -> Option<f64> {
-        self.0.value.as_ref().and_then(|v| match v {
+        self.inner.value.as_ref().and_then(|v| match v {
             any_value::Value::DoubleValue(f) => Some(*f),
             _ => None,
         })
@@ -144,7 +147,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn as_int64(&self) -> Option<i64> {
-        self.0.value.as_ref().and_then(|v| match v {
+        self.inner.value.as_ref().and_then(|v| match v {
             any_value::Value::IntValue(i) => Some(*i),
             _ => None,
         })
@@ -152,7 +155,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn as_string(&self) -> Option<Str<'_>> {
-        self.0.value.as_ref().and_then(|v| match v {
+        self.inner.value.as_ref().and_then(|v| match v {
             any_value::Value::StringValue(s) => Some(s.as_str()),
             _ => None,
         })
@@ -160,7 +163,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
-        if let Some(any_value::Value::ArrayValue(ref vec)) = self.0.value {
+        if let Some(any_value::Value::ArrayValue(ref vec)) = self.inner.value {
             let values = &vec.values;
             Some(AnyValueIter { it: values.iter() })
         } else {
@@ -170,7 +173,7 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
 
     #[inline]
     fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
-        if let Some(any_value::Value::KvlistValue(ref vec)) = self.0.value {
+        if let Some(any_value::Value::KvlistValue(ref vec)) = self.inner.value {
             let vals = &vec.values;
             Some(KeyValueIter { it: vals.iter() })
         } else {
@@ -206,7 +209,7 @@ impl AttributeView for ObjKeyValue<'_> {
 
     #[inline]
     fn value(&self) -> Option<Self::Val<'_>> {
-        self.val
+        self.val.clone()
     }
 }
 
@@ -247,4 +250,23 @@ impl InstrumentationScopeView for ObjInstrumentationScope<'_> {
     fn dropped_attributes_count(&self) -> u32 {
         self.inner.dropped_attributes_count
     }
+}
+
+/// A helper function for converting &str into options while dropping empty strings.
+pub(crate) fn read_str(s: &str) -> Option<&str> {
+    (!s.is_empty()).then_some(s)
+}
+
+// The theory behind these two functions comes from Lexi Lambda's "Parse, don't validate" article.
+
+/// Valid `TraceId`s are exactly 16 bytes and are not all zeros.
+pub(crate) fn parse_trace_id(data: &[u8]) -> Option<&TraceId> {
+    let trace_id: &TraceId = data.try_into().ok()?;
+    (trace_id != &[0; 16]).then_some(trace_id)
+}
+
+/// Valid `SpanId`s are exactly 8 bytes and are not all zeros.
+pub(crate) fn parse_span_id(data: &[u8]) -> Option<&SpanId> {
+    let span_id: &SpanId = data.try_into().ok()?;
+    (span_id != &[0; 8]).then_some(span_id)
 }

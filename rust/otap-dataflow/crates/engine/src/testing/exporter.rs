@@ -6,8 +6,13 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
+use crate::control::{ControlMsg, Controllable};
+use crate::error::Error;
 use crate::exporter::ExporterWrapper;
-use crate::message::{ControlMsg, Receiver, Sender};
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::message::{Receiver, Sender};
+use crate::node::NodeWithPDataReceiver;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use serde_json::Value;
@@ -142,7 +147,7 @@ pub struct TestPhase<PData> {
     pdata_sender: Sender<PData>,
 
     /// Join handle for the starting the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<()>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -155,7 +160,7 @@ pub struct ValidationPhase<PData> {
     context: TestContext<PData>,
 
     /// Join handle for the running the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<()>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
 
     _pd: PhantomData<PData>,
 }
@@ -188,45 +193,38 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the exporter for the test runtime and returns the test phase.
-    pub fn set_exporter(self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
-        let (control_tx, control_rx, pdata_tx, pdata_rx) = match &exporter {
+    pub fn set_exporter(self, mut exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = match &exporter {
             ExporterWrapper::Local { .. } => {
-                let (control_tx, control_rx) =
-                    create_not_send_channel(self.config.control_channel.capacity);
                 let (pdata_tx, pdata_rx) =
                     create_not_send_channel(self.config.control_channel.capacity);
                 (
-                    Sender::Local(control_tx),
-                    Receiver::Local(control_rx),
-                    Sender::Local(pdata_tx),
-                    Receiver::Local(pdata_rx),
+                    Sender::Local(LocalSender::MpscSender(pdata_tx)),
+                    Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx)),
                 )
             }
             ExporterWrapper::Shared { .. } => {
-                let (control_tx, control_rx) =
-                    tokio::sync::mpsc::channel(self.config.control_channel.capacity);
                 let (pdata_tx, pdata_rx) =
                     tokio::sync::mpsc::channel(self.config.control_channel.capacity);
                 (
-                    Sender::Shared(control_tx),
-                    Receiver::Shared(control_rx),
-                    Sender::Shared(pdata_tx),
-                    Receiver::Shared(pdata_rx),
+                    Sender::Shared(SharedSender::MpscSender(pdata_tx)),
+                    Receiver::Shared(SharedReceiver::MpscReceiver(pdata_rx)),
                 )
             }
         };
 
-        let run_exporter_handle = self.local_tasks.spawn_local(async move {
-            exporter
-                .start(control_rx, pdata_rx)
-                .await
-                .expect("Exporter event loop failed");
-        });
+        exporter
+            .set_pdata_receiver(self.config.name, pdata_rx)
+            .expect("Failed to set PData receiver");
+        let run_exporter_handle = self
+            .local_tasks
+            .spawn_local(async move { exporter.start().await });
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counter.clone(),
-            control_sender: control_tx,
+            control_sender,
             pdata_sender: pdata_tx,
             run_exporter_handle,
         }
@@ -286,18 +284,19 @@ impl<PData> ValidationPhase<PData> {
     /// The result of the provided future.
     pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
     where
-        F: FnOnce(TestContext<PData>) -> Fut,
+        F: FnOnce(TestContext<PData>, Result<(), Error<PData>>) -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion
         let local_tasks = std::mem::take(&mut self.local_tasks);
         self.rt.block_on(local_tasks);
 
-        self.rt
+        let result = self
+            .rt
             .block_on(self.run_exporter_handle)
-            .expect("Exporter task failed");
+            .expect("failed to join exporter task handle");
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(self.context))
+        self.rt.block_on(future_fn(self.context, result))
     }
 }

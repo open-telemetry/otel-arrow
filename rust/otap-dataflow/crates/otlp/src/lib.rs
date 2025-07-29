@@ -24,21 +24,21 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-/// OTLP batch processor implementation
-mod otlp_batch_processor;
-
 use crate::grpc::OTLPData;
-use linkme::distributed_slice;
-use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
-use otap_df_engine::shared::{
-    SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory,
-};
-
+use otap_df_engine::{PipelineFactory, build_factory};
+use otap_df_engine_macros::pipeline_factory;
 /// compression formats
 pub mod compression;
+/// debug exporter implementation, logs data collected in pipeline to console
 pub mod debug_exporter;
+/// fake signal receiver implementation, creates fake signals to use for pipeline testing
+pub mod fake_signal_receiver;
 /// gRPC service implementation
 pub mod grpc;
+/// OTLP Batch Processor implementation
+pub mod otlp_batch_processor;
+pub use otlp_batch_processor::{ExportTraceServiceRequest, HierarchicalBatchSplit};
+
 /// otlp exporter implementation
 pub mod otlp_exporter;
 /// Implementation of OTLP Receiver that implements the receiver trait
@@ -50,40 +50,59 @@ pub mod proto;
 #[cfg(test)]
 mod mock;
 
-/// A slice of local receiver factories for OTLP data.
-#[distributed_slice]
-pub static LOCAL_RECEIVERS: [LocalReceiverFactory<OTLPData>] = [..];
-
-/// A slice of local processor factories for OTLP data.
-#[distributed_slice]
-pub static LOCAL_PROCESSORS: [LocalProcessorFactory<OTLPData>] = [..];
-
-/// A slice of local exporter factories for OTLP data.
-#[distributed_slice]
-pub static LOCAL_EXPORTERS: [LocalExporterFactory<OTLPData>] = [..];
-
-/// A slice of shared receiver factories for OTLP data.
-#[distributed_slice]
-pub static SHARED_RECEIVERS: [SharedReceiverFactory<OTLPData>] = [..];
-
-/// A slice of shared processor factories for OTLP data.
-#[distributed_slice]
-pub static SHARED_PROCESSORS: [SharedProcessorFactory<OTLPData>] = [..];
-
-/// A slice of shared exporter factories for OTLP data.
-#[distributed_slice]
-pub static SHARED_EXPORTERS: [SharedExporterFactory<OTLPData>] = [..];
+/// Factory for OTLP-based pipeline
+#[pipeline_factory(OTLP, OTLPData)]
+pub static OTLP_PIPELINE_FACTORY: PipelineFactory<OTLPData> = build_factory();
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_plugins() {
-        for receiver in crate::SHARED_RECEIVERS.iter() {
-            println!("Receiver: {}", receiver.name);
-        }
+    use crate::OTLP_PIPELINE_FACTORY;
+    use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
+    use serde_json::json;
 
-        for exporter in crate::LOCAL_EXPORTERS.iter() {
-            println!("Exporter: {}", exporter.name);
-        }
+    #[test]
+    fn test_build_runtime_pipeline() {
+        let config = PipelineConfigBuilder::new()
+            .add_receiver(
+                "otlp_receiver",
+                "urn:otel:otlp:receiver",
+                Some(json!({
+                    "listening_addr": "127.0.0.1:4317"
+                })),
+            )
+            .add_exporter(
+                "otlp_exporter1",
+                "urn:otel:otlp:exporter",
+                Some(json!({
+                    "grpc_endpoint": "http://127.0.0.1:1234"
+                })),
+            )
+            .add_exporter(
+                "otlp_exporter2",
+                "urn:otel:otlp:exporter",
+                Some(json!({
+                    "grpc_endpoint": "http://127.0.0.1:1235"
+                })),
+            )
+            // ToDo(LQ): Check the validity of the outport.
+            .broadcast(
+                "otlp_receiver",
+                "out_port",
+                ["otlp_exporter1", "otlp_exporter2"],
+            )
+            .build(PipelineType::Otlp, "pgroup", "pipeline")
+            .expect("Failed to build pipeline config");
+        let result = OTLP_PIPELINE_FACTORY.build(config);
+        assert!(
+            result.is_ok(),
+            "Failed to create runtime pipeline: {:?}",
+            result.err()
+        );
+        let runtime_pipeline = result.unwrap();
+        assert_eq!(
+            runtime_pipeline.node_count(),
+            3,
+            "Expected 3 nodes in the pipeline"
+        );
     }
 }

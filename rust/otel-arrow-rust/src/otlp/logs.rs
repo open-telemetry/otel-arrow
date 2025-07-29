@@ -14,7 +14,7 @@ use crate::arrays::{
     StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error::{self, Error, Result};
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -175,7 +175,7 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     }
 }
 
-pub fn logs_from(logs_otap_batch: OtapBatch) -> Result<ExportLogsServiceRequest> {
+pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceRequest> {
     let mut logs = ExportLogsServiceRequest::default();
     let mut prev_res_id: Option<u16> = None;
     let mut prev_scope_id: Option<u16> = None;

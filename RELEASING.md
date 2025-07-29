@@ -1,93 +1,174 @@
 # Releasing
 
-To make a release of one or more Golang modules in the OTel Arrow repository,
-follow these steps.
+This document describes the release process for Go components in the OTel Arrow repository.
 
-Note that they may be performed in multiple PRs, or all together if confident in
-the methodology.
+## Overview
 
-> NOTE: Currently there is only a defined process in place for the Golang
-> components in this repository. As the Rust portion evolves, there should be
-> additional steps added here for those components.
+The repository uses two GitHub Actions workflows to manage releases:
 
-## Upgrade OpenTelemetry Collector Dependencies (optional, recommended)
+1. **Prepare Release**: Updates versions and creates a pull request
+2. **Push Release**: Creates git tags and publishes the GitHub release
 
-1. Using Git, checkout the version of the repo that will be released and create
-   a new branch for the release, for example,
+This two-step process ensures that all changes are reviewed before the release
+is published.
 
-   ```shell
-   git checkout main
-   git pull upstream main
-   git checkout -b release_xx_yy_zz
+## Prerequisites
+
+1. **Maintainer Access**: Only repository maintainers can trigger the release
+   workflows
+2. **Clean Repository**: Ensure your local repository has no uncommitted changes
+3. **Updated CHANGELOG**: Add entries to the "## Unreleased" section describing
+   changes for the new release
+
+## Release Process
+
+### Step 1: Prepare Release Content
+
+1. Ensure the `CHANGELOG.md` file has content under the "## Unreleased" section:
+
+   ```markdown
+   ## Unreleased
+
+   - Add your changes here
+   - Include PR references: [#123](https://github.com/open-telemetry/otel-arrow/pull/123)
+   - Follow the existing format
    ```
 
-1. Update OTel-Collector dependencies.  It will frequently be necessary to
-   update all v0.x OTel-Collector dependencies.  The steps are:
+2. Commit any final changes to the main branch
 
-   a. For each go.mod in the repository, run a command like
+### Step 2: Run Prepare Release Workflow
 
-   ```shell
-   for x in `grep OLDVERSION go.mod | awk '{print $1}'`; do go get $x@NEWVERSION; done
+1. Go to the [Actions tab](https://github.com/open-telemetry/otel-arrow/actions)
+   in the GitHub repository
+2. Select the "Prepare Release" workflow
+3. Click "Run workflow"
+4. Fill in the required inputs:
+   - **Version**: The new version number (e.g., `0.40.0`)
+   - **Dry run**: Check this box to preview changes without making them
+
+### Step 3: Review Dry Run (Recommended)
+
+Before making actual changes, run the workflow in dry-run mode:
+
+1. Set "Dry run mode" to `true`
+2. Review the output to ensure all planned changes are correct
+3. Verify that the version increment makes sense
+4. Check that the CHANGELOG.md will be updated properly
+
+### Step 4: Execute Release Preparation
+
+1. Run the workflow again with "Dry run mode" set to `false`
+2. The workflow will:
+   - Validate the version format and increment
+   - Move unreleased content from CHANGELOG.md to a new release section
+   - Create a release branch (`otelbot/release-vX.Y.Z`)
+   - Open a pull request with all changes
+
+### Step 5: Review and Merge PR
+
+1. Review the automatically created pull request
+2. Verify that:
+   - CHANGELOG.md formatting is correct
+   - Version numbers are consistent
+3. Ensure all CI checks pass
+4. Merge the pull request
+
+### Step 6: Run Push Release Workflow
+
+1. Go to the [Actions tab](https://github.com/open-telemetry/otel-arrow/actions)
+   in the GitHub repository
+2. Select the "Push Release" workflow
+3. Click "Run workflow"
+4. Fill in the required inputs:
+   - **Version**: The same version number used in the prepare step (e.g.,
+     `0.40.0`)
+   - **Dry run**: Check this box to preview what will happen
+
+### Step 7: Review Push Release Dry Run (Recommended)
+
+Before publishing the release, run the push workflow in dry-run mode:
+
+1. Set "Dry run mode" to `true`
+2. Review the output to ensure all git tags and release content look correct
+
+### Step 8: Publish Release
+
+1. Run the push release workflow again with "Dry run mode" set to `false`
+2. The workflow will:
+   - Create git tags for the main release and Go modules
+   - Publish the GitHub release with changelog content
+   - Make the release available to users
+
+This will automatically create the necessary git tags:
+
+- `v0.40.0` (main release tag)
+- `go/v0.40.0` (Go module tag)
+- `collector/cmd/otelarrowcol/v0.40.0` (collector module tag)
+
+## Supported Components
+
+The release process handles:
+
+**Go Modules:**
+
+- `github.com/open-telemetry/otel-arrow/go`
+- `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol`
+
+## Troubleshooting
+
+### Common Issues
+
+#### "No unreleased content found in CHANGELOG.md"**
+
+- Add content to the "## Unreleased" section before running the workflow
+
+#### "Repository has uncommitted changes"**
+
+- Commit or stash any local changes before running the workflow
+
+#### "Version is not greater than last version"**
+
+- Ensure the new version follows semantic versioning and is greater than the
+  current version
+- Check existing releases to see the current version
+
+#### "Workflow failed during version updates"**
+
+- Check for any syntax errors in CHANGELOG.md files
+
+### Manual Recovery
+
+If the workflow fails partway through:
+
+1. Delete the release branch if it was created:
+
+   ```bash
+   git push origin --delete otelbot/release-vX.Y.Z
    ```
 
-   b. Run `make test`; fix any build breakage.  If there have been refactorings
-      in the Collector APIs, there are likely to be small changes required.
+2. Delete the draft release from the GitHub UI if it was created
 
-   c. Edit `Makefile`, replace the string
-      `go.opentelemetry.io/collector/cmd/builder@OLDVERSION` with
-      `go.opentelemetry.io/collector/cmd/builder@NEWVERSION`.
+3. Fix the underlying issue and re-run the workflow
 
-   d. Run `make genotelarrowcol`
+### Emergency Release Process
 
-   e. Run `make otelarrowcol`
+In case the automated workflow cannot be used, you can create a manual release:
 
-## Update Changelog and released module versions (required)
+1. Update CHANGELOG.md manually
+2. Create and push appropriate git tags:
 
-1. Make sure the CHANGELOG.md file is up to date, add entries describing the
-   changes in the new release.  If collector dependencies have changed during
-   this release cycle, `make genotelarrowcol` should have been run to
-   synchronize dependencies.
-
-1. Using Make, prepare the release means updating Go modules and checking in the
-   changes, for example.
-
-   ```shell
-   make prepare-release
+   ```bash
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git tag -a go/vX.Y.Z -m "Release go/vX.Y.Z"
+   git tag -a collector/cmd/otelarrowcol/vX.Y.Z -m "Release collector/cmd/otelarrowcol/vX.Y.Z"
+   git push origin vX.Y.Z go/vX.Y.Z collector/cmd/otelarrowcol/vX.Y.Z
    ```
 
-1. Push the branch and open a PR to submit these changes to the upstream
-   repository's main branch.
+3. Create a GitHub release manually
 
-## Tag commit as a Release
+## Version Strategy
 
-1. After merging the PR, pull the upstream commit, for example,
-
-   ```shell
-   git checkout main
-   git pull upstream main
-   ```
-
-1. Push the release, for example,
-
-   ```shell
-   make push-release
-   ```
-
-   If you get an error about 'gpg failed to sign the data', follow GitHub's
-   instructions to [add a GPG signing
-   key](https://docs.github.com/en/authentication/managing-commit-signature-verification/telling-git-about-your-signing-key)
-   for your committer account.
-
-   > Note: Repository write access is required to perform this step. Contact a
-   > repository maintainer for help if you are unable to run this command.
-
-1. The tag has now been published, but need to manually create the release in
-   the Github UI. Go to
-   [releases](https://github.com/open-telemetry/otel-arrow/releases) and click
-   `Draft a new release`. Select the tag you just pushed and link the Changelog
-   in the description, following the convention of previous releases. TODO:
-   automate this step to trigger whenever a new release tag is pushed.
-
-The release has been published.  Note that these instructions do not cover the
-use of multiple module sets, since this repository uses a single module set
-named "beta" at this time.
+- All Go components use the same version number
+- Versions follow [Semantic Versioning](https://semver.org/)
+- Pre-release versions are not currently supported through the automated
+  workflow

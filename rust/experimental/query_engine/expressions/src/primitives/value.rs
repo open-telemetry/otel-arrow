@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use regex::Regex;
@@ -11,15 +11,15 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
-    Array(&'a dyn ArrayValue),
-    Boolean(&'a dyn BooleanValue),
-    DateTime(&'a dyn DateTimeValue),
-    Double(&'a dyn DoubleValue),
-    Integer(&'a dyn IntegerValue),
-    Map(&'a dyn MapValue),
+    Array(&'a (dyn ArrayValue + 'static)),
+    Boolean(&'a (dyn BooleanValue + 'static)),
+    DateTime(&'a (dyn DateTimeValue + 'static)),
+    Double(&'a (dyn DoubleValue + 'static)),
+    Integer(&'a (dyn IntegerValue + 'static)),
+    Map(&'a (dyn MapValue + 'static)),
     Null,
-    Regex(&'a dyn RegexValue),
-    String(&'a dyn StringValue),
+    Regex(&'a (dyn RegexValue + 'static)),
+    String(&'a (dyn StringValue + 'static)),
 }
 
 impl Value<'_> {
@@ -164,9 +164,8 @@ impl Value<'_> {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on right side of equality operation could not be converted to an array",
+                            "{:?} value '{right}' on right side of equality operation could not be converted to an array",
                             right.get_value_type(),
-                            right.to_string()
                         ),
                     ))
                 }
@@ -176,9 +175,8 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{}' on right side of equality operation could not be converted to bool",
+                        "{:?} value '{right}' on right side of equality operation could not be converted to bool",
                         right.get_value_type(),
-                        right.to_string()
                     ),
                 )),
             },
@@ -187,9 +185,8 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{}' on right side of equality operation could not be converted to DateTime",
+                        "{:?} value '{right}' on right side of equality operation could not be converted to DateTime",
                         right.get_value_type(),
-                        right.to_string()
                     ),
                 )),
             },
@@ -198,9 +195,8 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{}' on right side of equality operation could not be converted to double",
+                        "{:?} value '{right}' on right side of equality operation could not be converted to double",
                         right.get_value_type(),
-                        right.to_string()
                     ),
                 )),
             },
@@ -209,9 +205,8 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{}' on right side of equality operation could not be converted to int",
+                        "{:?} value '{right}' on right side of equality operation could not be converted to int",
                         right.get_value_type(),
-                        right.to_string()
                     ),
                 )),
             },
@@ -228,9 +223,8 @@ impl Value<'_> {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on right side of equality operation could not be converted to a map",
+                            "{:?} value '{right}' on right side of equality operation could not be converted to a map",
                             right.get_value_type(),
-                            right.to_string()
                         ),
                     ))
                 }
@@ -264,9 +258,8 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on left side of comparison operation could not be converted to DateTime",
+                            "{:?} value '{left}' on left side of comparison operation could not be converted to DateTime",
                             left.get_value_type(),
-                            left.to_string()
                         ),
                     ));
                 }
@@ -278,9 +271,8 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on right side of comparison operation could not be converted to DateTime",
+                            "{:?} value '{right}' on right side of comparison operation could not be converted to DateTime",
                             right.get_value_type(),
-                            right.to_string()
                         ),
                     ));
                 }
@@ -294,9 +286,8 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on left side of comparison operation could not be converted to double",
+                            "{:?} value '{left}' on left side of comparison operation could not be converted to double",
                             left.get_value_type(),
-                            left.to_string()
                         ),
                     ));
                 }
@@ -308,9 +299,8 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on right side of comparison operation could not be converted to double",
+                            "{:?} value '{right}' on right side of comparison operation could not be converted to double",
                             right.get_value_type(),
-                            right.to_string()
                         ),
                     ));
                 }
@@ -324,9 +314,8 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on left side of comparison operation could not be converted to int",
+                            "{:?} value '{left}' on left side of comparison operation could not be converted to int",
                             left.get_value_type(),
-                            left.to_string()
                         ),
                     ));
                 }
@@ -338,9 +327,8 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{}' on right side of comparison operation could not be converted to int",
+                            "{:?} value '{right}' on right side of comparison operation could not be converted to int",
                             right.get_value_type(),
-                            right.to_string()
                         ),
                     ));
                 }
@@ -363,18 +351,31 @@ impl Value<'_> {
 
         r.expect("Encountered a type which does not correctly implement convert_to_string")
     }
+}
 
-    /// Note: Only call this for tests and errors as it will copy the string to
-    /// the heap. Call convert_to_string instead to operate on the &str behind
-    /// the value.
-    fn to_string(&self) -> Box<str> {
-        let mut value: Option<Box<str>> = None;
-        self.convert_to_string(&mut |s: &str| value = Some(s.into()));
-        value.expect("Encountered a type which does not correctly implement convert_to_string")
+impl Display for Value<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut result = None;
+        self.convert_to_string(&mut |v| {
+            result = Some(f.write_str(v));
+        });
+        result.expect("Encountered a type which does not correctly implement convert_to_string")
     }
 }
 
-pub trait BooleanValue: Debug {
+impl PartialEq for Value<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        Self::are_values_equal(&QueryLocation::new_fake(), self, other, false).unwrap_or_default()
+    }
+}
+
+pub trait AsValue: Debug {
+    fn get_value_type(&self) -> ValueType;
+
+    fn to_value(&self) -> Value;
+}
+
+pub trait BooleanValue: AsValue {
     fn get_value(&self) -> bool;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -382,7 +383,7 @@ pub trait BooleanValue: Debug {
     }
 }
 
-pub trait IntegerValue: Debug {
+pub trait IntegerValue: AsValue {
     fn get_value(&self) -> i64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -390,7 +391,7 @@ pub trait IntegerValue: Debug {
     }
 }
 
-pub trait DateTimeValue: Debug {
+pub trait DateTimeValue: AsValue {
     fn get_value(&self) -> DateTime<FixedOffset>;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -402,7 +403,7 @@ pub trait DateTimeValue: Debug {
     }
 }
 
-pub trait DoubleValue: Debug {
+pub trait DoubleValue: AsValue {
     fn get_value(&self) -> f64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -410,7 +411,7 @@ pub trait DoubleValue: Debug {
     }
 }
 
-pub trait RegexValue: Debug {
+pub trait RegexValue: AsValue {
     fn get_value(&self) -> &Regex;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -418,7 +419,7 @@ pub trait RegexValue: Debug {
     }
 }
 
-pub trait StringValue: Debug {
+pub trait StringValue: AsValue {
     fn get_value(&self) -> &str;
 }
 
@@ -685,11 +686,8 @@ mod tests {
 
     #[test]
     pub fn test_convert_to_string() {
-        let run_test_success = |value: Value, expected: &str| {
-            let actual = Value::to_string(&value);
-
-            assert_eq!(expected, actual.as_ref())
-        };
+        let run_test_success =
+            |value: Value, expected: &str| assert_eq!(expected, value.to_string());
 
         run_test_success(
             Value::Boolean(&BooleanScalarExpression::new(

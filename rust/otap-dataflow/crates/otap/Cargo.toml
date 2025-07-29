@@ -23,7 +23,9 @@ http.workspace = true
 object_store.workspace = true
 otel-arrow-rust.workspace = true
 otap-df-engine = { path = "../engine" }
+otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }
+otap-df-config = { path = "../config" }
 otap-df-otlp = { path = "../otlp" }
 otap-df-pdata-views = { path = "../pdata-views" }
 parquet.workspace = true
@@ -40,6 +42,7 @@ tonic = { version = "0.13.1", default-features = false, features = [
 ] }
 tower-service = "0.3"
 sysinfo = "0.35.1"
+sysinfo = "0.36.0"
 byte-unit = "4"
 fluke-hpack = "0.3.1"
 serde = {version="1", features=["derive"]}
@@ -47,6 +50,7 @@ prost = "0.13.5"
 tokio-stream = "0.1.17"
 async-stream = "0.3.6"
 thiserror = { workspace = true }
+serde_cbor = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }

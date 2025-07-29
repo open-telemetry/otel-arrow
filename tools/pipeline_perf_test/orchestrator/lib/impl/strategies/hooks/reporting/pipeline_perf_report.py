@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from .....core.context.base import BaseContext
 from .....core.context import FrameworkElementHookContext
+from .....core.telemetry.metric import MetricDataFrame
 from .....core.helpers.report import group_by_populated_columns
 from .....core.helpers.metrics import (
     compute_rate_over_time,
@@ -378,8 +379,13 @@ class PipelinePerfReport(Report):
                 self.config.load_generator,
                 self.config.system_under_test,
             ]:
-                df = component_summary_pivoted.get(key)
-                df = group_by_populated_columns(df, ["delta", "min", "max", "mean"])
+                df = component_summary_pivoted.get(key, MetricDataFrame())
+                if df.empty:
+                    continue
+                try:
+                    df = group_by_populated_columns(df, ["delta", "min", "max", "mean"])
+                except:
+                    continue
                 df = format_metrics_by_ordered_rules(
                     df, metric_col="metric_name", format_rules=format_rules
                 )
@@ -518,7 +524,7 @@ hooks:
 | Logs received by backend          |      2.2475e+07 |
 | Logs lost in transit              |      0          |
 | Duration                          |     45.8919     |
-| Logs attempt rate (avg)           | 855638          |
+| Logs receive rate (avg)           | 855638          |
 | Total logs lost                   |      0          |
 | Percentage of logs lost           |      0          |
 """,
@@ -533,7 +539,7 @@ hooks:
 | metric_name                       |   PerfReprort - OTLP |   PerfReprort - OTAP |
 |:----------------------------------|---------------------:|---------------------:|
 | Duration                          |          45.8919     |          55.851      |
-| Logs attempt rate (avg)           |      855638          |      943012          |
+| Logs receive rate (avg)           |      855638          |      943012          |
 | Logs failed at loadgen            |           0          |           0          |
 | Logs lost in transit              |           0          |           0          |
 | Logs received by backend          |           2.2475e+07 |           2.5535e+07 |
@@ -574,8 +580,8 @@ hooks:
                 aggregated_metrics["metric_name"] == "delta(received_logs)", "value"
             ].iloc[0],
             "Duration": self.duration,
-            "Logs attempt rate (avg)": safe_lookup(
-                aggregated_metrics, "mean(rate(sent))"
+            "Logs receive rate (avg)": safe_lookup(
+                aggregated_metrics, "mean(rate(received_logs))"
             ),
             "Total logs lost": aggregated_metrics.loc[
                 aggregated_metrics["metric_name"] == "sum(total_sent)", "value"
@@ -676,6 +682,13 @@ hooks:
         counter_rates = compute_rate_over_time(
             counter_metrics, by=["metric_attributes.component_name", "metric_name"]
         )
+
+        # Remove leading/trailing rows where value == 0
+        non_zero = counter_rates["value"].ne(0) & counter_rates["value"].notna()
+        if non_zero.any():
+            first_idx = non_zero.idxmax()
+            last_idx = non_zero[::-1].idxmax()
+            counter_rates = counter_rates.loc[first_idx:last_idx]
 
         gauge_metrics = concat_metrics_df(
             [counter_rates, otel_gauge_metrics], ignore_index=True

@@ -18,13 +18,14 @@ use crate::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts,
 };
 
+pub mod schema;
 #[allow(missing_docs)]
 pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
-pub enum OtapBatch {
+pub enum OtapArrowRecords {
     /// Represents a batch of logs data.
     Logs(Logs),
     /// Represents a batch of metrics data.
@@ -33,7 +34,7 @@ pub enum OtapBatch {
     Traces(Traces),
 }
 
-impl OtapBatch {
+impl OtapArrowRecords {
     /// Set the record batch for the given payload type. If the payload type is not valid
     /// for this type of telemetry signal, this method does nothing.
     pub fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) {
@@ -101,7 +102,7 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// Arrow Record Batch contained in this Otap Batch. Internally, implementers should
     /// know which payloads use which types (u16 or u32) for ID/Parent ID fields as well
     /// as how the IDs are encoded.
-    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()>;
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()>;
 
     fn new() -> Self {
         Self::default()
@@ -199,7 +200,7 @@ const POSITION_LOOKUP: &[usize] = &[
 const UNUSED_INDEX: usize = 99;
 
 /// Store of record batches for a batch of OTAP logs data.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Logs {
     batches: [Option<RecordBatch>; 4],
 }
@@ -227,7 +228,7 @@ impl OtapBatchStore for Logs {
         ]
     }
 
-    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()> {
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
         if let Some(logs_rb) = otap_batch.get(ArrowPayloadType::Logs) {
             let rb = remove_delta_encoding::<UInt16Type>(logs_rb, consts::ID)?;
             otap_batch.set(ArrowPayloadType::Logs, rb);
@@ -249,7 +250,7 @@ impl OtapBatchStore for Logs {
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
     batches: [Option<RecordBatch>; 18],
 }
@@ -305,7 +306,7 @@ impl OtapBatchStore for Metrics {
         ]
     }
 
-    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()> {
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
         if let Some(metrics_rb) = otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
             let rb = remove_delta_encoding::<UInt16Type>(metrics_rb, consts::ID)?;
             otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb);
@@ -366,7 +367,7 @@ impl OtapBatchStore for Metrics {
 }
 
 /// Store of record batches for a batch of OTAP traces data.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Traces {
     batches: [Option<RecordBatch>; 8],
 }
@@ -402,7 +403,7 @@ impl OtapBatchStore for Traces {
         ]
     }
 
-    fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()> {
+    fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
         if let Some(spans_rb) = otap_batch.get(ArrowPayloadType::Spans) {
             let rb = remove_delta_encoding::<UInt16Type>(spans_rb, consts::ID)?;
             otap_batch.set(ArrowPayloadType::Spans, rb);
@@ -513,7 +514,7 @@ mod test {
 
     #[test]
     fn test_log_getset() {
-        let mut otap_batch = OtapBatch::Logs(Logs::new());
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::new());
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
@@ -569,7 +570,7 @@ mod test {
 
     #[test]
     fn test_metrics_getset() {
-        let mut otap_batch = OtapBatch::Metrics(Metrics::new());
+        let mut otap_batch = OtapArrowRecords::Metrics(Metrics::new());
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
@@ -611,7 +612,7 @@ mod test {
 
     #[test]
     fn test_traces_getset() {
-        let mut otap_batch = OtapBatch::Traces(Traces::new());
+        let mut otap_batch = OtapArrowRecords::Traces(Traces::new());
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
@@ -676,7 +677,7 @@ mod test {
         )
         .unwrap();
 
-        let mut batch = OtapBatch::Logs(Logs::default());
+        let mut batch = OtapArrowRecords::Logs(Logs::default());
         batch.set(ArrowPayloadType::Logs, logs_rb);
         batch.set(ArrowPayloadType::LogAttrs, attrs_rb.clone());
         batch.set(ArrowPayloadType::ResourceAttrs, attrs_rb.clone());
@@ -801,7 +802,7 @@ mod test {
         )
         .unwrap();
 
-        let mut otap_batch = OtapBatch::Metrics(Metrics::default());
+        let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
         otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
         otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone());
         otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_16_rb.clone());
@@ -1039,7 +1040,7 @@ mod test {
         )
         .unwrap();
 
-        let mut otap_batch = OtapBatch::Traces(Traces::default());
+        let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
         otap_batch.set(ArrowPayloadType::Spans, spans_rb);
         otap_batch.set(ArrowPayloadType::SpanAttrs, attrs_16_rb.clone());
         otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone());
