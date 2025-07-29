@@ -234,12 +234,6 @@ mod test {
                 .await
                 .expect("Failed to send  logs message");
 
-                // wait a little bit before sending the shutdown message because
-                // in most test cases here, we want the exporter to handle to write
-                // messages before shutdown
-                // tokio::time::sleep(Duration::from_millis(1000)).await;
-                tokio::task::yield_now().await;
-
                 ctx.send_shutdown(shutdown_timeout, "test completed")
                     .await
                     .unwrap();
