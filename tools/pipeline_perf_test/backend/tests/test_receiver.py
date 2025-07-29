@@ -73,9 +73,10 @@ async def test_prom_metrics_returns_prometheus_format():
     assert response == "received_logs 1000"
 
 
-def test_handle_signal_calls_exit(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_signal_calls_exit(monkeypatch):
     monkeypatch.setattr(sys, "exit", mock.Mock())
 
-    handle_signal(signal.SIGINT, None)
+    await handle_signal(signal.SIGINT, None)
 
     sys.exit.assert_called_once_with(0)
