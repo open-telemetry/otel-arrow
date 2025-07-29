@@ -10,13 +10,13 @@
 //! using CPU resources efficiently and predictably.
 //!
 //! Future work includes:
-//! - todo: Support pipeline groups
 //! - todo: Status and health checks for pipelines
 //! - todo: Graceful shutdown of pipelines
 //! - todo: Auto-restart threads in case of panic
 //! - todo: Live pipeline updates
 //! - todo: Better resource control
 //! - todo: Monitoring
+//! - todo: Support pipeline groups
 
 use otap_df_config::{pipeline::PipelineConfig, pipeline_group::Quota};
 use otap_df_engine::PipelineFactory;
@@ -70,6 +70,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .take(num_requested_cores)
             .collect::<Vec<_>>();
 
+        println!("Starting pipeline with {} cores", requested_cores.len());
+        
         // Start one thread per core
         let mut threads = Vec::with_capacity(requested_cores.len());
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
@@ -93,6 +95,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
         
         // Wait for all threads to finish
+        // Note: In a real-world scenario, you might want to handle thread panics and errors more gracefully.
+        // For now, we will just log the errors and continue.
         for (thread_id, handle) in threads.into_iter().enumerate() {
             match handle.join() {
                 Ok(_) => {
@@ -135,54 +139,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .map_err(|e| error::Error::PipelineBuildFailed {
                 source: Box::new(e),
             })?;
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Controller;
-    use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
-    use otap_df_config::pipeline_group::Quota;
-    use otap_df_otlp::OTLP_PIPELINE_FACTORY;
-    use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
-    use otap_df_otlp::otlp_receiver::OTLP_RECEIVER_URN;
-    use serde_json::json;
-
-    #[test]
-    #[ignore]
-    fn test_start_controller() -> Result<(), Box<dyn std::error::Error>> {
-        // Create a simple OTLP pipeline configuration
-        let pipeline_cfg = PipelineConfigBuilder::new()
-            .add_receiver(
-                "otlp_receiver",
-                OTLP_RECEIVER_URN,
-                Some(json!({
-                    "listening_addr": "127.0.0.1:4317"
-                })),
-            )
-            .add_exporter(
-                "otlp_exporter",
-                OTLP_EXPORTER_URN,
-                Some(json!({
-                    "grpc_endpoint": "http://127.0.0.1:1235"
-                })),
-            )
-            .round_robin("otlp_receiver", "out_port", ["otlp_exporter"])
-            .build(PipelineType::Otlp, "namespace", "pipeline")?;
-
-        println!(
-            "Pipeline configuration:\n{}",
-            serde_json::to_string_pretty(&pipeline_cfg)?
-        );
-
-        // Create controller and start pipeline with multi-core support
-        let controller = Controller::new(&OTLP_PIPELINE_FACTORY);
-        let quota = Quota { num_cores: 0 }; // Use 2 cores for testing
-
-        // Start the pipeline (this would run indefinitely in a real scenario)
-        controller.start_pipeline(pipeline_cfg, quota)?;
 
         Ok(())
     }

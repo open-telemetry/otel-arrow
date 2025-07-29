@@ -29,8 +29,12 @@ categories = ["asynchronous", "network-programming"]
 name = "engine"
 path = "examples/engine.rs"
 
+[[example]]
+name = "mini_collector"
+path = "examples/mini_collector.rs"
+
 [dependencies]
-otap-df-engine = { path = "crates/engine" }
+otap-df-controller = { path = "crates/controller" }
 otap-df-config = { path = "crates/config" }
 otap-df-otlp = { path = "crates/otlp" }
 thiserror.workspace = true
