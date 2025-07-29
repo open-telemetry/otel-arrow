@@ -21,6 +21,14 @@ impl<T> ValueStorage<T> {
     pub fn new(value: T) -> ValueStorage<T> {
         Self { value }
     }
+
+    pub fn get_raw_value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn get_raw_value_mut(&mut self) -> &T {
+        &self.value
+    }
 }
 
 impl BooleanValue for ValueStorage<bool> {
@@ -213,6 +221,14 @@ impl<T: ValueSource<T>> ArrayValueStorage<T> {
                 .collect(),
         )
     }
+
+    pub fn get_values(&self) -> &Vec<T> {
+        &self.values
+    }
+
+    pub fn get_values_mut(&mut self) -> &mut Vec<T> {
+        &mut self.values
+    }
 }
 
 impl<T: ValueSource<T> + 'static> ArrayValue for ArrayValueStorage<T> {
@@ -325,6 +341,14 @@ pub struct MapValueStorage<T: ValueSource<T>> {
 impl<T: ValueSource<T>> MapValueStorage<T> {
     pub fn new(values: HashMap<Box<str>, T>) -> MapValueStorage<T> {
         Self { values }
+    }
+
+    pub fn get_values(&self) -> &HashMap<Box<str>, T> {
+        &self.values
+    }
+
+    pub fn get_values_mut(&mut self) -> &mut HashMap<Box<str>, T> {
+        &mut self.values
     }
 
     pub fn into<TTarget: ValueSource<TTarget>>(mut self) -> MapValueStorage<TTarget> {
