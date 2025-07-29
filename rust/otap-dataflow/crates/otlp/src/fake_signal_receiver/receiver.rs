@@ -6,13 +6,12 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::FAKE_SIGNAL_RECEIVERS;
+// use crate::FAKE_SIGNAL_RECEIVERS;
 
-use crate::fake_signal_receiver::config::{Config, ScenarioStep, SignalConfig};
+use crate::fake_signal_receiver::config::{Config, ScenarioStep, SignalConfig, OTLPSignal};
 use crate::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
-// use crate::grpc::OTLPData;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -34,14 +33,14 @@ pub struct FakeSignalReceiver {
     config: Config,
 }
 
-// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPData type. We must unify this in the future.
+// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPSignal type. We must unify this in the future.
 /// Declares the Fake Signal receiver as a local receiver factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 // #[allow(unsafe_code)]
 // #[distributed_slice(LOCAL_RECEIVERS)]
-// pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPData> = LocalReceiverFactory {
+// pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPSignal> = LocalReceiverFactory {
 //     name: "urn:otel:fake:signal:receiver",
 //     create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
 // };
@@ -66,12 +65,12 @@ impl FakeSignalReceiver {
 
 // We use the local version of the receiver here since we don't need to worry about Send and Sync traits
 #[async_trait( ? Send)]
-impl local::Receiver<OTLPData> for FakeSignalReceiver {
+impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel,
-        effect_handler: local::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+        effect_handler: local::EffectHandler<OTLPSignal>,
+    ) -> Result<(), Error<OTLPSignal>> {
         //start event loop
         loop {
             tokio::select! {
@@ -104,7 +103,7 @@ impl local::Receiver<OTLPData> for FakeSignalReceiver {
 }
 
 /// Run the configured scenario steps
-async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLPData>) {
+async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLPSignal>) {
     // loop through each step
     let steps = config.get_steps();
     let registry = config.get_registry();
@@ -113,9 +112,9 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
         let batches = step.get_batches_to_generate() as usize;
         for _ in 0..batches {
             let signal = match step.get_config() {
-                SignalConfig::Metric => OTLPData::Metric(fake_otlp_metrics(registry)),
-                SignalConfig::Log => OTLPData::Log(fake_otlp_logs(registry)),
-                SignalConfig::Span => OTLPData::Span(fake_otlp_traces(registry)),
+                SignalConfig::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(load.resource_count(), load.scope_count(), registry)),
+                SignalConfig::Logs(load) => OTLPSignal::Logs(fake_otlp_logs(load.resource_count(), load.scope_count(), registry)),
+                SignalConfig::Traces(load) => OTLPSignal::Traces(fake_otlp_traces(load.resource_count(), load.scope_count(), registry)),
             };
             _ = effect_handler.send_message(signal).await;
             // if there is a delay set between batches sleep for that amount before created the next signal in the batch
@@ -128,7 +127,7 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
 // mod tests {
 //     use crate::fake_signal_receiver::{
 //         config::{
-//             Config, LogConfig, MetricConfig, MetricType, OTLPData, ScenarioStep, SignalConfig,
+//             Config, LogConfig, MetricConfig, MetricType, OTLPSignal, ScenarioStep, SignalConfig,
 //             SpanConfig,
 //         },
 //         receiver::FakeSignalReceiver,
@@ -169,7 +168,7 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
 
 //     /// Validation closure that checks the received message and counters (!Send context).
 //     fn validation_procedure()
-//     -> impl FnOnce(NotSendValidateContext<OTLPData>) -> Pin<Box<dyn Future<Output = ()>>> {
+//     -> impl FnOnce(NotSendValidateContext<OTLPSignal>) -> Pin<Box<dyn Future<Output = ()>>> {
 //         |mut ctx| {
 //             Box::pin(async move {
 //                 // check that messages have been sent through the effect_handler
@@ -190,7 +189,7 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
 
 //                 // Assert that the message received is what the test client sent.
 //                 match metric_received {
-//                     OTLPData::Metric(metric) => {
+//                     OTLPSignal::Metric(metric) => {
 //                         // loop and check count
 //                         let resource_count = metric.resource_metrics.len();
 //                         assert!(resource_count == RESOURCE_COUNT);
@@ -223,7 +222,7 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
 //                 }
 
 //                 match trace_received {
-//                     OTLPData::Span(span) => {
+//                     OTLPSignal::Span(span) => {
 //                         let resource_count = span.resource_spans.len();
 //                         assert!(resource_count == RESOURCE_COUNT);
 //                         for resource in span.resource_spans.iter() {
@@ -247,7 +246,7 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
 //                 }
 
 //                 match log_received {
-//                     OTLPData::Log(log) => {
+//                     OTLPSignal::Log(log) => {
 //                         let resource_count = log.resource_logs.len();
 //                         assert!(resource_count == RESOURCE_COUNT);
 //                         for resource in log.resource_logs.iter() {

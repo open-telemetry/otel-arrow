@@ -15,6 +15,12 @@ use std::collections::HashMap;
 
 use weaver_forge::registry::ResolvedRegistry;
 
+
+pub enum OTLPSignal {
+    Metrics(MetricsData),
+    Traces(TracesData),
+    Logs(LogsData),
+}
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -96,8 +102,23 @@ impl ScenarioStep {
     }
 }
 
+
+pub struct Load {
+    resource_count: usize,
+    scope_count: usize,
+}
+
+impl Load {
+    pub fn resource_count(&self) -> usize {
+        self.resource_count
+    }
+
+    pub fn scope_count(&self) -> usize {
+        self.scope_count
+    }
+}
 pub enum SignalConfig {
-    Metrics,
-    Logs,
-    Traces,
+    Metrics(Load),
+    Logs(Load),
+    Traces(Load),
 }

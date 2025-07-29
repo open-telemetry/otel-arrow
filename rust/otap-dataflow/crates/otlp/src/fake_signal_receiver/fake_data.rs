@@ -38,18 +38,18 @@ pub fn get_scope_version() -> String {
     SCOPE_VERSION.to_string()
 }
 
-/// provide data for the status field
-#[must_use]
-pub fn get_status() -> Status {
-    let mut rng = rand::rng();
-    let option: usize = rng.random_range(0..STATUS_CODES.len());
-    let status = STATUS_CODES[option];
+// /// provide data for the status field
+// #[must_use]
+// pub fn get_status() -> Status {
+//     let mut rng = rand::rng();
+//     let option: usize = rng.random_range(0..STATUS_CODES.len());
+//     let status = STATUS_CODES[option];
 
-    Status {
-        code: status as i32,
-        message: status.as_str_name().to_string(),
-    }
-}
+//     Status {
+//         code: status as i32,
+//         message: status.as_str_name().to_string(),
+//     }
+// }
 
 /// provide double value
 #[must_use]
@@ -66,20 +66,17 @@ pub fn get_int_value() -> u64 {
 /// generate a unique span id
 #[must_use]
 pub fn gen_span_id() -> SpanID {
-
     let mut byte_array: [u8; SPAN_ID_LENGTH] = [];
 
     // generate random byte array
     rand::thread_rng().fill(&mut byte_array);
 
     SpanID::new(byte_array)
-
 }
 
 /// generate a unique trace id
 #[must_use]
 pub fn gen_trace_id() -> TraceID {
-
     let mut byte_array: [u8; TRACE_ID_LENGTH] = [];
 
     // generate random byte array

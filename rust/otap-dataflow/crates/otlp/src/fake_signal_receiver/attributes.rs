@@ -9,7 +9,7 @@ use weaver_semconv::attribute::{
     AttributeType, Examples, PrimitiveOrArrayTypeSpec, TemplateTypeSpec,
 };
 
-//ToDo: choose random attribute value for each attribute instead of the first
+//ToDo: choose random attribute value for each attribute
 
 /// For the given attribute, return a name/value pair.
 /// Values are generated based on the attribute type and examples where possible.
@@ -49,29 +49,29 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                     Some(Examples::Bools(booleans)) => {
                         AnyValue::new_bool(*booleans.first().unwrap_or(&true))
                     }
-                    Some(Examples::ListOfBools(list_of_bools)) => AnyValue::new_array(Array::Bool(
-                        list_of_bools.first().unwrap_or(&vec![true, false]).to_vec(),
-                    )),
+                    Some(Examples::ListOfBools(list_of_bools)) => AnyValue::new_array(
+                        list_of_bools.first().unwrap_or(&vec![true, false]).iter().map(|b|AnyValue::new_bool(b).collect()),
+                    ),
                     // Integer-based examples
                     Some(Examples::Int(i)) => AnyValue::new_int(*i),
                     Some(Examples::Ints(ints)) => AnyValue::new_int(*ints.first().unwrap_or(&42)),
-                    Some(Examples::ListOfInts(list_of_ints)) => AnyValue::new_array(Array::I64(
-                        list_of_ints.first().unwrap_or(&vec![42, 43]).to_vec(),
-                    )),
+                    Some(Examples::ListOfInts(list_of_ints)) => AnyValue::new_array(
+                        list_of_ints.first().unwrap_or(&vec![42, 43]).iter().map(|i| AnyValue::new_int(i).collect()),
+                    ),
                     // Double-based examples
                     Some(Examples::Double(d)) => AnyValue::new_double(f64::from(*d)),
                     Some(Examples::Doubles(doubles)) => {
                         AnyValue::new_double(f64::from(*doubles.first().unwrap_or((&3.13).into())))
                     }
                     Some(Examples::ListOfDoubles(list_of_doubles)) => {
-                        AnyValue::new_array(Array::F64(
+                        AnyValue::new_array(
                             list_of_doubles
                                 .first()
                                 .unwrap_or(&vec![(3.13).into(), (3.15).into()])
                                 .iter()
-                                .map(|d| f64::from(*d))
+                                .map(|d| AnyValue::new_double(f64::from(*d)))
                                 .collect(),
-                        ))
+                        )
                     }
                     // String-based examples
                     Some(Examples::String(s)) => AnyValue::new_string(s.clone().into()),
@@ -83,14 +83,14 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                             .into(),
                     ),
                     Some(Examples::ListOfStrings(list_of_strings)) => {
-                        AnyValue::new_array(Array::String(
+                        AnyValue::new_array(
                             list_of_strings
                                 .first()
-                                .unwrap_or(&vec!["value1".to_owned(), "value2".to_owned()])
+                                .unwrap_or(&vec!["value1".to_string(), "value2".to_string()])
                                 .iter()
-                                .map(|s| s.clone().into())
+                                .map(|s| AnyValue::new_string(s))
                                 .collect(),
-                        ))
+                        )
                     }
                     Some(Examples::Any(any)) => match any {
                         ValueSpec::Int(v) => AnyValue::new_int(*v),
@@ -111,46 +111,46 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                     _ => AnyValue::new_string("value".into()),
                 },
                 PrimitiveOrArrayTypeSpec::Booleans => {
-                    AnyValue::new_array(Array::Bool(vec![true, false]))
+                    AnyValue::new_array(vec![AnyValue::new_bool(true), AnyValue::new_bool(false)])
                 }
                 PrimitiveOrArrayTypeSpec::Ints => match &attribute.examples {
-                    Some(Examples::Ints(ints)) => AnyValue::new_array(Array::I64(ints.to_vec())),
-                    Some(Examples::ListOfInts(list_of_ints)) => AnyValue::new_array(Array::I64(
-                        list_of_ints.first().unwrap_or(&vec![42, 43]).to_vec(),
-                    )),
-                    _ => AnyValue::new_array(Array::I64(vec![42, 43])),
+                    Some(Examples::Ints(ints)) => AnyValue::new_array(ints.iter().map(|i64| AnyValue::new_int(i64).collect())),
+                    Some(Examples::ListOfInts(list_of_ints)) => AnyValue::new_array(
+                        list_of_ints.first().unwrap_or(&vec![42, 43]).iter().map(|i| AnyValue::new_int(i).collect())
+                    ),
+                    _ => AnyValue::new_array(vec![AnyValue::new_int(42), AnyValue::new_int(43)]),
                 },
                 PrimitiveOrArrayTypeSpec::Doubles => match &attribute.examples {
-                    Some(Examples::Doubles(doubles)) => AnyValue::new_array(Array::F64(
-                        doubles.iter().map(|d| f64::from(*d)).collect(),
-                    )),
+                    Some(Examples::Doubles(doubles)) => AnyValue::new_array(
+                        doubles.iter().map(|d| AnyValue::new_double(f64::from(*d))).collect(),
+                    ),
                     Some(Examples::ListOfDoubles(list_of_doubles)) => {
-                        AnyValue::new_array(Array::F64(
+                        AnyValue::new_array(
                             list_of_doubles
                                 .first()
                                 .unwrap_or(&vec![(3.13).into(), (3.15).into()])
                                 .iter()
-                                .map(|d| f64::from(*d))
+                                .map(|d| AnyValue::new_double(f64::from(*d)))
                                 .collect(),
-                        ))
+                        )
                     }
-                    _ => AnyValue::new_array(Array::F64(vec![3.13, 3.15])),
+                    _ => AnyValue::new_array(vec![AnyValue::new_double(3.13), AnyValue::new_double(3.15)]),
                 },
                 PrimitiveOrArrayTypeSpec::Strings => match &attribute.examples {
-                    Some(Examples::Strings(strings)) => AnyValue::new_array(Array::String(
-                        strings.iter().map(|s| s.clone().into()).collect(),
-                    )),
+                    Some(Examples::Strings(strings)) => AnyValue::new_array(
+                        strings.iter().map(|s| AnyValue::new_string(s)).collect(),
+                    ),
                     Some(Examples::ListOfStrings(list_of_strings)) => {
-                        AnyValue::new_array(Array::String(
+                        AnyValue::new_array(
                             list_of_strings
                                 .first()
-                                .unwrap_or(&vec!["value1".to_owned(), "value2".to_owned()])
+                                .unwrap_or(&vec!["value1".to_string(), "value2".to_string()])
                                 .iter()
-                                .map(|s| s.clone().into())
+                                .map(|s| AnyValue::new_string(s))
                                 .collect(),
-                        ))
+                        )
                     }
-                    _ => AnyValue::new_array(Array::String(vec!["value1".into(), "value2".into()])),
+                    _ => AnyValue::new_array(vec![AnyValue::new_string("value1".to_string()), AnyValue::new_string("value2".to_string())]),
                 },
             };
             KeyValue::new(name, value)
@@ -172,15 +172,14 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                 TemplateTypeSpec::Double => AnyValue::new_double(3.13),
                 TemplateTypeSpec::Boolean => AnyValue::new_bool(true),
                 TemplateTypeSpec::Any => AnyValue::new_string("template_any_value".into()),
-                TemplateTypeSpec::Strings => AnyValue::new_array(Array::String(vec![
-                    "template_value1".into(),
-                    "template_value2".into(),
-                ])),
-                TemplateTypeSpec::Ints => AnyValue::new_array(Array::I64(vec![42, 43])),
-                TemplateTypeSpec::Doubles => AnyValue::new_array(Array::F64(vec![3.13, 3.15])),
-                TemplateTypeSpec::Booleans => AnyValue::new_array(Array::Bool(vec![true, false])),
+                TemplateTypeSpec::Strings => AnyValue::new_array(vec![AnyValue::new_string("template_value1".to_string()), AnyValue::new_string("template_value2".to_string())]),
+                TemplateTypeSpec::Ints => AnyValue::new_array(vec![AnyValue::new_int(42), AnyValue::new_int(43)]),
+                TemplateTypeSpec::Doubles => AnyValue::new_array(vec![AnyValue::new_double(3.13), AnyValue::new_double(3.15)]),
+                TemplateTypeSpec::Booleans => AnyValue::new_array(vec![AnyValue::new_bool(true), AnyValue::new_bool(false)]),
             };
             KeyValue::new(format!("{name}.key"), value)
         }
     }
 }
+
+
