@@ -25,6 +25,7 @@ components:
       pipeline_perf_loadgen:
         endpoint:  "http://localhost:5001/"
         threads: 1
+        target_rate: 10000
         body_size: 25
         num_attributes: 2
         attribute_value_size: 15
@@ -61,6 +62,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
         endpoint (Optional[str]): Base URL of the load generator service. Defaults to
             "http://localhost:5001/".
         threads (Optional[int]): Number of concurrent threads to simulate. Defaults to 1.
+        target_rate (Optional[int]): Number of messages / sec to target. Defaults to None.
         body_size (Optional[int]): Size of the request body payload. Defaults to 25.
         num_attributes (Optional[int]): Number of attributes included in each load event.
             Defaults to 2.
@@ -70,6 +72,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
 
     endpoint: Optional[str] = "http://localhost:5001/"
     threads: Optional[int] = 1
+    target_rate: Optional[int] = None
     body_size: Optional[int] = 25
     num_attributes: Optional[int] = 2
     attribute_value_size: Optional[int] = 15
@@ -107,6 +110,7 @@ components:
       pipeline_perf_loadgen:
         endpoint:  "http://localhost:5001/"
         threads: 1
+        target_rate: 10000
         body_size: 25
         num_attributes: 2
         attribute_value_size: 15
@@ -143,6 +147,7 @@ components:
             json={
                 "threads": self.config.threads,
                 "body_size": self.config.body_size,
+                "target_rate": self.config.target_rate,
                 "num_attributes": self.config.num_attributes,
                 "attribute_value_size": self.config.attribute_value_size,
                 "batch_size": self.config.batch_size,

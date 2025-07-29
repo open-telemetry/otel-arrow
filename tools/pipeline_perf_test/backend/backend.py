@@ -13,6 +13,7 @@ Intended for testing or development purposes where a mock OTLP log collector is 
 """
 
 import asyncio
+import os
 import signal
 import sys
 import grpc  # type: ignore
@@ -23,8 +24,8 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
 )
 
 # Constants for ports
-FLASK_PORT = 5000
-GRPC_PORT = 5317
+FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
+GRPC_PORT = int(os.getenv('GRPC_PORT', 5317))
 
 app = Flask(__name__)
 received_logs = 0
@@ -32,10 +33,10 @@ received_logs_lock = asyncio.Lock()  # Async lock to guard the received_logs
 grpc_server = None
 
 
-def handle_signal(signal, frame):
+async def handle_signal(signal, frame):
     print("Received signal to terminate, stopping gRPC server.")
     if grpc_server:
-        grpc_server.stop(0)
+        await grpc_server.stop(0)
     sys.exit(0)
 
 

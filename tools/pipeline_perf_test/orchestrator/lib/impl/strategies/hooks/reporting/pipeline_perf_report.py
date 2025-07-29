@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from .....core.context.base import BaseContext
 from .....core.context import FrameworkElementHookContext
+from .....core.telemetry.metric import MetricDataFrame
 from .....core.helpers.report import group_by_populated_columns
 from .....core.helpers.metrics import (
     compute_rate_over_time,
@@ -378,8 +379,13 @@ class PipelinePerfReport(Report):
                 self.config.load_generator,
                 self.config.system_under_test,
             ]:
-                df = component_summary_pivoted.get(key)
-                df = group_by_populated_columns(df, ["delta", "min", "max", "mean"])
+                df = component_summary_pivoted.get(key, MetricDataFrame())
+                if df.empty:
+                    continue
+                try:
+                    df = group_by_populated_columns(df, ["delta", "min", "max", "mean"])
+                except:
+                    continue
                 df = format_metrics_by_ordered_rules(
                     df, metric_col="metric_name", format_rules=format_rules
                 )
@@ -676,6 +682,13 @@ hooks:
         counter_rates = compute_rate_over_time(
             counter_metrics, by=["metric_attributes.component_name", "metric_name"]
         )
+
+        # Remove leading/trailing rows where value == 0
+        non_zero = counter_rates["value"].ne(0) & counter_rates["value"].notna()
+        if non_zero.any():
+            first_idx = non_zero.idxmax()
+            last_idx = non_zero[::-1].idxmax()
+            counter_rates = counter_rates.loc[first_idx:last_idx]
 
         gauge_metrics = concat_metrics_df(
             [counter_rates, otel_gauge_metrics], ignore_index=True
