@@ -353,9 +353,11 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure()
-    -> impl FnOnce(TestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |ctx| {
+    fn validation_procedure<T>() -> impl FnOnce(
+        TestContext<TestMsg>,
+        Result<(), Error<T>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |ctx, _| {
             Box::pin(async move {
                 ctx.counters().assert(
                     3, // timer tick
@@ -488,6 +490,7 @@ mod tests {
 
         // 5. Now, should receive the Shutdown message itself
         let msg5 = channel.recv().await.unwrap();
+        // println!("msg5 = {:?}", msg5);
         assert!(matches!(
             msg5,
             Message::Control(ControlMsg::Shutdown { .. })

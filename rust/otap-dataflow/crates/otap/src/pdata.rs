@@ -54,7 +54,7 @@
 //! ```
 //!
 //! Internally, conversions are happening using various utility functions:
-//! ```no_run
+//! ```text
 //!                                      ┌───────────────────────┐                                            
 //!                                      │                       │                                            
 //!                                      │      OTLP Bytes       │                                            
