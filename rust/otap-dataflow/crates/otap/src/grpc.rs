@@ -10,7 +10,6 @@
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 //!
 
-
 use otap_df_engine::shared::receiver as shared;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     BatchArrowRecords, BatchStatus, StatusCode, arrow_logs_service_server::ArrowLogsService,
@@ -25,7 +24,6 @@ use tonic::{Request, Response, Status};
 use crate::pdata::OtapPdata;
 
 pub mod otlp;
-
 
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {

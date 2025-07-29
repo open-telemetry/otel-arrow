@@ -7,21 +7,18 @@
 use std::convert::Infallible;
 use std::task::Poll;
 
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_otlp::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_otlp::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
-use otel_arrow_rust::otap::OtapBatch;
 use prost::{Message, bytes::Buf};
 use tonic::Status;
 use tonic::body::Body;
 use tonic::codec::{Codec, CompressionEncoding, Decoder, EnabledCompressionEncodings, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
-
-use crate::encoder::encode_logs_otap_batch;
-use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 
 #[derive(Clone)]
 enum Signal {
@@ -30,20 +27,19 @@ enum Signal {
     Traces,
 }
 
-/// Tonic `Codec` implementation that decodes OtapBatches from grpc requests bytes and and encodes
-/// otlp service responses.
-struct OtapBatchCodec {
+/// Tonic `Codec` implementation that returns the bytes of the serialized message
+struct OtlpBytesCodec {
     signal: Signal,
 }
 
-impl OtapBatchCodec {
+impl OtlpBytesCodec {
     fn new(signal: Signal) -> Self {
         Self { signal }
     }
 }
 
-impl Codec for OtapBatchCodec {
-    type Decode = OtapBatch;
+impl Codec for OtlpBytesCodec {
+    type Decode = OtapPdata;
     type Encode = ();
 
     type Encoder = OtlpResponseEncoder;
@@ -114,7 +110,7 @@ impl OtapBatchDecoder {
 }
 
 impl Decoder for OtapBatchDecoder {
-    type Item = OtapBatch;
+    type Item = OtapPdata;
 
     type Error = Status;
 
@@ -123,38 +119,33 @@ impl Decoder for OtapBatchDecoder {
         src: &mut tonic::codec::DecodeBuf<'_>,
     ) -> Result<Option<Self::Item>, Self::Error> {
         let buf = src.chunk();
-        let view_impl = RawLogsData::new(buf);
-        let res = match self.signal {
-            Signal::Logs => encode_logs_otap_batch(&view_impl),
-            // TODO - implement for other signal types
-            _ => {
-                return Err(Status::unimplemented("signal type not yet implemented"));
-            }
+        // let view_impl = RawLogsData::new(buf);
+        let result = match self.signal {
+            Signal::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec()),
+            Signal::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec()),
+            Signal::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
         };
         src.advance(buf.len());
-        match res {
-            Ok(batch) => Ok(Some(batch)),
-            Err(e) => Err(Status::internal(format!("Internal Error: {e}"))),
-        }
+        Ok(Some(result.into()))
     }
 }
 
 /// implementation of tonic service that handles the decoded request (the OtapBatch).
 struct OtapBatchService {
-    effect_handler: shared::EffectHandler<OtapBatch>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: shared::EffectHandler<OtapBatch>) -> Self {
+    fn new(effect_handler: shared::EffectHandler<OtapPdata>) -> Self {
         Self { effect_handler }
     }
 }
 
-impl UnaryService<OtapBatch> for OtapBatchService {
+impl UnaryService<OtapPdata> for OtapBatchService {
     type Response = ();
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
-    fn call(&mut self, request: tonic::Request<OtapBatch>) -> Self::Future {
+    fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
         let otap_batch = request.into_inner();
 
         let effect_handler = self.effect_handler.clone();
@@ -173,11 +164,11 @@ impl UnaryService<OtapBatch> for OtapBatchService {
 async fn handle_service_request(
     req: Request<Body>,
     signal: Signal,
-    effect_handler: shared::EffectHandler<OtapBatch>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 ) -> Response<Body> {
-    let codec = OtapBatchCodec::new(signal);
+    let codec = OtlpBytesCodec::new(signal);
     let mut grpc = Grpc::new(codec)
         .apply_compression_config(accept_compression_encodings, send_compression_encodings);
     grpc.unary(OtapBatchService::new(effect_handler), req).await
@@ -201,7 +192,7 @@ fn unimplemented_resp() -> Response<Body> {
 /// implementation of OTLP bytes -> OTAP GRPC server for logs
 #[derive(Clone)]
 pub struct LogsServiceServer {
-    effect_handler: shared::EffectHandler<OtapBatch>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -209,7 +200,7 @@ pub struct LogsServiceServer {
 impl LogsServiceServer {
     /// create a new instance of `LogsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OtapBatch>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>) -> Self {
         Self {
             effect_handler,
             accept_compression_encodings: Default::default(),
@@ -272,7 +263,7 @@ impl NamedService for LogsServiceServer {
 /// implementation of OTLP bytes -> OTAP GRPC server for metrics
 #[derive(Clone)]
 pub struct MetricsServiceServer {
-    effect_handler: shared::EffectHandler<OtapBatch>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -280,7 +271,7 @@ pub struct MetricsServiceServer {
 impl MetricsServiceServer {
     /// create a new instance of `MetricsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OtapBatch>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>) -> Self {
         Self {
             effect_handler,
             accept_compression_encodings: Default::default(),
@@ -343,7 +334,7 @@ impl NamedService for MetricsServiceServer {
 /// implementation of OTLP bytes -> OTAP GRPC server for traces
 #[derive(Clone)]
 pub struct TraceServiceServer {
-    effect_handler: shared::EffectHandler<OtapBatch>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     accept_compression_encodings: EnabledCompressionEncodings,
     send_compression_encodings: EnabledCompressionEncodings,
 }
@@ -351,7 +342,7 @@ pub struct TraceServiceServer {
 impl TraceServiceServer {
     /// create a new instance of `TracesServiceServer`
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OtapBatch>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>) -> Self {
         Self {
             effect_handler,
             accept_compression_encodings: Default::default(),

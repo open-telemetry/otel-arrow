@@ -41,7 +41,6 @@ tonic = { version = "0.13.1", default-features = false, features = [
     "deflate",
 ] }
 tower-service = "0.3"
-sysinfo = "0.35.1"
 sysinfo = "0.36.0"
 byte-unit = "4"
 fluke-hpack = "0.3.1"
