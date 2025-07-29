@@ -130,6 +130,18 @@ pub enum OtlpProtoBytes {
     ExportTracesRequest(Vec<u8>),
 }
 
+impl OtlpProtoBytes {
+    /// Get a borrowed reference to the serialized proto bytes slice
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            OtlpProtoBytes::ExportLogsRequest(bytes)
+            | OtlpProtoBytes::ExportMetricsRequest(bytes)
+            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_slice(),
+        }
+    }
+}
+
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
