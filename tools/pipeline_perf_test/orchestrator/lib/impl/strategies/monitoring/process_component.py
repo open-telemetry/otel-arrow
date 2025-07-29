@@ -215,10 +215,10 @@ components:
 
 def get_resources(proc: psutil.Process):
     """Get current resource utilization for the process and it's children.
-    
+
     Parameters:
         proc: the process to monitor, including any spawned children.
-    
+
     Returns:
         A tuple of cpu and memory values for the process and all children.
     """
