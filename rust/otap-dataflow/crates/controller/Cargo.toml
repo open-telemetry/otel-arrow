@@ -21,6 +21,9 @@ otap-df-engine = { path = "../engine" }
 
 thiserror = { workspace = true }
 miette = { workspace = true }
+tokio = { workspace = true }
+core_affinity = "0.8.3"
+num_cpus = "1.17.0"
 
 [dev-dependencies]
 serde_json = { workspace = true }
