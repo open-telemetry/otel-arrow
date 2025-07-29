@@ -7,6 +7,7 @@
 
 use crate::config::ExporterConfig;
 use crate::control::{ControlMsg, Controllable};
+use crate::error::Error;
 use crate::exporter::ExporterWrapper;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
@@ -146,7 +147,7 @@ pub struct TestPhase<PData> {
     pdata_sender: Sender<PData>,
 
     /// Join handle for the starting the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<()>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -159,7 +160,7 @@ pub struct ValidationPhase<PData> {
     context: TestContext<PData>,
 
     /// Join handle for the running the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<()>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
 
     _pd: PhantomData<PData>,
 }
@@ -216,9 +217,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         exporter
             .set_pdata_receiver(self.config.name, pdata_rx)
             .expect("Failed to set PData receiver");
-        let run_exporter_handle = self.local_tasks.spawn_local(async move {
-            exporter.start().await.expect("Exporter event loop failed");
-        });
+        let run_exporter_handle = self
+            .local_tasks
+            .spawn_local(async move { exporter.start().await });
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -283,18 +284,19 @@ impl<PData> ValidationPhase<PData> {
     /// The result of the provided future.
     pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
     where
-        F: FnOnce(TestContext<PData>) -> Fut,
+        F: FnOnce(TestContext<PData>, Result<(), Error<PData>>) -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion
         let local_tasks = std::mem::take(&mut self.local_tasks);
         self.rt.block_on(local_tasks);
 
-        self.rt
+        let result = self
+            .rt
             .block_on(self.run_exporter_handle)
-            .expect("Exporter task failed");
+            .expect("failed to join exporter task handle");
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(self.context))
+        self.rt.block_on(future_fn(self.context, result))
     }
 }
