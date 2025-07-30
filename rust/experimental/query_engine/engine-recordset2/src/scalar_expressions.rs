@@ -1006,7 +1006,7 @@ mod tests {
         }
 
         run_test(
-            |e| ConvertScalarExpression::Boolean(e),
+            ConvertScalarExpression::Boolean,
             vec![
                 (
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
@@ -1054,7 +1054,7 @@ mod tests {
         );
 
         run_test(
-            |e| ConvertScalarExpression::Double(e),
+            ConvertScalarExpression::Double,
             vec![
                 (
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
@@ -1099,7 +1099,7 @@ mod tests {
         );
 
         run_test(
-            |e| ConvertScalarExpression::Integer(e),
+            ConvertScalarExpression::Integer,
             vec![
                 (
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
@@ -1135,7 +1135,7 @@ mod tests {
         );
 
         run_test(
-            |e| ConvertScalarExpression::String(e),
+            ConvertScalarExpression::String,
             vec![
                 (
                     ScalarExpression::Static(StaticScalarExpression::Boolean(

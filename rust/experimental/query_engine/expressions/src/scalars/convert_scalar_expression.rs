@@ -23,35 +23,26 @@ impl ConvertScalarExpression {
         match self {
             ConvertScalarExpression::Boolean(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(v) => match v {
-                        ValueType::Boolean | ValueType::Integer | ValueType::Double => {
-                            Ok(Some(ValueType::Boolean))
-                        }
-                        _ => Ok(None),
-                    },
-                    None => Ok(None),
+                    Some(ValueType::Boolean | ValueType::Integer | ValueType::Double) => {
+                        Ok(Some(ValueType::Boolean))
+                    }
+                    _ => Ok(None),
                 }
             }
             ConvertScalarExpression::Double(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(v) => match v {
-                        ValueType::Boolean | ValueType::Integer | ValueType::Double => {
-                            Ok(Some(ValueType::Double))
-                        }
-                        _ => Ok(None),
-                    },
-                    None => Ok(None),
+                    Some(ValueType::Boolean | ValueType::Integer | ValueType::Double) => {
+                        Ok(Some(ValueType::Double))
+                    }
+                    _ => Ok(None),
                 }
             }
             ConvertScalarExpression::Integer(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(v) => match v {
-                        ValueType::Boolean | ValueType::Integer | ValueType::Double => {
-                            Ok(Some(ValueType::Integer))
-                        }
-                        _ => Ok(None),
-                    },
-                    None => Ok(None),
+                    Some(ValueType::Boolean | ValueType::Integer | ValueType::Double) => {
+                        Ok(Some(ValueType::Integer))
+                    }
+                    _ => Ok(None),
                 }
             }
             ConvertScalarExpression::String(_) => Ok(Some(ValueType::String)),
@@ -113,10 +104,7 @@ impl ConvertScalarExpression {
                 if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
                     let mut value = None;
                     v.to_value().convert_to_string(&mut |s| {
-                        value = Some(StringScalarExpression::new(
-                            c.query_location.clone(),
-                            s.into(),
-                        ));
+                        value = Some(StringScalarExpression::new(c.query_location.clone(), s));
                     });
 
                     Ok(Some(ResolvedStaticScalarExpression::Value(
@@ -211,7 +199,7 @@ mod tests {
         }
 
         run_test(
-            |e| ConvertScalarExpression::Boolean(e),
+            ConvertScalarExpression::Boolean,
             vec![
                 (
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
@@ -257,7 +245,7 @@ mod tests {
         );
 
         run_test(
-            |e| ConvertScalarExpression::Double(e),
+            ConvertScalarExpression::Double,
             vec![
                 (
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
@@ -303,7 +291,7 @@ mod tests {
         );
 
         run_test(
-            |e| ConvertScalarExpression::Integer(e),
+            ConvertScalarExpression::Integer,
             vec![
                 (
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
