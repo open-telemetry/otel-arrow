@@ -501,11 +501,18 @@ impl CoalesceScalarExpression {
         &self,
         pipeline: &PipelineExpression,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        if let Some(s) = self.try_resolve_static(pipeline)? {
-            return Ok(Some(s.get_value_type()));
+        for expression in &self.expressions {
+            match expression.try_resolve_value_type(pipeline)? {
+                Some(r) => {
+                    if r != ValueType::Null {
+                        return Ok(Some(r));
+                    }
+                }
+                None => return Ok(None),
+            }
         }
 
-        Ok(None)
+        Ok(Some(ValueType::Null))
     }
 
     pub(crate) fn try_resolve_static<'a, 'b, 'c>(
