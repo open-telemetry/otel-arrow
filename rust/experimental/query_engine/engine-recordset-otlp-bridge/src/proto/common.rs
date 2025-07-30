@@ -263,7 +263,7 @@ impl ArrayValueMut for ByteArrayValueStorage {
                     Some(slot) => {
                         let old = mem::replace(slot, ValueStorage::new(v as u8));
                         return ValueMutWriteResult::Updated(OwnedValue::Integer(
-                            ValueStorage::new(old.get_value() as i64),
+                            ValueStorage::new(old.get_value()),
                         ));
                     }
                     None => {
