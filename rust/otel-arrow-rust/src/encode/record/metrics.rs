@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use arrow::{
     array::{
-        Array, LargeListBuilder, NullBufferBuilder, PrimitiveBuilder, RecordBatch, StructArray,
+        Array, LargeListArray, LargeListBuilder, PrimitiveBuilder, RecordBatch, StructArray,
+        StructBuilder,
     },
-    datatypes::{Field, Fields, Float64Type, Schema, UInt64Type},
+    datatypes::{DataType, Field, Fields, Float64Type, Schema, UInt64Type},
     error::ArrowError,
 };
 
@@ -23,7 +24,7 @@ use crate::{
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
-    schema::consts,
+    schema::{consts, no_nulls},
 };
 
 use super::array::{
@@ -73,7 +74,7 @@ impl MetricsRecordBatchBuilder {
             id: UInt16ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             resource: ResourceBuilder::new(),
             scope: ScopeBuilder::new(),
@@ -166,8 +167,8 @@ impl MetricsRecordBatchBuilder {
 
     /// Construct an OTAP Metrics RecordBatch from the builders.
     pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
-        let mut fields = Vec::with_capacity(8);
-        let mut columns = Vec::with_capacity(8);
+        let mut fields = Vec::with_capacity(10);
+        let mut columns = Vec::with_capacity(10);
 
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
@@ -251,11 +252,22 @@ impl MetricsRecordBatchBuilder {
             columns.push(array);
         }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), check(columns))
     }
 }
 
-/// Record batch builder for numberdatapoints
+fn check(v: Vec<Arc<dyn Array + 'static>>) -> Vec<Arc<dyn Array + 'static>> {
+    let lens: Vec<usize> = v.iter().map(|x| x.len()).collect();
+    let len = lens.first().unwrap_or(&0);
+    for other in &lens[1..] {
+        if len != other {
+            panic!("boo {lens:?}");
+        }
+    }
+    v
+}
+
+/// Record batch builder for NumberDataPoints
 pub struct NumberDataPointsRecordBatchBuilder {
     id: UInt32ArrayBuilder,
     parent_id: UInt16ArrayBuilder,
@@ -280,12 +292,12 @@ impl NumberDataPointsRecordBatchBuilder {
             id: UInt32ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             parent_id: UInt16ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             start_time_unix_nano: TimestampNanosecondArrayBuilder::new(ArrayOptions {
                 optional: false,
@@ -440,11 +452,11 @@ impl NumberDataPointsRecordBatchBuilder {
             columns.push(array);
         }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), check(columns))
     }
 }
 
-/// Record batch builder for exemplars
+/// Record batch builder for Exemplars
 pub struct ExemplarsRecordBatchBuilder {
     id: UInt32ArrayBuilder,
     parent_id: UInt32ArrayBuilder,
@@ -469,12 +481,12 @@ impl ExemplarsRecordBatchBuilder {
             id: UInt32ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             parent_id: UInt32ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             time_unix_nano: TimestampNanosecondArrayBuilder::new(ArrayOptions {
                 optional: true,
@@ -497,7 +509,7 @@ impl ExemplarsRecordBatchBuilder {
                     dictionary_options: Some(DictionaryOptions::dict8()),
                     ..Default::default()
                 },
-                16,
+                8,
             ),
             trace_id: FixedSizeBinaryArrayBuilder::new_with_args(
                 ArrayOptions {
@@ -505,7 +517,7 @@ impl ExemplarsRecordBatchBuilder {
                     dictionary_options: Some(DictionaryOptions::dict8()),
                     ..Default::default()
                 },
-                8,
+                16,
             ),
         }
     }
@@ -613,14 +625,15 @@ impl ExemplarsRecordBatchBuilder {
             columns.push(array);
         }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), check(columns))
     }
 }
 
-/// Record batch builder for quantile
+/// Record batch builder for QuantileValues
+///
+/// Ultimately, what we want is a ListOf(StructOf(quantile, value)).
 pub struct QuantileRecordBatchBuilder {
-    quantile: Float64ArrayBuilder,
-    value: Float64ArrayBuilder,
+    lists: LargeListBuilder<StructBuilder>,
 }
 
 impl Default for QuantileRecordBatchBuilder {
@@ -634,57 +647,65 @@ impl QuantileRecordBatchBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            quantile: Float64ArrayBuilder::new(ArrayOptions {
-                optional: true,
-                dictionary_options: None,
-                ..Default::default()
-            }),
-            value: Float64ArrayBuilder::new(ArrayOptions {
-                optional: true,
-                dictionary_options: None,
-                ..Default::default()
-            }),
+            lists: LargeListBuilder::new(StructBuilder::from_fields(
+                vec![
+                    Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
+                    Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
+                ],
+                2,
+            )),
         }
     }
 
-    /// Append a value to the `quantile` array.
-    pub fn append_quantile(&mut self, val: f64) {
-        self.quantile.append_value(&val);
-    }
+    /// Append a (possibly empty) sequence of quantile-value pairs.
+    pub fn append(&mut self, val: impl Iterator<Item = (f64, f64)>) {
+        let mut val = val.peekable();
+        if val.peek().is_some() {
+            let builder = self.lists.values();
+            let (left, right) = builder.field_builders_mut().split_at_mut(1);
 
-    /// Append a value to the `value` array.
-    pub fn append_value(&mut self, val: f64) {
-        self.value.append_value(&val);
-    }
+            // SAFETY: These four `expect` calls should never fire since by construction, we have
+            // exactly two fields in the inner struct array and each field is of type `f64`.
+            let quantile_builder: &mut PrimitiveBuilder<Float64Type> = left
+                .get_mut(0)
+                .expect("we should have exactly two fields")
+                .as_any_mut()
+                .downcast_mut()
+                .expect("`quantile` field builder should be f64");
+            let value_builder: &mut PrimitiveBuilder<Float64Type> = right
+                .get_mut(0)
+                .expect("we should have exactly two fields")
+                .as_any_mut()
+                .downcast_mut()
+                .expect("`value` field builder should be f64");
 
-    /// Construct an OTAP Quantile RecordBatch from the builders.
-    pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
-        let mut fields = Vec::with_capacity(2);
-        let mut columns = Vec::with_capacity(2);
+            let mut count: usize = 0;
+            for (quantile, value) in val {
+                quantile_builder.append_value(quantile);
+                value_builder.append_value(value);
+                count += 1;
+            }
 
-        if let Some(array) = self.quantile.finish() {
-            fields.push(Field::new(
-                consts::SUMMARY_QUANTILE,
-                array.data_type().clone(),
-                false,
-            ));
-            columns.push(array);
+            // Why keep a second loop when this one statement could go in the first one? Because
+            // then we'd have multiple mutable borrows to `builder`.
+            for _ in 0..count {
+                builder.append(true);
+            }
         }
 
-        if let Some(array) = self.value.finish() {
-            fields.push(Field::new(
-                consts::SUMMARY_VALUE,
-                array.data_type().clone(),
-                false,
-            ));
-            columns.push(array);
-        }
+        // Conceptually, we always store some sequence of pairs; sometimes that sequence is empty,
+        // but it is never null!
+        self.lists.append(true);
+    }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+    /// Construct an OTAP Quantile `StructArray` from the builders.
+    pub fn finish(&mut self) -> Option<LargeListArray> {
+        let array = self.lists.finish();
+        (!array.is_empty()).then_some(array)
     }
 }
 
-/// Record batch builder for summarydatapoints
+/// Record batch builder for SummaryDataPoints
 pub struct SummaryDataPointsRecordBatchBuilder {
     id: UInt32ArrayBuilder,
     parent_id: UInt16ArrayBuilder,
@@ -712,12 +733,12 @@ impl SummaryDataPointsRecordBatchBuilder {
             id: UInt32ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             parent_id: UInt16ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             start_time_unix_nano: TimestampNanosecondArrayBuilder::new(ArrayOptions {
                 optional: true,
@@ -785,8 +806,8 @@ impl SummaryDataPointsRecordBatchBuilder {
 
     /// Construct an OTAP SummaryDataPoints RecordBatch from the builders.
     pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
-        let mut fields = Vec::with_capacity(7);
-        let mut columns = Vec::with_capacity(7);
+        let mut fields = Vec::with_capacity(8);
+        let mut columns = Vec::with_capacity(8);
 
         if let Some(array) = self.id.finish() {
             fields.push(Field::new(consts::ID, array.data_type().clone(), false));
@@ -842,8 +863,7 @@ impl SummaryDataPointsRecordBatchBuilder {
             columns.push(array);
         }
 
-        let array: StructArray = self.quantile_values.finish()?.into();
-        if !array.is_empty() {
+        if let Some(array) = self.quantile_values.finish() {
             fields.push(Field::new(
                 consts::SUMMARY_QUANTILE_VALUES,
                 array.data_type().clone(),
@@ -857,11 +877,11 @@ impl SummaryDataPointsRecordBatchBuilder {
             columns.push(array);
         }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), check(columns))
     }
 }
 
-/// Record batch builder for histogramdatapoints
+/// Record batch builder for HistogramDataPoints
 pub struct HistogramDataPointsRecordBatchBuilder {
     id: UInt32ArrayBuilder,
     parent_id: UInt16ArrayBuilder,
@@ -890,12 +910,12 @@ impl HistogramDataPointsRecordBatchBuilder {
             id: UInt32ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             parent_id: UInt16ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             start_time_unix_nano: TimestampNanosecondArrayBuilder::new(ArrayOptions {
                 optional: true,
@@ -1051,21 +1071,21 @@ impl HistogramDataPointsRecordBatchBuilder {
             columns.push(array);
         }
 
-        let array = self.bucket_counts.finish();
+        let array = no_nulls(self.bucket_counts.finish());
         if !array.is_empty() {
-            fields.push(Field::new(
+            fields.push(Field::new_large_list(
                 consts::HISTOGRAM_BUCKET_COUNTS,
-                array.data_type().clone(),
+                Field::new_list_field(DataType::UInt64, false),
                 false,
             ));
             columns.push(Arc::new(array));
         }
 
-        let array = self.explicit_bounds.finish();
+        let array = no_nulls(self.explicit_bounds.finish());
         if !array.is_empty() {
-            fields.push(Field::new(
+            fields.push(Field::new_large_list(
                 consts::HISTOGRAM_EXPLICIT_BOUNDS,
-                array.data_type().clone(),
+                Field::new("item", DataType::Float64, false),
                 false,
             ));
             columns.push(Arc::new(array));
@@ -1103,11 +1123,11 @@ impl HistogramDataPointsRecordBatchBuilder {
             columns.push(array);
         }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), check(columns))
     }
 }
 
-/// Record batch builder for exponentialhistogramdatapoints
+/// Record batch builder for ExponentialHistogramDataPoints
 pub struct ExponentialHistogramDataPointsRecordBatchBuilder {
     id: UInt32ArrayBuilder,
     parent_id: UInt16ArrayBuilder,
@@ -1140,12 +1160,12 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             id: UInt32ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             parent_id: UInt16ArrayBuilder::new(ArrayOptions {
                 optional: false,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             start_time_unix_nano: TimestampNanosecondArrayBuilder::new(ArrayOptions {
                 optional: true,
@@ -1263,8 +1283,8 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
 
     /// Construct an OTAP ExponentialHistogramDataPoints RecordBatch from the builders.
     pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
-        let mut fields = Vec::with_capacity(11);
-        let mut columns = Vec::with_capacity(11);
+        let mut fields = Vec::with_capacity(13);
+        let mut columns = Vec::with_capacity(13);
 
         if let Some(array) = self.id.finish() {
             fields.push(Field::new(consts::ID, array.data_type().clone(), false));
@@ -1338,8 +1358,7 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             columns.push(array);
         }
 
-        let array: StructArray = self.positive.finish()?;
-        if !array.is_empty() {
+        if let Some(array) = self.positive.finish().transpose()? {
             fields.push(Field::new(
                 consts::EXP_HISTOGRAM_POSITIVE,
                 array.data_type().clone(),
@@ -1348,8 +1367,7 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             columns.push(Arc::new(array));
         }
 
-        let array: StructArray = self.negative.finish()?;
-        if !array.is_empty() {
+        if let Some(array) = self.negative.finish().transpose()? {
             fields.push(Field::new(
                 consts::EXP_HISTOGRAM_NEGATIVE,
                 array.data_type().clone(),
@@ -1381,19 +1399,18 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
             columns.push(array);
         }
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), check(columns))
     }
 }
 
 /// Record batch builder for ExponentialHistogram Buckets.
-// This builder is a bit different because we build a `StructArray` directly rather than converting
-// from a `RecordBatch`; we do that because `offset` and `bucket_counts` are supposed to be
-// non-nullable and we represent missing data with null entries in the `StructArray` and
-// `RecordBatch` can't represent top-level nulls.
+///
+/// There are no nulls here at all; at the protobuf level, `Buckets` is required but `prost`
+/// represents this as an `Option<Buckets>`, so we handle cases of missing bucket data using an
+/// offset of zero and an empty counts slice.
 pub struct BucketsRecordBatchBuilder {
     offset: Int32ArrayBuilder,
     bucket_counts: LargeListBuilder<PrimitiveBuilder<UInt64Type>>,
-    nulls: NullBufferBuilder,
 }
 
 impl Default for BucketsRecordBatchBuilder {
@@ -1401,10 +1418,6 @@ impl Default for BucketsRecordBatchBuilder {
         Self::new()
     }
 }
-
-/// `NullBufferBuilder` will only allocate when it sees a `false` value and when it allocates, it
-/// will initially allocate this many bits. Make sure this value is a multiple of 64.
-const NULL_BUFFER_CAPACITY_IN_BITS: usize = 128;
 
 impl BucketsRecordBatchBuilder {
     /// Create a new instance of `BucketsRecordBatchBuilder`
@@ -1414,10 +1427,9 @@ impl BucketsRecordBatchBuilder {
             offset: Int32ArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: None,
-                ..Default::default()
+                default_values_optional: false,
             }),
             bucket_counts: LargeListBuilder::new(PrimitiveBuilder::new()),
-            nulls: NullBufferBuilder::new(NULL_BUFFER_CAPACITY_IN_BITS),
         }
     }
 
@@ -1427,18 +1439,16 @@ impl BucketsRecordBatchBuilder {
             Some((offset, bucket_counts)) => {
                 self.offset.append_value(&offset);
                 self.bucket_counts.append_value(bucket_counts.map(Some));
-                self.nulls.append_non_null();
             }
             None => {
                 self.offset.append_value(&0);
-                self.bucket_counts.append_value(std::iter::empty());
-                self.nulls.append_null();
+                self.bucket_counts.append(true);
             }
         }
     }
 
     /// Construct an OTAP ExponentialHistogramDataPointsBuckets RecordBatch from the builders.
-    pub fn finish(&mut self) -> Result<StructArray, ArrowError> {
+    pub fn finish(&mut self) -> Option<Result<StructArray, ArrowError>> {
         let mut fields = Vec::with_capacity(2);
         let mut columns = Vec::with_capacity(2);
 
@@ -1451,7 +1461,7 @@ impl BucketsRecordBatchBuilder {
             columns.push(array);
         }
 
-        let array = self.bucket_counts.finish();
+        let array = no_nulls(self.bucket_counts.finish());
         if !array.is_empty() {
             fields.push(Field::new(
                 consts::EXP_HISTOGRAM_BUCKET_COUNTS,
@@ -1461,9 +1471,12 @@ impl BucketsRecordBatchBuilder {
             columns.push(Arc::new(array));
         }
 
-        let length = self.nulls.len();
-        let nulls = self.nulls.finish();
-
-        StructArray::try_new_with_length(Fields::from(fields), columns, nulls, length)
+        let length = columns.first()?.len();
+        Some(StructArray::try_new_with_length(
+            Fields::from(fields),
+            columns,
+            None,
+            length,
+        ))
     }
 }

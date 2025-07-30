@@ -677,7 +677,13 @@ where
 
     for resource_metric in metrics_view.resources() {
         if let Some(resource) = resource_metric.resource() {
-            metrics.resource.append_id(Some(curr_resource_id));
+            metrics.resource.append_id_n(
+                curr_resource_id,
+                resource_metric
+                    .scopes()
+                    .map(|scope| scope.metrics().count())
+                    .sum(),
+            );
             for kv in resource.attributes() {
                 resource_attrs.append_parent_id(&curr_resource_id);
                 append_attribute_value(&mut resource_attrs, &kv)?;
@@ -867,10 +873,11 @@ where
                             summary.append_sum(sdp_view.sum());
                             summary.append_flags(sdp_view.flags().into_inner());
 
-                            for qv in sdp_view.quantile_values() {
-                                summary.quantile_values.append_quantile(qv.quantile());
-                                summary.quantile_values.append_value(qv.value());
-                            }
+                            summary.quantile_values.append(
+                                sdp_view
+                                    .quantile_values()
+                                    .map(|qv| (qv.quantile(), qv.value())),
+                            );
 
                             curr_summary_id = curr_summary_id
                                 .checked_add(1)
@@ -939,12 +946,15 @@ mod test {
     use super::*;
 
     use arrow::array::{
-        ArrayRef, BinaryArray, BooleanArray, DictionaryArray, DurationNanosecondArray,
-        FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
-        StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
+        DurationNanosecondArray, FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array,
+        LargeListArray, LargeListBuilder, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
+        StructBuilder, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     };
     use arrow::buffer::NullBuffer;
-    use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type, UInt16Type};
+    use arrow::datatypes::{
+        DataType, Field, Fields, Float64Type, Schema, TimeUnit, UInt8Type, UInt16Type, UInt64Type,
+    };
     use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
     use otel_arrow_rust::otlp::attributes::cbor::decode_pcommon_val;
     use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
@@ -955,8 +965,468 @@ mod test {
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
-    use otel_arrow_rust::schema::consts;
+    use otel_arrow_rust::schema::{consts, no_nulls};
     use prost::Message;
+
+    #[test]
+    fn test_metrics_round_trip() {
+        use otel_arrow_rust::encode::record::spans::{SpanId, TraceId};
+        use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
+            Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+            HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+            ScopeMetrics, Sum, Summary, SummaryDataPoint,
+            exponential_histogram_data_point::Buckets, summary_data_point::ValueAtQuantile,
+        };
+
+        let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
+
+        let metrics_data = MetricsData::new(vec![
+            ResourceMetrics::build(Resource::build(vec![KeyValue::new(
+                "attr1",
+                AnyValue::new_string("some_value"),
+            )]))
+            .scope_metrics(vec![
+                ScopeMetrics::build(
+                    InstrumentationScope::build("library")
+                        .version("scopev1")
+                        .attributes(vec![KeyValue::new(
+                            "scope_attr1",
+                            AnyValue::new_string("scope_val1"),
+                        )])
+                        .dropped_attributes_count(17u32)
+                        .finish(),
+                )
+                .schema_url("another url")
+                .metrics(vec![
+                    Metric::build_gauge(
+                        "gauge name",
+                        Gauge::new(vec![
+                            NumberDataPoint::build_double(123u64, std::f64::consts::PI)
+                                .attributes(vec![KeyValue::new(
+                                    "gauge_attr1",
+                                    AnyValue::new_string("gauge_val"),
+                                )])
+                                .start_time_unix_nano(456u64)
+                                .exemplars(vec![
+                                    Exemplar::build_int(678u64, 234i64)
+                                        .filtered_attributes(vec![KeyValue::new(
+                                            "exemplar_attr",
+                                            AnyValue::new_string("exemplar_val"),
+                                        )])
+                                        .span_id(a_span_id)
+                                        .trace_id(a_trace_id)
+                                        .finish(),
+                                ])
+                                .flags(1u32)
+                                .finish(),
+                        ]),
+                    )
+                    .description("here's a description")
+                    .unit("a unit")
+                    .metadata(vec![])
+                    .finish(),
+                    Metric::build_sum(
+                        "sum name",
+                        Sum::new(
+                            2,
+                            false,
+                            vec![NumberDataPoint::build_int(34u64, 47i64).finish()],
+                        ),
+                    )
+                    .finish(),
+                    Metric::build_summary(
+                        "a summary",
+                        Summary::new(vec![
+                            SummaryDataPoint::build(
+                                765u64,
+                                vec![
+                                    ValueAtQuantile::new(0., 123.),
+                                    ValueAtQuantile::new(0.5, 29.),
+                                ],
+                            )
+                            .start_time_unix_nano(543u64)
+                            .count(23u64)
+                            .sum(34.0)
+                            .flags(2u32)
+                            .finish(),
+                        ]),
+                    )
+                    .finish(),
+                    Metric::build_histogram(
+                        "a histogram",
+                        Histogram::new(
+                            1,
+                            vec![
+                                HistogramDataPoint::build(
+                                    567u64,
+                                    vec![3, 4, 5],
+                                    vec![5.0, 6.0, 7.0],
+                                )
+                                .start_time_unix_nano(23u64)
+                                .count(9u64)
+                                .sum(8)
+                                .exemplars(vec![])
+                                .flags(1u32)
+                                .min(1.)
+                                .max(2.)
+                                .finish(),
+                            ],
+                        ),
+                    )
+                    .finish(),
+                    Metric::build_exponential_histogram(
+                        "exp hist",
+                        ExponentialHistogram::new(
+                            3,
+                            vec![
+                                ExponentialHistogramDataPoint::build(
+                                    345u64,
+                                    67,
+                                    Buckets::new(2, vec![34, 45, 67]),
+                                )
+                                .start_time_unix_nano(234u64)
+                                .count(9999u64)
+                                .sum(123.)
+                                .zero_count(7u64)
+                                .flags(5u32)
+                                .min(4.)
+                                .max(44.)
+                                .zero_threshold(-1.1)
+                                .finish(),
+                            ],
+                        ),
+                    )
+                    .finish(),
+                ])
+                .finish(),
+            ])
+            .schema_url("a url")
+            .finish(),
+        ]);
+
+        let otap_batch = encode_metrics_otap_batch(&metrics_data).unwrap();
+
+        let sdp = otap_batch.get(ArrowPayloadType::SummaryDataPoints).unwrap();
+        let expected_sdp_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::UInt32, false),
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "start_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("count", DataType::UInt64, false),
+                Field::new("sum", DataType::Float64, false),
+                Field::new(
+                    "quantile",
+                    DataType::LargeList(Arc::new(Field::new(
+                        "item",
+                        DataType::Struct(Fields::from(vec![
+                            Field::new("quantile", DataType::Float64, false),
+                            Field::new("value", DataType::Float64, false),
+                        ])),
+                        true,
+                    ))),
+                    false,
+                ),
+                Field::new("flags", DataType::UInt32, false),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt32Array::from_iter(vec![0])),
+                // parent_id
+                Arc::new(UInt16Array::from_iter(vec![2])),
+                // start_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![543])),
+                // time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![765])),
+                // count
+                Arc::new(UInt64Array::from_iter(vec![23])),
+                // sum
+                Arc::new(Float64Array::from_iter(vec![34.0])),
+                // quantile
+                Arc::new(make_quantile_value_list(&[0., 0.5], &[123., 29.])),
+                // flags
+                Arc::new(UInt32Array::from_iter(vec![2])),
+            ],
+        )
+        .unwrap();
+        compare_record_batches(sdp, &expected_sdp_batch);
+        assert_eq!(sdp, &expected_sdp_batch);
+
+        let hdp = otap_batch
+            .get(ArrowPayloadType::HistogramDataPoints)
+            .unwrap();
+        let expected_hdp_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::UInt32, false),
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "start_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("count", DataType::UInt64, false),
+                Field::new_large_list(
+                    "bucket_counts",
+                    Field::new_list_field(DataType::UInt64, false),
+                    false,
+                ),
+                Field::new_large_list(
+                    "explicit_bounds",
+                    Field::new_list_field(DataType::Float64, false),
+                    false,
+                ),
+                Field::new("sum", DataType::Float64, true),
+                Field::new("flags", DataType::UInt32, false),
+                Field::new("min", DataType::Float64, true),
+                Field::new("max", DataType::Float64, true),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt32Array::from_iter(vec![0])),
+                // parent_id
+                Arc::new(UInt16Array::from_iter(vec![3])),
+                // start_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![23])),
+                // time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![567])),
+                // count
+                Arc::new(UInt64Array::from_iter(vec![9])),
+                // bucket_counts
+                make_list_of_primitives::<UInt64Type>(&[3, 4, 5]),
+                // explicit_bounds
+                make_list_of_primitives::<Float64Type>(&[5., 6., 7.]),
+                // sum
+                Arc::new(Float64Array::from_iter(vec![Some(8.0)])),
+                // flags
+                Arc::new(UInt32Array::from_iter(vec![1])),
+                // min
+                Arc::new(Float64Array::from_iter(vec![Some(1.0)])),
+                // max
+                Arc::new(Float64Array::from_iter(vec![Some(2.0)])),
+            ],
+        )
+        .unwrap();
+        compare_record_batches(hdp, &expected_hdp_batch);
+        assert_eq!(hdp, &expected_hdp_batch);
+
+        let edp = otap_batch
+            .get(ArrowPayloadType::ExpHistogramDataPoints)
+            .unwrap();
+        let expected_edp_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::UInt32, false),
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "start_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("count", DataType::UInt64, false),
+                Field::new("sum", DataType::Float64, true),
+                Field::new("scale", DataType::Int32, false),
+                Field::new("zero_count", DataType::UInt64, false),
+                Field::new(
+                    "positive",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("offset", DataType::Int32, false),
+                        Field::new(
+                            "bucket_counts",
+                            DataType::LargeList(Arc::new(Field::new(
+                                "item",
+                                DataType::UInt64,
+                                false,
+                            ))),
+                            false,
+                        ),
+                    ])),
+                    false,
+                ),
+                Field::new(
+                    "negative",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("offset", DataType::Int32, false),
+                        Field::new(
+                            "bucket_counts",
+                            DataType::LargeList(Arc::new(Field::new(
+                                "item",
+                                DataType::UInt64,
+                                false,
+                            ))),
+                            false,
+                        ),
+                    ])),
+                    false,
+                ),
+                Field::new("flags", DataType::UInt32, false),
+                Field::new("min", DataType::Float64, true),
+                Field::new("max", DataType::Float64, true),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt32Array::from_iter(vec![0])),
+                // parent_id
+                Arc::new(UInt16Array::from_iter(vec![4])),
+                // start_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![234])),
+                // time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![345])),
+                // count
+                Arc::new(UInt64Array::from_iter(vec![9999])),
+                // sum
+                Arc::new(Float64Array::from_iter(vec![Some(123.0)])),
+                // scale
+                Arc::new(Int32Array::from_iter(vec![67])),
+                // zero_count
+                Arc::new(UInt64Array::from_iter(vec![7])),
+                // positive
+                make_bucket(Some((2, &[34, 45, 67]))),
+                // negative
+                make_bucket(None),
+                // flags
+                Arc::new(UInt32Array::from_iter(vec![5])),
+                // min
+                Arc::new(Float64Array::from_iter(vec![Some(4.0)])),
+                // max
+                Arc::new(Float64Array::from_iter(vec![Some(44.0)])),
+            ],
+        )
+        .unwrap();
+        compare_record_batches(edp, &expected_edp_batch);
+        assert_eq!(edp, &expected_edp_batch);
+
+        let ndp = otap_batch.get(ArrowPayloadType::NumberDataPoints).unwrap();
+        let expected_ndp_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::UInt32, false),
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "start_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    true,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("int_value", DataType::Int64, true),
+                Field::new("double_value", DataType::Float64, true),
+                Field::new("flags", DataType::UInt32, false),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt32Array::from_iter(vec![0, 1])),
+                // parent_id
+                Arc::new(UInt16Array::from_iter(vec![0, 1])),
+                // start_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![Some(456), Some(0)])),
+                // time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![123, 34])),
+                // int_value
+                Arc::new(Int64Array::from_iter(vec![None, Some(47)])),
+                // double_value
+                Arc::new(Float64Array::from_iter(vec![
+                    Some(std::f64::consts::PI),
+                    None,
+                ])),
+                // flags
+                Arc::new(UInt32Array::from_iter(vec![1, 0])),
+            ],
+        )
+        .unwrap();
+        compare_record_batches(ndp, &expected_ndp_batch);
+        assert_eq!(ndp, &expected_ndp_batch);
+    }
+
+    fn make_bucket(offset_counts: Option<(i32, &[u64])>) -> Arc<dyn Array> {
+        let (offset, counts) = offset_counts.unwrap_or((0, &[]));
+        let offset = Int32Array::from_value(offset, 1);
+        let mut counts_builder: LargeListBuilder<PrimitiveBuilder<UInt64Type>> =
+            LargeListBuilder::new(PrimitiveBuilder::new());
+        counts_builder.append_value(counts.iter().copied().map(Some));
+
+        Arc::new(StructArray::new(
+            Fields::from(vec![
+                Field::new("offset", DataType::Int32, false),
+                Field::new(
+                    "bucket_counts",
+                    DataType::LargeList(Arc::new(Field::new("item", DataType::UInt64, false))),
+                    false,
+                ),
+            ]),
+            vec![
+                Arc::new(offset),
+                Arc::new(no_nulls(counts_builder.finish())),
+            ],
+            None,
+        ))
+    }
+
+    fn make_list_of_primitives<ArrowType>(data: &[ArrowType::Native]) -> Arc<dyn Array>
+    where
+        ArrowType: ArrowPrimitiveType,
+    {
+        let mut builder: LargeListBuilder<PrimitiveBuilder<ArrowType>> =
+            LargeListBuilder::new(PrimitiveBuilder::new());
+        builder.append_value(data.iter().copied().map(Some));
+        Arc::new(no_nulls(builder.finish()))
+    }
+
+    /// A tiny helper function to deal with the messiness of ListOf(StructOf()) construction; it
+    /// generates a single list.
+    fn make_quantile_value_list(quantiles: &[f64], values: &[f64]) -> LargeListArray {
+        let mut lists = LargeListBuilder::new(StructBuilder::from_fields(
+            vec![
+                Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
+                Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
+            ],
+            2,
+        ));
+
+        let builder = lists.values();
+        let (left, right) = builder.field_builders_mut().split_at_mut(1);
+        let quantile_builder: &mut PrimitiveBuilder<Float64Type> = left
+            .get_mut(0)
+            .unwrap()
+            .as_any_mut()
+            .downcast_mut()
+            .unwrap();
+        let value_builder: &mut PrimitiveBuilder<Float64Type> = right
+            .get_mut(0)
+            .unwrap()
+            .as_any_mut()
+            .downcast_mut()
+            .unwrap();
+        assert_eq!(quantiles.len(), values.len());
+        for (quantile, value) in quantiles.iter().zip(values) {
+            quantile_builder.append_value(*quantile);
+            value_builder.append_value(*value);
+        }
+        for _ in 0..quantiles.len() {
+            builder.append(true);
+        }
+        lists.append(true); // just one list!
+        lists.finish()
+    }
 
     fn _generate_logs_for_verify_all_columns() -> LogsData {
         LogsData::new(vec![
