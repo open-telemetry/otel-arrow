@@ -192,6 +192,28 @@ where
                 ValueStorage::new(value),
             )))
         }
+        ScalarExpression::Coalesce(c) => {
+            for expression in c.get_expressions() {
+                let value = execute_scalar_expression(execution_context, expression)?;
+                if value.get_value_type() != ValueType::Null {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar_expression,
+                        || format!("Evaluated as: {value}"),
+                    );
+
+                    return Ok(value);
+                }
+            }
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || "Evaluated as: null".into(),
+            );
+
+            Ok(ResolvedValue::Computed(OwnedValue::Null))
+        }
         ScalarExpression::Conditional(c) => {
             let inner_scalar =
                 match execute_logical_expression(execution_context, c.get_condition())? {
@@ -790,6 +812,59 @@ mod tests {
                 .into(),
             ),
             Value::Boolean(&ValueStorage::new(true)),
+        );
+    }
+
+    #[test]
+    fn test_execute_coalesce_scalar_expression() {
+        let record = TestRecord::new();
+
+        let run_test = |scalar_expression, expected_value: Value| {
+            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
+
+            let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
+
+            assert_eq!(expected_value, value.to_value());
+        };
+
+        run_test(
+            ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                ))],
+            )),
+            Value::Boolean(&ValueStorage::new(true)),
+        );
+
+        run_test(
+            ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+                    )),
+                ],
+            )),
+            Value::Boolean(&ValueStorage::new(false)),
+        );
+
+        run_test(
+            ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            Value::Null,
         );
     }
 
