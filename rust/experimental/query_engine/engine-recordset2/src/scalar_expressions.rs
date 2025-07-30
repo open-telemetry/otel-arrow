@@ -786,6 +786,7 @@ mod tests {
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
                     )),
+                    false,
                 ))
                 .into(),
             ),
