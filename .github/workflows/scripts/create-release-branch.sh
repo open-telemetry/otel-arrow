@@ -62,6 +62,7 @@ git add .
 git commit -m "Prepare release v$VERSION
 
 - Update CHANGELOG.md with release notes for v$VERSION
+- Update collector/otelarrowcol-build.yaml version to v$VERSION
 
 This commit prepares the repository for release v$VERSION."
 

@@ -48,6 +48,12 @@ jobs:
         id: changelog
         run: ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
 
+      - name: Update collector build version
+        run: |
+          # Update version in collector/otelarrowcol-build.yaml
+          sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: ${{ inputs.version }}/" collector/otelarrowcol-build.yaml
+          echo "Updated collector/otelarrowcol-build.yaml version to ${{ inputs.version }}"
+
       - name: Update CHANGELOG.md
         run: ./.github/workflows/scripts/update-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
 
@@ -108,12 +114,14 @@ jobs:
 
           ### Changes included:
           - Updated CHANGELOG.md with release notes
+          - Updated collector/otelarrowcol-build.yaml version to v${{ inputs.version }}
 
           ### Release Notes:
           ${CHANGELOG_CONTENT}
 
           ### Checklist:
           - [ ] Verify CHANGELOG.md formatting and content
+          - [ ] Verify collector version update in collector/otelarrowcol-build.yaml
           - [ ] Confirm all tests pass
           - [ ] Ready to merge and tag release
 
