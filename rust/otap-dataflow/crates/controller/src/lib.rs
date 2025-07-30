@@ -79,7 +79,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let pipeline_factory = self.pipeline_factory;
 
             let handle = thread::Builder::new()
-                .name(format!("pipeline-core-{core_id:?}"))
+                .name(format!("pipeline-core-{}", core_id.id))
                 .spawn(move || {
                     Self::run_pipeline_thread(
                         core_id,
@@ -124,8 +124,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails
             println!("Failed to pin thread to core {core_id:?}, continuing execution.");
-        } else {
-            println!("Pinned thread {} to core {core_id:?}", thread::current().name().unwrap_or("unknown"));
         }
 
         // Build the runtime pipeline from the configuration

@@ -2,7 +2,7 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use crate::control::ControlMsg;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::error::Error::EngineErrors;
 use crate::node::Node;
@@ -84,17 +84,23 @@ impl<PData: 'static> RuntimePipeline<PData> {
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
+        let mut control_senders = HashMap::new();
         let mut handlers = Vec::with_capacity(self.node_count());
 
-        for (_node_id, exporter) in self.exporters {
+        for (node_id, exporter) in self.exporters {
+            _ = control_senders.insert(node_id, exporter.control_sender());
             handlers.push(local_tasks.spawn_local(async move { exporter.start().await }));
         }
-        for (_node_id, processor) in self.processors {
+        for (node_id, processor) in self.processors {
+            _ = control_senders.insert(node_id, processor.control_sender());
             handlers.push(local_tasks.spawn_local(async move { processor.start().await }));
         }
-        for (_node_id, receiver) in self.receivers {
+        for (node_id, receiver) in self.receivers {
+            _ = control_senders.insert(node_id, receiver.control_sender());
             handlers.push(local_tasks.spawn_local(async move { receiver.start().await }));
         }
+
+        println!("Runtime pipeline starting on thread `{}`", std::thread::current().name().expect("NA"));
 
         // Wait for all tasks to complete, gathering any errors
         let results = rt.block_on(async {

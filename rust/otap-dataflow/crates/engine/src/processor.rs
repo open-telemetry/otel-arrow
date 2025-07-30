@@ -7,7 +7,7 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
-use crate::control::ControlMsg;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -20,6 +20,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
 use std::sync::Arc;
+use crate::exporter::ExporterWrapper;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -266,6 +267,24 @@ impl<PData> Node for ProcessorWrapper<PData> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ProcessorWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ProcessorWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        self.control_sender().send(msg).await
+    }
+
+    /// Returns the control message sender for the processor.
+    fn control_sender(&self) -> Sender<ControlMsg> {
+        match self {
+            ProcessorWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ProcessorWrapper::Shared { control_sender, .. } => {
+                Sender::Shared(control_sender.clone())
+            }
         }
     }
 }
