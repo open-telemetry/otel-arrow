@@ -9,6 +9,7 @@ OTLP collector endpoint over gRPC.
 Features:
 - Generates OTLP log records with random content for testing or benchmarking.
 - Runs multiple worker threads to simulate concurrent load.
+- Supports shared or dedicated TCP connection per-worker thread.
 - Supports optional rate targeting for message throughput (or max achievable).
 - Provides a Flask-based HTTP API to start, stop, and monitor the load
     generator.
@@ -74,6 +75,9 @@ class LoadGenConfig(BaseModel):
     target_rate: Optional[int] = Field(
         None, gt=0, description="Optional target messages per second"
     )
+    tcp_connection_per_thread: bool = Field(
+        True, description="Use a dedicated TCP connection per-thread"
+    )
 
     @field_validator(
         "body_size", "num_attributes", "attribute_value_size", "batch_size", "threads"
@@ -137,7 +141,17 @@ class LoadGenerator:
         Worker thread that sends batches of log records to an OTLP endpoint.
         """
         endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
-        channel = grpc.insecure_channel(endpoint)
+
+        channel = None
+        if args.get("tcp_connection_per_thread"):
+            # This disables the default python grpc client behavior of shared global
+            # subchannels per destination.
+            channel = grpc.insecure_channel(
+                endpoint, options=[("grpc.use_local_subchannel_pool", 1)]
+            )
+        else:
+            channel = grpc.insecure_channel(endpoint)
+
         stub = logs_service_pb2_grpc.LogsServiceStub(channel)
 
         batch_size = args["batch_size"]
@@ -356,6 +370,15 @@ def main():
         help=(
             "Optional message rate to target "
             f"(default {get_default_value('target_rate')})"
+        ),
+    )
+    parser.add_argument(
+        "--tcp-connection-per-thread",
+        type=bool,
+        default=get_default_value("tcp_connection_per_thread"),
+        help=(
+            "Use a dedicated TCP connection per-thread (default "
+            f"{get_default_value("tcp_connection_per_thread")})"
         ),
     )
     args = parser.parse_args()
