@@ -38,6 +38,9 @@ pub enum ScalarExpression {
 
     /// Returns one of two inner scalar expressions based on a logical condition.
     Conditional(ConditionalScalarExpression),
+
+    /// Type conversion operations
+    Conversion(ConversionScalarExpression),
 }
 
 impl ScalarExpression {
@@ -54,6 +57,7 @@ impl ScalarExpression {
             ScalarExpression::Negate(n) => n.try_resolve_value_type(pipeline),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(pipeline),
+            ScalarExpression::Conversion(c) => c.try_resolve_value_type(pipeline),
         }
     }
 
@@ -74,6 +78,7 @@ impl ScalarExpression {
             ScalarExpression::Negate(n) => n.try_resolve_static(pipeline),
             ScalarExpression::Logical(l) => l.try_resolve_static(pipeline),
             ScalarExpression::Conditional(c) => c.try_resolve_static(pipeline),
+            ScalarExpression::Conversion(c) => c.try_resolve_static(pipeline),
         }
     }
 }
@@ -89,6 +94,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Negate(n) => n.get_query_location(),
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
+            ScalarExpression::Conversion(c) => c.get_query_location(),
         }
     }
 
@@ -102,6 +108,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
             ScalarExpression::Constant(c) => c.get_name(),
+            ScalarExpression::Conversion(_) => "ScalarExpression(Conversion)",
         }
     }
 }
@@ -573,6 +580,105 @@ impl Expression for ConditionalScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ConditionalScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConversionType {
+    ToString,
+    // add more conversion types as needed
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversionScalarExpression {
+    query_location: QueryLocation,
+    conversion_type: ConversionType,
+    inner_expression: Box<ScalarExpression>,
+}
+
+impl ConversionScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        conversion_type: ConversionType,
+        inner_expression: ScalarExpression,
+    ) -> ConversionScalarExpression {
+        Self {
+            query_location,
+            conversion_type,
+            inner_expression: inner_expression.into(),
+        }
+    }
+
+    pub fn get_inner_expression(&self) -> &ScalarExpression {
+        &self.inner_expression
+    }
+
+    pub fn get_conversion_type(&self) -> &ConversionType {
+        &self.conversion_type
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        _pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        match &self.conversion_type {
+            ConversionType::ToString => {
+                // toString always returns a string
+                Ok(Some(ValueType::String))
+            } // Add more conversion types as needed
+        }
+    }
+
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        // Try to resolve the inner expression statically
+        if let Some(inner_static) = self.inner_expression.try_resolve_static(pipeline)? {
+            match &self.conversion_type {
+                ConversionType::ToString => {
+                    // Convert the static value to string
+                    let string_value = match inner_static.to_value() {
+                        Value::Null => "".to_string(),
+                        Value::Boolean(b) => b.get_value().to_string(),
+                        Value::Integer(i) => i.get_value().to_string(),
+                        Value::Double(d) => d.get_value().to_string(),
+                        Value::String(s) => s.get_value().to_string(),
+                        Value::DateTime(dt) => {
+                            let mut result = String::new();
+                            dt.to_string(&mut |s| result = s.to_string());
+                            result
+                        }
+                        // Handle other types as needed
+                        _ => return Ok(None), // Can't convert complex types statically
+                    };
+
+                    Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            self.query_location.clone(),
+                            &string_value,
+                        )),
+                    )))
+                } // Add more conversion types as needed
+            }
+        } else {
+            // Can't resolve statically if inner expression is dynamic
+            Ok(None)
+        }
+    }
+}
+
+impl Expression for ConversionScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ConversionScalarExpression"
     }
 }
 
