@@ -63,6 +63,22 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                     tokio::select! {
                         biased; //Prioritize control messages over data
 
+                        // Process incoming control messages.
+                        ctrl_msg = ctrl_chan.recv() => {
+                            match ctrl_msg {
+                                Ok(ControlMsg::Shutdown {..}) => {
+                                // ToDo: Add proper deadline function
+                                break;
+                                },
+                            Err(e) => {
+                                return Err(Error::ChannelRecvError(e));
+                                }
+                            _ => {
+                                // ToDo: Handle other control messages if needed
+                                }
+                            }
+                        }
+
                         // Process incoming TCP connections.
                         accept_result = listener.accept() => {
                             match accept_result {
@@ -112,6 +128,15 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            Protocol::Udp => {
+                let socket = effect_handler.udp_socket(self.listening_addr)?;
+                let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
+                loop {
+                    tokio::select! {
+                        biased; //Prioritize control messages over data
 
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
@@ -128,15 +153,6 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                 }
                             }
                         }
-                    }
-                }
-            }
-            Protocol::Udp => {
-                let socket = effect_handler.udp_socket(self.listening_addr)?;
-                let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
-                loop {
-                    tokio::select! {
-                        biased; //Prioritize control messages over data
 
                         result = socket.recv(&mut buf) => {
                             match result {
@@ -149,22 +165,6 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                 }
                             }
                         },
-
-                        // Process incoming control messages.
-                        ctrl_msg = ctrl_chan.recv() => {
-                            match ctrl_msg {
-                                Ok(ControlMsg::Shutdown {..}) => {
-                                // ToDo: Add proper deadline function
-                                break;
-                                },
-                            Err(e) => {
-                                return Err(Error::ChannelRecvError(e));
-                                }
-                            _ => {
-                                // ToDo: Handle other control messages if needed
-                                }
-                            }
-                        }
                     }
                 }
             }
