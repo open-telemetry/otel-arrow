@@ -16,7 +16,9 @@ plus_token = { "+" }
 positive_infinity_token = { "+inf" }
 negative_infinity_token = { "-inf" }
 equals_token = @{ "==" }
+equals_insensitive_token = @{ "=~" }
 not_equals_token = @{ "!=" }
+not_equals_insensitive_token = @{ "!~" }
 greater_than_token = @{ ">" ~ !"=" }
 greater_than_or_equal_to_token = @{ ">=" }
 less_than_token = @{ "<" ~ !"=" }
@@ -94,7 +96,7 @@ scalar_expression = {
     | ("(" ~ logical_expression ~ ")")
 }
 
-comparison_expression = { scalar_expression ~ (equals_token|not_equals_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression }
+comparison_expression = { scalar_expression ~ (equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression }
 logical_expressions = _{ comparison_expression|scalar_expression }
 logical_expression = { logical_expressions ~ ((and_token|or_token) ~ logical_expressions)* }
 

@@ -38,7 +38,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 e.get_query_location(),
                 &left.to_value(),
                 &right.to_value(),
-                false,
+                e.get_case_insensitive(),
             ) {
                 Ok(b) => {
                     execution_context.add_diagnostic_if_enabled(
@@ -222,6 +222,7 @@ mod tests {
                 ScalarExpression::Static(StaticScalarExpression::Boolean(
                     BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                 )),
+                false,
             )),
             true,
         );
@@ -229,14 +230,30 @@ mod tests {
         run_test(
             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Boolean(
-                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "VALUE"),
                 )),
-                ScalarExpression::Static(StaticScalarExpression::Boolean(
-                    BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "value"),
                 )),
+                false,
             )),
             false,
+        );
+
+        // Test case-insensitive string equality
+        run_test(
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "VALUE"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "value"),
+                )),
+                true,
+            )),
+            true,
         );
     }
 
