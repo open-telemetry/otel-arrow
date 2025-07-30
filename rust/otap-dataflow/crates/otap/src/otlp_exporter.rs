@@ -51,8 +51,6 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 };
 
 impl OTLPExporter {
-    // TODO new
-
     /// create a new instance of the `[OTLPExporter]` from json config value
     pub fn from_config(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
