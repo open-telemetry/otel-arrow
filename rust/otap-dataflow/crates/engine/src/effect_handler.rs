@@ -23,6 +23,19 @@ impl EffectHandlerCore {
         self.node_id.clone()
     }
 
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for all nodes in the pipeline
+    /// to output informational messages without blocking the async runtime.
+    pub(crate) async fn info(&self, message: &str) {
+        use tokio::io::{AsyncWriteExt, stdout};
+        let mut out = stdout();
+        let formatted_message = format!("{message}\n");
+        // Ignore write errors as they're typically not recoverable for stdout
+        let _ = out.write_all(formatted_message.as_bytes()).await;
+        let _ = out.flush().await;
+    }
+
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
     /// pipeline engine implementation. It's important for receiver implementer to create TCP
     /// listeners via this method to ensure the scalability and the serviceability of the pipeline.

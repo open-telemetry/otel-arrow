@@ -6,7 +6,6 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
-//!
 
 use crate::OTLP_EXPORTER_FACTORIES;
 use crate::debug_exporter::{
@@ -36,9 +35,35 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use serde_json::Value;
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::borrow::Cow;
 use std::rc::Rc;
+use tokio::fs::File;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
+
+/// A wrapper around AsyncWrite that simplifies error handling for debug output
+struct OutputWriter {
+    writer: Box<dyn AsyncWrite + Unpin>,
+    exporter_id: Cow<'static, str>,
+}
+
+impl OutputWriter {
+    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: Cow<'static, str>) -> Self {
+        Self {
+            writer,
+            exporter_id,
+        }
+    }
+
+    async fn write(&mut self, data: &str) -> Result<(), Error<OTLPData>> {
+        self.writer
+            .write_all(data.as_bytes())
+            .await
+            .map_err(|e| Error::ExporterError {
+                exporter: self.exporter_id.clone(),
+                error: format!("Write error: {e}"),
+            })
+    }
+}
 
 /// The URN for the debug exporter
 pub const DEBUG_EXPORTER_URN: &str = "urn:otel:debug:exporter";
@@ -106,31 +131,35 @@ impl local::Exporter<OTLPData> for DebugExporter {
             Box::new(DetailedOTLPMarshaler)
         };
 
-        println!("Starting Debug Exporter");
+        effect_handler.info("Starting Debug Exporter").await;
 
         // get a writer to write to stdout or to a file
-        let mut writer = get_writer(self.output);
+        let raw_writer = get_writer(self.output).await;
+        let mut writer = OutputWriter::new(raw_writer, effect_handler.exporter_id());
+
         // Loop until a Shutdown event is received.
         loop {
             match msg_chan.recv().await? {
                 // handle control messages
                 Message::Control(ControlMsg::TimerTick { .. }) => {
-                    _ = writeln!(writer, "Timer tick received");
+                    writer.write("Timer tick received\n").await?;
 
                     // output count of messages received since last timertick
-                    _ = write!(writer, "{report}", report = counter.signals_count_report());
+                    let report = counter.signals_count_report();
+                    writer.write(&report).await?;
 
                     // reset counters after timertick
                     counter.reset_signal_count();
                 }
                 Message::Control(ControlMsg::Config { .. }) => {
-                    _ = writeln!(writer, "Config message received");
+                    writer.write("Config message received\n").await?;
                 }
                 // shutdown the exporter
                 Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
-                    _ = writeln!(writer, "Shutdown message received");
-                    _ = write!(writer, "{report}", report = counter.debug_report());
+                    writer.write("Shutdown message received\n").await?;
+                    let report = counter.debug_report();
+                    writer.write(&report).await?;
                     break;
                 }
                 //send data
@@ -148,7 +177,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            );
+                            )
+                            .await?;
                             counter.increment_metric_signal_count();
                         }
                         OTLPData::Logs(req) => {
@@ -158,7 +188,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            );
+                            )
+                            .await?;
                             counter.increment_log_signal_count();
                         }
                         OTLPData::Traces(req) => {
@@ -168,7 +199,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            );
+                            )
+                            .await?;
                             counter.increment_span_signal_count();
                         }
                         OTLPData::Profiles(req) => {
@@ -178,7 +210,8 @@ impl local::Exporter<OTLPData> for DebugExporter {
                                 &*marshaler,
                                 &mut writer,
                                 &mut counter,
-                            );
+                            )
+                            .await?;
                             counter.increment_profile_signal_count();
                         }
                     }
@@ -196,28 +229,30 @@ impl local::Exporter<OTLPData> for DebugExporter {
 }
 
 /// determine if output goes to console or to a file
-fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
+async fn get_writer(output_file: Option<String>) -> Box<dyn AsyncWrite + Unpin> {
     match output_file {
-        Some(file_name) => Box::new(
-            OpenOptions::new()
+        Some(file_name) => {
+            let file = File::options()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .open(file_name)
-                .expect("could not open output file"),
-        ),
-        None => Box::new(std::io::stdout()),
+                .await
+                .expect("could not open output file");
+            Box::new(file)
+        }
+        None => Box::new(tokio::io::stdout()),
     }
 }
 
 /// Function to collect and report the data contained in a Metrics object received by the Debug exporter
-fn push_metric(
+async fn push_metric(
     verbosity: &Verbosity,
     metric_request: ExportMetricsServiceRequest,
     marshaler: &dyn OTLPMarshaler,
-    writer: &mut impl Write,
+    writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) {
+) -> Result<(), Error<OTLPData>> {
     // collect number of resource metrics
     // collect number of metrics
     // collect number of datapoints
@@ -251,26 +286,33 @@ fn push_metric(
         }
     }
 
-    _ = writeln!(writer, "Received {resource_metrics} resource metrics");
-    _ = writeln!(writer, "Received {metrics} metrics");
-    _ = writeln!(writer, "Received {data_points} data points");
+    writer
+        .write(&format!("Received {resource_metrics} resource metrics\n"))
+        .await?;
+    writer
+        .write(&format!("Received {metrics} metrics\n"))
+        .await?;
+    writer
+        .write(&format!("Received {data_points} data points\n"))
+        .await?;
     counter.update_metric_data(resource_metrics as u64, metrics as u64, data_points as u64);
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
-        return;
+        return Ok(());
     }
 
     let report = marshaler.marshal_metrics(metric_request);
-    _ = writeln!(writer, "{report}");
+    writer.write(&format!("{report}\n")).await?;
+    Ok(())
 }
 
-fn push_trace(
+async fn push_trace(
     verbosity: &Verbosity,
     trace_request: ExportTraceServiceRequest,
     marshaler: &dyn OTLPMarshaler,
-    writer: &mut impl Write,
+    writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) {
+) -> Result<(), Error<OTLPData>> {
     // collect number of resource spans
     // collect number of spans
     let resource_spans = trace_request.resource_spans.len();
@@ -287,10 +329,12 @@ fn push_trace(
         }
     }
 
-    _ = writeln!(writer, "Received {resource_spans} resource spans");
-    _ = writeln!(writer, "Received {spans} spans");
-    _ = writeln!(writer, "Received {events} events");
-    _ = writeln!(writer, "Received {links} links");
+    writer
+        .write(&format!("Received {resource_spans} resource spans\n"))
+        .await?;
+    writer.write(&format!("Received {spans} spans\n")).await?;
+    writer.write(&format!("Received {events} events\n")).await?;
+    writer.write(&format!("Received {links} links\n")).await?;
     counter.update_span_data(
         resource_spans as u64,
         spans as u64,
@@ -299,20 +343,21 @@ fn push_trace(
     );
     // if verbosity is basic we don't report anymore information, if a higher verbosity is specified than we call the marshaler
     if *verbosity == Verbosity::Basic {
-        return;
+        return Ok(());
     }
 
     let report = marshaler.marshal_traces(trace_request);
-    _ = writeln!(writer, "{report}");
+    writer.write(&format!("{report}\n")).await?;
+    Ok(())
 }
 
-fn push_log(
+async fn push_log(
     verbosity: &Verbosity,
     log_request: ExportLogsServiceRequest,
     marshaler: &dyn OTLPMarshaler,
-    writer: &mut impl Write,
+    writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) {
+) -> Result<(), Error<OTLPData>> {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
@@ -326,25 +371,30 @@ fn push_log(
             }
         }
     }
-    _ = writeln!(writer, "Received {resource_logs} resource logs");
-    _ = writeln!(writer, "Received {log_records} log records");
-    _ = writeln!(writer, "Received {events} events");
+    writer
+        .write(&format!("Received {resource_logs} resource logs\n"))
+        .await?;
+    writer
+        .write(&format!("Received {log_records} log records\n"))
+        .await?;
+    writer.write(&format!("Received {events} events\n")).await?;
     counter.update_log_data(resource_logs as u64, log_records as u64, events as u64);
     if *verbosity == Verbosity::Basic {
-        return;
+        return Ok(());
     }
 
     let report = marshaler.marshal_logs(log_request);
-    _ = writeln!(writer, "{report}");
+    writer.write(&format!("{report}\n")).await?;
+    Ok(())
 }
 
-fn push_profile(
+async fn push_profile(
     verbosity: &Verbosity,
     profile_request: ExportProfilesServiceRequest,
     marshaler: &dyn OTLPMarshaler,
-    writer: &mut impl Write,
+    writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) {
+) -> Result<(), Error<OTLPData>> {
     // collect number of resource profiles
     // collect number of sample records
     let resource_profiles = profile_request.resource_profiles.len();
@@ -357,15 +407,20 @@ fn push_profile(
         }
     }
 
-    _ = writeln!(writer, "Received {resource_profiles} resource profiles");
-    _ = writeln!(writer, "Received {samples} samples");
+    writer
+        .write(&format!("Received {resource_profiles} resource profiles\n"))
+        .await?;
+    writer
+        .write(&format!("Received {samples} samples\n"))
+        .await?;
     counter.update_profile_data(resource_profiles as u64, samples as u64);
     if *verbosity == Verbosity::Basic {
-        return;
+        return Ok(());
     }
 
     let report = marshaler.marshal_profiles(profile_request);
-    _ = writeln!(writer, "{report}");
+    writer.write(&format!("{report}\n")).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -378,6 +433,7 @@ mod tests {
         create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
     };
 
+    use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
@@ -385,6 +441,7 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
     use std::fs::{File, remove_file};
+    use std::future::Future;
     use std::io::{BufReader, read_to_string};
     use std::rc::Rc;
 
@@ -429,9 +486,14 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         output_file: String,
-    ) -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |_| {
+    ) -> impl FnOnce(
+        TestContext<OTLPData>,
+        Result<(), Error<OTLPData>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_, exporter_result| {
             Box::pin(async move {
+                assert!(exporter_result.is_ok());
+
                 // get a file to read and validate the output
                 // open file
                 // read the output file

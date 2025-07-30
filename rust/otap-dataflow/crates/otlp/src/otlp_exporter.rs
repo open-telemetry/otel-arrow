@@ -98,10 +98,12 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
-        println!(
-            "Exporting OTLP traffic to gRPC endpoint: {}",
-            self.grpc_endpoint
-        );
+        effect_handler
+            .info(&format!(
+                "Exporting OTLP traffic to gRPC endpoint: {}",
+                self.grpc_endpoint
+            ))
+            .await;
 
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::connect(self.grpc_endpoint.clone())
@@ -224,6 +226,7 @@ mod tests {
         trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
@@ -273,9 +276,14 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
-    ) -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |_| {
+    ) -> impl FnOnce(
+        TestContext<OTLPData>,
+        Result<(), Error<OTLPData>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_, exporter_result| {
             Box::pin(async move {
+                assert!(exporter_result.is_ok());
+
                 // check that the message was properly sent from the exporter
                 let metrics_received = timeout(Duration::from_secs(3), receiver.recv())
                     .await

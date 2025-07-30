@@ -26,7 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 0
           fetch-tags: true
+          ref: ${{ github.ref }}
 
       - name: Validate inputs
         run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
@@ -34,7 +36,7 @@ jobs:
       - name: Get last released version
         id: last_version
         run: |
-          LAST_VERSION=$(./.github/workflows/scripts/get-last-version.sh --quiet)
+          LAST_VERSION=$(./.github/workflows/scripts/get-last-version.sh)
           echo "last_version=$LAST_VERSION" >> $GITHUB_OUTPUT
           echo "Last released version: $LAST_VERSION"
           echo "New version: ${{ inputs.version }}"
@@ -42,9 +44,15 @@ jobs:
       - name: Validate version increment
         run: ./.github/workflows/scripts/validate-version-increment.sh "${{ steps.last_version.outputs.last_version }}" "${{ inputs.version }}"
 
-      - name: Extract changelog content
+      - name: Extract unreleased changelog content
         id: changelog
         run: ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
+
+      - name: Update collector build version
+        run: |
+          # Update version in collector/otelarrowcol-build.yaml
+          sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: ${{ inputs.version }}/" collector/otelarrowcol-build.yaml
+          echo "Updated collector/otelarrowcol-build.yaml version to ${{ inputs.version }}"
 
       - name: Update CHANGELOG.md
         run: ./.github/workflows/scripts/update-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
@@ -57,12 +65,13 @@ jobs:
           echo "Planned changes:"
           echo "- New version: ${{ inputs.version }}"
           echo "- Last version: ${{ steps.last_version.outputs.last_version }}"
-          echo ""
+          echo "--------------------------------"
           echo "Git diff:"
-
           git diff
-
-          echo ""
+          echo "--------------------------------"
+          echo "Unreleased content:"
+          cat /tmp/changelog_content.txt
+          echo "--------------------------------"
           echo "Git operations that would occur:"
           echo "  - Create branch: otelbot/release-v${{ inputs.version }}"
           echo "  - Commit version updates"
@@ -91,24 +100,28 @@ jobs:
       - name: Create pull request
         if: '!inputs.dry_run'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          # Read changelog content into a variable
+          CHANGELOG_CONTENT=$(cat /tmp/changelog_content.txt)
+
           # Create PR body content
-          cat > /tmp/pr_body.md << 'EOF'
+          cat > /tmp/pr_body.md << EOF
           ## Release v${{ inputs.version }}
 
           This PR prepares the repository for release v${{ inputs.version }}.
 
           ### Changes included:
           - Updated CHANGELOG.md with release notes
+          - Updated collector/otelarrowcol-build.yaml version to v${{ inputs.version }}
 
           ### Release Notes:
-          ```
-          $(cat /tmp/changelog_content.txt)
-          ```
+          ${CHANGELOG_CONTENT}
 
           ### Checklist:
           - [ ] Verify CHANGELOG.md formatting and content
+          - [ ] Verify collector version update in collector/otelarrowcol-build.yaml
           - [ ] Confirm all tests pass
           - [ ] Ready to merge and tag release
 
@@ -117,7 +130,7 @@ jobs:
 
           # Create the pull request using GitHub CLI
           gh pr create \
-            --title "Release v${{ inputs.version }}" \
+            --title "chore(release) Prepare Release v${{ inputs.version }}" \
             --body-file /tmp/pr_body.md \
             --head "otelbot/release-v${{ inputs.version }}" \
             --base main \
