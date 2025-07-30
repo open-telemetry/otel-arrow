@@ -87,9 +87,7 @@ impl LogsService for LogsServiceImpl {
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         _ = self
             .effect_handler
-            .send_message(OTLPData::Logs(LogsData::new(
-                request.into_inner().resource_logs.clone(),
-            )))
+            .send_message(OTLPData::Logs(request.into_inner()))
             .await;
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
@@ -105,9 +103,7 @@ impl MetricsService for MetricsServiceImpl {
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         _ = self
             .effect_handler
-            .send_message(OTLPData::Metrics(MetricsData::new(
-                request.into_inner().resource_metrics.clone(),
-            )))
+            .send_message(OTLPData::Metrics(request.into_inner()))
             .await;
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
@@ -123,9 +119,7 @@ impl TraceService for TraceServiceImpl {
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         _ = self
             .effect_handler
-            .send_message(OTLPData::Traces(TracesData::new(
-                request.into_inner().resource_spans.clone(),
-            )))
+            .send_message(OTLPData::Traces(request.into_inner()))
             .await;
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
@@ -153,11 +147,11 @@ impl ProfilesService for ProfilesServiceImpl {
 #[derive(Debug, Clone)]
 pub enum OTLPData {
     /// Logs Object
-    Logs(LogsData),
+    Logs(ExportLogsServiceRequest),
     /// Metrics Object
-    Metrics(MetricsData),
+    Metrics(ExportMetricsServiceRequest),
     /// Traces/Span Object
-    Traces(TracesData),
+    Traces(ExportTraceServiceRequest),
     /// Profiles Object
     Profiles(ExportProfilesServiceRequest),
 }

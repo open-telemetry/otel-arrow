@@ -5,19 +5,20 @@
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 
-use otel_arrow_rust::proto::opentelemetry::{
-    common::v1::{InstrumentationScope, AnyValue},
-    logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber, LogsData},
-    metrics::v1::{
-        ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint,
-        Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
-        metric::Data, number_data_point::Value, MetricsData
-    },
-    trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData, span::SpanKind, span::Event},
-    resource::v1::Resource
-};
-use crate::fake_signal_receiver::fake_data::{current_time, gen_span_id, gen_trace_id, get_scope_name, get_scope_version};
 use crate::fake_signal_receiver::attributes::get_attribute_name_value;
+use crate::fake_signal_receiver::fake_data::{
+    current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
+};
+use otel_arrow_rust::proto::opentelemetry::{
+    common::v1::{AnyValue, InstrumentationScope},
+    logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+    metrics::v1::{
+        AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, MetricsData,
+        NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+    },
+    resource::v1::Resource,
+    trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData, span::Event, span::SpanKind},
+};
 use weaver_forge::registry::ResolvedRegistry;
 use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
 
@@ -78,8 +79,8 @@ pub fn fake_otlp_logs(
         }
 
         resources.push(
-            ResourceSpans::build(Resource::default())
-                .scope_spans(scopes)
+            ResourceLogs::build(Resource::default())
+                .scope_logs(scopes)
                 .finish(),
         );
     }
@@ -112,7 +113,7 @@ pub fn fake_otlp_metrics(
 
         resources.push(
             ResourceMetrics::build(Resource::default())
-                .scope_spans(scopes)
+                .scope_metrics(scopes)
                 .finish(),
         );
     }
@@ -124,12 +125,12 @@ pub fn fake_otlp_metrics(
 #[must_use]
 fn spans(registry: &ResolvedRegistry) -> Vec<Span> {
     // Emit each span to the OTLP receiver.
-    let spans = vec![];
+    let mut spans = vec![];
     for group in registry.groups.iter() {
         if group.r#type == GroupType::Span {
             let start_time = current_time();
             // todo add random delay (configurable via annotations?)
-            let end_time = start_time + 10000;
+            let end_time = start_time + delay();
             spans.push(
                 Span::build(gen_trace_id(), gen_span_id(), group.id.clone(), start_time)
                     .attributes(
@@ -146,7 +147,7 @@ fn spans(registry: &ResolvedRegistry) -> Vec<Span> {
                             .map(|event_name| Event::new(event_name, current_time()))
                             .collect::<Vec<_>>(),
                     )
-                    .kind(group.span_kind.as_ref())
+                    .kind(otel_span_kind(group.span_kind.as_ref()))
                     .end_time_unix_nano(end_time)
                     .finish(),
             );
@@ -158,7 +159,7 @@ fn spans(registry: &ResolvedRegistry) -> Vec<Span> {
 /// generate each metric defined in the resolved registry
 #[must_use]
 fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
-    let metrics = vec![];
+    let mut metrics = vec![];
     for group in registry.groups.iter() {
         if group.r#type == GroupType::Metric {
             if let Some(instrument) = &group.instrument {
@@ -184,9 +185,13 @@ fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
                         ];
                         // is not monotonic
                         metrics.push(
-                            Metric::new_sum(metric_name, Sum::new(, false, datapoints))
-                                .description(description)
-                                .unit(unit),
+                            Metric::build_sum(
+                                metric_name,
+                                Sum::new(AggregationTemporality::Unspecified, false, datapoints),
+                            )
+                            .description(description)
+                            .unit(unit)
+                            .finish(),
                         );
                     }
                     InstrumentSpec::Counter => {
@@ -197,9 +202,13 @@ fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
                         ];
                         // is monotonic
                         metrics.push(
-                            Metric::new_sum(metric_name, Sum::new(, true, datapoints))
-                                .description(description)
-                                .unit(unit),
+                            Metric::build_sum(
+                                metric_name,
+                                Sum::new(AggregationTemporality::Unspecified, true, datapoints),
+                            )
+                            .description(description)
+                            .unit(unit)
+                            .finish(),
                         );
                     }
                     InstrumentSpec::Gauge => {
@@ -210,9 +219,10 @@ fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
                         ];
 
                         metrics.push(
-                            Metric::new_gauge(metric_name, Gauge::new(datapoints))
+                            Metric::build_gauge(metric_name, Gauge::new(datapoints))
                                 .description(description)
-                                .unit(unit),
+                                .unit(unit)
+                                .finish(),
                         );
                     }
                     InstrumentSpec::Histogram => {
@@ -222,9 +232,13 @@ fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
                                 .finish(),
                         ];
                         metrics.push(
-                            Metric::new_histogram(metric_name, Histogram::new(datapoints))
-                                .description(description)
-                                .unit(unit),
+                            Metric::build_histogram(
+                                metric_name,
+                                Histogram::new(AggregationTemporality::Unspecified, datapoints),
+                            )
+                            .description(description)
+                            .unit(unit)
+                            .finish(),
                         );
                     }
                 }
@@ -237,32 +251,34 @@ fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
 /// generate each span defined in the resolved registry
 #[must_use]
 fn logs(registry: &ResolvedRegistry) -> Vec<LogRecord> {
-    let log_records = vec![];
+    let mut log_records = vec![];
     for group in registry.groups.iter() {
         // events are structured logs
         if group.r#type == GroupType::Event {
             let timestamp = current_time();
             // extract the body
-            let body_text = match group.body {
+            let body_text = match &group.body {
                 Some(body) => body.to_string(),
                 None => "".to_string(),
             };
-            
-            log_records.push(LogRecord::build(
-                timestamp,
-                SeverityNumber::Unspecified,
-                group.name.clone().unwrap_or("".to_owned),
-            )
-            .attributes(
-                group
-                    .attributes
-                    .iter()
-                    .map(get_attribute_name_value)
-                    .collect::<Vec<_>>(),
-            )
-            .body(AnyValue::new_string(body_text))
-            .observed_time_unix_nano(timestamp)
-            .finish());
+
+            log_records.push(
+                LogRecord::build(
+                    timestamp,
+                    SeverityNumber::Unspecified,
+                    group.name.clone().unwrap_or("".to_owned()),
+                )
+                .attributes(
+                    group
+                        .attributes
+                        .iter()
+                        .map(get_attribute_name_value)
+                        .collect::<Vec<_>>(),
+                )
+                .body(AnyValue::new_string(body_text))
+                .observed_time_unix_nano(timestamp)
+                .finish(),
+            );
         }
     }
     log_records

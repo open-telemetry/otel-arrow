@@ -4,20 +4,12 @@
 //! provides fake data to use for various fields in a OTLP signal
 //!
 
-use otel_arrow_rust::proto::opentelemetry::{
-    common::v1::{AnyValue, KeyValue},
-    logs::v1::LogRecordFlags,
-    metrics::v1::AggregationTemporality,
-    trace::v1::{SpanFlags, Status, span::SpanKind, status::StatusCode},
-};
-
 use otel_arrow_rust::pdata::{SpanID, TraceID};
 use rand::Rng;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MAX_MS_DELAY: u64 = 1000;
-
+const MAX_NS_DELAY: u64 = 10000;
 /// default scope name to use for fake signals
 const SCOPE_NAME: &str = "fake_signal";
 /// default scope version to use for fake signals
@@ -66,23 +58,23 @@ pub fn get_int_value() -> u64 {
 /// generate a unique span id
 #[must_use]
 pub fn gen_span_id() -> SpanID {
-    let mut byte_array: [u8; SPAN_ID_LENGTH] = [];
+    let mut byte_array: [u8; SPAN_ID_LENGTH] = [0; SPAN_ID_LENGTH];
 
     // generate random byte array
-    rand::thread_rng().fill(&mut byte_array);
+    rand::rng().fill(&mut byte_array);
 
-    SpanID::new(byte_array)
+    SpanID::new(&byte_array)
 }
 
 /// generate a unique trace id
 #[must_use]
 pub fn gen_trace_id() -> TraceID {
-    let mut byte_array: [u8; TRACE_ID_LENGTH] = [];
+    let mut byte_array: [u8; TRACE_ID_LENGTH] = [0; TRACE_ID_LENGTH];
 
     // generate random byte array
-    rand::thread_rng().fill(&mut byte_array);
+    rand::rng().fill(&mut byte_array);
 
-    TraceID::new(byte_array)
+    TraceID::new(&byte_array)
 }
 
 /// provides the current unix nano time
@@ -103,7 +95,8 @@ pub fn current_time() -> u64 {
 }
 
 /// generates a delay in nano seconds
+#[must_use]
 pub fn delay() -> u64 {
     // generate a random delay
-    1000u64
+    MAX_NS_DELAY
 }

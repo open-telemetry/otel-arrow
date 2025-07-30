@@ -15,9 +15,9 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine", features = ["testing"] }
 otap-df-channel = { path = "../channel" }
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git" }
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git" }
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.16.1"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.16.1"}
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.16.1"}
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-config = { path = "../config" }
 
@@ -31,6 +31,7 @@ prost-types = "0.13.5"
 hex = "0.4.3"
 linkme = "0.3.33"
 rand = "0.9.1"
+serde_yaml = "0.9.34"
 # Workspace dependencies
 thiserror.workspace = true
 serde_json.workspace = true
