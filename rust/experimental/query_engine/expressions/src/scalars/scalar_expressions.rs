@@ -41,6 +41,9 @@ pub enum ScalarExpression {
 
     /// Returns one of two inner scalar expressions based on a logical condition.
     Conditional(ConditionalScalarExpression),
+
+    /// Convert scalar vales into different types.
+    Convert(ConvertScalarExpression),
 }
 
 impl ScalarExpression {
@@ -58,6 +61,7 @@ impl ScalarExpression {
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(pipeline),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(pipeline),
+            ScalarExpression::Convert(c) => c.try_resolve_value_type(pipeline),
         }
     }
 
@@ -79,6 +83,7 @@ impl ScalarExpression {
             ScalarExpression::Logical(l) => l.try_resolve_static(pipeline),
             ScalarExpression::Coalesce(c) => c.try_resolve_static(pipeline),
             ScalarExpression::Conditional(c) => c.try_resolve_static(pipeline),
+            ScalarExpression::Convert(c) => c.try_resolve_static(pipeline),
         }
     }
 }
@@ -95,6 +100,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Coalesce(c) => c.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
+            ScalarExpression::Convert(c) => c.get_query_location(),
         }
     }
 
@@ -109,6 +115,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
             ScalarExpression::Constant(c) => c.get_name(),
+            ScalarExpression::Convert(c) => c.get_name(),
         }
     }
 }
