@@ -21,6 +21,8 @@
 
 use std::io::ErrorKind;
 
+use crate::pdata::OtapPdata;
+
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
 use self::writer::WriteBatch;
@@ -56,15 +58,12 @@ impl ParquetExporter {
 }
 
 #[async_trait(?Send)]
-impl<T> Exporter<T> for ParquetExporter
-where
-    T: TryInto<(i64, OtapArrowRecords), Error = Error<T>> + 'static,
-{
+impl Exporter<OtapPdata> for ParquetExporter{
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<T>,
-        effect_handler: EffectHandler<T>,
-    ) -> Result<(), Error<T>> {
+        mut msg_chan: MessageChannel<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
                 exporter: effect_handler.exporter_id(),
@@ -73,7 +72,7 @@ where
 
         let mut writer =
             writer::WriterManager::new(object_store, self.config.writer_options.clone());
-
+        let mut batch_id = 0;
         let mut id_generator = PartitionSequenceIdGenerator::new();
 
         loop {
@@ -105,7 +104,7 @@ where
                 }
 
                 Message::PData(pdata) => {
-                    let (batch_id, mut otap_batch): (i64, OtapArrowRecords) = pdata.try_into()?;
+                    let mut otap_batch: OtapArrowRecords = pdata.try_into()?;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
@@ -139,7 +138,8 @@ where
                                 partition.attributes.as_deref(),
                             )
                         })
-                        .collect::<Vec<_>>();
+                        .collect::<Vec<_>>();                    
+                    batch_id += 1;
                     let write_result = writer.write(&writes).await;
                     if let Err(e) = write_result {
                         // TODO - this is not the error handling we want long term.
@@ -191,29 +191,25 @@ mod test {
         batch: BatchArrowRecords,
     }
 
-    impl TryInto<(i64, OtapArrowRecords)> for TestPDataInput {
+    impl TryInto<OtapArrowRecords> for TestPDataInput {
         type Error = Error<Self>;
 
-        fn try_into(mut self) -> Result<(i64, OtapArrowRecords), Self::Error> {
-            let batch_id = self.batch.batch_id;
+        fn try_into(mut self) -> Result<OtapArrowRecords, Self::Error> {
             let first_payload_type =
                 ArrowPayloadType::try_from(self.batch.arrow_payloads[0].r#type).unwrap();
             let mut consumer = Consumer::default();
             let record_messages = consumer.consume_bar(&mut self.batch).unwrap();
 
             match first_payload_type {
-                ArrowPayloadType::Logs => Ok((
-                    batch_id,
+                ArrowPayloadType::Logs => Ok(
                     OtapArrowRecords::Logs(from_record_messages(record_messages)),
-                )),
-                ArrowPayloadType::Spans => Ok((
-                    batch_id,
+                ),
+                ArrowPayloadType::Spans => Ok(
                     OtapArrowRecords::Traces(from_record_messages(record_messages)),
-                )),
-                ArrowPayloadType::UnivariateMetrics => Ok((
-                    batch_id,
+                ),
+                ArrowPayloadType::UnivariateMetrics => Ok(
                     OtapArrowRecords::Metrics(from_record_messages(record_messages)),
-                )),
+                ),
                 payload_type => {
                     panic!("unexpected payload type in TestPDataInput.try_into: {payload_type:?}")
                 }
@@ -224,15 +220,17 @@ mod test {
     fn logs_scenario(
         num_rows: usize,
         shutdown_timeout: Duration,
-    ) -> impl FnOnce(TestContext<TestPDataInput>) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                ctx.send_pdata(TestPDataInput {
+                let otap_batch: OtapArrowRecords = TestPDataInput {
                     batch: datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                         num_rows,
                         ..Default::default()
                     }),
-                })
+                }.try_into().unwrap();
+
+                ctx.send_pdata(otap_batch.into())
                 .await
                 .expect("Failed to send  logs message");
 
@@ -269,7 +267,7 @@ mod test {
 
     #[test]
     fn test_with_partitioning() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -282,7 +280,7 @@ mod test {
         let node_config = Rc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
@@ -356,7 +354,7 @@ mod test {
 
     #[test]
     fn test_no_partitioning() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -367,7 +365,7 @@ mod test {
         let node_config = Rc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
@@ -396,7 +394,7 @@ mod test {
 
     #[test]
     fn test_shutdown_timeout() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -407,7 +405,7 @@ mod test {
         let node_config = Rc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
@@ -434,7 +432,7 @@ mod test {
 
     #[test]
     fn test_traces() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -445,18 +443,14 @@ mod test {
         let node_config = Rc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
         );
 
         let num_rows = 100;
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(move |ctx| {
-                Box::pin(async move {
-                    ctx.send_pdata(TestPDataInput {
+        let otap_batch: OtapArrowRecords = TestPDataInput {
                         batch: datagen::create_simple_trace_arrow_record_batches(
                             SimpleDataGenOptions {
                                 num_rows,
@@ -464,7 +458,12 @@ mod test {
                                 ..Default::default()
                             },
                         ),
-                    })
+                    }.try_into().unwrap();
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(otap_batch.into())
                     .await
                     .expect("Failed to send  logs message");
 
@@ -497,7 +496,7 @@ mod test {
 
     #[test]
     fn test_metrics() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -508,18 +507,14 @@ mod test {
         let node_config = Rc::new(NodeUserConfig::new_exporter_config(
             OTAP_PARQUET_EXPORTER_URN,
         ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
         );
 
         let num_rows = 100;
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(move |ctx| {
-                Box::pin(async move {
-                    ctx.send_pdata(TestPDataInput {
+        let otap_batch: OtapArrowRecords = TestPDataInput {
                         batch: datagen::create_simple_metrics_arrow_record_batches(
                             SimpleDataGenOptions {
                                 num_rows,
@@ -527,7 +522,12 @@ mod test {
                                 ..Default::default()
                             },
                         ),
-                    })
+                    }.try_into().unwrap();
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(otap_batch.into())
                     .await
                     .expect("Failed to send  logs message");
 
