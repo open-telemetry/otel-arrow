@@ -123,7 +123,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails
-            // ToDo add logging
+            println!("Failed to pin thread to core {core_id:?}, continuing execution.");
+        } else {
+            println!("Pinned thread {} to core {core_id:?}", thread::current().name().unwrap_or("unknown"));
         }
 
         // Build the runtime pipeline from the configuration
