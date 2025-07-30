@@ -58,7 +58,7 @@ impl ParquetExporter {
 }
 
 #[async_trait(?Send)]
-impl Exporter<OtapPdata> for ParquetExporter{
+impl Exporter<OtapPdata> for ParquetExporter {
     async fn start(
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
@@ -138,7 +138,7 @@ impl Exporter<OtapPdata> for ParquetExporter{
                                 partition.attributes.as_deref(),
                             )
                         })
-                        .collect::<Vec<_>>();                    
+                        .collect::<Vec<_>>();
                     batch_id += 1;
                     let write_result = writer.write(&writes).await;
                     if let Err(e) = write_result {
@@ -163,6 +163,8 @@ impl Exporter<OtapPdata> for ParquetExporter{
 
 #[cfg(test)]
 mod test {
+    use crate::grpc::OtapArrowBytes;
+
     use super::*;
 
     use std::pin::Pin;
@@ -174,48 +176,11 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
-    use otel_arrow_rust::Consumer;
-    use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_rust::{
-        otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::BatchArrowRecords,
-    };
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
 
     pub mod datagen;
-
-    /// this is input to the test
-    #[derive(Debug, Clone)]
-    struct TestPDataInput {
-        batch: BatchArrowRecords,
-    }
-
-    impl TryInto<OtapArrowRecords> for TestPDataInput {
-        type Error = Error<Self>;
-
-        fn try_into(mut self) -> Result<OtapArrowRecords, Self::Error> {
-            let first_payload_type =
-                ArrowPayloadType::try_from(self.batch.arrow_payloads[0].r#type).unwrap();
-            let mut consumer = Consumer::default();
-            let record_messages = consumer.consume_bar(&mut self.batch).unwrap();
-
-            match first_payload_type {
-                ArrowPayloadType::Logs => Ok(
-                    OtapArrowRecords::Logs(from_record_messages(record_messages)),
-                ),
-                ArrowPayloadType::Spans => Ok(
-                    OtapArrowRecords::Traces(from_record_messages(record_messages)),
-                ),
-                ArrowPayloadType::UnivariateMetrics => Ok(
-                    OtapArrowRecords::Metrics(from_record_messages(record_messages)),
-                ),
-                payload_type => {
-                    panic!("unexpected payload type in TestPDataInput.try_into: {payload_type:?}")
-                }
-            }
-        }
-    }
 
     fn logs_scenario(
         num_rows: usize,
@@ -223,16 +188,16 @@ mod test {
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                let otap_batch: OtapArrowRecords = TestPDataInput {
-                    batch: datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                let otap_batch = OtapArrowBytes::ArrowLogs(
+                    datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                         num_rows,
                         ..Default::default()
                     }),
-                }.try_into().unwrap();
+                );
 
                 ctx.send_pdata(otap_batch.into())
-                .await
-                .expect("Failed to send  logs message");
+                    .await
+                    .expect("Failed to send  logs message");
 
                 ctx.send_shutdown(shutdown_timeout, "test completed")
                     .await
@@ -450,22 +415,20 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch: OtapArrowRecords = TestPDataInput {
-                        batch: datagen::create_simple_trace_arrow_record_batches(
-                            SimpleDataGenOptions {
-                                num_rows,
-                                traces_options: Some(Default::default()),
-                                ..Default::default()
-                            },
-                        ),
-                    }.try_into().unwrap();
+        let otap_batch = OtapArrowBytes::ArrowTraces(
+            datagen::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
+                num_rows,
+                traces_options: Some(Default::default()),
+                ..Default::default()
+            }),
+        );
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
                     ctx.send_pdata(otap_batch.into())
-                    .await
-                    .expect("Failed to send  logs message");
+                        .await
+                        .expect("Failed to send  logs message");
 
                     ctx.send_shutdown(Duration::from_millis(200), "test completed")
                         .await
@@ -514,22 +477,20 @@ mod test {
         );
 
         let num_rows = 100;
-        let otap_batch: OtapArrowRecords = TestPDataInput {
-                        batch: datagen::create_simple_metrics_arrow_record_batches(
-                            SimpleDataGenOptions {
-                                num_rows,
-                                metrics_options: Some(Default::default()),
-                                ..Default::default()
-                            },
-                        ),
-                    }.try_into().unwrap();
+        let otap_batch = OtapArrowBytes::ArrowMetrics(
+            datagen::create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
+                num_rows,
+                metrics_options: Some(Default::default()),
+                ..Default::default()
+            }),
+        );
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
                     ctx.send_pdata(otap_batch.into())
-                    .await
-                    .expect("Failed to send  logs message");
+                        .await
+                        .expect("Failed to send  logs message");
 
                     ctx.send_shutdown(Duration::from_millis(1000), "test completed")
                         .await
