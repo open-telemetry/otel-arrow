@@ -20,7 +20,9 @@
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use std::io::ErrorKind;
+use std::rc::Rc;
 
+use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 
 use self::idgen::PartitionSequenceIdGenerator;
@@ -29,8 +31,13 @@ use self::writer::WriteBatch;
 use async_trait::async_trait;
 use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
+use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ExporterFactory;
+use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otel_arrow_rust::otap::OtapArrowRecords;
@@ -42,18 +49,46 @@ mod partition;
 mod writer;
 
 #[allow(dead_code)]
-const OTAP_PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
+const PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
     config: config::Config,
 }
 
+/// Declares the Parquet exporter as a local exporter factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: PARQUET_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        Ok(ExporterWrapper::local(
+            ParquetExporter::from_config(&node_config.config)?,
+            node_config,
+            exporter_config,
+        ))
+    },
+};
+
 impl ParquetExporter {
     /// construct a new instance of the `ParquetExporter`
     #[must_use]
     pub fn new(config: config::Config) -> Self {
         Self { config }
+    }
+
+    /// construct a new instance from the configuration object
+    pub fn from_config(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: config::Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+
+        Ok(ParquetExporter { config })
     }
 }
 
@@ -242,9 +277,7 @@ mod test {
             )]),
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -327,9 +360,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -367,9 +398,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -405,9 +434,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -467,9 +494,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
+        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
