@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub struct RecordSetEngineOptions {
-    pub(crate) log_level: LogLevel,
+    pub(crate) diagnostic_level: RecordSetEngineDiagnosticLevel,
 }
 
 impl Default for RecordSetEngineOptions {
@@ -23,18 +23,21 @@ impl Default for RecordSetEngineOptions {
 impl RecordSetEngineOptions {
     pub fn new() -> RecordSetEngineOptions {
         Self {
-            log_level: LogLevel::Warn,
+            diagnostic_level: RecordSetEngineDiagnosticLevel::Warn,
         }
     }
 
-    pub fn with_log_level(mut self, log_level: LogLevel) -> RecordSetEngineOptions {
-        self.log_level = log_level;
+    pub fn with_diagnostic_level(
+        mut self,
+        diagnostic_level: RecordSetEngineDiagnosticLevel,
+    ) -> RecordSetEngineOptions {
+        self.diagnostic_level = diagnostic_level;
         self
     }
 }
 
 pub struct RecordSetEngine {
-    log_level: LogLevel,
+    diagnostic_level: RecordSetEngineDiagnosticLevel,
 }
 
 impl Default for RecordSetEngine {
@@ -50,7 +53,7 @@ impl RecordSetEngine {
 
     pub fn new_with_options(options: RecordSetEngineOptions) -> RecordSetEngine {
         Self {
-            log_level: options.log_level,
+            diagnostic_level: options.diagnostic_level,
         }
     }
 
@@ -113,17 +116,17 @@ where
         attached_records: Option<&'d dyn AttachedRecords>,
         record: TRecord,
     ) -> RecordSetEngineResult<'a, 'c, TRecord> {
-        let log_level = record
-            .get_log_level()
-            .unwrap_or(self.engine.log_level.clone());
+        let diagnostic_level = record
+            .get_diagnostic_level()
+            .unwrap_or(self.engine.diagnostic_level.clone());
 
         let execution_context =
-            ExecutionContext::new(log_level, self.pipeline, attached_records, record);
+            ExecutionContext::new(diagnostic_level, self.pipeline, attached_records, record);
 
-        if execution_context.is_enabled(LogLevel::Verbose) {
+        if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
             for (constant_id, constant) in self.pipeline.get_constants().iter().enumerate() {
-                execution_context.log(LogMessage::new(
-                    LogLevel::Verbose,
+                execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
+                    RecordSetEngineDiagnosticLevel::Verbose,
                     constant,
                     format!("Constant defined with id '{constant_id}'"),
                 ));
@@ -137,34 +140,30 @@ where
                         match execute_logical_expression(&execution_context, predicate) {
                             Ok(logical_result) => {
                                 if !logical_result {
-                                    if execution_context.is_enabled(LogLevel::Verbose) {
-                                        execution_context.log(LogMessage::new(
-                                            LogLevel::Verbose,
-                                            d,
-                                            "Record included".into(),
-                                        ));
-                                    }
+                                    execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Verbose,
+                                        d,
+                                        || "Record included".into(),
+                                    );
                                     continue;
                                 }
                             }
                             Err(e) => {
-                                execution_context.log(LogMessage::new(
-                                    LogLevel::Error,
+                                execution_context.add_diagnostic_if_enabled(
+                                    RecordSetEngineDiagnosticLevel::Error,
                                     d,
-                                    e.to_string(),
-                                ));
+                                    || e.to_string(),
+                                );
                                 break;
                             }
                         }
                     }
 
-                    if execution_context.is_enabled(LogLevel::Info) {
-                        execution_context.log(LogMessage::new(
-                            LogLevel::Info,
-                            d,
-                            "Record dropped".into(),
-                        ));
-                    }
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Info,
+                        d,
+                        || "Record dropped".into(),
+                    );
 
                     return RecordSetEngineResult::Drop(execution_context.into());
                 }
@@ -172,11 +171,11 @@ where
                     match execute_transform_expression(&execution_context, t) {
                         Ok(_) => {}
                         Err(e) => {
-                            execution_context.log(LogMessage::new(
-                                LogLevel::Error,
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Error,
                                 t,
-                                e.to_string(),
-                            ));
+                                || e.to_string(),
+                            );
                             break;
                         }
                     }
@@ -199,7 +198,7 @@ pub trait Record: MapValueMut {
 
     fn get_observed_timestamp(&self) -> Option<SystemTime>;
 
-    fn get_log_level(&self) -> Option<LogLevel>;
+    fn get_diagnostic_level(&self) -> Option<RecordSetEngineDiagnosticLevel>;
 }
 
 pub trait AttachedRecords {
@@ -215,28 +214,32 @@ pub enum RecordSetEngineResult<'a, 'b, TRecord: Record> {
 pub struct RecordSetEngineRecord<'a, 'b, TRecord: Record> {
     pipeline: &'a PipelineExpression,
     record: TRecord,
-    log_messages: Vec<LogMessage<'b>>,
+    diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
 }
 
 impl<'a, 'b, TRecord: Record> RecordSetEngineRecord<'a, 'b, TRecord> {
     pub(crate) fn new(
         pipeline: &'a PipelineExpression,
         record: TRecord,
-        log_messages: Vec<LogMessage<'b>>,
+        diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
     ) -> RecordSetEngineRecord<'a, 'b, TRecord> {
         Self {
             pipeline,
             record,
-            log_messages,
+            diagnostics,
         }
+    }
+
+    pub fn get_record(&self) -> &TRecord {
+        &self.record
+    }
+
+    pub fn get_diagnostics(&self) -> &Vec<RecordSetEngineDiagnostic<'b>> {
+        &self.diagnostics
     }
 
     pub fn take_record(self) -> TRecord {
         self.record
-    }
-
-    pub fn get_log_messages(&self) -> &Vec<LogMessage<'b>> {
-        &self.log_messages
     }
 }
 
@@ -250,13 +253,13 @@ impl<'a, 'b, 'c, TRecord: Record> From<ExecutionContext<'a, 'b, 'c, TRecord>>
 
 impl<TRecord: Record> Display for RecordSetEngineRecord<'_, '_, TRecord> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut lines: Vec<(&str, Vec<&LogMessage<'_>>)> = Vec::new();
+        let mut lines: Vec<(&str, Vec<&RecordSetEngineDiagnostic<'_>>)> = Vec::new();
 
         for line in self.pipeline.get_query().lines() {
             lines.push((line, Vec::new()));
         }
 
-        for log in &self.log_messages {
+        for log in &self.diagnostics {
             let location = log.get_expression().get_query_location();
             let (line, _) = location.get_line_and_column_numbers();
             lines[line - 1].1.push(log);
@@ -290,7 +293,7 @@ impl<TRecord: Record> Display for RecordSetEngineRecord<'_, '_, TRecord> {
 
                 line.push_str(&" ".repeat(column + 7));
                 line.push('[');
-                line.push_str(message.get_log_level().get_name());
+                line.push_str(message.get_diagnostic_level().get_name());
                 line.push_str("] ");
                 line.push_str(message.get_expression().get_name());
                 line.push_str(": ");

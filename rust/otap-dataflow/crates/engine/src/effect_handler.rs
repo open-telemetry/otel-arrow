@@ -3,6 +3,7 @@
 //! Common foundation of all effect handlers.
 
 use crate::error::Error;
+use otap_df_config::NodeId;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, UdpSocket};
@@ -12,14 +13,27 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
-    pub(crate) node_name: Cow<'static, str>,
+    pub(crate) node_id: NodeId,
 }
 
 impl EffectHandlerCore {
-    /// Returns the name of the node associated with this effect handler.
+    /// Returns the id of the node associated with this effect handler.
     #[must_use]
-    pub(crate) fn node_name(&self) -> Cow<'static, str> {
-        self.node_name.clone()
+    pub(crate) fn node_id(&self) -> NodeId {
+        self.node_id.clone()
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for all nodes in the pipeline
+    /// to output informational messages without blocking the async runtime.
+    pub(crate) async fn info(&self, message: &str) {
+        use tokio::io::{AsyncWriteExt, stdout};
+        let mut out = stdout();
+        let formatted_message = format!("{message}\n");
+        // Ignore write errors as they're typically not recoverable for stdout
+        let _ = out.write_all(formatted_message.as_bytes()).await;
+        let _ = out.flush().await;
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

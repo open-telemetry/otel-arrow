@@ -194,10 +194,10 @@ class ProcessReport(Report):
     ) -> Dict[str, Any]:
         data = {}
         format_rules = [
-            (r"container\.network\.(?:rx|tx)", format_bytes),
-            (r"container\.memory\.usage", format_bytes),
+            (r"(?:container|process)\.network\.(?:rx|tx)", format_bytes),
+            (r"(?:container|process)\.memory\.usage", format_bytes),
             (r"rate\(", append_string("/s")),
-            (r"container\.cpu\.usage", append_string(" cores")),
+            (r"(?:container|process)\.cpu\.usage", append_string(" cores")),
         ]
 
         if mode == ReportAggregation.COMPARISON:
@@ -218,10 +218,10 @@ class ProcessReport(Report):
         data["metadata"] = yaml.dump(self.metadata, indent=2)
 
         format_rules = [
-            (r"container\.network\.(?:rx|tx)", format_bytes),
-            (r"container\.memory\.usage", format_bytes),
+            (r"(?:container|process)\.network\.(?:rx|tx)", format_bytes),
+            (r"(?:container|process)\.memory\.usage", format_bytes),
             (r"rate\(", append_string("/s")),
-            (r"container.cpu.usage", append_string(" cores")),
+            (r"(?:container|process).cpu.usage", append_string(" cores")),
         ]
 
         if self.config.output_component_summary:
@@ -232,7 +232,11 @@ class ProcessReport(Report):
             )
             for key, df in component_summary_pivoted.items():
                 df = df.copy()
-                df = group_by_populated_columns(df, ["delta", "min", "max", "mean"])
+                try:
+                    df = group_by_populated_columns(df, ["delta", "min", "max", "mean"])
+                except ValueError:
+                    df = group_by_populated_columns(df, ["min", "max", "mean"])
+
                 df = format_metrics_by_ordered_rules(
                     df, metric_col="metric_name", format_rules=format_rules
                 )
@@ -379,6 +383,7 @@ test.suite: Test OTLP Vs OTAP
     def _execute(self, ctx: BaseContext) -> Report:
         tc: TelemetryClient = ctx.get_telemetry_client()
         components = ctx.get_components()
+        logger = ctx.get_logger(__name__)
 
         report = ProcessReport.from_context(self.config.name, ctx)
         report.config = self.config
@@ -405,25 +410,64 @@ test.suite: Test OTLP Vs OTAP
                 report.metadata["report.observation.duration_seconds"] = self.duration
 
         results = {}
-        for component_name, _component in components.items():
+        for component_name, component in components.items():
             if self.config.components and component_name not in self.config.components:
                 continue
+
+            metric_prefix = "container"
+            if component.deployment.type == "process":
+                metric_prefix = "process"
+
             process_counter_metrics = tc.metrics.query_metrics(
-                metric_name=["container.network.rx", "container.network.tx"],
+                metric_name=[
+                    f"{metric_prefix}.network.rx",
+                    f"{metric_prefix}.network.tx",
+                ],
                 metric_attrs={"component_name": component_name},
                 time_range=(self.report_start, self.report_end),
             )
             process_gauge_metrics = tc.metrics.query_metrics(
-                metric_name=["container.cpu.usage", "container.memory.usage"],
+                metric_name=[
+                    f"{metric_prefix}.cpu.usage",
+                    f"{metric_prefix}.memory.usage",
+                ],
                 metric_attrs={"component_name": component_name},
                 time_range=(self.report_start, self.report_end),
             )
 
+            counter_rates = pd.DataFrame()
+            counter_deltas = pd.DataFrame()
+            # Check if the process_counter_metrics DataFrame is empty
+            if process_counter_metrics.empty:
+                if metric_prefix == "process":
+                    logger.debug(
+                        "Component is a process deployment, so no network metrics expected: %s",
+                        component_name,
+                    )
+                else:
+                    logger.warning(
+                        "Missing process counter metrics for component %s",
+                        component_name,
+                    )
+                    continue
+            else:
+                counter_rates = compute_rate_over_time(
+                    process_counter_metrics,
+                    by=["metric_attributes.component_name", "metric_name"],
+                )
+                counter_deltas = process_counter_metrics.with_aggregation(
+                    by=["metric_attributes.component_name", "metric_name"],
+                    agg_func=delta,
+                )
+
+            # Check if the process_gauge_metrics DataFrame is empty
+            if process_gauge_metrics.empty:
+                logger.warning(
+                    "Missing process gauge metrics for component %s", component_name
+                )
+                continue
+
             # Component detail
-            counter_rates = compute_rate_over_time(
-                process_counter_metrics,
-                by=["metric_attributes.component_name", "metric_name"],
-            )
             gauge_metrics = concat_metrics_df(
                 [counter_rates, process_gauge_metrics], ignore_index=True
             )
@@ -441,9 +485,6 @@ test.suite: Test OTLP Vs OTAP
             gauge_aggregates = gauge_metrics.with_aggregation(
                 by=["metric_attributes.component_name", "metric_name"],
                 agg_func=["min", "mean", "max"],
-            )
-            counter_deltas = process_counter_metrics.with_aggregation(
-                by=["metric_attributes.component_name", "metric_name"], agg_func=delta
             )
             if results.get("component_summary") is None:
                 results["component_summary"] = concat_metrics_df(

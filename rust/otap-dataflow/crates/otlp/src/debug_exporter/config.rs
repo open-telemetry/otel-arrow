@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the configuration of the debug exporter
-//!
 
 use serde::Deserialize;
 
 /// Enum that allows the user to specify how much information they want displayed
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Verbosity {
     /// display the most detailed information available
     Detailed,

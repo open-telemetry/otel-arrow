@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use data_engine_expressions::*;
 
-use crate::{ParserError, ParserOptions};
+use crate::{ParserError, ParserMapSchema, ParserOptions};
 
 pub struct ParserState {
-    default_source_map_key: Option<Box<str>>,
+    source_map_schema: Option<ParserMapSchema>,
     attached_data_names: HashSet<Box<str>>,
     variable_names: HashSet<Box<str>>,
     constants: HashMap<Box<str>, (usize, ValueType)>,
@@ -19,7 +19,7 @@ impl ParserState {
 
     pub fn new_with_options(query: &str, options: ParserOptions) -> ParserState {
         Self {
-            default_source_map_key: options.default_source_map_key,
+            source_map_schema: options.source_map_schema,
             attached_data_names: options.attached_data_names,
             variable_names: HashSet::new(),
             constants: HashMap::new(),
@@ -39,8 +39,8 @@ impl ParserState {
         self.pipeline_builder.as_ref()
     }
 
-    pub fn get_default_source_map_key(&self) -> Option<&str> {
-        self.default_source_map_key.as_ref().map(|f| f.as_ref())
+    pub fn get_source_schema(&self) -> Option<&ParserMapSchema> {
+        self.source_map_schema.as_ref()
     }
 
     pub fn is_well_defined_identifier(&self, name: &str) -> bool {

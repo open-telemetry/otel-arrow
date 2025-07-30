@@ -27,7 +27,7 @@ use otel_arrow_rust::{
         },
         spans::{EventsBuilder, LinksBuilder, SpansRecordBatchBuilder},
     },
-    otap::{Logs, Metrics, OtapBatch, Traces},
+    otap::{Logs, Metrics, OtapArrowRecords, OtapBatch, Traces},
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -35,11 +35,11 @@ use otel_arrow_rust::{
 use crate::encoder::error::{Error, Result};
 
 mod cbor;
-mod error;
+pub mod error;
 
 /// Traverse the trace structure within the TracesView and produces an `OtapBatch' for the span
 /// data.
-pub fn encode_spans_otap_batch<T>(traces_view: &T) -> Result<OtapBatch>
+pub fn encode_spans_otap_batch<T>(traces_view: &T) -> Result<OtapArrowRecords>
 where
     T: TracesView,
 {
@@ -192,7 +192,7 @@ where
 
     // Then we build up an OTAP Batch from the RecordBatch builders....
 
-    let mut otap_batch = OtapBatch::Traces(Traces::default());
+    let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
 
     // Append spans records along with events and links!
     otap_batch.set(ArrowPayloadType::Spans, spans.finish()?);
@@ -229,7 +229,7 @@ where
 }
 
 /// traverse the log structure within the LogDataView and produces an `OtapBatch' for the log data
-pub fn encode_logs_otap_batch<T>(logs_view: &T) -> Result<OtapBatch>
+pub fn encode_logs_otap_batch<T>(logs_view: &T) -> Result<OtapArrowRecords>
 where
     T: LogsDataView,
 {
@@ -476,7 +476,7 @@ where
             .append_dropped_attributes_count_n(resource_dropped_attrs_count, resource_log_count);
     }
 
-    let mut otap_batch = OtapBatch::Logs(Logs::default());
+    let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
 
     // append logs record
     otap_batch.set(ArrowPayloadType::Logs, logs.finish()?);

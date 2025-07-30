@@ -13,8 +13,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-otap-df-engine = { path = "../engine", features = ["testing"] }
-otap-df-channel = { path = "../channel" }
+otap-df-engine = { path = "../engine" }
+otap-df-engine-macros = { path = "../engine-macros" }
+otap-df-config = { path = "../config" }
 
 # gRPC and Protocol Buffers
 tonic = { version = "0.13.1", default-features = false, features = [
@@ -34,7 +35,6 @@ tokio.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 log.workspace = true
-otel-arrow-rust.workspace = true
 
 [build-dependencies]
 tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }

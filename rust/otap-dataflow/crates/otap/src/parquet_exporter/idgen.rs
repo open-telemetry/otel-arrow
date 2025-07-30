@@ -11,7 +11,7 @@ use arrow::compute::kernels::cast;
 use arrow::compute::kernels::numeric::add;
 use arrow::compute::max;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
-use otel_arrow_rust::otap::OtapBatch;
+use otel_arrow_rust::otap::OtapArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::{consts, update_schema_metadata};
 use uuid::Uuid;
@@ -60,7 +60,7 @@ impl PartitionSequenceIdGenerator {
 
     pub fn generate_unique_ids(
         &mut self,
-        otap_batch: &mut OtapBatch,
+        otap_batch: &mut OtapArrowRecords,
     ) -> Result<(), IdGeneratorError> {
         // decode the transport optimized IDs if they are not already decoded. This is needed
         // to ensure that we are not computing the sequence of IDs based on delta-encoded IDs.
@@ -249,7 +249,7 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch1 = OtapBatch::Logs(from_record_messages(record_messages));
+        let mut otap_batch1 = OtapArrowRecords::Logs(from_record_messages(record_messages));
         id_generator.generate_unique_ids(&mut otap_batch1).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![0, 1]);
 
@@ -290,7 +290,7 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch2 = OtapBatch::Logs(from_record_messages(record_messages));
+        let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(record_messages));
         id_generator.generate_unique_ids(&mut otap_batch2).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![2, 3]);
 
@@ -334,7 +334,7 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch = OtapBatch::Logs(from_record_messages(record_messages));
+        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
 
         id_generator.generate_unique_ids(&mut otap_batch).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -366,7 +366,7 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch1 = OtapBatch::Logs(from_record_messages(record_messages));
+        let mut otap_batch1 = OtapArrowRecords::Logs(from_record_messages(record_messages));
         id_generator.generate_unique_ids(&mut otap_batch1).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![1, 2, 3]);
 
@@ -428,7 +428,7 @@ pub mod test {
         )
         .unwrap();
 
-        let mut traces_batch = OtapBatch::Traces(Traces::default());
+        let mut traces_batch = OtapArrowRecords::Traces(Traces::default());
         traces_batch.set(ArrowPayloadType::SpanEvents, span_events.clone());
         traces_batch.set(ArrowPayloadType::SpanEventAttrs, span_event_attrs.clone());
 
@@ -470,7 +470,7 @@ pub mod test {
         )
         .unwrap();
 
-        let mut traces_batch = OtapBatch::Traces(Traces::default());
+        let mut traces_batch = OtapArrowRecords::Traces(Traces::default());
         traces_batch.set(ArrowPayloadType::Spans, root_batch.clone());
         let mut id_generator = PartitionSequenceIdGenerator::new();
         id_generator.generate_unique_ids(&mut traces_batch).unwrap();
@@ -479,7 +479,7 @@ pub mod test {
             get_schema_metadata(spans_batch.schema_ref(), PARTITION_METADATA_KEY).unwrap();
         assert_eq!(partition_id, &format!("{}", id_generator.part_id));
 
-        let mut metrics_batch = OtapBatch::Metrics(Metrics::default());
+        let mut metrics_batch = OtapArrowRecords::Metrics(Metrics::default());
         metrics_batch.set(ArrowPayloadType::UnivariateMetrics, root_batch.clone());
         id_generator
             .generate_unique_ids(&mut metrics_batch)
