@@ -27,7 +27,7 @@ use otel_arrow_rust::{
         },
         spans::{EventsBuilder, LinksBuilder, SpansRecordBatchBuilder},
     },
-    otap::{Logs, Metrics, OtapArrowRecords, OtapBatch, Traces},
+    otap::{Logs, Metrics, OtapArrowRecords, Traces},
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -37,7 +37,7 @@ use crate::encoder::error::{Error, Result};
 mod cbor;
 pub mod error;
 
-/// Traverse the trace structure within the TracesView and produces an `OtapBatch' for the span
+/// Traverse the trace structure within the TracesView and produces an `OtapArrowRecords' for the span
 /// data.
 pub fn encode_spans_otap_batch<T>(traces_view: &T) -> Result<OtapArrowRecords>
 where
@@ -228,7 +228,7 @@ where
     Ok(otap_batch)
 }
 
-/// traverse the log structure within the LogDataView and produces an `OtapBatch' for the log data
+/// traverse the log structure within the LogDataView and produces an `OtapArrowRecords' for the log data
 pub fn encode_logs_otap_batch<T>(logs_view: &T) -> Result<OtapArrowRecords>
 where
     T: LogsDataView,
@@ -628,9 +628,9 @@ where
     Ok(())
 }
 
-/// Traverse the metrics structure within the MetricsView and produces an `OtapBatch` for the
+/// Traverse the metrics structure within the MetricsView and produces an `OtapArrowRecords` for the
 /// metrics data.
-pub fn encode_metrics_otap_batch<T>(metrics_view: &T) -> Result<OtapBatch>
+pub fn encode_metrics_otap_batch<T>(metrics_view: &T) -> Result<OtapArrowRecords>
 where
     T: MetricsView,
 {
@@ -899,7 +899,7 @@ where
             .ok_or(Error::U16OverflowError)?;
     }
 
-    let mut otap_batch = OtapBatch::Metrics(Metrics::default());
+    let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
     otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics.finish()?);
 
     // FIXME: there doesn't seem to be a payload type for Metrics' attrs.
