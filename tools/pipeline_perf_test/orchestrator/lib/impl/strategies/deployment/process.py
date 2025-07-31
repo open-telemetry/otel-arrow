@@ -13,11 +13,6 @@ Key Components:
 - `ProcessDeployment`: A concrete deployment strategy that implements how to launch and
   terminate a process as part of the component lifecycle.
 
-Features:
-- Environment variable support via both `dict` and `list[str]` formats.
-- Graceful process termination with a fallback to force kill if needed.
-- Capture and optional debug logging of stdout and stderr output from the process.
-
 This strategy is registered under the name `"process"` and integrates with the component
 framework and step-level test execution context.
 
@@ -30,14 +25,14 @@ components:
         environment: {}
 """
 import os
+import shlex
 import subprocess
 
 from typing import ClassVar, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict
-
 from ....core.component.component import (
     Component,
+    HookableComponentPhase,
 )
 from ....core.context.framework_element_contexts import StepContext
 from ....core.strategies.deployment_strategy import (
@@ -45,21 +40,10 @@ from ....core.strategies.deployment_strategy import (
     DeploymentStrategyConfig,
 )
 from ....runner.registry import deployment_registry, PluginMeta
-
+from ..common.process import ComponentProcessRuntime
+from ..hooks.process.ensure_process import EnsureProcess, EnsureProcessConfig
 
 STRATEGY_NAME = "process"
-
-
-class ComponentProcessRuntime(BaseModel):
-    """Base Model for component process runtime information."""
-
-    type: ClassVar[Literal["component_process_runtime"]] = "component_process_runtime"
-    pid: Optional[int] = None
-    process: Optional[subprocess.Popen[bytes]] = None
-    std_out_logs: Optional[list[str]] = None
-    std_err_logs: Optional[list[str]] = None
-    # Support Popen[bytes]
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 @deployment_registry.register_config(STRATEGY_NAME)
@@ -100,7 +84,7 @@ class ProcessDeployment(DeploymentStrategy):
     type: ClassVar[Literal["process"]] = "process"
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
-        installs_hooks=[],
+        installs_hooks=[EnsureProcess.__name__],
         yaml_example="""
 components:
   otel-collector:
@@ -114,7 +98,11 @@ components:
     def __init__(self, config: ProcessDeploymentConfig):
         """Initialize the strategy and specify default hooks to register."""
         self.config = config
-        self.default_component_hooks = {}
+        self.default_component_hooks = {
+            HookableComponentPhase.POST_DEPLOY: [
+                EnsureProcess(EnsureProcessConfig())
+            ]
+        }
         self.stop_event = None
 
     def start(self, component: Component, ctx: StepContext):
@@ -147,9 +135,11 @@ components:
 
         # Start the subprocess
         logger.debug(f"Launching command: {self.config.command}")
+        args = shlex.split(self.config.command)
+
         process = subprocess.Popen(
-            self.config.command,
-            shell=True,
+            args,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,

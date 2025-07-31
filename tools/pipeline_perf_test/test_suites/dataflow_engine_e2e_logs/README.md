@@ -25,6 +25,7 @@ the project:
 
 ```bash
 pip install -r ./otel-arrow/tools/pipeline_perf_test/orchestrator/requirements.txt
+pip install -r ./otel-arrow/tools/pipeline_perf_test/backend/requirements.txt
 ```
 
 This will install all the necessary Python packages, including dependencies for
@@ -53,8 +54,9 @@ The test suite is executed using the run_orchestrator.py script. This script
 will orchestrate the deployment, execution, monitoring, and reporting phases
 of the test based on the configuration file.
 
-To run the test suite, execute the following command:
+To run the test suite, execute the following command
+(from the otel-arrow/tools/pipeline_perf_test directory):
 
 ```bash
-python ./otel-arrow/tools/pipeline_perf_test/orchestrator/run_orchestrator.py --config ./test_suites/dataflow_engine_e2e_logs/test-suite-comparison.yaml --debug
+python ./orchestrator/run_orchestrator.py --config ./test_suites/dataflow_engine_e2e_logs/test-suite-comparison.yaml --debug
 ```

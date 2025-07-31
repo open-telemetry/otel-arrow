@@ -28,20 +28,22 @@ components:
     deployment:
       process:
         # Path to your otel collector binary
-        command: /tmp/otelcol --config ./test_suites/dataflow_engine_e2e_logs/collector-config-without-batch-processor.yaml
+        command: otelcol --config ./test_suites/dataflow_engine_e2e_logs/collector-config-without-batch-processor.yaml
     monitoring:
       # The process_component monitoring strategy uses the psutil lib to monitoring container cpu, memory, network.
       process_component: {}
   dataflow-engine:
     deployment:
       process:
-        command: ../../rust/otap-dataflow/target/debug/examples/engine
+        command: ../../rust/otap-dataflow/target/release/examples/engine
     monitoring:
       process_component: {}
   backend-service:
     deployment:
       process:
-        command: GRPC_PORT=1235 python ./backend/backend.py
+        command: python ./backend/backend.py
+        environment:
+          - GRPC_PORT=1235
     monitoring:
       process_component: {}
       prometheus:
@@ -53,15 +55,23 @@ tests:
   - name: Test OTLP Logs - Dataflow Engine
     # Each step describes an "action" and hooks (optional)
     steps:
-      - name: Deploy All
+      - name: Deploy Load and Backend
         action:
-          # The multi_component_action invokes the specified phase on 1 or more components, here deploying
-          # all components using their deployment strategy configs.
           multi_component_action:
             phase: deploy
             targets:
               - load-generator
               - backend-service
+      # Backend service must be up and running or we see connections fail on some runs.
+      - name: Wait For Backend
+        action:
+          wait:
+            delay_seconds: 3
+      - name: Deploy Engine
+        action:
+          multi_component_action:
+            phase: deploy
+            targets:
               - dataflow-engine
       - name: Monitor All
         action:
@@ -220,7 +230,7 @@ hooks:
     pre:
       # Build the dataflow-engine prior to all test execution.
       - run_command:
-          command: cd ../../rust/otap-dataflow && cargo build --all-targets
+          command: cd ../../rust/otap-dataflow && cargo build --all-targets --release
     post:
         # This report type collects e.g. logs sent / lost / rate /etc.
         # We declare it once for each test by adjusting
