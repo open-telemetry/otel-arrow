@@ -28,7 +28,7 @@ components:
     deployment:
       process:
         # Path to your otel collector binary
-        command: /tmp/otelcol --config ./test_suites/dataflow_engine_e2e_logs/collector-config-without-batch-processor.yaml
+        command: otelcol --config ./test_suites/dataflow_engine_e2e_logs/collector-config-without-batch-processor.yaml
     monitoring:
       # The process_component monitoring strategy uses the psutil lib to monitoring container cpu, memory, network.
       process_component: {}
