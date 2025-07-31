@@ -17,7 +17,6 @@ use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use serde_json::Value;
-use tokio::time::{Duration, sleep};
 
 /// The URN for the fake signal receiver
 pub const FAKE_SIGNAL_RECEIVER_URN: &str = "urn:otel:fake:signal:receiver";
@@ -98,35 +97,36 @@ impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
 
 /// Run the configured scenario steps
 async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLPSignal>) {
-    // loop through each step
+    for signal in generate_signals(config) {
+        _ = effect_handler.send_message(signal).await;
+    }
+}
+
+/// generates otlp signals
+pub fn generate_signals(config: &Config) -> impl Iterator<Item = OTLPSignal> + '_ {
     let steps = config.get_steps();
     let registry = config.get_registry();
-    for step in steps {
-        // create batches if specified
+
+    steps.into_iter().flat_map(move |step| {
         let batches = step.get_batches_to_generate() as usize;
-        for _ in 0..batches {
-            let signal = match step.get_signal_type() {
-                SignalType::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-                SignalType::Logs(load) => OTLPSignal::Logs(fake_otlp_logs(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-                SignalType::Traces(load) => OTLPSignal::Traces(fake_otlp_traces(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-            };
-            _ = effect_handler.send_message(signal).await;
-            // if there is a delay set between batches sleep for that amount before created the next signal in the batch
-            sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
-        }
-    }
+        (0..batches).map(move |_| match step.get_signal_type() {
+            SignalType::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(
+                load.resource_count(),
+                load.scope_count(),
+                registry,
+            )),
+            SignalType::Logs(load) => OTLPSignal::Logs(fake_otlp_logs(
+                load.resource_count(),
+                load.scope_count(),
+                registry,
+            )),
+            SignalType::Traces(load) => OTLPSignal::Traces(fake_otlp_traces(
+                load.resource_count(),
+                load.scope_count(),
+                registry,
+            )),
+        })
+    })
 }
 
 #[cfg(test)]
