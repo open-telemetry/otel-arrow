@@ -33,10 +33,10 @@ received_logs_lock = asyncio.Lock()  # Async lock to guard the received_logs
 grpc_server = None
 
 
-async def handle_signal(signal, frame):
+def handle_signal(signal, frame):
     print("Received signal to terminate, stopping gRPC server.")
     if grpc_server:
-        await grpc_server.stop(0)
+        grpc_server.stop(0)
     sys.exit(0)
 
 
