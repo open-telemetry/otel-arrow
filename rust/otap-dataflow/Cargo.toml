@@ -49,7 +49,8 @@ tempfile = "3"
 thiserror = "2.0.12"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
-serde_json = { version = "1.0.140" }
+serde_json = { version = "1.0.141" }
+serde_yaml = "0.9.34"
 tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
 uuid = { version = "1.17.0", features = ["v4"] }
 async-trait = "0.1.88"
@@ -61,6 +62,7 @@ linkme = "0.3.33"
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.16.1"}
 
 [workspace.lints.rust]
 # General compatibility lints

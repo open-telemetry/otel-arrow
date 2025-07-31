@@ -6,21 +6,17 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::OTLP_RECEIVER_FACTORIES;
-use crate::fake_signal_receiver::config::{Config, ScenarioStep, SignalConfig};
-use crate::grpc::OTLPData;
+// use crate::FAKE_SIGNAL_RECEIVERS;
+
+use crate::fake_signal_receiver::config::{Config, OTLPSignal, SignalType};
+use crate::fake_signal_receiver::fake_signal::{
+    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
+};
 use async_trait::async_trait;
-use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
-use otap_df_engine::receiver::ReceiverWrapper;
 use serde_json::Value;
-use std::rc::Rc;
-use tokio::time::{Duration, sleep};
 
 /// The URN for the fake signal receiver
 pub const FAKE_SIGNAL_RECEIVER_URN: &str = "urn:otel:fake:signal:receiver";
@@ -30,23 +26,17 @@ pub struct FakeSignalReceiver {
     config: Config,
 }
 
-// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPData type. We must unify this in the future.
+// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPSignal type. We must unify this in the future.
 /// Declares the Fake Signal receiver as a local receiver factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
-#[allow(unsafe_code)]
-#[distributed_slice(OTLP_RECEIVER_FACTORIES)]
-pub static FAKE_SIGNAL_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
-    name: FAKE_SIGNAL_RECEIVER_URN,
-    create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        Ok(ReceiverWrapper::local(
-            FakeSignalReceiver::from_config(&node_config.config)?,
-            node_config,
-            receiver_config,
-        ))
-    },
-};
+// #[allow(unsafe_code)]
+// #[distributed_slice(LOCAL_RECEIVERS)]
+// pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPSignal> = LocalReceiverFactory {
+//     name: "urn:otel:fake:signal:receiver",
+//     create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
+// };
 
 impl FakeSignalReceiver {
     /// creates a new FakeSignalReceiver
@@ -68,13 +58,12 @@ impl FakeSignalReceiver {
 
 // We use the local version of the receiver here since we don't need to worry about Send and Sync traits
 #[async_trait( ? Send)]
-impl local::Receiver<OTLPData> for FakeSignalReceiver {
+impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel,
-        effect_handler: local::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
-        effect_handler.info("Starting fake signal_receiver").await;
+        effect_handler: local::EffectHandler<OTLPSignal>,
+    ) -> Result<(), Error<OTLPSignal>> {
         //start event loop
         loop {
             tokio::select! {
@@ -95,7 +84,7 @@ impl local::Receiver<OTLPData> for FakeSignalReceiver {
                     }
                 }
                 // run scenario based on provided configuration
-                _ = run_scenario(self.config.get_steps(), effect_handler.clone()) => {
+                _ = run_scenario(&self.config, effect_handler.clone()) => {
                     // do nothing
                 }
 
@@ -107,55 +96,87 @@ impl local::Receiver<OTLPData> for FakeSignalReceiver {
 }
 
 /// Run the configured scenario steps
-async fn run_scenario(steps: &Vec<ScenarioStep>, effect_handler: local::EffectHandler<OTLPData>) {
-    // loop through each step
-
-    for step in steps {
-        // create batches if specified
-        let batches = step.get_batches_to_generate() as usize;
-        for _ in 0..batches {
-            let signal = match step.get_config() {
-                SignalConfig::Metric(config) => OTLPData::Metrics(config.get_signal()),
-                SignalConfig::Log(config) => OTLPData::Logs(config.get_signal()),
-                SignalConfig::Span(config) => OTLPData::Traces(config.get_signal()),
-            };
-            _ = effect_handler.send_message(signal).await;
-            // if there is a delay set between batches sleep for that amount before created the next signal in the batch
-            sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
-        }
+async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLPSignal>) {
+    for signal in generate_signals(config) {
+        _ = effect_handler.send_message(signal).await;
     }
+}
+
+/// generates otlp signals
+pub fn generate_signals(config: &Config) -> impl Iterator<Item = OTLPSignal> + '_ {
+    let steps = config.get_steps();
+    let registry = config.get_registry();
+
+    steps.into_iter().flat_map(move |step| {
+        let batches = step.get_batches_to_generate() as usize;
+        (0..batches).map(move |_| match step.get_signal_type() {
+            SignalType::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(
+                load.resource_count(),
+                load.scope_count(),
+                registry,
+            )),
+            SignalType::Logs(load) => OTLPSignal::Logs(fake_otlp_logs(
+                load.resource_count(),
+                load.scope_count(),
+                registry,
+            )),
+            SignalType::Traces(load) => OTLPSignal::Traces(fake_otlp_traces(
+                load.resource_count(),
+                load.scope_count(),
+                registry,
+            )),
+        })
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::fake_signal_receiver::receiver::FAKE_SIGNAL_RECEIVER_URN;
     use crate::fake_signal_receiver::{
-        config::{
-            Config, LogConfig, MetricConfig, MetricType, ScenarioStep, SignalConfig, SpanConfig,
-        },
-        receiver::FakeSignalReceiver,
+        config::{Config, Load, OTLPSignal, ScenarioStep, SignalType},
+        receiver::{FAKE_SIGNAL_RECEIVER_URN, FakeSignalReceiver},
     };
-    use crate::grpc::OTLPData;
-    use crate::proto::opentelemetry::metrics::v1::metric::Data;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
+    use std::fs;
     use std::future::Future;
     use std::pin::Pin;
     use std::rc::Rc;
     use tokio::time::{Duration, sleep, timeout};
+    use weaver_forge::registry::ResolvedRegistry;
 
     const RESOURCE_COUNT: usize = 1;
-    const SPAN_COUNT: usize = 1;
-    const METRIC_COUNT: usize = 1;
-    const LOG_COUNT: usize = 1;
-    const DATAPOINT_COUNT: usize = 1;
-    const ATTRIBUTE_COUNT: usize = 1;
-    const EVENT_COUNT: usize = 1;
-    const LINK_COUNT: usize = 1;
     const SCOPE_COUNT: usize = 1;
     const BATCH_COUNT: u64 = 1;
     const DELAY: u64 = 0;
+    const RESOLVED_REGISTRY_FILE: &str = "src/fake_signal_receiver/resolved_registry.yaml";
+
+    // metric signal based on registry we should check matches
+    const METRIC_NAME: &str = "system.network.dropped";
+    const METRIC_DESC: &str =
+        "Count of packets that are dropped or discarded even though there was no error.";
+    const METRIC_DATAPOINT_ATTR: [&str; 2] = ["network.io.direction", "network.interface.name"];
+    const METRIC_UNIT: &str = "{packet}";
+
+    // span signal based on registry we should check matches
+    const SPAN_NAME: &str = "span.rpc.client";
+    const SPAN_ATTR: [&str; 9] = [
+        "rpc.method",
+        "rpc.service",
+        "network.peer.address",
+        "network.transport",
+        "network.type",
+        "rpc.system",
+        "network.peer.port",
+        "server.address",
+        "server.port",
+    ];
+    const SPAN_EVENTS: [&str; 1] = ["rpc.message"];
+
+    // log signal based on registry we should check matches
+    const LOG_NAME: &str = "session.end";
+    const LOG_ATTR: [&str; 1] = ["session.id"];
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario() -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -174,7 +195,7 @@ mod tests {
 
     /// Validation closure that checks the received message and counters (!Send context).
     fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<OTLPData>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OTLPSignal>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
                 // check that messages have been sent through the effect_handler
@@ -195,74 +216,102 @@ mod tests {
 
                 // Assert that the message received is what the test client sent.
                 match metric_received {
-                    OTLPData::Metrics(metric) => {
+                    OTLPSignal::Metrics(metric) => {
                         // loop and check count
+                        let mut metric_seen = false;
                         let resource_count = metric.resource_metrics.len();
                         assert!(resource_count == RESOURCE_COUNT);
                         for resource in metric.resource_metrics.iter() {
                             let scope_count = resource.scope_metrics.len();
                             assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_metrics.iter() {
-                                let metric_count = scope.metrics.len();
-                                assert!(metric_count == METRIC_COUNT);
-                                for metric_data in scope.metrics.iter() {
-                                    if let Some(data) = &metric_data.data {
-                                        if let Data::Gauge(gauge) = data {
-                                            let datapoint_count = gauge.data_points.len();
-                                            assert!(datapoint_count == DATAPOINT_COUNT);
-                                            for datapoint in gauge.data_points.iter() {
-                                                let attribute_count = datapoint.attributes.len();
-                                                assert!(attribute_count == ATTRIBUTE_COUNT);
+                                for metric in scope.metrics.iter() {
+                                    // check for metric and see if the signal fields match what is defined in the registry
+                                    if &metric.name == METRIC_NAME {
+                                        metric_seen = true;
+                                        assert!(metric.description == METRIC_DESC.to_string());
+                                        assert!(metric.unit == METRIC_UNIT.to_string());
+                                        match metric.data.as_ref().expect("metric has no data") {
+                                            Data::Sum(sum) => {
+                                                assert!(sum.is_monotonic);
+                                                for datapoints in sum.data_points.iter() {
+                                                    let keys: Vec<&str> = datapoints
+                                                        .attributes
+                                                        .iter()
+                                                        .map(|attribute| attribute.key.as_str())
+                                                        .collect();
+                                                    assert!(keys == METRIC_DATAPOINT_ATTR.to_vec());
+                                                }
                                             }
-                                        } else {
-                                            unreachable!("Wrong MetricType received");
+                                            _ => assert!(false),
                                         }
-                                    } else {
-                                        unreachable!("Option should not be None");
                                     }
                                 }
                             }
                         }
+                        assert!(metric_seen);
                     }
                     _ => unreachable!("Signal should have been a Metric type"),
                 }
 
                 match trace_received {
-                    OTLPData::Traces(span) => {
+                    OTLPSignal::Traces(span) => {
+                        let mut span_seen = false;
                         let resource_count = span.resource_spans.len();
                         assert!(resource_count == RESOURCE_COUNT);
                         for resource in span.resource_spans.iter() {
                             let scope_count = resource.scope_spans.len();
                             assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_spans.iter() {
-                                let span_count = scope.spans.len();
-                                assert!(span_count == SPAN_COUNT);
-                                for span_data in scope.spans.iter() {
-                                    let event_count = span_data.events.len();
-                                    let link_count = span_data.links.len();
-                                    let attribute_count = span_data.attributes.len();
-                                    assert!(link_count == LINK_COUNT);
-                                    assert!(event_count == EVENT_COUNT);
-                                    assert!(attribute_count == ATTRIBUTE_COUNT);
+                                for span in scope.spans.iter() {
+                                    // check for span and see if the signal fields match what is defined in the registry
+                                    if &span.name == SPAN_NAME {
+                                        span_seen = true;
+                                        let keys: Vec<&str> = span
+                                            .attributes
+                                            .iter()
+                                            .map(|attribute| attribute.key.as_str())
+                                            .collect();
+                                        assert!(keys == SPAN_ATTR);
+                                        let events: Vec<&str> = span
+                                            .events
+                                            .iter()
+                                            .map(|event| event.name.as_str())
+                                            .collect();
+                                        assert!(events == SPAN_EVENTS.to_vec())
+                                    }
                                 }
                             }
                         }
+                        assert!(span_seen);
                     }
                     _ => unreachable!("Signal should have been a Span type"),
                 }
 
                 match log_received {
-                    OTLPData::Logs(log) => {
+                    OTLPSignal::Logs(log) => {
+                        let mut log_seen = false;
                         let resource_count = log.resource_logs.len();
                         assert!(resource_count == RESOURCE_COUNT);
                         for resource in log.resource_logs.iter() {
                             let scope_count = resource.scope_logs.len();
                             assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_logs.iter() {
-                                let log_count = scope.log_records.len();
-                                assert!(log_count == LOG_COUNT);
+                                for log_record in scope.log_records.iter() {
+                                    // check for log and see if the signal fields match what is defined in the registry
+                                    if &log_record.event_name == LOG_NAME {
+                                        log_seen = true;
+                                        let keys: Vec<&str> = log_record
+                                            .attributes
+                                            .iter()
+                                            .map(|attribute| attribute.key.as_str())
+                                            .collect();
+                                        assert!(keys == LOG_ATTR.to_vec());
+                                    }
+                                }
                             }
                         }
+                        assert!(log_seen);
                     }
                     _ => unreachable!("Signal should have been a Log type"),
                 }
@@ -274,48 +323,36 @@ mod tests {
     fn test_fake_signal_receiver() {
         let test_runtime = TestRuntime::new();
 
+        let registry_yaml =
+            fs::read_to_string(RESOLVED_REGISTRY_FILE).expect("unable to read registry file");
+        let registry: ResolvedRegistry = serde_yaml::from_str(registry_yaml.as_ref()).unwrap();
+
         let mut steps = vec![];
-        let metric_config = MetricConfig::new(
-            RESOURCE_COUNT,
-            SCOPE_COUNT,
-            METRIC_COUNT,
-            DATAPOINT_COUNT,
-            MetricType::Gauge,
-            ATTRIBUTE_COUNT,
-        );
-        let trace_config = SpanConfig::new(
-            RESOURCE_COUNT,
-            SCOPE_COUNT,
-            SPAN_COUNT,
-            EVENT_COUNT,
-            LINK_COUNT,
-            ATTRIBUTE_COUNT,
-        );
 
-        let log_config = LogConfig::new(RESOURCE_COUNT, SCOPE_COUNT, LOG_COUNT, ATTRIBUTE_COUNT);
+        let load = Load::new(RESOURCE_COUNT, SCOPE_COUNT);
 
         steps.push(ScenarioStep::new(
-            SignalConfig::Metric(metric_config),
+            SignalType::Metrics(load.clone()),
             BATCH_COUNT,
             DELAY,
         ));
 
         steps.push(ScenarioStep::new(
-            SignalConfig::Span(trace_config),
+            SignalType::Traces(load.clone()),
             BATCH_COUNT,
             DELAY,
         ));
         steps.push(ScenarioStep::new(
-            SignalConfig::Log(log_config),
+            SignalType::Logs(load.clone()),
             BATCH_COUNT,
             DELAY,
         ));
-        let config = Config::new(steps);
+        let config = Config::new(steps, registry);
 
-        // create our receiver
         let node_config = Rc::new(NodeUserConfig::new_receiver_config(
             FAKE_SIGNAL_RECEIVER_URN,
         ));
+        // create our receiver
         let receiver = ReceiverWrapper::local(
             FakeSignalReceiver::new(config),
             node_config,

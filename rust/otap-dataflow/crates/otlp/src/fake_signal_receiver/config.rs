@@ -3,32 +3,50 @@
 //! Implementation of the configuration of the fake signal receiver
 //!
 
-use crate::fake_signal_receiver::fake_signal::{
-    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
-};
-use crate::proto::opentelemetry::collector::{
-    logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
-    trace::v1::ExportTraceServiceRequest,
+use otel_arrow_rust::proto::opentelemetry::{
+    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
 use serde::{Deserialize, Serialize};
 
+use weaver_forge::registry::ResolvedRegistry;
+
+/// Temp pdata
+#[derive(Clone, Debug)]
+pub enum OTLPSignal {
+    /// metrics pdata
+    Metrics(MetricsData),
+    /// traces pdata
+    Traces(TracesData),
+    /// log pdata
+    Logs(LogsData),
+}
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
     // A ordered list of steps defining various signals to emit
     steps: Vec<ScenarioStep>,
+
+    resolved_registry: ResolvedRegistry,
 }
 
 impl Config {
     /// Create a new config given a name and a vector of scenario steps
     #[must_use]
-    pub fn new(steps: Vec<ScenarioStep>) -> Self {
-        Self { steps }
+    pub fn new(steps: Vec<ScenarioStep>, resolved_registry: ResolvedRegistry) -> Self {
+        Self {
+            steps,
+            resolved_registry,
+        }
     }
     /// Provide a reference to the vector of scenario steps
     #[must_use]
     pub fn get_steps(&self) -> &Vec<ScenarioStep> {
         &self.steps
+    }
+    /// Provide a reference to the ResolvedRegistry
+    #[must_use]
+    pub fn get_registry(&self) -> &ResolvedRegistry {
+        &self.resolved_registry
     }
 }
 
@@ -40,7 +58,7 @@ pub struct ScenarioStep {
     delay_between_batches_ms: u64,
     #[serde(default = "default_batches_to_generate")]
     batches_to_generate: u64,
-    config: SignalConfig,
+    signal_type: SignalType,
 }
 
 fn default_delay_between_batches_ms() -> u64 {
@@ -55,20 +73,20 @@ impl ScenarioStep {
     /// create a new step
     #[must_use]
     pub fn new(
-        config: SignalConfig,
+        signal_type: SignalType,
         batches_to_generate: u64,
         delay_between_batches_ms: u64,
     ) -> Self {
         Self {
-            config,
+            signal_type,
             batches_to_generate,
             delay_between_batches_ms,
         }
     }
-    /// return the configuration stored inside the scenario step
+    /// return the signal type stored inside the scenario step
     #[must_use]
-    pub fn get_config(&self) -> SignalConfig {
-        self.config
+    pub fn get_signal_type(&self) -> &SignalType {
+        &self.signal_type
     }
 
     /// return the number of batches to generate
@@ -84,192 +102,42 @@ impl ScenarioStep {
     }
 }
 
-/// configs to describe the data being generated
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(tag = "signal_type")]
-#[serde(rename_all = "snake_case")]
-pub enum SignalConfig {
-    /// metric config
-    Metric(MetricConfig),
-    /// log config
-    Log(LogConfig),
-    /// span config
-    Span(SpanConfig),
-}
-/// Specify the datapoint type for a metric
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MetricType {
-    /// gauge datapoints
-    Gauge,
-    /// sum datapoints
-    Sum,
-    /// histogram datapoints
-    Histogram,
-    /// exponetial histogram datapoints
-    ExponentialHistogram,
-    /// summary datapoints
-    Summary,
-}
-
-// ToDo: Need to be able to have multiple different datapoint types without all the metrics in the resource being the same
-/// configuration settings for a fake metric signal
-#[derive(Clone, Copy, Deserialize, Serialize)]
-pub struct MetricConfig {
+/// Struct to describe how large the signal request should be
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Load {
     resource_count: usize,
     scope_count: usize,
-    metric_count: usize,
-    datapoint_count: usize,
-    datapoint_type: MetricType,
-    attribute_count: usize,
 }
 
-/// configuration settings for a fake log signal
-#[derive(Clone, Copy, Deserialize, Serialize)]
-pub struct LogConfig {
-    resource_count: usize,
-    scope_count: usize,
-    log_count: usize,
-    attribute_count: usize,
-}
-/// configuration settings for a fake trace signal
-#[derive(Clone, Copy, Deserialize, Serialize)]
-pub struct SpanConfig {
-    resource_count: usize,
-    scope_count: usize,
-    span_count: usize,
-    event_count: usize,
-    link_count: usize,
-    attribute_count: usize,
-}
-
-impl MetricConfig {
-    /// create a new config
+impl Load {
+    /// create new Load struct
     #[must_use]
-    pub fn new(
-        resource_count: usize,
-        scope_count: usize,
-        metric_count: usize,
-        datapoint_count: usize,
-        datapoint_type: MetricType,
-        attribute_count: usize,
-    ) -> Self {
+    pub fn new(resource_count: usize, scope_count: usize) -> Self {
         Self {
             resource_count,
             scope_count,
-            metric_count,
-            datapoint_count,
-            datapoint_type,
-            attribute_count,
         }
     }
-    /// Take the metric config and generate the corresponding metric signal
+
+    /// Provide a reference to the vector of scenario steps
     #[must_use]
-    pub fn get_signal(&self) -> ExportMetricsServiceRequest {
-        // check datapoint type
-        fake_otlp_metrics(
-            self.resource_count,
-            self.scope_count,
-            self.metric_count,
-            self.datapoint_count,
-            self.datapoint_type,
-            self.attribute_count,
-        )
+    pub fn resource_count(&self) -> usize {
+        self.resource_count
+    }
+    /// Provide a reference to the vector of scenario steps
+    #[must_use]
+    pub fn scope_count(&self) -> usize {
+        self.scope_count
     }
 }
 
-impl LogConfig {
-    /// create a new config
-    #[must_use]
-    pub fn new(
-        resource_count: usize,
-        scope_count: usize,
-        log_count: usize,
-        attribute_count: usize,
-    ) -> Self {
-        Self {
-            resource_count,
-            scope_count,
-            log_count,
-            attribute_count,
-        }
-    }
-    /// Take the log config and generate the corresponding log signal
-    #[must_use]
-    pub fn get_signal(&self) -> ExportLogsServiceRequest {
-        fake_otlp_logs(
-            self.resource_count,
-            self.scope_count,
-            self.log_count,
-            self.attribute_count,
-        )
-    }
-}
-
-impl SpanConfig {
-    /// create a new config
-    #[must_use]
-    pub fn new(
-        resource_count: usize,
-        scope_count: usize,
-        span_count: usize,
-        event_count: usize,
-        link_count: usize,
-        attribute_count: usize,
-    ) -> Self {
-        Self {
-            resource_count,
-            scope_count,
-            span_count,
-            event_count,
-            link_count,
-            attribute_count,
-        }
-    }
-    /// Take the traces config and generate the corresponding traces signal
-    #[must_use]
-    pub fn get_signal(&self) -> ExportTraceServiceRequest {
-        fake_otlp_traces(
-            self.resource_count,
-            self.scope_count,
-            self.span_count,
-            self.event_count,
-            self.link_count,
-            self.attribute_count,
-        )
-    }
-}
-
-/// Enum to represent the OTLP data being sent through the pipeline
-#[derive(Debug, Clone)]
-pub enum OTLPSignal {
-    /// Logs signal
-    Log(ExportLogsServiceRequest),
-    /// Metrics signal
-    Metric(ExportMetricsServiceRequest),
-    /// Traces signal
-    Span(ExportTraceServiceRequest),
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::fake_signal_receiver::config::*;
-
-    #[test]
-    fn test_config() {
-        let mut steps = vec![];
-        let metric_config = MetricConfig::new(1, 1, 1, 1, MetricType::Gauge, 1);
-        let trace_config = SpanConfig::new(1, 1, 1, 1, 1, 1);
-
-        let log_config = LogConfig::new(1, 1, 1, 1);
-
-        steps.push(ScenarioStep::new(SignalConfig::Metric(metric_config), 1, 0));
-        steps.push(ScenarioStep::new(SignalConfig::Span(trace_config), 1, 0));
-        steps.push(ScenarioStep::new(SignalConfig::Log(log_config), 1, 0));
-
-        let config = Config::new(steps);
-        // Convert the Point to a JSON string.
-        let serialized = serde_json::to_string(&config).unwrap();
-        println!("{serialized}");
-    }
+/// Describes what signals to generate and the signal size
+#[derive(Clone, Deserialize, Serialize)]
+pub enum SignalType {
+    /// metrics signals
+    Metrics(Load),
+    /// logs signals
+    Logs(Load),
+    /// traces signals
+    Traces(Load),
 }

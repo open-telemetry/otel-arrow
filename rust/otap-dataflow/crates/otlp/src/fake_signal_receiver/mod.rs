@@ -3,6 +3,7 @@
 //! Implementation of the Fake Signal Receiver node
 //!
 
+pub mod attributes;
 /// allows the user to configure their fake signal receiver
 pub mod config;
 /// provides the fake signal with fake data
