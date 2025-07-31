@@ -15,7 +15,7 @@
 // TODO write documentation for this crate
 #![allow(missing_docs)]
 
-use arrow::array::RecordBatch;
+use arrow::array::{LargeListArray, RecordBatch};
 use arrow::datatypes::Schema;
 use std::sync::Arc;
 
@@ -105,4 +105,18 @@ pub fn get_field_metadata<'a>(
     let field = &schema.fields[column_index];
     let field_metadata = field.metadata();
     field_metadata.get(key).map(|s| s.as_str())
+}
+
+/// Make a `LargeListArray` into an array whose item field is not nullable.
+///
+/// When you use `GenericListBuilder`, you'll get a list array where list elements are
+/// nullable. This is often not what we want, so this little function converts `LargeListArray`s
+/// that don't have any nulls into an equivalent form whose item field type is not nullable. This
+/// function panics if the input contains any nulls at all.
+#[must_use]
+pub fn no_nulls(values: LargeListArray) -> LargeListArray {
+    let (mut field, offsets, values, nulls) = values.into_parts();
+    assert_eq!(0, nulls.map(|n| n.null_count()).unwrap_or(0));
+    Arc::make_mut(&mut field).set_nullable(false);
+    LargeListArray::new(field, offsets, values, None)
 }
