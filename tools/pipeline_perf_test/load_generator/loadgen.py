@@ -37,6 +37,7 @@ import concurrent.futures
 import os
 import random
 import signal
+import socket
 import string
 import sys
 import threading
@@ -307,6 +308,11 @@ def handle_signal(sig, frame):
     sys.exit(0)
 
 
+def is_port_in_use(port, host="0.0.0.0"):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
+
 def main():
     def get_default_value(field_name: str):
         return LoadGenConfig.model_fields[field_name].default
@@ -384,6 +390,8 @@ def main():
     args = parser.parse_args()
 
     if args.serve:
+        if is_port_in_use(FLASK_PORT):
+            raise RuntimeError(f"Port {FLASK_PORT} is already in use.")
         app.run(host="0.0.0.0", port=args.serve_port)
         return
 

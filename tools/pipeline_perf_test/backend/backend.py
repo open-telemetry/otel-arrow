@@ -15,6 +15,7 @@ Intended for testing or development purposes where a mock OTLP log collector is 
 import asyncio
 import os
 import signal
+import socket
 import sys
 import grpc  # type: ignore
 from flask import Flask, jsonify
@@ -67,6 +68,10 @@ async def prom_metrics():
         print(f"Metrics endpoint called. Returning: {received_logs}")
         return f"received_logs {received_logs}"
 
+def is_port_in_use(port, host="0.0.0.0"):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
 
 async def start_flask():
     # Run Flask app asynchronously
@@ -99,6 +104,12 @@ async def serve():
 async def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
+
+    if is_port_in_use(GRPC_PORT):
+        raise RuntimeError(f"Port {GRPC_PORT} is already in use.")
+
+    if is_port_in_use(FLASK_PORT):
+        raise RuntimeError(f"Port {FLASK_PORT} is already in use.")
 
     # Start both Flask and gRPC servers
     flask_task = asyncio.create_task(start_flask())
