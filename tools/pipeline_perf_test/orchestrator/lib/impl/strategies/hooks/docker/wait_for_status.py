@@ -93,7 +93,7 @@ components:
             ctx.status = ExecutionStatus.FAILURE
             raise RuntimeError("No container ID available to check status.")
 
-        client = get_or_create_docker_client(ctx)
+        client = None
         deadline = time.time() + self.config.timeout
         desired_status = (
             self.config.status.value
@@ -103,6 +103,8 @@ components:
 
         while time.time() < deadline:
             try:
+                if not client:
+                    client = get_or_create_docker_client(ctx)
                 container = client.containers.get(container_id)
                 current_status = container.status
 
