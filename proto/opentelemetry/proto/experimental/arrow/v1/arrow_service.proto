@@ -101,6 +101,7 @@ enum ArrowPayloadType {
   HISTOGRAM_DP_EXEMPLAR_ATTRS = 23;
   EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS = 24;
   MULTIVARIATE_METRICS = 25;                // Multivariate metric payload
+  METRIC_ATTRS = 26;
 
   // A set of payloads representing a collection of logs.
   LOGS = 30;

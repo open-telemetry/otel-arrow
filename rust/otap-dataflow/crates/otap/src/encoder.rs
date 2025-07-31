@@ -909,10 +909,11 @@ where
     }
 
     let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
-    otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics.finish()?);
-
-    // FIXME: there doesn't seem to be a payload type for Metrics' attrs.
+    // Note: `pairs` has 18 elements but `Metrics.batches` has 19; the extra one represents
+    // `MultivariateMetrics` which we're not implementing.
     let pairs = [
+        (metrics.finish()?, ArrowPayloadType::UnivariateMetrics),
+        (metric_attrs.finish()?, ArrowPayloadType::MetricAttrs),
         (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
         (scope_attrs.finish()?, ArrowPayloadType::ScopeAttrs),
         (ndp.finish()?, ArrowPayloadType::NumberDataPoints),
@@ -1037,7 +1038,10 @@ mod test {
                     )
                     .description("here's a description")
                     .unit("a unit")
-                    .metadata(vec![])
+                    .metadata(vec![KeyValue::new(
+                        "metric_attr",
+                        AnyValue::new_string("metric_val"),
+                    )])
                     .finish(),
                     Metric::build_sum(
                         "sum name",
@@ -1435,6 +1439,45 @@ mod test {
         .unwrap();
         compare_record_batches(scope_attrs, &expected_scope_attrs_batch);
         assert_eq!(scope_attrs, &expected_scope_attrs_batch);
+
+        let metric_attrs = otap_batch.get(ArrowPayloadType::MetricAttrs).unwrap();
+        let expected_metric_attrs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new(
+                    "key",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new("type", DataType::UInt8, false),
+                Field::new(
+                    "str",
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                // parent_id
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                // key
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from_iter_values(vec![0]),
+                    Arc::new(StringArray::from_iter_values(vec!["metric_attr"])),
+                )),
+                // type
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                // str
+                Arc::new(DictionaryArray::<UInt16Type>::new(
+                    UInt16Array::from_iter_values(vec![0]),
+                    Arc::new(StringArray::from_iter_values(vec!["metric_val"])),
+                )),
+            ],
+        )
+        .unwrap();
+        compare_record_batches(metric_attrs, &expected_metric_attrs_batch);
+        assert_eq!(metric_attrs, &expected_metric_attrs_batch);
 
         let ndp = otap_batch.get(ArrowPayloadType::NumberDataPoints).unwrap();
         let expected_ndp_batch = RecordBatch::try_new(
