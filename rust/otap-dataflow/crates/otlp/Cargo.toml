@@ -31,7 +31,6 @@ prost-types = "0.13.5"
 hex = "0.4.3"
 linkme = "0.3.33"
 rand = "0.9.1"
-serde_yaml = "0.9.34"
 # Workspace dependencies
 thiserror.workspace = true
 serde_json.workspace = true
