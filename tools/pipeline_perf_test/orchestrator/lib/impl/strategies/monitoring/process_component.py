@@ -213,6 +213,30 @@ components:
         return {}
 
 
+def get_resources(proc: psutil.Process):
+    """Get current resource utilization for the process and it's children.
+
+    Parameters:
+        proc: the process to monitor, including any spawned children.
+
+    Returns:
+        A tuple of cpu and memory values for the process and all children.
+    """
+    children = proc.children(recursive=True)
+    all_procs = [proc] + children
+    cpu = 0.0
+    memory = 0.0
+
+    for p in all_procs:
+        try:
+            times = p.cpu_times()  # short interval
+            cpu += times.user + times.system
+            memory += p.memory_info().rss      # in bytes
+        except psutil.NoSuchProcess:
+            continue
+    return cpu, memory
+
+
 def monitor(
     pid: int,
     component_name: str,
@@ -249,7 +273,6 @@ def monitor(
 
     try:
         proc = psutil.Process(pid)
-
         with tracer.start_as_current_span(
             f"Process Monitor: PID {pid}", context=ctx, kind=SpanKind.PRODUCER
         ) as span:
@@ -260,17 +283,14 @@ def monitor(
                 }
             )
 
-            prev_cpu_times = proc.cpu_times()
-            prev_total_time = sum(prev_cpu_times)
+            (prev_total_time, _prev_mem) = get_resources(proc)
             prev_time = time.time()
 
             while not stop_event.is_set():
                 try:
                     time.sleep(interval)
 
-                    # CPU usage calculation (using cpu_times())
-                    cur_cpu_times = proc.cpu_times()
-                    cur_total_time = sum(cur_cpu_times)
+                    (cur_total_time, mem_usage) = get_resources(proc)
                     cur_time = time.time()
 
                     delta_proc = cur_total_time - prev_total_time
@@ -278,8 +298,6 @@ def monitor(
 
                     cpu_usage = delta_proc / delta_time
 
-                    # Memory usage calculation (using memory_info())
-                    mem_usage = proc.memory_info().rss  # RSS in bytes
 
                     labels = {
                         "pid": str(pid),
@@ -293,8 +311,6 @@ def monitor(
                         f"Monitored Process {component_name} PID {pid}: Cur. CPU (#Cores): {cpu_usage:.2f} Cur Mem (By): {mem_usage:.0f}"
                     )
 
-                    # Update previous values for next iteration
-                    prev_cpu_times = cur_cpu_times
                     prev_total_time = cur_total_time
                     prev_time = cur_time
 
