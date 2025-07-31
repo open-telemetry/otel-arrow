@@ -35,13 +35,15 @@ components:
   dataflow-engine:
     deployment:
       process:
-        command: ../../rust/otap-dataflow/target/debug/examples/engine
+        command: ../../rust/otap-dataflow/target/release/examples/engine
     monitoring:
       process_component: {}
   backend-service:
     deployment:
       process:
         command: python ./backend/backend.py
+        environment:
+          - GRPC_PORT=1235
     monitoring:
       process_component: {}
       prometheus:

@@ -144,7 +144,7 @@ components:
         # Start the subprocess
         logger.debug(f"Launching command: {self.config.command}")
         args = shlex.split(self.config.command)
-        
+
         process = subprocess.Popen(
             args,
             shell=False,
