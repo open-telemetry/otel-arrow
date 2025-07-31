@@ -30,10 +30,19 @@ pub(crate) fn parse_query(
             pest::error::LineColLocation::Span(l, _) => l,
         };
 
+        let content = if line > 0 && column > 0 {
+            &query
+                .lines()
+                .nth(line - 1)
+                .expect("Query line did not exist")[column - 1..]
+        } else {
+            &query[start..end]
+        };
+
         errors.push(ParserError::SyntaxNotSupported(
             QueryLocation::new(start, end, line, column)
                 .expect("QueryLocation could not be constructed"),
-            pest_error.variant.message().into(),
+            format!("Syntax '{content}' supplied in query is not supported"),
         ));
 
         return Err(errors);
@@ -98,19 +107,25 @@ mod tests {
             assert_eq!(expected, expression);
         };
 
-        let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
             let errors = parse_query(input, Default::default()).unwrap_err();
 
-            if let ParserError::QueryLanguageDiagnostic {
-                location: _,
-                diagnostic_id: id,
-                message: msg,
-            } = &errors[0]
-            {
-                assert_eq!(expected_id, *id);
+            if expected_id.is_some() {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = &errors[0]
+                {
+                    assert_eq!(expected_id.unwrap(), *id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxNotSupported(_, msg) = &errors[0] {
                 assert_eq!(expected_msg, msg);
             } else {
-                panic!("Expected QueryLanguageDiagnostic");
+                panic!("Expected SyntaxNotSupported");
             }
         };
 
@@ -278,8 +293,14 @@ mod tests {
 
         run_test_failure(
             "let var1 = 1; let var1 = 2;",
-            "KS201",
+            Some("KS201"),
             "A variable with the name 'var1' has already been declared",
+        );
+
+        run_test_failure(
+            "s | join some_table on id",
+            None,
+            "Syntax 'join some_table on id' supplied in query is not supported",
         );
     }
 }
