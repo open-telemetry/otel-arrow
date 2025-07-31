@@ -115,11 +115,11 @@ hooks:
         from ....strategies.deployment.docker import DockerDeploymentConfig
 
         logger = ctx.get_logger(__name__)
-        client = get_or_create_docker_client(ctx)
         args = ctx.get_suite().get_runtime("args")
         if args.docker_no_build:
             ctx.status = ExecutionStatus.SKIPPED
             return
+        client = None
         buildable_components = self.config.components
         if not buildable_components:
             components = ctx.get_components()
@@ -131,6 +131,8 @@ hooks:
                     continue
                 if isinstance(conf, DockerDeploymentConfig) and conf.build:
                     logger.debug(f"Building Docker image '{conf.image}'...")
+                    if not client:
+                        client = get_or_create_docker_client(ctx)
                     build_image(client, conf, logger, log_build=self.config.log_build)
 
 
