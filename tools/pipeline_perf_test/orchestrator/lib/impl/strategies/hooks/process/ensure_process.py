@@ -74,7 +74,7 @@ components:
         if not runtime.process:
             ctx.status = ExecutionStatus.FAILURE
             raise RuntimeError(f"No process available for component: {component.name}")
-        
+
         if self.config.delay:
             time.sleep(self.config.delay)
 
