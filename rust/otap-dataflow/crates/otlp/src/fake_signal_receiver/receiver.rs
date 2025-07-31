@@ -150,7 +150,7 @@ mod tests {
     const BATCH_COUNT: u64 = 1;
     const DELAY: u64 = 0;
 
-    const RESOLVED_REGISTRY_JSON: &'static str = r#"
+    const RESOLVED_REGISTRY_JSON: &str = r#"
     {
   "registry_url": "",
   "groups": [
@@ -719,10 +719,10 @@ mod tests {
                             for scope in resource.scope_metrics.iter() {
                                 for metric in scope.metrics.iter() {
                                     // check for metric and see if the signal fields match what is defined in the registry
-                                    if &metric.name == METRIC_NAME {
+                                    if metric.name == METRIC_NAME {
                                         metric_seen = true;
-                                        assert!(metric.description == METRIC_DESC.to_string());
-                                        assert!(metric.unit == METRIC_UNIT.to_string());
+                                        assert!(metric.description.as_str() == METRIC_DESC);
+                                        assert!(metric.unit.as_str() == METRIC_UNIT);
                                         match metric.data.as_ref().expect("metric has no data") {
                                             Data::Sum(sum) => {
                                                 assert!(sum.is_monotonic);
@@ -735,7 +735,7 @@ mod tests {
                                                     assert!(keys == METRIC_DATAPOINT_ATTR.to_vec());
                                                 }
                                             }
-                                            _ => assert!(false),
+                                            _ => unreachable!()
                                         }
                                     }
                                 }
@@ -757,7 +757,7 @@ mod tests {
                             for scope in resource.scope_spans.iter() {
                                 for span in scope.spans.iter() {
                                     // check for span and see if the signal fields match what is defined in the registry
-                                    if &span.name == SPAN_NAME {
+                                    if span.name == SPAN_NAME {
                                         span_seen = true;
                                         let keys: Vec<&str> = span
                                             .attributes
@@ -791,7 +791,7 @@ mod tests {
                             for scope in resource.scope_logs.iter() {
                                 for log_record in scope.log_records.iter() {
                                     // check for log and see if the signal fields match what is defined in the registry
-                                    if &log_record.event_name == LOG_NAME {
+                                    if log_record.event_name == LOG_NAME {
                                         log_seen = true;
                                         let keys: Vec<&str> = log_record
                                             .attributes
