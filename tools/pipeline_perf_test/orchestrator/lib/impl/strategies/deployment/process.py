@@ -13,11 +13,6 @@ Key Components:
 - `ProcessDeployment`: A concrete deployment strategy that implements how to launch and
   terminate a process as part of the component lifecycle.
 
-Features:
-- Environment variable support via both `dict` and `list[str]` formats.
-- Graceful process termination with a fallback to force kill if needed.
-- Capture and optional debug logging of stdout and stderr output from the process.
-
 This strategy is registered under the name `"process"` and integrates with the component
 framework and step-level test execution context.
 
@@ -30,6 +25,7 @@ components:
         environment: {}
 """
 import os
+import shlex
 import subprocess
 
 from typing import ClassVar, Dict, List, Literal, Optional, Union
@@ -147,9 +143,11 @@ components:
 
         # Start the subprocess
         logger.debug(f"Launching command: {self.config.command}")
+        args = shlex.split(self.config.command)
+        
         process = subprocess.Popen(
-            self.config.command,
-            shell=True,
+            args,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
