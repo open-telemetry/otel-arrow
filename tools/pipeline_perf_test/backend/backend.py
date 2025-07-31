@@ -51,8 +51,6 @@ class FakeLogsExporter(logs_service_pb2_grpc.LogsServiceServicer):
         # Acquire the lock before modifying the global received_logs
         async with received_logs_lock:
             received_logs += count
-            if received_logs % 10000 == 0:
-                print(f"Total received logs: {received_logs}")
         return ExportLogsServiceResponse()
 
 
