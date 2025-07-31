@@ -2,7 +2,7 @@
 // Copyright The OpenTelemetry Authors
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::grpc::otlp::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
+use crate::grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
 use crate::pdata::OtapPdata;
 
 use std::net::SocketAddr;
@@ -37,7 +37,7 @@ pub struct OTLPReceiver {
     config: Config,
 }
 
-/// Declares the OTLP receiver as a local shared receiver factory
+/// Declares the OTLP receiver as a shared receiver factory
 ///
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]

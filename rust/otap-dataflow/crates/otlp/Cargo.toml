@@ -9,6 +9,10 @@ publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Expose test utilities to other crates for use in their own tests.
+test-utils = []
+
 [lints]
 workspace = true
 

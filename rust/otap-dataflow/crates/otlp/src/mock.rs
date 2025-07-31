@@ -7,24 +7,27 @@
 //!
 
 use crate::grpc::OTLPData;
-use crate::proto::opentelemetry::{
-    collector::{
-        logs::v1::{
-            ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
-        },
-        metrics::v1::{
-            ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-            metrics_service_server::MetricsService,
-        },
-        profiles::v1development::{
-            ExportProfilesServiceRequest, ExportProfilesServiceResponse,
-            profiles_service_server::ProfilesService,
-        },
-        trace::v1::{
-            ExportTraceServiceRequest, ExportTraceServiceResponse,
-            trace_service_server::TraceService,
-        },
+use crate::proto::opentelemetry::collector::{
+    logs::v1::{
+        ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
     },
+    metrics::v1::{
+        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+        metrics_service_server::MetricsService,
+    },
+    profiles::v1development::{
+        ExportProfilesServiceRequest, ExportProfilesServiceResponse,
+        profiles_service_server::ProfilesService,
+    },
+    trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse, trace_service_server::TraceService,
+    },
+};
+use tokio::sync::mpsc::Sender;
+use tonic::{Request, Response, Status};
+
+#[cfg(test)]
+use crate::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     metrics::v1::{
@@ -41,8 +44,6 @@ use crate::proto::opentelemetry::{
         span::{Event, Link},
     },
 };
-use tokio::sync::mpsc::Sender;
-use tonic::{Request, Response, Status};
 
 /// struct that implements the Log Service trait
 pub struct LogsServiceMock {
@@ -51,6 +52,7 @@ pub struct LogsServiceMock {
 
 impl LogsServiceMock {
     /// creates a new mock logs service
+    #[must_use]
     pub fn new(sender: Sender<OTLPData>) -> Self {
         Self { sender }
     }
@@ -159,7 +161,8 @@ impl ProfilesService for ProfilesServiceMock {
     }
 }
 
-pub fn create_otlp_metric(
+#[cfg(test)]
+pub(crate) fn create_otlp_metric(
     resource_metrics_count: usize,
     scope_metrics_count: usize,
     metric_count: usize,
@@ -383,7 +386,8 @@ pub fn create_otlp_metric(
     }
 }
 
-pub fn create_otlp_trace(
+#[cfg(test)]
+pub(crate) fn create_otlp_trace(
     resource_spans_count: usize,
     scope_spans_count: usize,
     span_count: usize,
@@ -492,7 +496,8 @@ pub fn create_otlp_trace(
     }
 }
 
-pub fn create_otlp_log(
+#[cfg(test)]
+pub(crate) fn create_otlp_log(
     resource_logs_count: usize,
     scope_logs_count: usize,
     log_records_count: usize,
@@ -566,7 +571,8 @@ pub fn create_otlp_log(
     }
 }
 
-pub fn create_otlp_profile(
+#[cfg(test)]
+pub(crate) fn create_otlp_profile(
     resource_profiles_count: usize,
     scope_profiles_count: usize,
     profile_count: usize,

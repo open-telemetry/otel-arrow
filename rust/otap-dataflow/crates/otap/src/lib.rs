@@ -16,8 +16,12 @@ pub mod otap_exporter;
 /// Implementation of OTAP Receiver that implements the receiver trait
 pub mod otap_receiver;
 
-/// This receiver receives OTLP bytes, and converts them to OTAP
+/// This receiver receives OTLP bytes from the grpc service request and
+/// produce for the pipeline OTAP PData
 pub mod otlp_receiver;
+
+/// Implementation of OTLP exporter that implements the exporter trait
+pub mod otlp_exporter;
 
 /// Generated protobuf files
 pub mod proto;
