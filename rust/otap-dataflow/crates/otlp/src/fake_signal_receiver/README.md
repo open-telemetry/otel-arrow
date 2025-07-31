@@ -6,10 +6,10 @@ This crate will contain the implementation of the fake signal receiver
 
 The fake signal receiver will allow users to test their pipelines by defining
 a scenario to run, this scenario will be made up of various steps where each
-step will describe a batch of signals, a . Signals will be defined by a 
-ResolvedRegistry that will be defined in the configuration. 
-For more information about the ResolvedRegistry please check the 
-[weaver](https://github.com/open-telemetry/weaver) and 
+step will describe a batch of signals, with some delay in ms. Signals will be
+defined by a ResolvedRegistry that will be defined in the configuration.
+For more information about the ResolvedRegistry please check the
+[weaver](https://github.com/open-telemetry/weaver) and
 [semantic convention](https://github.com/open-telemetry/semantic-conventions)repos
 
 
