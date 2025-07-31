@@ -39,6 +39,7 @@ tokio.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 log.workspace = true
+weaver_forge.workspace = true
 
 [build-dependencies]
 tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }
