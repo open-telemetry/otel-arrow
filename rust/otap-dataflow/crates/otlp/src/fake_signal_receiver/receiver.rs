@@ -839,9 +839,6 @@ mod tests {
         ));
         let config = Config::new(steps, registry);
 
-        let config_string = serde_json::to_string(&config).unwrap();
-        println!("{}", config_string);
-
         let node_config = Rc::new(NodeUserConfig::new_receiver_config(
             FAKE_SIGNAL_RECEIVER_URN,
         ));

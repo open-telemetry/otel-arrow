@@ -12,7 +12,6 @@ For more information about the ResolvedRegistry please check the
 [weaver](https://github.com/open-telemetry/weaver) and
 [semantic convention](https://github.com/open-telemetry/semantic-conventions)repos
 
-
 ## Example configuration
 
 ```json
