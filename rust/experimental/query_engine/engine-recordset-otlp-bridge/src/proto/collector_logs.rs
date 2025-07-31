@@ -22,4 +22,17 @@ impl ExportLogsServiceRequest {
         self.resource_logs.push(value);
         self
     }
+
+    pub fn from_protobuf(
+        protobuf_data: &[u8],
+    ) -> Result<ExportLogsServiceRequest, SerializerError> {
+        serializer::otlp_reader::read_export_logs_service_request(protobuf_data)
+    }
+
+    pub fn to_protobuf(
+        value: &ExportLogsServiceRequest,
+        initial_capacity: usize,
+    ) -> Result<Vec<u8>, SerializerError> {
+        serializer::otlp_writer::write_export_logs_service_request(value, initial_capacity)
+    }
 }
