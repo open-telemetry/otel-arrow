@@ -133,6 +133,7 @@ pub struct EqualToLogicalExpression {
     query_location: QueryLocation,
     left: ScalarExpression,
     right: ScalarExpression,
+    case_insensitive: bool,
 }
 
 impl EqualToLogicalExpression {
@@ -140,12 +141,18 @@ impl EqualToLogicalExpression {
         query_location: QueryLocation,
         left: ScalarExpression,
         right: ScalarExpression,
+        case_insensitive: bool,
     ) -> EqualToLogicalExpression {
         Self {
             query_location,
             left,
             right,
+            case_insensitive,
         }
+    }
+
+    pub fn get_case_insensitive(&self) -> bool {
+        self.case_insensitive
     }
 
     pub fn get_left(&self) -> &ScalarExpression {
