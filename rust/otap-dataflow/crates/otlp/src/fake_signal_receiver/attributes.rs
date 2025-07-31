@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Translations from Weaver to Otel for attributes.
+//! Handles mapping attributes defined in a resolved registry to a KeyValue pair for a otlp signal
 
 use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use weaver_resolved_schema::attribute::Attribute;

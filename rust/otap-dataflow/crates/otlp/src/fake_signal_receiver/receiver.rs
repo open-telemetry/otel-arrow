@@ -735,7 +735,7 @@ mod tests {
                                                     assert!(keys == METRIC_DATAPOINT_ATTR.to_vec());
                                                 }
                                             }
-                                            _ => unreachable!()
+                                            _ => unreachable!(),
                                         }
                                     }
                                 }
@@ -838,6 +838,9 @@ mod tests {
             DELAY,
         ));
         let config = Config::new(steps, registry);
+
+        let config_string = serde_json::to_string(&config).unwrap();
+        println!("{}", config_string);
 
         let node_config = Rc::new(NodeUserConfig::new_receiver_config(
             FAKE_SIGNAL_RECEIVER_URN,
