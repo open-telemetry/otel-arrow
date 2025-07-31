@@ -174,7 +174,7 @@ const POSITION_LOOKUP: &[usize] = &[
     15,           // HistogramDpExemplarAttrs = 23,
     16,           // ExpHistogramDpExemplarAttrs = 24,
     17,           // MultivariateMetrics = 25,
-    UNUSED_INDEX, // 26
+    18,           // MetricAttrs = 26,
     UNUSED_INDEX, // 27
     UNUSED_INDEX, // 28
     UNUSED_INDEX, // 29
@@ -252,7 +252,7 @@ impl OtapBatchStore for Logs {
 /// Store of record batches for a batch of OTAP metrics data.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
-    batches: [Option<RecordBatch>; 18],
+    batches: [Option<RecordBatch>; 19],
 }
 
 impl OtapBatchStore for Metrics {
@@ -273,7 +273,8 @@ impl OtapBatchStore for Metrics {
         + (1 << ArrowPayloadType::NumberDpExemplarAttrs as u64)
         + (1 << ArrowPayloadType::HistogramDpExemplarAttrs as u64)
         + (1 << ArrowPayloadType::ExpHistogramDpExemplarAttrs as u64)
-        + (1 << ArrowPayloadType::MultivariateMetrics as u64);
+        + (1 << ArrowPayloadType::MultivariateMetrics as u64)
+        + (1 << ArrowPayloadType::MetricAttrs as u64);
 
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
         &mut self.batches
@@ -303,6 +304,7 @@ impl OtapBatchStore for Metrics {
             ArrowPayloadType::HistogramDpExemplarAttrs,
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
             ArrowPayloadType::MultivariateMetrics,
+            ArrowPayloadType::MetricAttrs,
         ]
     }
 
@@ -315,6 +317,7 @@ impl OtapBatchStore for Metrics {
         for payload_type in [
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::MetricAttrs,
         ] {
             if let Some(attrs_rb) = otap_batch.get(payload_type) {
                 let rb = materialize_parent_id_for_attributes::<u16>(attrs_rb)?;
