@@ -177,7 +177,7 @@ mod tests {
     use super::*;
 
     #[test]
-    pub fn try_resolve() {
+    pub fn test_try_resolve() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, Option<ValueType>, Option<Value>)>)
         where
             F: Fn(ConversionScalarExpression) -> ConvertScalarExpression,
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    pub fn try_resolve_value_type_string() {
+    pub fn test_string_try_resolve_value_type() {
         // Test string conversion always returns string value type
         let expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
             QueryLocation::new_fake(),
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    pub fn try_resolve_static_string() {
+    pub fn test_string_try_resolve_static() {
         let expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
             QueryLocation::new_fake(),
             ScalarExpression::Static(StaticScalarExpression::Integer(
