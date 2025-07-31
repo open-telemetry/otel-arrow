@@ -21,4 +21,4 @@ data_engine_recordset2 = { path = "../engine-recordset2" }
 
 [dev-dependencies]
 opentelemetry-proto = "0.30.0"
-prost = "0.13.1"
+prost = "0.14.0"
