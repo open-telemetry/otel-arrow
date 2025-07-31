@@ -1,3 +1,5 @@
+pub(crate) mod otlp_reader;
+pub(crate) mod otlp_writer;
 pub(crate) mod protobuf_reader;
 pub(crate) mod protobuf_writer;
 pub(crate) mod serializer_error;
