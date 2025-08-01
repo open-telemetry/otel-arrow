@@ -5,7 +5,6 @@ members = [
     "kql-parser",
     "ottl-parser",
     "engine-columnar",
-    "engine-recordset",
     "engine-recordset2",
     "engine-recordset-otlp-bridge",
 ]
