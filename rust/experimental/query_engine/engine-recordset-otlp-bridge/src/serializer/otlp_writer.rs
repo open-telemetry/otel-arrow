@@ -275,7 +275,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::{SecondsFormat, Utc};
-    use data_engine_recordset2::{ArrayValueStorage, MapValueStorage, ValueStorage};
+    use data_engine_recordset::*;
     use prost::Message;
     use regex::Regex;
 

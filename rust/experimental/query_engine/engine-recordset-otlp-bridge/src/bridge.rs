@@ -2,7 +2,7 @@ use std::sync::{LazyLock, RwLock};
 
 use data_engine_expressions::PipelineExpression;
 use data_engine_kql_parser::*;
-use data_engine_recordset2::*;
+use data_engine_recordset::*;
 
 use crate::*;
 
