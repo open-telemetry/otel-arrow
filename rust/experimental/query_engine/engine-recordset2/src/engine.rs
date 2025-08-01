@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Display, Write},
+    fmt::{Debug, Display, Write},
     time::SystemTime,
 };
 
@@ -187,7 +187,7 @@ where
     }
 }
 
-pub trait RecordSet<TRecord: Record> {
+pub trait RecordSet<TRecord: Record>: Debug {
     fn drain<F>(&mut self, action: &mut F)
     where
         F: FnMut(Option<&dyn AttachedRecords>, TRecord);

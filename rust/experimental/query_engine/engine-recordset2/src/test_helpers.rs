@@ -34,6 +34,7 @@ impl AttachedRecords for TestAttachedRecords {
     }
 }
 
+#[derive(Debug)]
 pub struct TestRecordSet {
     records: Vec<TestRecord>,
 }
