@@ -20,6 +20,10 @@
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use std::io::ErrorKind;
+use std::rc::Rc;
+
+use crate::OTAP_EXPORTER_FACTORIES;
+use crate::pdata::OtapPdata;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
@@ -27,11 +31,16 @@ use self::writer::WriteBatch;
 use async_trait::async_trait;
 use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
+use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ExporterFactory;
+use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::control::ControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
-use otel_arrow_rust::otap::OtapBatch;
+use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
 mod idgen;
@@ -40,12 +49,29 @@ mod partition;
 mod writer;
 
 #[allow(dead_code)]
-const OTAP_PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
+const PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
     config: config::Config,
 }
+
+/// Declares the Parquet exporter as a local exporter factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: PARQUET_EXPORTER_URN,
+    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+        Ok(ExporterWrapper::local(
+            ParquetExporter::from_config(&node_config.config)?,
+            node_config,
+            exporter_config,
+        ))
+    },
+};
 
 impl ParquetExporter {
     /// construct a new instance of the `ParquetExporter`
@@ -53,18 +79,26 @@ impl ParquetExporter {
     pub fn new(config: config::Config) -> Self {
         Self { config }
     }
+
+    /// construct a new instance from the configuration object
+    pub fn from_config(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: config::Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+
+        Ok(ParquetExporter { config })
+    }
 }
 
 #[async_trait(?Send)]
-impl<T> Exporter<T> for ParquetExporter
-where
-    T: TryInto<(i64, OtapBatch), Error = Error<T>> + 'static,
-{
+impl Exporter<OtapPdata> for ParquetExporter {
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<T>,
-        effect_handler: EffectHandler<T>,
-    ) -> Result<(), Error<T>> {
+        mut msg_chan: MessageChannel<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
                 exporter: effect_handler.exporter_id(),
@@ -73,7 +107,7 @@ where
 
         let mut writer =
             writer::WriterManager::new(object_store, self.config.writer_options.clone());
-
+        let mut batch_id = 0;
         let mut id_generator = PartitionSequenceIdGenerator::new();
 
         loop {
@@ -96,18 +130,16 @@ where
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
                     return futures::select! {
-                        _timeout = timeout =>
-                            Err(Error::IoError {
+                        _timeout = timeout => Err(Error::IoError {
                                 node: effect_handler.exporter_id(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
-                            })
-                        ,
+                            }),
                         _ = flush_all => Ok(()),
                     };
                 }
 
                 Message::PData(pdata) => {
-                    let (batch_id, mut otap_batch): (i64, OtapBatch) = pdata.try_into()?;
+                    let mut otap_batch: OtapArrowRecords = pdata.try_into()?;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
@@ -142,6 +174,7 @@ where
                             )
                         })
                         .collect::<Vec<_>>();
+                    batch_id += 1;
                     let write_result = writer.write(&writes).await;
                     if let Err(e) = write_result {
                         // TODO - this is not the error handling we want long term.
@@ -165,6 +198,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use crate::grpc::OtapArrowBytes;
+
     use super::*;
 
     use std::pin::Pin;
@@ -176,65 +211,28 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
-    use otel_arrow_rust::Consumer;
-    use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_rust::{otap::OtapBatch, proto::opentelemetry::arrow::v1::BatchArrowRecords};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
 
     pub mod datagen;
 
-    /// this is input to the test
-    #[derive(Debug, Clone)]
-    struct TestPDataInput {
-        batch: BatchArrowRecords,
-    }
-
-    impl TryInto<(i64, OtapBatch)> for TestPDataInput {
-        type Error = Error<Self>;
-
-        fn try_into(mut self) -> Result<(i64, OtapBatch), Self::Error> {
-            let batch_id = self.batch.batch_id;
-            let first_payload_type =
-                ArrowPayloadType::try_from(self.batch.arrow_payloads[0].r#type).unwrap();
-            let mut consumer = Consumer::default();
-            let record_messages = consumer.consume_bar(&mut self.batch).unwrap();
-
-            match first_payload_type {
-                ArrowPayloadType::Logs => Ok((
-                    batch_id,
-                    OtapBatch::Logs(from_record_messages(record_messages)),
-                )),
-                ArrowPayloadType::Spans => Ok((
-                    batch_id,
-                    OtapBatch::Traces(from_record_messages(record_messages)),
-                )),
-                ArrowPayloadType::UnivariateMetrics => Ok((
-                    batch_id,
-                    OtapBatch::Metrics(from_record_messages(record_messages)),
-                )),
-                payload_type => {
-                    panic!("unexpected payload type in TestPDataInput.try_into: {payload_type:?}")
-                }
-            }
-        }
-    }
-
     fn logs_scenario(
         num_rows: usize,
         shutdown_timeout: Duration,
-    ) -> impl FnOnce(TestContext<TestPDataInput>) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                ctx.send_pdata(TestPDataInput {
-                    batch: datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                let otap_batch = OtapArrowBytes::ArrowLogs(
+                    datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                         num_rows,
                         ..Default::default()
                     }),
-                })
-                .await
-                .expect("Failed to send  logs message");
+                );
+
+                ctx.send_pdata(otap_batch.into())
+                    .await
+                    .expect("Failed to send  logs message");
 
                 ctx.send_shutdown(shutdown_timeout, "test completed")
                     .await
@@ -269,7 +267,7 @@ mod test {
 
     #[test]
     fn test_with_partitioning() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -279,10 +277,8 @@ mod test {
             )]),
             writer_options: None,
         });
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
@@ -292,8 +288,10 @@ mod test {
         test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [
@@ -354,7 +352,7 @@ mod test {
 
     #[test]
     fn test_no_partitioning() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -362,10 +360,8 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
@@ -374,8 +370,10 @@ mod test {
         test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [
@@ -392,7 +390,7 @@ mod test {
 
     #[test]
     fn test_shutdown_timeout() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -400,10 +398,8 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
@@ -412,20 +408,17 @@ mod test {
 
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(num_rows, Duration::ZERO))
-            .run_validation(move |_ctx| {
+            .run_test(logs_scenario(num_rows, Duration::from_nanos(1)))
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    // assert we didn't write because the timeout
-                    for payload_type in [
-                        ArrowPayloadType::Logs,
-                        ArrowPayloadType::LogAttrs,
-                        ArrowPayloadType::ResourceAttrs,
-                        ArrowPayloadType::ScopeAttrs,
-                    ] {
-                        let table_name = payload_type.as_str_name().to_lowercase();
-                        let result = tokio::fs::read_dir(format!("{base_dir}/{table_name}")).await;
-                        let error = result.unwrap_err();
-                        assert_eq!(error.kind(), ErrorKind::NotFound);
+                    // assert the exporter result is as expected
+                    match exporter_result {
+                        Ok(_) => panic!("expected exporter result to be error, received: Ok(())"),
+                        Err(Error::IoError { node, error }) => {
+                            assert_eq!(&node, "test_exporter");
+                            assert_eq!(error.kind(), ErrorKind::TimedOut);
+                        },
+                        Err(e) => panic!("{}", format!("received unexpected error: {e:?}. Expected IoError caused by timeout"))
                     }
                 })
             });
@@ -433,7 +426,7 @@ mod test {
 
     #[test]
     fn test_traces() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -441,39 +434,38 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
         );
 
         let num_rows = 100;
+        let otap_batch = OtapArrowBytes::ArrowTraces(
+            datagen::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
+                num_rows,
+                traces_options: Some(Default::default()),
+                ..Default::default()
+            }),
+        );
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(TestPDataInput {
-                        batch: datagen::create_simple_trace_arrow_record_batches(
-                            SimpleDataGenOptions {
-                                num_rows,
-                                traces_options: Some(Default::default()),
-                                ..Default::default()
-                            },
-                        ),
-                    })
-                    .await
-                    .expect("Failed to send  logs message");
+                    ctx.send_pdata(otap_batch.into())
+                        .await
+                        .expect("Failed to send  logs message");
 
                     ctx.send_shutdown(Duration::from_millis(200), "test completed")
                         .await
                         .unwrap();
                 })
             })
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [
@@ -494,7 +486,7 @@ mod test {
 
     #[test]
     fn test_metrics() {
-        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -502,39 +494,38 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(
-            OTAP_PARQUET_EXPORTER_URN,
-        ));
-        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
             test_runtime.config(),
         );
 
         let num_rows = 100;
+        let otap_batch = OtapArrowBytes::ArrowMetrics(
+            datagen::create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
+                num_rows,
+                metrics_options: Some(Default::default()),
+                ..Default::default()
+            }),
+        );
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    ctx.send_pdata(TestPDataInput {
-                        batch: datagen::create_simple_metrics_arrow_record_batches(
-                            SimpleDataGenOptions {
-                                num_rows,
-                                metrics_options: Some(Default::default()),
-                                ..Default::default()
-                            },
-                        ),
-                    })
-                    .await
-                    .expect("Failed to send  logs message");
+                    ctx.send_pdata(otap_batch.into())
+                        .await
+                        .expect("Failed to send  logs message");
 
                     ctx.send_shutdown(Duration::from_millis(1000), "test completed")
                         .await
                         .unwrap();
                 })
             })
-            .run_validation(move |_ctx| {
+            .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
+                    assert!(exporter_result.is_ok());
+
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
                     for payload_type in [

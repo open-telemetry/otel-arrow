@@ -1825,14 +1825,19 @@ mod integration_tests {
         ProcessorWrapper::local(processor, node_config, &config)
     }
 
-    // Helper: Write string to a file
-    fn log_to_file(s: &str) {
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/generic_batch_proc_test.json")
-            .expect("could not open /tmp file for writing");
-        writeln!(f, "{s}\n").expect("Write failed");
+    // Helper: Write string to a file (async version)
+    async fn log_to_file(s: &str) {
+        let s = s.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/generic_batch_proc_test.json")
+                .expect("could not open /tmp file for writing");
+            writeln!(f, "{s}\n").expect("Write failed");
+        })
+        .await
+        .expect("Blocking task failed");
     }
 
     fn sample_trace() -> ExportTraceServiceRequest {
@@ -1933,21 +1938,21 @@ mod integration_tests {
             .run_test(|mut ctx| async move {
                 // TRACE INPUT
                 let trace_req = sample_trace();
-                log_to_file(&format!("INPUT TRACE:\n{trace_req:#?}"));
+                log_to_file(&format!("INPUT TRACE:\n{trace_req:#?}")).await;
                 ctx.process(Message::PData(OTLPData::Traces(trace_req)))
                     .await
                     .unwrap();
 
                 // METRICS INPUT
                 let metrics_req = sample_metrics();
-                log_to_file(&format!("INPUT METRIC:\n{metrics_req:#?}"));
+                log_to_file(&format!("INPUT METRIC:\n{metrics_req:#?}")).await;
                 ctx.process(Message::PData(OTLPData::Metrics(metrics_req)))
                     .await
                     .unwrap();
 
                 // LOGS INPUT
                 let logs_req = sample_logs();
-                log_to_file(&format!("INPUT LOGS:\n{logs_req:#?}"));
+                log_to_file(&format!("INPUT LOGS:\n{logs_req:#?}")).await;
                 ctx.process(Message::PData(OTLPData::Logs(logs_req)))
                     .await
                     .unwrap();
@@ -1965,17 +1970,17 @@ mod integration_tests {
                 for (i, out) in outputs.iter().enumerate() {
                     match out {
                         OTLPData::Traces(req) => {
-                            log_to_file(&format!("OUTPUT[{i}] TRACE:\n{req:#?}"));
+                            log_to_file(&format!("OUTPUT[{i}] TRACE:\n{req:#?}")).await;
                         }
                         OTLPData::Metrics(req) => {
-                            log_to_file(&format!("OUTPUT[{i}] METRICS:\n{req:#?}"));
+                            log_to_file(&format!("OUTPUT[{i}] METRICS:\n{req:#?}")).await;
                         }
                         OTLPData::Logs(req) => {
-                            log_to_file(&format!("OUTPUT[{i}] LOGS:\n{req:#?}"));
+                            log_to_file(&format!("OUTPUT[{i}] LOGS:\n{req:#?}")).await;
                         }
                         #[allow(unreachable_patterns)]
                         _ => {
-                            log_to_file(&format!("OUTPUT[{i}] UNKNOWN:\n<unhandled type>"));
+                            log_to_file(&format!("OUTPUT[{i}] UNKNOWN:\n<unhandled type>")).await;
                         }
                     }
                 }

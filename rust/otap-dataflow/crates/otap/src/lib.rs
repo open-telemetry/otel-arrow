@@ -3,7 +3,7 @@
 //! Implementation of the OTAP nodes (receiver, exporter, processor).
 //!
 
-use crate::grpc::OTAPData;
+use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
@@ -15,8 +15,18 @@ pub mod grpc;
 pub mod otap_exporter;
 /// Implementation of OTAP Receiver that implements the receiver trait
 pub mod otap_receiver;
+
+/// This receiver receives OTLP bytes from the grpc service request and
+/// produce for the pipeline OTAP PData
+pub mod otlp_receiver;
+
+/// Implementation of OTLP exporter that implements the exporter trait
+pub mod otlp_exporter;
+
 /// Generated protobuf files
 pub mod proto;
+
+pub mod pdata;
 
 pub mod parquet_exporter;
 
@@ -28,8 +38,8 @@ pub mod fake_data_generator;
 mod mock;
 
 /// Factory for OTAP-based pipeline
-#[pipeline_factory(OTAP, OTAPData)]
-static OTAP_PIPELINE_FACTORY: PipelineFactory<OTAPData> = build_factory();
+#[pipeline_factory(OTAP, OtapPdata)]
+static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
 
 #[cfg(test)]
 mod tests {

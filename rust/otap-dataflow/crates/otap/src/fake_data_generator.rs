@@ -4,8 +4,8 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::grpc::OTAPData;
-use crate::proto::opentelemetry::experimental::arrow::v1::BatchArrowRecords;
+use crate::grpc::OtapArrowBytes;
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -14,6 +14,7 @@ use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::receiver::ReceiverWrapper;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -40,7 +41,7 @@ pub struct FakeGeneratorReceiver {
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OTAPData> = ReceiverFactory {
+pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
     create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
@@ -81,16 +82,16 @@ impl FakeGeneratorReceiver {
 
 /// Implement the Receiver trait for the FakeGeneratorReceiver
 #[async_trait(?Send)]
-impl local::Receiver<OTAPData> for FakeGeneratorReceiver {
+impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     async fn start(
         self: Box<Self>,
         _ctrl_msg_recv: local::ControlChannel,
-        effect_handler: local::EffectHandler<OTAPData>,
-    ) -> Result<(), Error<OTAPData>> {
+        effect_handler: local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         for _ in 0..self.config.batch_count {
-            let msg = OTAPData::ArrowLogs(BatchArrowRecords::default());
+            let msg = OtapArrowBytes::ArrowLogs(BatchArrowRecords::default());
             // Send the fake data message to the effect handler
-            effect_handler.send_message(msg).await?;
+            effect_handler.send_message(msg.into()).await?;
         }
 
         // Exit the receiver gracefully

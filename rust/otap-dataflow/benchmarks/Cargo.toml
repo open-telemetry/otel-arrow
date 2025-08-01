@@ -62,6 +62,10 @@ harness = false
 name = "pdata_views"
 harness = false
 
+[[bench]]
+name = "retry_processor"
+harness = false
+
 [profile.bench]
 opt-level = 3
 debug = false

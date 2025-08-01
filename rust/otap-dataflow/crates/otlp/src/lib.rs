@@ -47,8 +47,8 @@ pub mod otlp_receiver;
 pub mod proto;
 
 /// grpc mock server for testing
-#[cfg(test)]
-mod mock;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod mock;
 
 /// Factory for OTLP-based pipeline
 #[pipeline_factory(OTLP, OTLPData)]
