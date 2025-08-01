@@ -56,10 +56,8 @@ mod tests {
         );
 
         if let Ok(ScalarExpression::Convert(ConvertScalarExpression::String(conv))) = &result {
-            
             // Verify the inner expression is a static integer
             if let ScalarExpression::Static(static_expr) = conv.get_inner_expression() {
-                
                 // Check if it's an integer
                 match static_expr {
                     StaticScalarExpression::Integer(int_expr) => {
