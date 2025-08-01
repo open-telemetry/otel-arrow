@@ -6,6 +6,8 @@ use data_engine_recordset2::*;
 
 use crate::*;
 
+const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;
+
 static EXPRESSIONS: LazyLock<RwLock<Vec<PipelineExpression>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
 
@@ -71,7 +73,10 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
         Ok((included, dropped)) => {
             let mut included_records_otlp_response = Vec::new();
             if included.is_some() {
-                match ExportLogsServiceRequest::to_protobuf(included.as_ref().unwrap(), 8192) {
+                match ExportLogsServiceRequest::to_protobuf(
+                    included.as_ref().unwrap(),
+                    OTLP_BUFFER_INITIAL_CAPACITY,
+                ) {
                     Ok(r) => {
                         included_records_otlp_response = r.to_vec();
                     }
@@ -83,7 +88,10 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
 
             let mut dropped_records_otlp_response = Vec::new();
             if dropped.is_some() {
-                match ExportLogsServiceRequest::to_protobuf(dropped.as_ref().unwrap(), 8192) {
+                match ExportLogsServiceRequest::to_protobuf(
+                    dropped.as_ref().unwrap(),
+                    OTLP_BUFFER_INITIAL_CAPACITY,
+                ) {
                     Ok(r) => {
                         dropped_records_otlp_response = r.to_vec();
                     }
@@ -214,6 +222,133 @@ fn process_log_record_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use bytes::BytesMut;
+    use prost::Message;
+
+    type OtlpExportLogsServiceRequest =
+        opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    type OtlpResourceLogs = opentelemetry_proto::tonic::logs::v1::ResourceLogs;
+    type OtlpScopeLogs = opentelemetry_proto::tonic::logs::v1::ScopeLogs;
+    type OtlpLogRecord = opentelemetry_proto::tonic::logs::v1::LogRecord;
+    type OtlpResource = opentelemetry_proto::tonic::resource::v1::Resource;
+    type OtlpEntityRef = opentelemetry_proto::tonic::common::v1::EntityRef;
+    type OtlpInstrumentationScope = opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+    type OtlpKeyValue = opentelemetry_proto::tonic::common::v1::KeyValue;
+    type OtlpAnyValue = opentelemetry_proto::tonic::common::v1::AnyValue;
+    type OtlpValue = opentelemetry_proto::tonic::common::v1::any_value::Value;
+
+    #[test]
+    fn test_otlp_round_trip() {
+        let request = OtlpExportLogsServiceRequest {
+            resource_logs: vec![
+                OtlpResourceLogs {
+                    resource: Some(OtlpResource {
+                        attributes: vec![OtlpKeyValue {
+                            key: "key1".into(),
+                            value: Some(OtlpAnyValue {
+                                value: Some(OtlpValue::IntValue(18)),
+                            }),
+                        }],
+                        dropped_attributes_count: 18,
+                        entity_refs: vec![OtlpEntityRef {
+                            schema_url: "SchemaA".into(),
+                            r#type: "service".into(),
+                            id_keys: vec!["key1".into()],
+                            description_keys: vec![],
+                        }],
+                    }),
+                    scope_logs: vec![
+                        OtlpScopeLogs {
+                            scope: Some(OtlpInstrumentationScope {
+                                name: "name".into(),
+                                version: "version".into(),
+                                attributes: vec![OtlpKeyValue {
+                                    key: "key1".into(),
+                                    value: Some(OtlpAnyValue {
+                                        value: Some(OtlpValue::IntValue(18)),
+                                    }),
+                                }],
+                                dropped_attributes_count: 18,
+                            }),
+                            log_records: vec![OtlpLogRecord {
+                                time_unix_nano: 1,
+                                observed_time_unix_nano: 1,
+                                severity_number: 1,
+                                severity_text: "Info".into(),
+                                body: Some(OtlpAnyValue {
+                                    value: Some(OtlpValue::StringValue("value".into())),
+                                }),
+                                attributes: vec![OtlpKeyValue {
+                                    key: "key1".into(),
+                                    value: Some(OtlpAnyValue {
+                                        value: Some(OtlpValue::IntValue(18)),
+                                    }),
+                                }],
+                                dropped_attributes_count: 18,
+                                flags: 1,
+                                trace_id: vec![0x00, 0xFF],
+                                span_id: vec![0x00, 0xFF],
+                                event_name: "eventname".into(),
+                            }],
+                            schema_url: "".into(),
+                        },
+                        OtlpScopeLogs {
+                            scope: None,
+                            log_records: vec![],
+                            schema_url: "SchemaB".into(),
+                        },
+                    ],
+                    schema_url: "".into(),
+                },
+                OtlpResourceLogs {
+                    resource: None,
+                    scope_logs: vec![],
+                    schema_url: "SchemaA".into(),
+                },
+            ],
+        };
+
+        let mut protobuf_data = BytesMut::new();
+
+        request.encode(&mut protobuf_data).unwrap();
+
+        let protobuf_data = protobuf_data.freeze();
+
+        {
+            // Include everything
+            let pipeline_id = register_pipeline_for_kql_query("s | where true").unwrap();
+
+            let (included, _) =
+                process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
+                    pipeline_id,
+                    RecordSetEngineDiagnosticLevel::Error,
+                    &protobuf_data,
+                )
+                .unwrap();
+
+            let response = OtlpExportLogsServiceRequest::decode(&included[..]).unwrap();
+
+            assert_eq!(request, response);
+        }
+
+        {
+            // Drop everything
+            let pipeline_id = register_pipeline_for_kql_query("s | where false").unwrap();
+
+            let (_, dropped) =
+                process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
+                    pipeline_id,
+                    RecordSetEngineDiagnosticLevel::Error,
+                    &protobuf_data,
+                )
+                .unwrap();
+
+            let response = OtlpExportLogsServiceRequest::decode(&dropped[..]).unwrap();
+
+            assert_eq!(request, response);
+        }
+    }
 
     #[test]
     fn test_process_parsed_export_logs_service_request_all_dropped() {
