@@ -17,7 +17,7 @@ thiserror = { workspace = true }
 
 data_engine_expressions = { path = "../expressions" }
 data_engine_kql_parser = { path = "../kql-parser" }
-data_engine_recordset2 = { path = "../engine-recordset2" }
+data_engine_recordset = { path = "../engine-recordset" }
 
 [dev-dependencies]
 opentelemetry-proto = "0.30.0"

@@ -1,5 +1,5 @@
 [package]
-name = "data_engine_recordset2"
+name = "data_engine_recordset"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
