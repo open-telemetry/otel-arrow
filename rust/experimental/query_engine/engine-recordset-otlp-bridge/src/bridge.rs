@@ -143,7 +143,7 @@ pub fn process_export_logs_service_request_using_pipeline(
 
                 scope_logs.instrumentation_scope =
                     original_scope_logs.instrumentation_scope.clone();
-                scope_logs.extra_fields = original_resource_logs.extra_fields.clone();
+                scope_logs.extra_fields = original_scope_logs.extra_fields.clone();
 
                 resource_logs.scope_logs.push(scope_logs);
             }
