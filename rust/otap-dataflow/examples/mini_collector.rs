@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTLP_PIPELINE_FACTORY);
-    let quota = Quota { num_cores: 0 }; // Use 2 cores for testing
+    let quota = Quota { num_cores: 1 }; // Use 2 cores for testing
 
     // Start the pipeline (this would run indefinitely in a real scenario)
     controller.start_pipeline(pipeline_cfg, quota)?;

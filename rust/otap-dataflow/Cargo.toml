@@ -122,9 +122,11 @@ broken_intra_doc_links = "deny"
 missing_crate_level_docs = "deny"
 
 [profile.release]
-lto = "thin"    # Evaluate the performance gain of lto=true
-strip = true
-#panic = "abort"
+debug = "line-tables-only"
+
+#[profile.release]
+#lto = "thin"    # Evaluate the performance gain of lto=true
+#strip = true
 
 [profile.bench]
 inherits = "release"
