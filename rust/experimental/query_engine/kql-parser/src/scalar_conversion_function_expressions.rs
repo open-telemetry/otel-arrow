@@ -49,10 +49,7 @@ mod tests {
         let state = ParserState::new(input);
 
         let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(
-            result.is_ok(),
-            "Failed to parse tostring(123): {result:?}"
-        );
+        assert!(result.is_ok(), "Failed to parse tostring(123): {result:?}");
 
         if let Ok(ScalarExpression::Convert(ConvertScalarExpression::String(conv))) = &result {
             // Verify the inner expression is a static integer
@@ -98,10 +95,7 @@ mod tests {
         let state = ParserState::new(input);
 
         let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(
-            result.is_ok(),
-            "Failed to parse tostring(true): {result:?}"
-        );
+        assert!(result.is_ok(), "Failed to parse tostring(true): {result:?}");
     }
 
     #[test]
@@ -114,10 +108,7 @@ mod tests {
         let state = ParserState::new(input);
 
         let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(
-            result.is_ok(),
-            "Failed to parse tostring(null): {result:?}"
-        );
+        assert!(result.is_ok(), "Failed to parse tostring(null): {result:?}");
     }
 
     #[test]
