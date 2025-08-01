@@ -172,6 +172,7 @@ mod tests {
                     ScalarExpression::Static(StaticScalarExpression::Boolean(
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
+                    false,
                 ))
                 .into(),
             ),

@@ -9,6 +9,7 @@ OTLP collector endpoint over gRPC.
 Features:
 - Generates OTLP log records with random content for testing or benchmarking.
 - Runs multiple worker threads to simulate concurrent load.
+- Supports shared or dedicated TCP connection per-worker thread.
 - Supports optional rate targeting for message throughput (or max achievable).
 - Provides a Flask-based HTTP API to start, stop, and monitor the load
     generator.
@@ -36,6 +37,7 @@ import concurrent.futures
 import os
 import random
 import signal
+import socket
 import string
 import sys
 import threading
@@ -73,6 +75,9 @@ class LoadGenConfig(BaseModel):
     threads: int = Field(4, gt=0, description="Number of worker threads to run")
     target_rate: Optional[int] = Field(
         None, gt=0, description="Optional target messages per second"
+    )
+    tcp_connection_per_thread: bool = Field(
+        True, description="Use a dedicated TCP connection per-thread"
     )
 
     @field_validator(
@@ -137,7 +142,17 @@ class LoadGenerator:
         Worker thread that sends batches of log records to an OTLP endpoint.
         """
         endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
-        channel = grpc.insecure_channel(endpoint)
+
+        channel = None
+        if args.get("tcp_connection_per_thread"):
+            # This disables the default python grpc client behavior of shared global
+            # subchannels per destination.
+            channel = grpc.insecure_channel(
+                endpoint, options=[("grpc.use_local_subchannel_pool", 1)]
+            )
+        else:
+            channel = grpc.insecure_channel(endpoint)
+
         stub = logs_service_pb2_grpc.LogsServiceStub(channel)
 
         batch_size = args["batch_size"]
@@ -293,6 +308,11 @@ def handle_signal(sig, frame):
     sys.exit(0)
 
 
+def is_port_in_use(port, host="0.0.0.0"):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
+
 def main():
     def get_default_value(field_name: str):
         return LoadGenConfig.model_fields[field_name].default
@@ -358,9 +378,20 @@ def main():
             f"(default {get_default_value('target_rate')})"
         ),
     )
+    parser.add_argument(
+        "--tcp-connection-per-thread",
+        type=bool,
+        default=get_default_value("tcp_connection_per_thread"),
+        help=(
+            "Use a dedicated TCP connection per-thread (default "
+            f"{get_default_value("tcp_connection_per_thread")})"
+        ),
+    )
     args = parser.parse_args()
 
     if args.serve:
+        if is_port_in_use(FLASK_PORT):
+            raise RuntimeError(f"Port {FLASK_PORT} is already in use.")
         app.run(host="0.0.0.0", port=args.serve_port)
         return
 

@@ -9,9 +9,9 @@
 //! ToDo: calculate average latency of otlp signals
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::grpc::OTAPData;
+use crate::grpc::OtapArrowBytes;
+use crate::pdata::OtapPdata;
 use crate::perf_exporter::config::Config;
-use crate::proto::opentelemetry::experimental::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use async_trait::async_trait;
 use byte_unit::Byte;
 use fluke_hpack::Decoder;
@@ -23,16 +23,43 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
     CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
     System, get_current_pid,
 };
+use tokio::fs::File;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
+
+/// A wrapper around AsyncWrite that simplifies error handling for debug output
+struct OutputWriter {
+    writer: Box<dyn AsyncWrite + Unpin>,
+    exporter_id: Cow<'static, str>,
+}
+
+impl OutputWriter {
+    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: Cow<'static, str>) -> Self {
+        Self {
+            writer,
+            exporter_id,
+        }
+    }
+
+    async fn write(&mut self, data: &str) -> Result<(), Error<OtapPdata>> {
+        self.writer
+            .write_all(data.as_bytes())
+            .await
+            .map_err(|e| Error::ExporterError {
+                exporter: self.exporter_id.clone(),
+                error: format!("Write error: {e}\n"),
+            })
+    }
+}
 
 /// The URN for the OTAP Perf exporter
 pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
@@ -49,7 +76,7 @@ pub struct PerfExporter {
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-pub static PERF_EXPORTER: ExporterFactory<OTAPData> = ExporterFactory {
+pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
     create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
@@ -81,12 +108,12 @@ impl PerfExporter {
 }
 
 #[async_trait(?Send)]
-impl local::Exporter<OTAPData> for PerfExporter {
+impl local::Exporter<OtapPdata> for PerfExporter {
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<OTAPData>,
-        effect_handler: local::EffectHandler<OTAPData>,
-    ) -> Result<(), Error<OTAPData>> {
+        mut msg_chan: MessageChannel<OtapPdata>,
+        effect_handler: local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         // init variables for tracking
         let mut average_pipeline_latency: f64 = 0.0;
         let mut received_arrow_records_count: u64 = 0;
@@ -98,36 +125,38 @@ impl local::Exporter<OTAPData> for PerfExporter {
         let mut last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
             exporter: effect_handler.exporter_id(),
-            error: format!("Failed to get process pid: {e}"),
+            error: format!("Failed to get process pid: {e}\n"),
         })?;
         let mut system = System::new();
 
-        let mut writer = get_writer(self.output);
+        let raw_writer = get_writer(self.output).await;
+        let mut writer = OutputWriter::new(raw_writer, effect_handler.exporter_id());
 
         let sys_refresh_list = sys_refresh_list(&self.config);
 
+        effect_handler.info("Starting Perf Exporter\n").await;
+
         // Helper function to generate performance report
-        let generate_report = |received_arrow_records_count: u64,
-                               received_otlp_signal_count: u64,
-                               received_pdata_batch_count: u64,
-                               total_received_arrow_records_count: u128,
-                               total_received_otlp_signal_count: u128,
-                               total_received_pdata_batch_count: u64,
-                               average_pipeline_latency: f64,
-                               last_perf_time: Instant,
-                               system: &mut System,
-                               config: &Config,
-                               writer: &mut Box<dyn Write>,
-                               process_pid: sysinfo::Pid|
-         -> Result<(), Error<OTAPData>> {
+        let generate_report = async |received_arrow_records_count: u64,
+                                     received_otlp_signal_count: u64,
+                                     received_pdata_batch_count: u64,
+                                     total_received_arrow_records_count: u128,
+                                     total_received_otlp_signal_count: u128,
+                                     total_received_pdata_batch_count: u64,
+                                     average_pipeline_latency: f64,
+                                     last_perf_time: Instant,
+                                     system: &mut System,
+                                     config: &Config,
+                                     writer: &mut OutputWriter,
+                                     process_pid: sysinfo::Pid|
+               -> Result<(), Error<OtapPdata>> {
             let now = Instant::now();
             let duration = now - last_perf_time;
 
             // display pipeline report
-            _ = writeln!(
-                writer,
-                "====================Pipeline Report===================="
-            );
+            writer
+                .write("====================Pipeline Report====================\n")
+                .await?;
             display_report_pipeline(
                 received_arrow_records_count,
                 received_otlp_signal_count,
@@ -138,7 +167,8 @@ impl local::Exporter<OTAPData> for PerfExporter {
                 average_pipeline_latency,
                 duration,
                 writer,
-            );
+            )
+            .await?;
 
             // update sysinfo data
             system.refresh_specifics(sys_refresh_list);
@@ -149,35 +179,31 @@ impl local::Exporter<OTAPData> for PerfExporter {
 
             // check configuration and display data accordingly
             if config.mem_usage() {
-                _ = writeln!(
-                    writer,
-                    "=====================Memory Usage======================"
-                );
-                display_mem_usage(process, writer);
+                writer
+                    .write("=====================Memory Usage======================\n")
+                    .await?;
+                display_mem_usage(process, writer).await?;
             }
             if config.cpu_usage() {
-                _ = writeln!(
-                    writer,
-                    "=======================Cpu Usage======================="
-                );
-                display_cpu_usage(process, system, writer);
+                writer
+                    .write("=======================Cpu Usage=======================\n")
+                    .await?;
+                display_cpu_usage(process, system, writer).await?;
             }
             if config.disk_usage() {
-                _ = writeln!(
-                    writer,
-                    "======================Disk Usage======================="
-                );
+                writer
+                    .write("======================Disk Usage=======================\n")
+                    .await?;
                 let disk_usage = process.disk_usage();
-                display_disk_usage(disk_usage, duration, writer);
+                display_disk_usage(disk_usage, duration, writer).await?;
             }
             if config.io_usage() {
                 let networks = Networks::new_with_refreshed_list();
-                _ = writeln!(
-                    writer,
-                    "=====================Network Usage====================="
-                );
+                writer
+                    .write("=====================Network Usage=====================\n")
+                    .await?;
                 for (interface_name, network) in &networks {
-                    display_io_usage(interface_name, network, duration, writer);
+                    display_io_usage(interface_name, network, duration, writer).await?;
                 }
             }
 
@@ -202,7 +228,8 @@ impl local::Exporter<OTAPData> for PerfExporter {
                         &self.config,
                         &mut writer,
                         process_pid,
-                    )?;
+                    )
+                    .await?;
 
                     // reset received counters and update last_perf_time
                     received_arrow_records_count = 0;
@@ -227,12 +254,16 @@ impl local::Exporter<OTAPData> for PerfExporter {
                         &self.config,
                         &mut writer,
                         process_pid,
-                    )?;
+                    )
+                    .await?;
                     break;
                 }
-                Message::PData(OTAPData::ArrowMetrics(batch))
-                | Message::PData(OTAPData::ArrowLogs(batch))
-                | Message::PData(OTAPData::ArrowTraces(batch)) => {
+                Message::PData(pdata) => {
+                    let batch = match OtapArrowBytes::try_from(pdata)? {
+                        OtapArrowBytes::ArrowLogs(batch) => batch,
+                        OtapArrowBytes::ArrowMetrics(batch) => batch,
+                        OtapArrowBytes::ArrowTraces(batch) => batch,
+                    };
                     // keep track of batches received
                     received_pdata_batch_count += 1;
                     total_received_pdata_batch_count += 1;
@@ -277,31 +308,6 @@ impl local::Exporter<OTAPData> for PerfExporter {
                     // increment counters for otlp signals
                     received_otlp_signal_count += calculate_otlp_signal_count(batch);
                     total_received_otlp_signal_count += received_otlp_signal_count as u128;
-
-                    // ToDo: Remove these lines, used to debugging
-                    // _ = writeln!(writer, "Arrow Records {}", received_arrow_records_count);
-                    // _ = writeln!(writer, "Otlp Data Count {}", received_otlp_signal_count);
-                    // _ = writeln!(writer, "Pdata Count {}", received_pdata_batch_count);
-                    // _ = writeln!(
-                    //     writer,
-                    //     "Total Records Count {}",
-                    //     total_received_arrow_records_count
-                    // );
-                    // _ = writeln!(
-                    //     writer,
-                    //     "Total Otlp Count {}",
-                    //     total_received_otlp_signal_count
-                    // );
-                    // _ = writeln!(
-                    //     writer,
-                    //     "Total Pdata Count {}",
-                    //     total_received_pdata_batch_count
-                    // );
-                    // _ = writeln!(
-                    //     writer,
-                    //     "Average Pipeline Latency {}",
-                    //     average_pipeline_latency
-                    // );
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -316,17 +322,19 @@ impl local::Exporter<OTAPData> for PerfExporter {
 }
 
 /// determine if output goes to console or to a file
-fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
+async fn get_writer(output_file: Option<String>) -> Box<dyn AsyncWrite + Unpin> {
     match output_file {
-        Some(file_name) => Box::new(
-            OpenOptions::new()
+        Some(file_name) => {
+            let file = File::options()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .open(file_name)
-                .expect("could not open output file"),
-        ),
-        None => Box::new(std::io::stdout()),
+                .await
+                .expect("could not open output file\n");
+            Box::new(file)
+        }
+        None => Box::new(tokio::io::stdout()),
     }
 }
 
@@ -385,72 +393,94 @@ fn calculate_otlp_signal_count(batch: BatchArrowRecords) -> u64 {
 }
 
 /// takes in the process and system outputs cpu stats via the writer
-fn display_cpu_usage(process: &Process, system: &System, writer: &mut impl Write) {
+async fn display_cpu_usage(
+    process: &Process,
+    system: &System,
+    writer: &mut OutputWriter,
+) -> Result<(), Error<OtapPdata>> {
     let process_cpu_usage = process.cpu_usage(); // as %
     let global_cpu_usage = system.global_cpu_usage(); // as %
-    _ = writeln!(
-        writer,
-        "\t- global cpu usage                  : {process_cpu_usage}% (100% is all cores)"
-    );
-    _ = writeln!(
-        writer,
-        "\t- process cpu usage                 : {global_cpu_usage}% (100% is a single core)"
-    );
+    writer
+        .write(&format!(
+            "\t- global cpu usage                  : {process_cpu_usage}% (100% is all cores)\n"
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- process cpu usage                 : {global_cpu_usage}% (100% is a single core)\n",
+        ))
+        .await?;
+    Ok(())
 }
 
 /// takes in the process outputs memory stats via the writer
-fn display_mem_usage(process: &Process, writer: &mut impl Write) {
+async fn display_mem_usage(
+    process: &Process,
+    writer: &mut OutputWriter,
+) -> Result<(), Error<OtapPdata>> {
     let memory_rss = process.memory(); // as bytes
     let memory_virtual = process.virtual_memory(); // as bytes
-    _ = writeln!(
-        writer,
-        "\t- memory rss                        : {}",
-        Byte::from_bytes(memory_rss as u128).get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- memory virtual                    : {}",
-        Byte::from_bytes(memory_virtual as u128).get_appropriate_unit(false)
-    );
+    writer
+        .write(&format!(
+            "\t- memory rss                        : {}\n",
+            Byte::from_bytes(memory_rss as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- memory virtual                    : {}\n",
+            Byte::from_bytes(memory_virtual as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    Ok(())
 }
 
 /// takes in the disk usage data and outputs stats via the writer
-fn display_disk_usage(disk_usage: DiskUsage, duration: Duration, writer: &mut impl Write) {
+async fn display_disk_usage(
+    disk_usage: DiskUsage,
+    duration: Duration,
+    writer: &mut OutputWriter,
+) -> Result<(), Error<OtapPdata>> {
     let total_written_bytes = disk_usage.total_written_bytes;
     let total_read_bytes = disk_usage.total_read_bytes;
     let written_bytes = disk_usage.written_bytes;
     let read_bytes = disk_usage.read_bytes;
-    _ = writeln!(
-        writer,
-        "\t- read bytes                        : {}/s",
-        Byte::from_bytes((read_bytes as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false) // duration.as_secs_f64()
-    );
-    _ = writeln!(
-        writer,
-        "\t- total read bytes                  : {}",
-        Byte::from_bytes(total_read_bytes as u128).get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- written bytes                     : {}/s",
-        Byte::from_bytes((written_bytes as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- total written bytes               : {}",
-        Byte::from_bytes(total_written_bytes as u128).get_appropriate_unit(false)
-    );
+    writer
+        .write(&format!(
+            "\t- read bytes                        : {}/s\n",
+            Byte::from_bytes((read_bytes as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false), // duration.as_secs_f64()
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total read bytes                  : {}\n",
+            Byte::from_bytes(total_read_bytes as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- written bytes                     : {}/s\n",
+            Byte::from_bytes((written_bytes as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total written bytes               : {}\n",
+            Byte::from_bytes(total_written_bytes as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    Ok(())
 }
 
 /// takes in network data and outputs networks stats via the writer
-fn display_io_usage(
+async fn display_io_usage(
     network_name: &str,
     network_data: &NetworkData,
     duration: Duration,
-    writer: &mut impl Write,
-) {
+    writer: &mut OutputWriter,
+) -> Result<(), Error<OtapPdata>> {
     // per interface, get networkdata
     let bytes_received = network_data.received(); //as bytes u64
     let total_bytes_received = network_data.total_received(); // as bytes u64
@@ -469,77 +499,92 @@ fn display_io_usage(
 
     let errors_on_transmitted = network_data.errors_on_transmitted();
     let total_errors_on_transmitted = network_data.total_errors_on_transmitted();
-    _ = writeln!(writer, "Network Interface: {network_name}");
-    _ = writeln!(
-        writer,
-        "\t- bytes read                        : {}/s",
-        Byte::from_bytes((bytes_received as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- total bytes recevied              : {}",
-        Byte::from_bytes(total_bytes_received as u128).get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- bytes transmitted                 : {}/s",
-        Byte::from_bytes((bytes_transmitted as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- total bytes transmitted           : {}",
-        Byte::from_bytes(total_bytes_transmitted as u128).get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- packets received                  : {}/s",
-        Byte::from_bytes((packets_received as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- total packets received            : {}",
-        Byte::from_bytes(total_packets_received as u128).get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- packets transmitted               : {}/s",
-        Byte::from_bytes((packets_transmitted as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- total packets transmitted         : {}",
-        Byte::from_bytes(total_packets_transmitted as u128).get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- errors on received                : {}/s",
-        Byte::from_bytes((errors_on_received as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- total errors on received          : {}",
-        Byte::from_bytes(total_errors_on_received as u128).get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- errors on transmitted             : {}/s",
-        Byte::from_bytes((errors_on_transmitted as f64 / duration.as_secs_f64()) as u128)
-            .get_appropriate_unit(false)
-    );
-    _ = writeln!(
-        writer,
-        "\t- total errors on transmitted       : {}",
-        Byte::from_bytes(total_errors_on_transmitted as u128).get_appropriate_unit(false)
-    );
+    writer
+        .write(&format!("Network Interface: {network_name}\n"))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- bytes read                        : {}/s\n",
+            Byte::from_bytes((bytes_received as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total bytes recevied              : {}\n",
+            Byte::from_bytes(total_bytes_received as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- bytes transmitted                 : {}/s\n",
+            Byte::from_bytes((bytes_transmitted as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total bytes transmitted           : {}\n",
+            Byte::from_bytes(total_bytes_transmitted as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- packets received                  : {}/s\n",
+            Byte::from_bytes((packets_received as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total packets received            : {}\n",
+            Byte::from_bytes(total_packets_received as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- packets transmitted               : {}/s\n",
+            Byte::from_bytes((packets_transmitted as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total packets transmitted         : {}\n",
+            Byte::from_bytes(total_packets_transmitted as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- errors on received                : {}/s\n",
+            Byte::from_bytes((errors_on_received as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total errors on received          : {}\n",
+            Byte::from_bytes(total_errors_on_received as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- errors on transmitted             : {}/s\n",
+            Byte::from_bytes((errors_on_transmitted as f64 / duration.as_secs_f64()) as u128)
+                .get_appropriate_unit(false),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total errors on transmitted       : {}\n",
+            Byte::from_bytes(total_errors_on_transmitted as u128).get_appropriate_unit(false),
+        ))
+        .await?;
+    Ok(())
 }
 
 /// accepts pipeline statistics and prints a report via the writer
-fn display_report_pipeline(
+async fn display_report_pipeline(
     received_arrow_records_count: u64,
     received_otlp_signal_count: u64,
     received_pdata_batch_count: u64,
@@ -548,64 +593,74 @@ fn display_report_pipeline(
     total_received_pdata_batch_count: u64,
     average_pipeline_latency: f64,
     duration: Duration,
-    writer: &mut impl Write,
-) {
-    _ = writeln!(
-        writer,
-        "\t- arrow records throughput          : {:.2} arrow-records/s",
-        (received_arrow_records_count as f64 / duration.as_secs_f64())
-    );
-    _ = writeln!(
-        writer,
-        "\t- average pipeline latency          : {:.2} s",
-        average_pipeline_latency * 1000.0
-    );
+    writer: &mut OutputWriter,
+) -> Result<(), Error<OtapPdata>> {
+    writer
+        .write(&format!(
+            "\t- arrow records throughput          : {:.2} arrow-records/s\n",
+            (received_arrow_records_count as f64 / duration.as_secs_f64()),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- average pipeline latency          : {:.2} s\n",
+            average_pipeline_latency * 1000.0,
+        ))
+        .await?;
 
-    _ = writeln!(
-        writer,
-        "\t- total arrow records received      : {total_received_arrow_records_count}"
-    );
-    _ = writeln!(
-        writer,
-        "\t- otlp signal throughput            : {:.2} otlp/s",
-        (received_otlp_signal_count as f64 / duration.as_secs_f64())
-    );
-    _ = writeln!(
-        writer,
-        "\t- total otlp signal received        : {total_received_otlp_signal_count}"
-    );
-    _ = writeln!(
-        writer,
-        "\t- pdata batch throughput            : {:.2} pdata/s",
-        received_pdata_batch_count as f64 / duration.as_secs_f64()
-    );
+    writer
+        .write(&format!(
+            "\t- total arrow records received      : {total_received_arrow_records_count}\n"
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- otlp signal throughput            : {:.2} otlp/s\n",
+            (received_otlp_signal_count as f64 / duration.as_secs_f64()),
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- total otlp signal received        : {total_received_otlp_signal_count}\n"
+        ))
+        .await?;
+    writer
+        .write(&format!(
+            "\t- pdata batch throughput            : {:.2} pdata/s\n",
+            received_pdata_batch_count as f64 / duration.as_secs_f64(),
+        ))
+        .await?;
 
-    _ = writeln!(
-        writer,
-        "\t- total pdata batch received        : {total_received_pdata_batch_count}"
-    );
+    writer
+        .write(&format!(
+            "\t- total pdata batch received        : {total_received_pdata_batch_count}\n"
+        ))
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
 
+    use crate::grpc::OtapArrowBytes;
+    use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
-    use crate::proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
-    };
     use fluke_hpack::Encoder;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-    use tokio::time::{Duration, sleep};
-
-    use crate::grpc::OTAPData;
-    use otap_df_config::node::NodeUserConfig;
+    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
+    };
     use std::fs::{File, remove_file};
+    use std::future::Future;
     use std::io::{BufReader, prelude::*};
     use std::rc::Rc;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::time::{Duration, sleep};
 
     const TRACES_BATCH_ID: i64 = 0;
     const LOGS_BATCH_ID: i64 = 1;
@@ -658,7 +713,7 @@ mod tests {
     /// data message, and shutdown control messages.
     ///
     fn scenario()
-    -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 // send some messages to the exporter to calculate pipeline statistics
@@ -682,13 +737,13 @@ mod tests {
                         ROW_SIZE,
                     );
                     // // Send a data message
-                    ctx.send_pdata(OTAPData::ArrowTraces(traces_batch_data))
+                    ctx.send_pdata(OtapArrowBytes::ArrowTraces(traces_batch_data).into())
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(OTAPData::ArrowLogs(logs_batch_data))
+                    ctx.send_pdata(OtapArrowBytes::ArrowLogs(logs_batch_data).into())
                         .await
                         .expect("Failed to send data message");
-                    ctx.send_pdata(OTAPData::ArrowMetrics(metrics_batch_data))
+                    ctx.send_pdata(OtapArrowBytes::ArrowMetrics(metrics_batch_data).into())
                         .await
                         .expect("Failed to send data message");
                 }
@@ -712,9 +767,14 @@ mod tests {
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
         output_file: String,
-    ) -> impl FnOnce(TestContext<OTAPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |_| {
+    ) -> impl FnOnce(
+        TestContext<OtapPdata>,
+        Result<(), Error<OtapPdata>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_, exporter_result| {
             Box::pin(async move {
+                assert!(exporter_result.is_ok());
+
                 // get a file to read and validate the output
                 // open file
                 // read the output file
@@ -801,6 +861,6 @@ mod tests {
             .run_validation(validation_procedure(output_file.clone()));
 
         // remove the created file, prevent accidental check in of report
-        remove_file(output_file).expect("Failed to remove file");
+        remove_file(output_file).expect("Failed to remove file\n");
     }
 }

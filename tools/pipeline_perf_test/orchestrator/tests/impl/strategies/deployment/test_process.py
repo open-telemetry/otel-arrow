@@ -46,8 +46,8 @@ class TestProcessDeployment(unittest.TestCase):
 
         # Assertions
         mock_popen.assert_called_once_with(
-            "echo 'hello world'",
-            shell=True,
+            ["echo", "hello world"],
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env={**os.environ, **{"KEY": "VALUE"}},
@@ -160,8 +160,8 @@ class TestProcessDeployment(unittest.TestCase):
 
         # Check if Popen is called with an environment based on os.environ only (empty environment)
         mock_popen.assert_called_once_with(
-            "echo 'hello world'",
-            shell=True,
+            ["echo", "hello world"],
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=os.environ,
@@ -201,8 +201,8 @@ class TestProcessDeployment(unittest.TestCase):
 
         # Check if Popen is called with an environment based on os.environ only (empty environment)
         mock_popen.assert_called_once_with(
-            "echo 'hello world'",
-            shell=True,
+            ["echo", "hello world"],
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=os.environ,

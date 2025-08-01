@@ -1,22 +1,15 @@
-#[macro_use]
-pub(crate) mod macros;
-
-pub mod data;
-pub(crate) mod data_engine;
-pub mod data_expressions;
-pub(crate) mod error;
+pub(crate) mod engine;
+pub(crate) mod engine_diagnostic;
 pub(crate) mod execution_context;
-pub(crate) mod expression;
-pub mod logical_expressions;
-pub(crate) mod pipeline_expression;
-pub mod primitives;
-pub(crate) mod summary;
-pub mod transform_expressions;
-pub mod value_expressions;
-pub(crate) mod value_path;
+pub(crate) mod logical_expressions;
+pub(crate) mod primitives;
+pub(crate) mod scalar_expressions;
+pub(crate) mod test_helpers;
+pub(crate) mod transform;
+pub(crate) mod value_expressions;
 
-pub use data_engine::*;
-pub use error::Error;
-pub use pipeline_expression::PipelineExpression;
-pub use summary::*;
-pub use value_path::ValuePath;
+pub use engine::*;
+pub use engine_diagnostic::*;
+pub use primitives::*;
+#[cfg(test)]
+pub use test_helpers::*;
