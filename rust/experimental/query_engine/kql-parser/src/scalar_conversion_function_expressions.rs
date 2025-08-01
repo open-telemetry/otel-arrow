@@ -8,35 +8,29 @@ pub(crate) fn parse_tostring_expression(
     tostring_rule: Pair<Rule>,
     state: &ParserState,
 ) -> Result<ScalarExpression, ParserError> {
-    // Capture the location for error reporting
     let query_location = to_query_location(&tostring_rule);
-
-    // Get the inner rules (should contain exactly one scalar_expression)
     let mut inner = tostring_rule.into_inner();
 
-    // Get the first (and should be only) argument
-    let scalar_expr_rule = inner.next().ok_or_else(|| {
-        ParserError::SyntaxError(
-            query_location.clone(),
-            "tostring() requires exactly one argument".to_string(),
-        )
-    })?;
+    // Create the error once since it's the same for both cases
+    let arg_count_error = || ParserError::QueryLanguageDiagnostic {
+        location: query_location.clone(),
+        diagnostic_id: "KS119",
+        message: "The function 'tostring' expects 1 argument.".to_string(),
+    };
 
-    // Check if there are extra arguments (there shouldn't be)
+    // Get exactly one argument
+    let scalar_expr_rule = inner.next().ok_or_else(arg_count_error)?;
+
+    // Ensure no extra arguments
     if inner.next().is_some() {
-        return Err(ParserError::SyntaxError(
-            query_location.clone(),
-            "tostring() accepts only one argument".to_string(),
-        ));
+        return Err(arg_count_error());
     }
 
-    // Parse the inner scalar expression
+    // Parse and wrap in conversion expression
     let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
-
-    // Create the conversion expression using the existing ConversionScalarExpression
-    Ok(ScalarExpression::Conversion(
-        ConversionScalarExpression::new(query_location, ConversionType::ToString, inner_expr),
-    ))
+    Ok(ScalarExpression::Convert(ConvertScalarExpression::String(
+        ConversionScalarExpression::new(query_location, inner_expr),
+    )))
 }
 
 #[cfg(test)]
@@ -61,11 +55,11 @@ mod tests {
             result
         );
 
-        if let Ok(ScalarExpression::Conversion(conv)) = &result {
-            assert_eq!(conv.get_conversion_type(), &ConversionType::ToString);
-
+        if let Ok(ScalarExpression::Convert(ConvertScalarExpression::String(conv))) = &result {
+            
             // Verify the inner expression is a static integer
             if let ScalarExpression::Static(static_expr) = conv.get_inner_expression() {
+                
                 // Check if it's an integer
                 match static_expr {
                     StaticScalarExpression::Integer(int_expr) => {
@@ -77,7 +71,7 @@ mod tests {
                 panic!("Expected static expression inside tostring()");
             }
         } else {
-            panic!("Expected Conversion expression");
+            panic!("Expected Convert::String expression");
         }
     }
 
