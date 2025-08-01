@@ -51,8 +51,7 @@ mod tests {
         let result = parse_tostring_expression(tostring_pair, &state);
         assert!(
             result.is_ok(),
-            "Failed to parse tostring(123): {:?}",
-            result
+            "Failed to parse tostring(123): {result:?}"
         );
 
         if let Ok(ScalarExpression::Convert(ConvertScalarExpression::String(conv))) = &result {
@@ -85,8 +84,7 @@ mod tests {
         let result = parse_tostring_expression(tostring_pair, &state);
         assert!(
             result.is_ok(),
-            "Failed to parse tostring(\"hello\"): {:?}",
-            result
+            "Failed to parse tostring(\"hello\"): {result:?}"
         );
     }
 
@@ -102,8 +100,7 @@ mod tests {
         let result = parse_tostring_expression(tostring_pair, &state);
         assert!(
             result.is_ok(),
-            "Failed to parse tostring(true): {:?}",
-            result
+            "Failed to parse tostring(true): {result:?}"
         );
     }
 
@@ -119,8 +116,7 @@ mod tests {
         let result = parse_tostring_expression(tostring_pair, &state);
         assert!(
             result.is_ok(),
-            "Failed to parse tostring(null): {:?}",
-            result
+            "Failed to parse tostring(null): {result:?}"
         );
     }
 
@@ -178,8 +174,7 @@ mod tests {
         let result = parse_tostring_expression(tostring_pair, &state);
         assert!(
             result.is_ok(),
-            "Failed to parse nested tostring: {:?}",
-            result
+            "Failed to parse nested tostring: {result:?}"
         );
     }
 }
