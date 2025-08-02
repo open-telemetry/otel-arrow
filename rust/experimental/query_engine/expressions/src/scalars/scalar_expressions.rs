@@ -42,6 +42,9 @@ pub enum ScalarExpression {
     /// Returns one of two inner scalar expressions based on a logical condition.
     Conditional(ConditionalScalarExpression),
 
+    /// Returns one of many inner scalar expressions based on multiple logical conditions.
+    Case(CaseScalarExpression),
+
     /// Convert scalar values into different types.
     Convert(ConvertScalarExpression),
 
@@ -65,6 +68,7 @@ impl ScalarExpression {
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(pipeline),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(pipeline),
+            ScalarExpression::Case(c) => c.try_resolve_value_type(pipeline),
             ScalarExpression::Convert(c) => c.try_resolve_value_type(pipeline),
             ScalarExpression::Length(l) => l.try_resolve_value_type(pipeline),
         }
@@ -88,6 +92,7 @@ impl ScalarExpression {
             ScalarExpression::Logical(l) => l.try_resolve_static(pipeline),
             ScalarExpression::Coalesce(c) => c.try_resolve_static(pipeline),
             ScalarExpression::Conditional(c) => c.try_resolve_static(pipeline),
+            ScalarExpression::Case(c) => c.try_resolve_static(pipeline),
             ScalarExpression::Convert(c) => c.try_resolve_static(pipeline),
             ScalarExpression::Length(l) => l.try_resolve_static(pipeline),
         }
@@ -106,6 +111,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Coalesce(c) => c.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
+            ScalarExpression::Case(c) => c.get_query_location(),
             ScalarExpression::Convert(c) => c.get_query_location(),
             ScalarExpression::Length(l) => l.get_query_location(),
         }
@@ -121,6 +127,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
+            ScalarExpression::Case(_) => "ScalarExpression(Case)",
             ScalarExpression::Constant(c) => c.get_name(),
             ScalarExpression::Convert(c) => c.get_name(),
             ScalarExpression::Length(_) => "ScalarExpression(Length)",
@@ -669,6 +676,132 @@ impl Expression for ConditionalScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ConditionalScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseScalarExpression {
+    query_location: QueryLocation,
+    conditions: Vec<Box<LogicalExpression>>,
+    expressions: Vec<Box<ScalarExpression>>,
+    else_expression: Box<ScalarExpression>,
+}
+
+impl CaseScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        conditions: Vec<LogicalExpression>,
+        expressions: Vec<ScalarExpression>,
+        else_expression: ScalarExpression,
+    ) -> CaseScalarExpression {
+        Self {
+            query_location,
+            conditions: conditions.into_iter().map(|c| c.into()).collect(),
+            expressions: expressions.into_iter().map(|e| e.into()).collect(),
+            else_expression: else_expression.into(),
+        }
+    }
+
+    pub fn get_conditions(&self) -> &Vec<Box<LogicalExpression>> {
+        &self.conditions
+    }
+
+    pub fn get_expressions(&self) -> &Vec<Box<ScalarExpression>> {
+        &self.expressions
+    }
+
+    pub fn get_else_expression(&self) -> &ScalarExpression {
+        &self.else_expression
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        if let Some(s) = self.try_resolve_static(pipeline)? {
+            return Ok(Some(s.get_value_type()));
+        }
+
+        // Check if all expressions (including else) have the same static type
+        let mut resolved_type: Option<ValueType> = None;
+        
+        for expr in &self.expressions {
+            if let Some(expr_static) = expr.try_resolve_static(pipeline)? {
+                let expr_type = expr_static.get_value_type();
+                if let Some(existing_type) = &resolved_type {
+                    if *existing_type != expr_type {
+                        return Ok(None); // Types don't match
+                    }
+                } else {
+                    resolved_type = Some(expr_type);
+                }
+            } else {
+                return Ok(None); // Can't resolve type
+            }
+        }
+
+        if let Some(else_static) = self.else_expression.try_resolve_static(pipeline)? {
+            let else_type = else_static.get_value_type();
+            if let Some(existing_type) = &resolved_type {
+                if *existing_type == else_type {
+                    return Ok(Some(else_type));
+                }
+            } else {
+                return Ok(Some(else_type));
+            }
+        }
+
+        Ok(None)
+    }
+
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        // Check each condition in order
+        for (condition, expression) in self.conditions.iter().zip(&self.expressions) {
+            let condition_result = condition.try_resolve_static(pipeline)?;
+            
+            if condition_result.is_none() {
+                return Ok(None);
+            }
+
+            match condition_result.unwrap().to_value() {
+                Value::Boolean(b) => {
+                    if b.get_value() {
+                        // This condition is true, return its expression
+                        let expr_result = expression.try_resolve_static(pipeline)?;
+                        if expr_result.is_none() {
+                            return Ok(None);
+                        }
+                        return Ok(Some(expr_result.unwrap()));
+                    }
+                    // This condition is false, continue to next condition
+                }
+                _ => panic!("LogicalExpression did not return a bool value"),
+            }
+        }
+
+        // No condition was true, return else expression
+        let else_result = self.else_expression.try_resolve_static(pipeline)?;
+        if else_result.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(else_result.unwrap()))
+    }
+}
+
+impl Expression for CaseScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "CaseScalarExpression"
     }
 }
 
