@@ -148,7 +148,7 @@ where
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
                     mutable_value_expression,
-                    || format!("Copied the resolved selector value '{value}' into temporary storage because the destination matches the source"));
+                    || format!("Copied the resolved selector value '{value}' into temporary storage because the value came from the mutable target"));
             }
         }
 

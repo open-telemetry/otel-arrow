@@ -41,7 +41,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         s,
-                        || "Copied the resolved source value into temporary storage because the destination matches the source".into());
+                        || "Copied the resolved source value into temporary storage because the value came from the mutable target".into());
                 }
             }
 
@@ -203,7 +203,9 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
         }
         TransformExpression::RemoveMapKeys(r) => match r {
             RemoveMapKeysTransformExpression::Remove(m) => {
-                let map_keys = resolve_map_keys(execution_context, m)?;
+                let target = m.get_target();
+
+                let map_keys = resolve_map_keys(execution_context, target, m)?;
 
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
@@ -211,7 +213,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                     || format!("Resolved map keys: {map_keys}"),
                 );
 
-                let target = execute_mutable_value_expression(execution_context, m.get_target())?;
+                let target = execute_mutable_value_expression(execution_context, target)?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
@@ -251,7 +253,9 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                 Ok(())
             }
             RemoveMapKeysTransformExpression::Retain(m) => {
-                let map_keys = resolve_map_keys(execution_context, m)?;
+                let target = m.get_target();
+
+                let map_keys = resolve_map_keys(execution_context, target, m)?;
 
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
@@ -259,7 +263,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                     || format!("Resolved map keys: {map_keys}"),
                 );
 
-                let target = execute_mutable_value_expression(execution_context, m.get_target())?;
+                let target = execute_mutable_value_expression(execution_context, target)?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
@@ -327,6 +331,7 @@ impl Display for MapKeys<'_> {
 
 fn resolve_map_keys<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    target: &'a MutableValueExpression,
     key_list: &'a MapKeyListExpression,
 ) -> Result<MapKeys<'c>, ExpressionError>
 where
@@ -336,7 +341,27 @@ where
     let mut keys = Vec::new();
 
     for key_scalar in key_list.get_keys() {
-        let value = execute_scalar_expression(execution_context, key_scalar)?;
+        let mut value = execute_scalar_expression(execution_context, key_scalar)?;
+
+        if let ResolvedValue::Borrowed(ref borrow_source, _) = value {
+            let writing_while_holding_borrow = match target {
+                MutableValueExpression::Source(_) => {
+                    matches!(borrow_source, BorrowSource::Record)
+                }
+                MutableValueExpression::Variable(_) => {
+                    matches!(borrow_source, BorrowSource::Variable)
+                }
+            };
+
+            if writing_while_holding_borrow {
+                value = ResolvedValue::Computed(value.to_owned());
+
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    target,
+                    || format!("Copied the resolved key value '{value}' into temporary storage because the value came from the mutable target"));
+            }
+        }
 
         keys.push(value);
     }
@@ -922,6 +947,10 @@ mod tests {
                     OwnedValue::Integer(ValueStorage::new(2)),
                     OwnedValue::Integer(ValueStorage::new(3)),
                 ])),
+            )
+            .with_key_value(
+                "key_to_remove".into(),
+                OwnedValue::String(ValueStorage::new("key1".into())),
             );
 
         let run_test = |transform_expression| {
@@ -964,7 +993,30 @@ mod tests {
             )),
         ));
 
-        assert_eq!(1, result.len());
+        assert_eq!(2, result.len());
+        assert!(!result.contains_key("key1"));
+
+        // Test removing a key using path referencing data on source
+        let result = run_test(TransformExpression::RemoveMapKeys(
+            RemoveMapKeysTransformExpression::Remove(MapKeyListExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key_to_remove",
+                        )),
+                    )]),
+                ))],
+            )),
+        ));
+
+        assert_eq!(2, result.len());
         assert!(!result.contains_key("key1"));
 
         // Test retaining a key

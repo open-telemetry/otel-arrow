@@ -343,7 +343,7 @@ where
                                 execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Verbose,
                                                 s,
-                                                || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                                || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.to_value(), map_key.get_value()),
                                             );
                                 Some(v)
                             }
@@ -385,7 +385,7 @@ where
                                     execution_context.add_diagnostic_if_enabled(
                                                     RecordSetEngineDiagnosticLevel::Verbose,
                                                     s,
-                                                    || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                                    || format!("Resolved '{}' value for index '{index}' specified in accessor expression", v.to_value()),
                                                 );
                                     Some(v)
                                 }
@@ -445,7 +445,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                 execution_context.add_diagnostic_if_enabled(
                                             RecordSetEngineDiagnosticLevel::Verbose,
                                             s,
-                                            || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                            || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.to_value(), map_key.get_value()),
                                         );
                                 Some(v.to_value())
                             }
@@ -486,7 +486,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                     execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Verbose,
                                                 s,
-                                                || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                                || format!("Resolved '{}' value for index '{index}' specified in accessor expression", v.to_value()),
                                             );
                                     Some(v.to_value())
                                 }
