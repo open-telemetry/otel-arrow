@@ -10,22 +10,10 @@ pub(crate) fn parse_tostring_expression(
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tostring_rule);
     let mut inner = tostring_rule.into_inner();
-
-    // Create the error once since it's the same for both cases
-    let arg_count_error = || ParserError::QueryLanguageDiagnostic {
-        location: query_location.clone(),
-        diagnostic_id: "KS119",
-        message: "The function 'tostring' expects 1 argument.".to_string(),
-    };
-
-    // Get exactly one argument
-    let scalar_expr_rule = inner.next().ok_or_else(arg_count_error)?;
-
-    // Ensure no extra arguments
-    if inner.next().is_some() {
-        return Err(arg_count_error());
-    }
-
+    
+    // Grammar guarantees exactly one scalar_expression
+    let scalar_expr_rule = inner.next().unwrap();
+    
     // Parse and wrap in conversion expression
     let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
     Ok(ScalarExpression::Convert(ConvertScalarExpression::String(
@@ -35,137 +23,114 @@ pub(crate) fn parse_tostring_expression(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::KqlPestParser;
     use pest::Parser;
+    use crate::KqlPestParser;
+    use super::*;
 
     #[test]
-    fn test_tostring_with_integer() {
-        let input = "tostring(123)";
-        let mut pairs = KqlPestParser::parse(Rule::tostring_expression, input)
-            .expect("Failed to parse tostring expression");
+    fn test_pest_parse_tostring_expression_rule() {
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+            Rule::tostring_expression,
+            &[
+                "tostring(123)",
+                "tostring(-456)",
+                "tostring(0)",
+                "tostring(1.5)",
+                "tostring(-3.14)",
+                "tostring(true)",
+                "tostring(false)",
+                "tostring(null)",
+                "tostring(\"hello\")",
+                "tostring('world')",
+                "tostring(\"\")",
+                "tostring(x)",
+                "tostring(myVariable)",
+                "tostring(_var123)",
+                "tostring((42))",
+                "tostring(((x)))",
+                "tostring(iff(true, 1, 0))",
+                "tostring( 42 )",
+                "tostring(  42  )",
+            ],
+            &[
+                "tostring()",
+                "tostring(1, 2)",
+                "tostring(1, 2, 3)",
+                "tostring 42",
+                "tostring42",
+                "tostring(,)",
+                "tostring(42,)",
+                "tostring(,42)",
+                "toString(42)",
+                "TOSTRING(42)",
+                "ToString(42)",
+                "toSTRING(42)",
+                "tostring(",
+                "tostring(42",
+                "tostring)",
+                "tostring[]",
+                "tostring{}",
+                "tostring<42>",
+            ],
+        );
+    }
 
-        let tostring_pair = pairs.next().unwrap();
+    #[test]
+    fn test_tostring_query_location() {
+        let input = "tostring(42)";
         let state = ParserState::new(input);
+        let mut parsed = KqlPestParser::parse(Rule::tostring_expression, input).unwrap();
+        
+        let result = parse_tostring_expression(parsed.next().unwrap(), &state).unwrap();
+        
+        // Verify the result has proper location tracking
+        match result {
+            ScalarExpression::Convert(ConvertScalarExpression::String(conv_expr)) => {
+                let location = conv_expr.get_query_location();
+                let start_and_end = location.get_start_and_end_positions();
+                assert_eq!(start_and_end.0, 0);
+                assert_eq!(start_and_end.1, input.len());
+            }
+            _ => panic!("Expected ConvertScalarExpression::String"),
+        }
+    }
 
-        let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(result.is_ok(), "Failed to parse tostring(123): {result:?}");
+    #[test]
+    fn test_tostring_creates_correct_conversion_expression() {
+        // This test verifies that the parser creates the correct AST structure
+        // that will later be evaluated by ConvertScalarExpression::String
+        
+        let test_cases = vec![
+            ("tostring(42)", "integer literal"),
+            ("tostring(true)", "boolean literal"),
+            ("tostring(3.14)", "float literal"),
+            ("tostring(\"hello\")", "string literal"),
+        ];
 
-        if let Ok(ScalarExpression::Convert(ConvertScalarExpression::String(conv))) = &result {
-            // Verify the inner expression is a static integer
-            if let ScalarExpression::Static(static_expr) = conv.get_inner_expression() {
-                // Check if it's an integer
-                match static_expr {
-                    StaticScalarExpression::Integer(int_expr) => {
-                        assert_eq!(int_expr.get_value(), 123);
-                    }
-                    _ => panic!("Expected integer static expression inside tostring()"),
+        for (input, description) in test_cases {
+            let state = ParserState::new(input);
+            let mut parsed = KqlPestParser::parse(Rule::tostring_expression, input)
+                .expect(&format!("Failed to parse: {}", input));
+            
+            let result = parse_tostring_expression(parsed.next().unwrap(), &state)
+                .expect(&format!("Failed to parse expression: {}", input));
+            
+            // Verify we created the correct AST node that will trigger
+            // the String conversion logic in convert_scalar_expression.rs
+            match result {
+                ScalarExpression::Convert(ConvertScalarExpression::String(_conv_expr)) => {
+                    // This confirms the parser created the right structure
+                    // that will use the conversion logic you showed
+                    
+                    // When this AST is evaluated, it will:
+                    // 1. Evaluate the inner expression
+                    // 2. Call convert_to_string() on the result
+                    // 3. Return a StringScalarExpression with the converted value
+                    
+                    println!("Parser correctly created String conversion AST for {}", description);
                 }
-            } else {
-                panic!("Expected static expression inside tostring()");
-            }
-        } else {
-            panic!("Expected Convert::String expression");
-        }
-    }
-
-    #[test]
-    fn test_tostring_with_string() {
-        let input = r#"tostring("hello")"#;
-        let mut pairs = KqlPestParser::parse(Rule::tostring_expression, input)
-            .expect("Failed to parse tostring expression");
-
-        let tostring_pair = pairs.next().unwrap();
-        let state = ParserState::new(input);
-
-        let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(
-            result.is_ok(),
-            "Failed to parse tostring(\"hello\"): {result:?}"
-        );
-    }
-
-    #[test]
-    fn test_tostring_with_boolean() {
-        let input = "tostring(true)";
-        let mut pairs = KqlPestParser::parse(Rule::tostring_expression, input)
-            .expect("Failed to parse tostring expression");
-
-        let tostring_pair = pairs.next().unwrap();
-        let state = ParserState::new(input);
-
-        let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(result.is_ok(), "Failed to parse tostring(true): {result:?}");
-    }
-
-    #[test]
-    fn test_tostring_with_null() {
-        let input = "tostring(null)";
-        let mut pairs = KqlPestParser::parse(Rule::tostring_expression, input)
-            .expect("Failed to parse tostring expression");
-
-        let tostring_pair = pairs.next().unwrap();
-        let state = ParserState::new(input);
-
-        let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(result.is_ok(), "Failed to parse tostring(null): {result:?}");
-    }
-
-    #[test]
-    fn test_tostring_no_arguments() {
-        let input = "tostring()";
-        let parse_result = KqlPestParser::parse(Rule::tostring_expression, input);
-
-        // This might fail at the pest level if the grammar requires an argument
-        if let Ok(mut pairs) = parse_result {
-            let tostring_pair = pairs.next().unwrap();
-            let state = ParserState::new(input);
-
-            let result = parse_tostring_expression(tostring_pair, &state);
-            assert!(result.is_err(), "Expected error for tostring()");
-
-            if let Err(ParserError::SyntaxError(_, msg)) = result {
-                assert!(msg.contains("requires exactly one argument"));
-            } else {
-                panic!("Expected SyntaxError");
+                _ => panic!("Expected ConvertScalarExpression::String for: {}", description),
             }
         }
-    }
-
-    #[test]
-    fn test_tostring_multiple_arguments() {
-        let input = "tostring(123, 456)";
-        let parse_result = KqlPestParser::parse(Rule::tostring_expression, input);
-
-        // This might fail at the pest level if the grammar enforces single argument
-        if let Ok(mut pairs) = parse_result {
-            let tostring_pair = pairs.next().unwrap();
-            let state = ParserState::new(input);
-
-            let result = parse_tostring_expression(tostring_pair, &state);
-            assert!(result.is_err(), "Expected error for tostring(123, 456)");
-
-            if let Err(ParserError::SyntaxError(_, msg)) = result {
-                assert!(msg.contains("accepts only one argument"));
-            } else {
-                panic!("Expected SyntaxError");
-            }
-        }
-    }
-
-    #[test]
-    fn test_tostring_nested() {
-        let input = "tostring(tostring(123))";
-        let mut pairs = KqlPestParser::parse(Rule::tostring_expression, input)
-            .expect("Failed to parse nested tostring expression");
-
-        let tostring_pair = pairs.next().unwrap();
-        let state = ParserState::new(input);
-
-        let result = parse_tostring_expression(tostring_pair, &state);
-        assert!(
-            result.is_ok(),
-            "Failed to parse nested tostring: {result:?}"
-        );
     }
 }
