@@ -231,6 +231,36 @@ where
 
             Ok(inner_value)
         }
+        ScalarExpression::Case(c) => {
+            let conditions = c.get_conditions();
+            let expressions = c.get_expressions();
+            
+            // Evaluate conditions in order and return first matching result
+            for (condition, expression) in conditions.iter().zip(expressions.iter()) {
+                if execute_logical_expression(execution_context, condition)? {
+                    let inner_value = execute_scalar_expression(execution_context, expression)?;
+                    
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar_expression,
+                        || format!("Evaluated as: {inner_value}"),
+                    );
+                    
+                    return Ok(inner_value);
+                }
+            }
+            
+            // No condition matched, return else expression
+            let inner_value = execute_scalar_expression(execution_context, c.get_else_expression())?;
+            
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {inner_value}"),
+            );
+            
+            Ok(inner_value)
+        }
         ScalarExpression::Convert(c) => {
             let value = match c {
                 ConvertScalarExpression::Boolean(c) => {
@@ -1282,5 +1312,98 @@ mod tests {
                 Value::Null,
             ),
         ]);
+    }
+
+    #[test]
+    fn test_execute_case_scalar_expression() {
+        let record = TestRecord::new();
+
+        let run_test = |scalar_expression, expected_value: Value| {
+            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
+
+            let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
+
+            assert_eq!(expected_value, value.to_value());
+        };
+
+        // Test simple case: case(true, "success", "failure") -> "success"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                ))],
+                vec![ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                ))],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
+                )),
+            )),
+            Value::String(&ValueStorage::new("success".into())),
+        );
+
+        // Test fallback to else: case(false, "success", "failure") -> "failure"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        false,
+                    )),
+                ))],
+                vec![ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                ))],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
+                )),
+            )),
+            Value::String(&ValueStorage::new("failure".into())),
+        );
+
+        // Test multiple conditions: case(false, "first", true, "second", "else") -> "second"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            false,
+                        )),
+                    )),
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
+                    )),
+                ],
+                vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "first"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "second"),
+                    )),
+                ],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "else"),
+                )),
+            )),
+            Value::String(&ValueStorage::new("second".into())),
+        );
     }
 }

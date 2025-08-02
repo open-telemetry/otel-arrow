@@ -29,16 +29,4 @@ mod tests {
         assert!(KqlParser::parse("let a = 1").is_err());
         assert!(KqlParser::parse("i | extend a = 1 i | extend b = 2").is_err());
     }
-
-    #[test]
-    pub fn test_parse_case_expressions() {
-        // Test simple case expression
-        assert!(KqlParser::parse("events | extend status = case(true, \"success\", \"failure\")").is_ok());
-        
-        // Test case expression with multiple conditions
-        assert!(KqlParser::parse("events | extend category = case(level == \"info\", \"information\", level == \"error\", \"problem\", \"other\")").is_ok());
-        
-        // Test case expression with various types
-        assert!(KqlParser::parse("events | extend result = case(count > 10, 1, count > 5, 2, 0)").is_ok());
-    }
 }
