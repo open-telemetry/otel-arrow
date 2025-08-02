@@ -21,7 +21,12 @@ where
             });
             let mut selectors = s.get_value_accessor().get_selectors().iter();
 
-            let value = select_from_borrowed_value(execution_context, record, &mut selectors)?;
+            let value = select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Record,
+                record,
+                &mut selectors,
+            )?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -78,8 +83,12 @@ where
 
             let mut selectors = v.get_value_accessor().get_selectors().iter();
 
-            let value =
-                select_from_borrowed_value(execution_context, variable.unwrap(), &mut selectors)?;
+            let value = select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Variable,
+                variable.unwrap(),
+                &mut selectors,
+            )?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -315,7 +324,8 @@ where
 
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
-    root: Ref<'b, dyn AsValue + 'static>,
+    borrow_source: BorrowSource,
+    borrow: Ref<'b, dyn AsValue + 'static>,
     selectors: &mut Iter<'a, ScalarExpression>,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -326,7 +336,7 @@ where
             let value = execute_scalar_expression(execution_context, s)?;
 
             let next = match value.to_value() {
-                Value::String(map_key) => Ref::filter_map(root, |v| {
+                Value::String(map_key) => Ref::filter_map(borrow, |v| {
                     if let Value::Map(m) = v.to_value() {
                         match m.get(map_key.get_value()) {
                             Some(v) => {
@@ -356,7 +366,7 @@ where
                         None
                     }
                 }),
-                Value::Integer(array_index) => Ref::filter_map(root, |v| {
+                Value::Integer(array_index) => Ref::filter_map(borrow, |v| {
                     if let Value::Array(a) = v.to_value() {
                         let mut index = array_index.get_value();
                         if index < 0 {
@@ -409,12 +419,12 @@ where
             };
 
             if let Ok(v) = next {
-                select_from_borrowed_value(execution_context, v, selectors)
+                select_from_borrowed_value(execution_context, borrow_source, v, selectors)
             } else {
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
             }
         }
-        None => Ok(ResolvedValue::Borrowed(root)),
+        None => Ok(ResolvedValue::Borrowed(borrow_source, borrow)),
     }
 }
 
