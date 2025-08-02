@@ -234,31 +234,32 @@ where
         ScalarExpression::Case(c) => {
             let conditions = c.get_conditions();
             let expressions = c.get_expressions();
-            
+
             // Evaluate conditions in order and return first matching result
             for (condition, expression) in conditions.iter().zip(expressions.iter()) {
                 if execute_logical_expression(execution_context, condition)? {
                     let inner_value = execute_scalar_expression(execution_context, expression)?;
-                    
+
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         scalar_expression,
                         || format!("Evaluated as: {inner_value}"),
                     );
-                    
+
                     return Ok(inner_value);
                 }
             }
-            
+
             // No condition matched, return else expression
-            let inner_value = execute_scalar_expression(execution_context, c.get_else_expression())?;
-            
+            let inner_value =
+                execute_scalar_expression(execution_context, c.get_else_expression())?;
+
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
                 || format!("Evaluated as: {inner_value}"),
             );
-            
+
             Ok(inner_value)
         }
         ScalarExpression::Convert(c) => {

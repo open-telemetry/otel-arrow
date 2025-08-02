@@ -682,8 +682,8 @@ impl Expression for ConditionalScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaseScalarExpression {
     query_location: QueryLocation,
-    conditions: Vec<Box<LogicalExpression>>,
-    expressions: Vec<Box<ScalarExpression>>,
+    conditions: Vec<LogicalExpression>,
+    expressions: Vec<ScalarExpression>,
     else_expression: Box<ScalarExpression>,
 }
 
@@ -696,17 +696,17 @@ impl CaseScalarExpression {
     ) -> CaseScalarExpression {
         Self {
             query_location,
-            conditions: conditions.into_iter().map(|c| c.into()).collect(),
-            expressions: expressions.into_iter().map(|e| e.into()).collect(),
+            conditions,
+            expressions,
             else_expression: else_expression.into(),
         }
     }
 
-    pub fn get_conditions(&self) -> &Vec<Box<LogicalExpression>> {
+    pub fn get_conditions(&self) -> &Vec<LogicalExpression> {
         &self.conditions
     }
 
-    pub fn get_expressions(&self) -> &Vec<Box<ScalarExpression>> {
+    pub fn get_expressions(&self) -> &Vec<ScalarExpression> {
         &self.expressions
     }
 
@@ -724,7 +724,7 @@ impl CaseScalarExpression {
 
         // Check if all expressions (including else) have the same static type
         let mut resolved_type: Option<ValueType> = None;
-        
+
         for expr in &self.expressions {
             if let Some(expr_static) = expr.try_resolve_static(pipeline)? {
                 let expr_type = expr_static.get_value_type();
@@ -765,7 +765,7 @@ impl CaseScalarExpression {
         // Check each condition in order
         for (condition, expression) in self.conditions.iter().zip(&self.expressions) {
             let condition_result = condition.try_resolve_static(pipeline)?;
-            
+
             if condition_result.is_none() {
                 return Ok(None);
             }

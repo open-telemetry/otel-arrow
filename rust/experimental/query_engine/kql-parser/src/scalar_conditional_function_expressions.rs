@@ -39,12 +39,12 @@ pub(crate) fn parse_case_expression(
     let case_rules = case_expression_rule.into_inner();
     let mut conditions = Vec::new();
     let mut expressions = Vec::new();
-    
+
     // The grammar ensures we have: logical_expression, scalar_expression, (logical_expression, scalar_expression)*, scalar_expression
     // So we alternate between conditions and expressions, with the last one being the else expression
-    
+
     let rules_vec: Vec<_> = case_rules.collect();
-    
+
     // We need at least 3 elements: condition, then_expr, else_expr
     if rules_vec.len() < 3 {
         return Err(ParserError::SyntaxError(
@@ -52,7 +52,7 @@ pub(crate) fn parse_case_expression(
             "Case statement requires at least one condition, one then expression, and one else expression".to_string(),
         ));
     }
-    
+
     // Process pairs of (condition, expression) until we reach the last element (else)
     let mut i = 0;
     while i < rules_vec.len() - 1 {
@@ -60,9 +60,10 @@ pub(crate) fn parse_case_expression(
         let condition = parse_logical_expression(rules_vec[i].clone(), state)?;
         conditions.push(condition);
         i += 1;
-        
+
         // Parse corresponding expression
-        if i < rules_vec.len() - 1 { // Not the last element (which is else)
+        if i < rules_vec.len() - 1 {
+            // Not the last element (which is else)
             let expression = parse_scalar_expression(rules_vec[i].clone(), state)?;
             expressions.push(expression);
             i += 1;
@@ -73,18 +74,16 @@ pub(crate) fn parse_case_expression(
             ));
         }
     }
-    
+
     // Parse the else expression (last element)
     let else_expression = parse_scalar_expression(rules_vec[rules_vec.len() - 1].clone(), state)?;
-    
-    Ok(ScalarExpression::Case(
-        CaseScalarExpression::new(
-            query_location,
-            conditions,
-            expressions,
-            else_expression,
-        ),
-    ))
+
+    Ok(ScalarExpression::Case(CaseScalarExpression::new(
+        query_location,
+        conditions,
+        expressions,
+        else_expression,
+    )))
 }
 
 #[cfg(test)]
