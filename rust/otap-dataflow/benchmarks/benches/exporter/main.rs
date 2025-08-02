@@ -62,7 +62,7 @@ use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
 use std::pin::Pin;
-use std::rc::Rc;
+use std::sync::Arc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -393,7 +393,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let config = Config::new(1000, 0.3, true, true, true, true, true);
                     let exporter_config = ExporterConfig::new("perf_exporter");
                     let node_config =
-                        Rc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         PerfExporter::new(config, None),
                         node_config,
@@ -439,7 +439,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let config = Config::new(1000, 0.3, false, false, false, false, false);
                     let exporter_config = ExporterConfig::new("perf_exporter");
                     let node_config =
-                        Rc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         PerfExporter::new(config, None),
                         node_config,
@@ -489,7 +489,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (otap_signals, otlp_grpc_port) = input;
                     let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
                     let node_config =
-                        Rc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         OTAPExporter::new(grpc_endpoint, None),
                         node_config,
@@ -538,7 +538,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let grpc_addr = "127.0.0.1";
                     let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
                     let node_config =
-                        Rc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+                        Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         OTLPExporter::new(grpc_endpoint, None),
                         node_config,

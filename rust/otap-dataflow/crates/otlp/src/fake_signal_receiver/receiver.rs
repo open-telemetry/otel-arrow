@@ -19,7 +19,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::receiver::ReceiverWrapper;
 use serde_json::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 use tokio::time::{Duration, sleep};
 
 /// The URN for the fake signal receiver
@@ -39,7 +39,7 @@ pub struct FakeSignalReceiver {
 #[distributed_slice(OTLP_RECEIVER_FACTORIES)]
 pub static FAKE_SIGNAL_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: FAKE_SIGNAL_RECEIVER_URN,
-    create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
             FakeSignalReceiver::from_config(&node_config.config)?,
             node_config,
@@ -142,7 +142,7 @@ mod tests {
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::time::{Duration, sleep, timeout};
 
     const RESOURCE_COUNT: usize = 1;
@@ -313,7 +313,7 @@ mod tests {
         let config = Config::new(steps);
 
         // create our receiver
-        let node_config = Rc::new(NodeUserConfig::new_receiver_config(
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             FAKE_SIGNAL_RECEIVER_URN,
         ));
         let receiver = ReceiverWrapper::local(

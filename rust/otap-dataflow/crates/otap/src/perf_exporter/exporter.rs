@@ -26,7 +26,7 @@ use otap_df_engine::{ExporterFactory, distributed_slice};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
     CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
@@ -78,7 +78,7 @@ pub struct PerfExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
-    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             PerfExporter::from_config(&node_config.config)?,
             node_config,
@@ -658,7 +658,7 @@ mod tests {
     use std::fs::{File, remove_file};
     use std::future::Future;
     use std::io::{BufReader, prelude::*};
-    use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::time::{Duration, sleep};
 
@@ -848,7 +848,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let config = Config::new(1000, 0.3, true, true, true, true, true);
         let output_file = "perf_output.txt".to_string();
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             PerfExporter::new(config, Some(output_file.clone())),
             node_config,

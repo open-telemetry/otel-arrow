@@ -19,11 +19,10 @@
 //! - dynamic configuration updates
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
-use std::io::ErrorKind;
-use std::rc::Rc;
-
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
+use std::io::ErrorKind;
+use std::sync::Arc;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
@@ -64,7 +63,7 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             ParquetExporter::from_config(&node_config.config)?,
             node_config,
@@ -203,7 +202,7 @@ mod test {
     use super::*;
 
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use datagen::SimpleDataGenOptions;
@@ -277,7 +276,7 @@ mod test {
             )]),
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -360,7 +359,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -398,7 +397,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -434,7 +433,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,
@@ -494,7 +493,7 @@ mod test {
             partitioning_strategies: None,
             writer_options: None,
         });
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
             node_config,

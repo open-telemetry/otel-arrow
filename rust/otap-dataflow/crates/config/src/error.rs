@@ -110,6 +110,13 @@ pub enum Error {
         /// An error message.
         error: String,
     },
+
+    /// A pipeline with the same id already exists in the pipeline group.
+    #[error("Pipeline with id `{pipeline_id}` already exists in the pipeline group")]
+    DuplicatePipeline {
+        /// The id of the pipeline that was duplicated.
+        pipeline_id: PipelineId,
+    },
 }
 
 /// Information that all errors provide to help identify

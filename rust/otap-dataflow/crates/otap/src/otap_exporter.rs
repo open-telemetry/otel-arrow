@@ -27,7 +27,7 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
 use serde_json::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
@@ -46,7 +46,7 @@ pub struct OTAPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
-    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTAPExporter::from_config(&node_config.config)?,
             node_config,
@@ -212,7 +212,7 @@ mod tests {
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
     use std::net::SocketAddr;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -357,7 +357,7 @@ mod tests {
             .block_on(ready_receiver)
             .expect("Server failed to start");
 
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTAPExporter::new(grpc_endpoint, None),
             node_config,

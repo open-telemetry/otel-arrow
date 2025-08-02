@@ -7,7 +7,7 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
-use crate::control::ControlMsg;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -19,7 +19,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -30,7 +30,7 @@ pub enum ProcessorWrapper<PData> {
     /// A processor with a `!Send` implementation.
     Local {
         /// The user configuration for the node, including its name and channel settings.
-        user_config: Rc<NodeUserConfig>,
+        user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
         runtime_config: ProcessorConfig,
         /// The processor instance.
@@ -48,7 +48,7 @@ pub enum ProcessorWrapper<PData> {
     /// A processor with a `Send` implementation.
     Shared {
         /// The user configuration for the node, including its name and channel settings.
-        user_config: Rc<NodeUserConfig>,
+        user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
         runtime_config: ProcessorConfig,
         /// The processor instance.
@@ -93,7 +93,11 @@ pub enum ProcessorWrapperRuntime<PData> {
 
 impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
-    pub fn local<P>(processor: P, user_config: Rc<NodeUserConfig>, config: &ProcessorConfig) -> Self
+    pub fn local<P>(
+        processor: P,
+        user_config: Arc<NodeUserConfig>,
+        config: &ProcessorConfig,
+    ) -> Self
     where
         P: local::Processor<PData> + 'static,
     {
@@ -115,7 +119,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn shared<P>(
         processor: P,
-        user_config: Rc<NodeUserConfig>,
+        user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
     where
@@ -248,7 +252,7 @@ impl<PData> Node for ProcessorWrapper<PData> {
         }
     }
 
-    fn user_config(&self) -> Rc<NodeUserConfig> {
+    fn user_config(&self) -> Arc<NodeUserConfig> {
         match self {
             ProcessorWrapper::Local {
                 user_config: config,
@@ -266,6 +270,24 @@ impl<PData> Node for ProcessorWrapper<PData> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ProcessorWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ProcessorWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        self.control_sender().send(msg).await
+    }
+
+    /// Returns the control message sender for the processor.
+    fn control_sender(&self) -> Sender<ControlMsg> {
+        match self {
+            ProcessorWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ProcessorWrapper::Shared { control_sender, .. } => {
+                Sender::Shared(control_sender.clone())
+            }
         }
     }
 }
@@ -339,7 +361,7 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::Duration;
 
     /// A generic test processor that counts message events.
@@ -471,7 +493,7 @@ mod tests {
     #[test]
     fn test_processor_local() {
         let test_runtime = TestRuntime::new();
-        let user_config = Rc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::local(
             TestProcessor::new(test_runtime.counters()),
             user_config,
@@ -487,7 +509,7 @@ mod tests {
     #[test]
     fn test_processor_shared() {
         let test_runtime = TestRuntime::new();
-        let user_config = Rc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::shared(
             TestProcessor::new(test_runtime.counters()),
             user_config,

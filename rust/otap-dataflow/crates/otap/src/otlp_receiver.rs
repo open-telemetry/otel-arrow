@@ -5,9 +5,6 @@ use crate::OTAP_RECEIVER_FACTORIES;
 use crate::grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
 use crate::pdata::OtapPdata;
 
-use std::net::SocketAddr;
-use std::rc::Rc;
-
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -20,10 +17,13 @@ use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
 use serde::Deserialize;
 use serde_json::Value;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
-const OTLP_RECEIVER_URN: &str = "urn::otel::otlp::receiver";
+/// URN for the OTLP Receiver
+pub const OTLP_RECEIVER_URN: &str = "urn::otel::otlp::receiver";
 
 /// Configuration for OTLP Receiver
 #[derive(Debug, Deserialize)]
@@ -43,7 +43,7 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTLPReceiver::from_config(&node_config.config)?,
             node_config,
@@ -137,7 +137,6 @@ mod tests {
     use super::*;
 
     use std::pin::Pin;
-    use std::rc::Rc;
     use std::time::Duration;
 
     use otap_df_config::node::NodeUserConfig;
@@ -356,7 +355,7 @@ mod tests {
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let node_config = Rc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: Config {
