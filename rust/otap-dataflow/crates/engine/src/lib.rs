@@ -13,8 +13,8 @@ use crate::{
 };
 use serde_json::Value;
 use std::num::NonZeroUsize;
-use std::{collections::HashMap, sync::OnceLock};
 use std::sync::Arc;
+use std::{collections::HashMap, sync::OnceLock};
 
 pub mod error;
 pub mod exporter;

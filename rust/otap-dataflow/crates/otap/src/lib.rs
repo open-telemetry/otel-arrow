@@ -39,7 +39,7 @@ mod mock;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
-static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
+pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
 
 #[cfg(test)]
 mod tests {

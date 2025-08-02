@@ -20,7 +20,6 @@ use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
 use std::sync::Arc;
-use crate::exporter::ExporterWrapper;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -94,7 +93,11 @@ pub enum ProcessorWrapperRuntime<PData> {
 
 impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
-    pub fn local<P>(processor: P, user_config: Arc<NodeUserConfig>, config: &ProcessorConfig) -> Self
+    pub fn local<P>(
+        processor: P,
+        user_config: Arc<NodeUserConfig>,
+        config: &ProcessorConfig,
+    ) -> Self
     where
         P: local::Processor<PData> + 'static,
     {

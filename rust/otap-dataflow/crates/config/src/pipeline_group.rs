@@ -23,27 +23,32 @@ pub struct PipelineGroupConfig {
 
 impl PipelineGroupConfig {
     /// Creates a new empty pipeline group configuration.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pipelines: HashMap::new(),
             quota: Default::default(),
         }
     }
-    
+
     /// Sets the quota for the pipeline group.
     pub fn set_quota(&mut self, quota: Quota) {
         self.quota = quota;
     }
-    
+
     /// Adds a pipeline to the pipeline group.
-    pub fn add_pipeline(&mut self, pipeline_id: PipelineId, pipeline: PipelineConfig) -> Result<(), Error> {
+    pub fn add_pipeline(
+        &mut self,
+        pipeline_id: PipelineId,
+        pipeline: PipelineConfig,
+    ) -> Result<(), Error> {
         let prev_pipeline_grp = self.pipelines.insert(pipeline_id.clone(), pipeline);
         if prev_pipeline_grp.is_some() {
             return Err(Error::DuplicatePipeline { pipeline_id });
         }
         Ok(())
     }
-    
+
     /// Validates the pipeline group configuration.
     pub fn validate(&self, pipeline_group_id: &PipelineGroupId) -> Result<(), Error> {
         let mut errors = Vec::new();
@@ -58,6 +63,12 @@ impl PipelineGroupConfig {
         } else {
             Ok(())
         }
+    }
+}
+
+impl Default for PipelineGroupConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

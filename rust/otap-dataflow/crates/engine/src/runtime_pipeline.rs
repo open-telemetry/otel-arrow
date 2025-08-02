@@ -100,8 +100,6 @@ impl<PData: 'static> RuntimePipeline<PData> {
             handlers.push(local_tasks.spawn_local(async move { receiver.start().await }));
         }
 
-        println!("Runtime pipeline starting on thread `{}`", std::thread::current().name().expect("NA"));
-
         // Wait for all tasks to complete, gathering any errors
         let results = rt.block_on(async {
             local_tasks

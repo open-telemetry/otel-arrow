@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! OTAP Dataflow Engine Controller
-//! 
+//!
 //! This controller is responsible for managing and monitoring the execution of pipelines within
 //! the current process. The execution model supported by this controller is based on a
 //! thread-per-core approach, allowing efficient use of multi-core architectures while
@@ -20,10 +20,7 @@
 
 use otap_df_config::{pipeline::PipelineConfig, pipeline_group::Quota};
 use otap_df_engine::PipelineFactory;
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-use tokio::sync::mpsc;
+use std::thread;
 
 /// Error messages.
 pub mod error;
@@ -37,9 +34,7 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Creates a new controller with the given pipeline factory.
     pub fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
-        Self {
-            pipeline_factory,
-        }
+        Self { pipeline_factory }
     }
 
     /// Starts the controller with the given pipeline configuration and quota.
@@ -70,8 +65,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .take(num_requested_cores)
             .collect::<Vec<_>>();
 
-        println!("Starting pipeline with {} cores", requested_cores.len());
-        
         // Start one thread per core
         let mut threads = Vec::with_capacity(requested_cores.len());
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
@@ -81,19 +74,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let handle = thread::Builder::new()
                 .name(format!("pipeline-core-{}", core_id.id))
                 .spawn(move || {
-                    Self::run_pipeline_thread(
-                        core_id,
-                        pipeline_config,
-                        pipeline_factory,
-                    )
+                    Self::run_pipeline_thread(core_id, pipeline_config, pipeline_factory)
                 })
                 .map_err(|e| error::Error::InternalError {
-                    message: format!("Failed to spawn thread {}: {}", thread_id, e),
+                    message: format!("Failed to spawn thread {thread_id}: {e}"),
                 })?;
 
             threads.push(handle);
         }
-        
+
         // Wait for all threads to finish
         // Note: In a real-world scenario, you might want to handle thread panics and errors more gracefully.
         // For now, we will just log the errors and continue.
@@ -105,7 +94,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 Err(e) => {
                     // Thread join failed, handle the error
                     return Err(error::Error::InternalError {
-                        message: format!("Failed to join thread pipeline-core-{thread_id:?}: {e:?}"),
+                        message: format!(
+                            "Failed to join thread pipeline-core-{thread_id:?}: {e:?}"
+                        ),
                     });
                 }
             }
@@ -123,7 +114,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails
-            println!("Failed to pin thread to core {core_id:?}, continuing execution.");
         }
 
         // Build the runtime pipeline from the configuration

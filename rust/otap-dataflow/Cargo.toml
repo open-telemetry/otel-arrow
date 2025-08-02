@@ -37,6 +37,7 @@ path = "examples/mini_collector.rs"
 otap-df-controller = { path = "crates/controller" }
 otap-df-config = { path = "crates/config" }
 otap-df-otlp = { path = "crates/otlp" }
+otap-df-otap = { path = "crates/otap" }
 thiserror.workspace = true
 serde_json.workspace = true
 

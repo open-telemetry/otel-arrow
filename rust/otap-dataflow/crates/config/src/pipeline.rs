@@ -32,7 +32,7 @@ pub struct PipelineConfig {
     settings: PipelineSettings,
 
     /// All nodes in this pipeline, keyed by node ID.
-    /// 
+    ///
     /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
     /// across multiple threads without cloning the entire configuration.
     nodes: HashMap<NodeId, Arc<NodeUserConfig>>,
