@@ -26,7 +26,7 @@ otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
-otap-df-otlp = { path = "../otlp" }
+otap-df-otlp = { path = "../otlp", features = ["test-utils"]}
 otap-df-pdata-views = { path = "../pdata-views" }
 parquet.workspace = true
 tonic = { version = "0.13.1", default-features = false, features = [

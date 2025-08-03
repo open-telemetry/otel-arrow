@@ -68,6 +68,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
             Defaults to 2.
         attribute_value_size (Optional[int]): Size of each attribute's value. Defaults to 15.
         batch_size (Optional[int]): Number of events sent in each batch. Defaults to 10000.
+        tcp_connection_per_thread(Optional[bool]): Use a dedicated tcp connection per-thread.
     """
 
     endpoint: Optional[str] = "http://localhost:5001/"
@@ -77,6 +78,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
     num_attributes: Optional[int] = 2
     attribute_value_size: Optional[int] = 15
     batch_size: Optional[int] = 10000
+    tcp_connection_per_thread: Optional[bool] = True
 
 
 @execution_registry.register_class(STRATEGY_NAME)
@@ -111,6 +113,7 @@ components:
         endpoint:  "http://localhost:5001/"
         threads: 1
         target_rate: 10000
+        tcp_connection_per_thread: false
         body_size: 25
         num_attributes: 2
         attribute_value_size: 15
@@ -151,6 +154,7 @@ components:
                 "num_attributes": self.config.num_attributes,
                 "attribute_value_size": self.config.attribute_value_size,
                 "batch_size": self.config.batch_size,
+                "tcp_connection_per_thread": self.config.tcp_connection_per_thread
             },
             timeout=60,
         )

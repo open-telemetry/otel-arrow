@@ -66,6 +66,20 @@ impl ProtobufWriter {
     }
 
     #[inline(always)]
+    pub fn write_byte_array_field(
+        &mut self,
+        field_number: u32,
+        byte_array: &ByteArrayValueStorage,
+    ) {
+        self.write_tag(field_number, ProtobufWireType::LengthDelimited);
+
+        let values = byte_array.get_values();
+
+        self.write_varint32(values.len() as u32);
+        self.data.extend(values.iter().map(|v| *v.get_raw_value()));
+    }
+
+    #[inline(always)]
     pub fn write_int64_field(&mut self, field_number: u32, v: i64) {
         self.write_tag(field_number, ProtobufWireType::Varint);
         self.write_varint64(v as u64);
