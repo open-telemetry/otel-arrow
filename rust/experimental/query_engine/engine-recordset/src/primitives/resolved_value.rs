@@ -10,7 +10,7 @@ pub enum ResolvedValue<'a> {
     /// A value resolved from the expression tree or an attached record
     Value(Value<'a>),
 
-    /// A value borrowed from the record being modified by the engine or
+    /// A value borrowed from the source being modified by the engine or
     /// borrowed from a variable
     Borrowed(BorrowSource, Ref<'a, dyn AsValue + 'static>),
 
@@ -18,13 +18,34 @@ pub enum ResolvedValue<'a> {
     Computed(OwnedValue),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BorrowSource {
-    Record,
+    Source,
     Variable,
 }
 
 impl<'a> ResolvedValue<'a> {
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool
+    {
+        if let ResolvedValue::Borrowed(s, v) = self {
+            let writing_while_holding_borrow = match target {
+                MutableValueExpression::Source(_) => {
+                    matches!(s, BorrowSource::Source)
+                }
+                MutableValueExpression::Variable(_) => {
+                    matches!(s, BorrowSource::Variable)
+                }
+            };
+
+            if writing_while_holding_borrow {
+                *self = ResolvedValue::Computed(Self::into_owned(v.to_value()));
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub fn try_resolve_string(self) -> Result<ResolvedStringValue<'a>, Self> {
         if self.get_value_type() != ValueType::String {
             return Err(self);

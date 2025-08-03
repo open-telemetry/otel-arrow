@@ -132,24 +132,11 @@ where
     for selector in selectors {
         let mut value = execute_scalar_expression(execution_context, selector)?;
 
-        if let ResolvedValue::Borrowed(ref borrow_source, _) = value {
-            let writing_while_holding_borrow = match mutable_value_expression {
-                MutableValueExpression::Source(_) => {
-                    matches!(borrow_source, BorrowSource::Record)
-                }
-                MutableValueExpression::Variable(_) => {
-                    matches!(borrow_source, BorrowSource::Variable)
-                }
-            };
-
-            if writing_while_holding_borrow {
-                value = ResolvedValue::Computed(value.to_owned());
-
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    mutable_value_expression,
-                    || format!("Copied the resolved selector value '{value}' into temporary storage because the value came from the mutable target"));
-            }
+        if value.copy_if_borrowed_from_target(mutable_value_expression) {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                mutable_value_expression,
+                || format!("Copied the resolved selector value '{value}' into temporary storage because the value came from the mutable target"));
         }
 
         results.push((selector, value));

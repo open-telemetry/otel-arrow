@@ -23,7 +23,7 @@ where
 
             let value = select_from_borrowed_value(
                 execution_context,
-                BorrowSource::Record,
+                BorrowSource::Source,
                 record,
                 &mut selectors,
             )?;

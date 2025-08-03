@@ -300,24 +300,11 @@ where
             MapSelector::KeyOrKeyPattern(s) => {
                 let mut value = execute_scalar_expression(execution_context, s)?;
 
-                if let ResolvedValue::Borrowed(ref borrow_source, _) = value {
-                    let writing_while_holding_borrow = match target {
-                        MutableValueExpression::Source(_) => {
-                            matches!(borrow_source, BorrowSource::Record)
-                        }
-                        MutableValueExpression::Variable(_) => {
-                            matches!(borrow_source, BorrowSource::Variable)
-                        }
-                    };
-
-                    if writing_while_holding_borrow {
-                        value = ResolvedValue::Computed(value.to_owned());
-
-                        execution_context.add_diagnostic_if_enabled(
-                            RecordSetEngineDiagnosticLevel::Verbose,
-                            target,
-                            || format!("Copied the resolved key or pattern value '{value}' into temporary storage because the value came from the mutable target"));
-                    }
+                if value.copy_if_borrowed_from_target(target) {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        target,
+                        || format!("Copied the resolved key or pattern value '{value}' into temporary storage because the value came from the mutable target"));
                 }
 
                 let value_type = value.get_value_type();
@@ -368,24 +355,11 @@ where
     if let Some(selector) = selectors.next() {
         let mut value = execute_scalar_expression(execution_context, selector)?;
 
-        if let ResolvedValue::Borrowed(ref borrow_source, _) = value {
-            let writing_while_holding_borrow = match target {
-                MutableValueExpression::Source(_) => {
-                    matches!(borrow_source, BorrowSource::Record)
-                }
-                MutableValueExpression::Variable(_) => {
-                    matches!(borrow_source, BorrowSource::Variable)
-                }
-            };
-
-            if writing_while_holding_borrow {
-                value = ResolvedValue::Computed(value.to_owned());
-
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    target,
-                    || format!("Copied the resolved accessor value '{value}' into temporary storage because the value came from the mutable target"));
-            }
+        if value.copy_if_borrowed_from_target(target) {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                target,
+                || format!("Copied the resolved accessor value '{value}' into temporary storage because the value came from the mutable target"));
         }
 
         let value_type = value.get_value_type();
