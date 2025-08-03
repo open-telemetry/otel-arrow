@@ -173,21 +173,14 @@ pub enum Error<T> {
         kind: Cow<'static, str>,
     },
 
-    /// A task error that occurred during the execution of the pipeline.
-    #[error("Task error: {error}, cancelled: {is_cancelled}, panic: {is_panic}")]
-    TaskError {
-        /// Flag indicating whether the task was cancelled.
-        is_cancelled: bool,
+    /// A task error that occurred during the execution of a join task.
+    #[error("Join task error: {error}, cancelled: {is_canceled}, panic: {is_panic}")]
+    JoinTaskError {
+        /// Flag indicating whether the task was canceled.
+        is_canceled: bool,
         /// Flag indicating whether the task panicked.
         is_panic: bool,
         /// The error that occurred.
         error: String,
-    },
-
-    /// A list of errors that occurred during the execution of the pipeline.
-    #[error("Errors detected during the execution of the engine: {errors:?}")]
-    EngineErrors {
-        /// A list of errors that occurred during the execution of the pipeline.
-        errors: Vec<Error<T>>,
     },
 }

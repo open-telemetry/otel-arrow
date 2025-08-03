@@ -38,7 +38,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Starts the controller with the given pipeline configuration and quota.
-    pub fn start_pipeline(
+    pub fn run_forever(
         &self,
         pipeline: PipelineConfig,
         quota: Quota,
@@ -84,12 +84,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
 
         // Wait for all threads to finish
-        // Note: In a real-world scenario, you might want to handle thread panics and errors more gracefully.
-        // For now, we will just log the errors and continue.
         for (thread_id, handle) in threads.into_iter().enumerate() {
             match handle.join() {
-                Ok(_) => {
+                Ok(Ok(_)) => {
                     // Thread completed successfully
+                }
+                Ok(Err(e)) => {
+                    return Err(e);
                 }
                 Err(e) => {
                     // Thread join failed, handle the error
@@ -110,7 +111,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         core_id: core_affinity::CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
-    ) -> Result<(), error::Error> {
+    ) -> Result<Vec<()>, error::Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails
@@ -119,17 +120,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
             .build(pipeline_config.clone())
-            .map_err(|e| error::Error::PipelineBuildFailed {
+            .map_err(|e| error::Error::PipelineRuntimeError {
                 source: Box::new(e),
             })?;
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
-            .start()
-            .map_err(|e| error::Error::PipelineBuildFailed {
+            .run_forever()
+            .map_err(|e| error::Error::PipelineRuntimeError {
                 source: Box::new(e),
-            })?;
-
-        Ok(())
+            })
     }
 }

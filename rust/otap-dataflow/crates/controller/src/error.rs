@@ -15,9 +15,9 @@ pub enum Error {
         errors: Vec<otap_df_config::error::Error>,
     },
 
-    /// Failed to build runtime pipeline from configuration.
-    #[error("Failed to build runtime pipeline: {source}")]
-    PipelineBuildFailed {
+    /// Pipeline runtime error.
+    #[error("Pipeline runtime error: {source}")]
+    PipelineRuntimeError {
         /// The underlying engine error.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,

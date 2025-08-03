@@ -5,7 +5,9 @@ This directory contains example pipeline configurations for the OTAP dataflow en
 ## Available Configurations
 
 ### `otlp-basic.json`
+
 A basic OTLP pipeline configuration that:
+
 - Receives OTLP data on `127.0.0.1:4317`
 - Exports to `http://127.0.0.1:1235`
 - Uses round-robin dispatch strategy
@@ -55,4 +57,5 @@ Pipeline configurations follow this JSON structure:
 }
 ```
 
-Add your custom configuration files to this directory and reference them using the `-p` parameter.
+Add your custom configuration files to this directory and reference them using
+the `-p` parameter.

@@ -121,6 +121,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         let mut total_received_arrow_records_count: u128 = 0;
         let mut total_received_otlp_signal_count: u128 = 0;
         let mut received_pdata_batch_count: u64 = 0;
+        let mut invalid_pdata_count: u64 = 0;
         let mut total_received_pdata_batch_count: u64 = 0;
         let mut last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
@@ -259,10 +260,17 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     break;
                 }
                 Message::PData(pdata) => {
-                    let batch = match OtapArrowBytes::try_from(pdata)? {
-                        OtapArrowBytes::ArrowLogs(batch) => batch,
-                        OtapArrowBytes::ArrowMetrics(batch) => batch,
-                        OtapArrowBytes::ArrowTraces(batch) => batch,
+                    let batch = match OtapArrowBytes::try_from(pdata) {
+                        Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
+                        Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
+                        Ok(OtapArrowBytes::ArrowTraces(batch)) => batch,
+                        Err(_) => {
+                            // if the pdata is not a valid Arrow batch, we skip it.
+                            // For example, when it is a not supported signal type.
+                            invalid_pdata_count += 1;
+                            total_received_pdata_batch_count += 1;
+                            continue;
+                        }
                     };
                     // keep track of batches received
                     received_pdata_batch_count += 1;

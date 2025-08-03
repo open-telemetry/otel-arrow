@@ -15,6 +15,7 @@ use serde_json::Value;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{collections::HashMap, sync::OnceLock};
+use std::fmt::Debug;
 
 pub mod error;
 pub mod exporter;
@@ -180,7 +181,7 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static + Clone> PipelineFactory<PData> {
+impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(

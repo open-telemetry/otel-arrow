@@ -81,6 +81,6 @@ mod tests {
             "Expected 2 nodes in the pipeline"
         );
 
-        runtime_pipeline.start().expect("Failed to start pipeline");
+        _ = runtime_pipeline.run_forever().expect("Failed to start pipeline");
     }
 }

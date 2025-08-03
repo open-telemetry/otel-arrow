@@ -4,16 +4,16 @@
 
 use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
-use crate::error::Error::EngineErrors;
 use crate::node::Node;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::{NodeId, pipeline::PipelineConfig};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
-pub struct RuntimePipeline<PData> {
+pub struct RuntimePipeline<PData: Debug> {
     /// The pipeline configuration that defines the structure and behavior of the pipeline.
     config: PipelineConfig,
     /// A map node id to receiver runtime node.
@@ -37,7 +37,7 @@ pub enum NodeType {
     Exporter,
 }
 
-impl<PData: 'static> RuntimePipeline<PData> {
+impl<PData: 'static + Debug> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
     #[must_use]
     pub fn new(
@@ -77,53 +77,62 @@ impl<PData: 'static> RuntimePipeline<PData> {
         &self.config
     }
 
-    /// Starts the pipeline by
-    pub fn start(self) -> Result<(), Error<PData>> {
+    /// Runs the pipeline forever, starting all nodes and handling their tasks.
+    /// Returns an error if any node fails to start or if any task encounters an error.
+    pub fn run_forever(self) -> Result<Vec<()>, Error<PData>> {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        let mut futures = FuturesUnordered::new();
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
         let mut control_senders = HashMap::new();
-        let mut handlers = Vec::with_capacity(self.node_count());
+        // let mut handlers = Vec::with_capacity(self.node_count());
 
         for (node_id, exporter) in self.exporters {
             _ = control_senders.insert(node_id, exporter.control_sender());
-            handlers.push(local_tasks.spawn_local(async move { exporter.start().await }));
+            futures.push(local_tasks.spawn_local(async move { exporter.start().await }));
         }
         for (node_id, processor) in self.processors {
             _ = control_senders.insert(node_id, processor.control_sender());
-            handlers.push(local_tasks.spawn_local(async move { processor.start().await }));
+            futures.push(local_tasks.spawn_local(async move { processor.start().await }));
         }
         for (node_id, receiver) in self.receivers {
             _ = control_senders.insert(node_id, receiver.control_sender());
-            handlers.push(local_tasks.spawn_local(async move { receiver.start().await }));
+            futures.push(local_tasks.spawn_local(async move { receiver.start().await }));
         }
 
-        // Wait for all tasks to complete, gathering any errors
-        let results = rt.block_on(async {
+        rt.block_on(async {
             local_tasks
-                .run_until(async { futures::future::join_all(handlers).await })
-                .await
-        });
+                .run_until(async {
+                    let mut task_results = Vec::new();
 
-        let mut errors = Vec::new();
-        for result in results {
-            match result {
-                Ok(Ok(())) => continue,       // Task completed successfully
-                Ok(Err(e)) => errors.push(e), // Task completed with an error
-                Err(e) => errors.push(Error::TaskError {
-                    // Task panicked
-                    is_cancelled: e.is_cancelled(),
-                    is_panic: e.is_panic(),
-                    error: e.to_string(),
-                }),
-            }
-        }
-        if !errors.is_empty() {
-            return Err(EngineErrors { errors });
-        }
-        Ok(())
+                    // Process each future as they complete and handle errors
+                    while let Some(result) = futures.next().await {
+                        match result {
+                            Ok(Ok(res)) => {
+                                // Task completed successfully, collect its result
+                                task_results.push(res);
+                            },
+                            Ok(Err(e)) => {
+                                // A task returned an error
+                                return Err(e);
+                            },
+                            Err(e) => {
+                                // JoinError (panic or cancellation)
+                                return Err(Error::JoinTaskError {
+                                    is_canceled: e.is_cancelled(),
+                                    is_panic: e.is_panic(),
+                                    error: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(task_results)
+                })
+                .await
+        })
     }
 
     /// Gets a reference to any node by its ID as a Node trait object

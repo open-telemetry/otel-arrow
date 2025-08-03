@@ -44,7 +44,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting pipeline with {} cores", args.num_cores);
 
-    // Start the pipeline (this would run indefinitely in a real scenario)
-    controller.start_pipeline(pipeline_cfg, quota)?;
-    Ok(())
+    let result = controller.run_forever(pipeline_cfg, quota);
+    match result {
+        Ok(_) => {
+            println!("Pipeline run successfully");
+            std::process::exit(0);
+        },
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        },
+    }
 }
