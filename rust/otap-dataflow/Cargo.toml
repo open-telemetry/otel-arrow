@@ -25,21 +25,17 @@ license.workspace = true
 keywords = ["OpenTelemetry", "OTLP", "OTAP", "Dataflow", "Engine"]
 categories = ["asynchronous", "network-programming"]
 
-[[example]]
-name = "engine"
-path = "examples/engine.rs"
-
-[[example]]
-name = "mini_collector"
-path = "examples/mini_collector.rs"
+[[bin]]
+name = "df_engine"
+path = "src/main.rs"
 
 [dependencies]
-otap-df-controller = { path = "crates/controller" }
 otap-df-config = { path = "crates/config" }
-otap-df-otlp = { path = "crates/otlp" }
+otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
 thiserror.workspace = true
 serde_json.workspace = true
+clap = { version = "4.5.42", features = ["derive"] }
 
 [workspace.dependencies]
 arrow = "55.2"
@@ -54,7 +50,7 @@ tempfile = "3"
 thiserror = "2.0.12"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
-serde_json = { version = "1.0.140" }
+serde_json = { version = "1.0.142" }
 tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
 uuid = { version = "1.17.0", features = ["v4"] }
 async-trait = "0.1.88"
