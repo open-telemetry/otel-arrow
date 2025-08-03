@@ -6,7 +6,7 @@
 pub mod syslog_cef_receiver;
 
 /// Parser module for syslog message parsing
-pub mod parser;
+mod parser; 
 
-/// Views module containing data view implementations
-pub mod views;
+/// Arrow records encoder for syslog messages
+mod arrow_records_encoder;

@@ -8,6 +8,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 #[allow(dead_code)]
 const SYLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
+const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
+const MAX_BATCH_SIZE: usize = 100; // Maximum number of messages to build an Arrow batch
+
 /// Protocol type for the receiver
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -134,6 +137,10 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
             Protocol::Udp => {
                 let socket = effect_handler.udp_socket(self.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
+
+                let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
+                let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
+
                 loop {
                     tokio::select! {
                         biased; //Prioritize control messages over data
@@ -154,10 +161,11 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                             }
                         }
 
-                        result = socket.recv(&mut buf) => {
+                        result = socket.recv_from(&mut buf) => {
                             match result {
-                                Ok(n) => {
+                                Ok((n, _peer_addr)) => {
                                     // ToDo: Validate the received data before processing
+                                    // ToDo: Consider logging or using peer_addr for security/auditing
                                     effect_handler.send_message(buf[..n].to_vec()).await?;
                                 },
                                 Err(e) => {
