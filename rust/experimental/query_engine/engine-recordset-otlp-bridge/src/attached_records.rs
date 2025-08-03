@@ -48,7 +48,7 @@ impl MapValue for Resource {
 
     fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
         if key == "Attributes" {
-            return Some(&self.attributes as &dyn AsStaticValue);
+            return Some(&self.attributes);
         }
 
         None
@@ -80,7 +80,7 @@ impl MapValue for InstrumentationScope {
 
     fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
         match key {
-            "Attributes" => Some(&self.attributes as &dyn AsStaticValue),
+            "Attributes" => Some(&self.attributes),
             "Name" => self.name.as_ref().map(|v| v as &dyn AsStaticValue),
             "Version" => self.version.as_ref().map(|v| v as &dyn AsStaticValue),
             _ => None,

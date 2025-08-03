@@ -88,7 +88,7 @@ impl MapValue for LogRecord {
 
     fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
         match key {
-            "Attributes" => Some(&self.attributes as &dyn AsStaticValue),
+            "Attributes" => Some(&self.attributes),
             "Timestamp" => self.timestamp.as_ref().map(|v| v as &dyn AsStaticValue),
             "ObservedTimestamp" => self
                 .observed_timestamp

@@ -219,7 +219,7 @@ impl AsValue for ResolvedStringValue<'_> {
         match self {
             ResolvedStringValue::Value(v) => Value::String(*v),
             ResolvedStringValue::Borrowed(b) => Value::String(&**b),
-            ResolvedStringValue::Computed(c) => Value::String(c as &dyn StringValue),
+            ResolvedStringValue::Computed(c) => Value::String(c),
         }
     }
 }
@@ -261,7 +261,7 @@ impl AsValue for ResolvedRegexValue<'_> {
         match self {
             ResolvedRegexValue::Value(v) => Value::Regex(*v),
             ResolvedRegexValue::Borrowed(b) => Value::Regex(&**b),
-            ResolvedRegexValue::Computed(c) => Value::Regex(c as &dyn RegexValue),
+            ResolvedRegexValue::Computed(c) => Value::Regex(c),
         }
     }
 }
