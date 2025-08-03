@@ -914,7 +914,10 @@ mod tests {
                     StringScalarExpression::new(QueryLocation::new_fake(), "value"),
                 ))],
             ),
-            Some(StringScalarExpression::new(QueryLocation::new_fake(), "value").to_value()),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "value",
+            ))),
         );
 
         // Test first expression is known null and second expression is known
@@ -930,7 +933,10 @@ mod tests {
                     )),
                 ],
             ),
-            Some(StringScalarExpression::new(QueryLocation::new_fake(), "value").to_value()),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "value",
+            ))),
         );
 
         // Test first expression is known null and second expression is unknown

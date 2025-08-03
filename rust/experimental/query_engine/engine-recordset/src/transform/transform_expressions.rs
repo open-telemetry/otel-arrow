@@ -352,7 +352,7 @@ fn resolve_map_destination<'a>(
             ResolvedValueMut::Map(m) => Some(m),
             ResolvedValueMut::MapKey { map, key } => RefMut::filter_map(map, |v| {
                 if let ValueMutGetResult::Found(v) = v.get_mut(key.get_value())
-                    && let Some(ValueMut::Map(m)) = v.to_value_mut()
+                    && let Some(StaticValueMut::Map(m)) = v.to_static_value_mut()
                 {
                     Some(m)
                 } else {
@@ -362,7 +362,7 @@ fn resolve_map_destination<'a>(
             .ok(),
             ResolvedValueMut::ArrayIndex { array, index } => RefMut::filter_map(array, |v| {
                 if let ValueMutGetResult::Found(v) = v.get_mut(index)
-                    && let Some(ValueMut::Map(m)) = v.to_value_mut()
+                    && let Some(StaticValueMut::Map(m)) = v.to_static_value_mut()
                 {
                     Some(m)
                 } else {
@@ -385,23 +385,23 @@ mod tests {
         let record = TestRecord::new()
             .with_key_value(
                 "key1".into(),
-                OwnedValue::String(ValueStorage::new("value1".into())),
+                OwnedValue::String(StringValueStorage::new("value1".into())),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             )
             .with_key_value(
                 "key3".into(),
-                OwnedValue::String(ValueStorage::new("Hello world!".into())),
+                OwnedValue::String(StringValueStorage::new("Hello world!".into())),
             )
             .with_key_value(
                 "key4".into(),
-                OwnedValue::String(ValueStorage::new("key1".into())),
+                OwnedValue::String(StringValueStorage::new("key1".into())),
             );
 
         let run_test = |transform_expression| {
@@ -451,7 +451,7 @@ mod tests {
         )));
 
         assert_eq!(
-            Value::String(&ValueStorage::new("hello world".into())),
+            Value::String(&StringValueStorage::new("hello world".into())),
             result.get("key1").unwrap().to_value()
         );
 
@@ -486,7 +486,7 @@ mod tests {
         )));
 
         assert_eq!(
-            Value::String(&ValueStorage::new("Hello world!".into())),
+            Value::String(&StringValueStorage::new("Hello world!".into())),
             result.get("key1").unwrap().to_value()
         );
 
@@ -511,7 +511,7 @@ mod tests {
         )));
 
         assert_eq!(
-            Value::String(&ValueStorage::new("hello world".into())),
+            Value::String(&StringValueStorage::new("hello world".into())),
             result.get("new_key").unwrap().to_value()
         );
 
@@ -539,7 +539,7 @@ mod tests {
 
         if let Some(Value::Array(a)) = result.get("key2").map(|v| v.to_value()) {
             assert_eq!(
-                Value::String(&ValueStorage::new("hello world".into())),
+                Value::String(&StringValueStorage::new("hello world".into())),
                 a.get(0).unwrap().to_value()
             );
         } else {
@@ -570,7 +570,7 @@ mod tests {
 
         if let Some(Value::Array(a)) = result.get("key2").map(|v| v.to_value()) {
             assert_eq!(
-                Value::String(&ValueStorage::new("hello world".into())),
+                Value::String(&StringValueStorage::new("hello world".into())),
                 a.get(2).unwrap().to_value()
             );
         } else {
@@ -599,20 +599,22 @@ mod tests {
                 "var1",
                 ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from([(
                     "subkey1".into(),
-                    OwnedValue::String(ValueStorage::new("hello world".into())),
+                    OwnedValue::String(StringValueStorage::new("hello world".into())),
                 )])))),
             );
 
             execution_context.get_variables().borrow_mut().set(
                 "var2",
-                ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(
+                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
                     "Hello world!".into(),
                 ))),
             );
 
             execution_context.get_variables().borrow_mut().set(
                 "var3",
-                ResolvedValue::Computed(OwnedValue::String(ValueStorage::new("subkey1".into()))),
+                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                    "subkey1".into(),
+                ))),
             );
 
             if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
@@ -650,7 +652,7 @@ mod tests {
 
         assert_eq!(4, result.len());
         assert_eq!(
-            OwnedValue::String(ValueStorage::new("hello world!".into())).to_value(),
+            OwnedValue::String(StringValueStorage::new("hello world!".into())).to_value(),
             result.get("var4").unwrap().to_value()
         );
 
@@ -673,7 +675,7 @@ mod tests {
 
         assert_eq!(3, result.len());
         assert_eq!(
-            OwnedValue::String(ValueStorage::new("Hello world!".into())).to_value(),
+            OwnedValue::String(StringValueStorage::new("Hello world!".into())).to_value(),
             result.get("var3").unwrap().to_value()
         );
 
@@ -695,7 +697,7 @@ mod tests {
 
         assert_eq!(3, result.len());
         assert_eq!(
-            OwnedValue::String(ValueStorage::new("goodebye world".into())).to_value(),
+            OwnedValue::String(StringValueStorage::new("goodebye world".into())).to_value(),
             result.get("var1").unwrap().to_value()
         );
 
@@ -760,14 +762,14 @@ mod tests {
         let record = TestRecord::new()
             .with_key_value(
                 "key1".into(),
-                OwnedValue::String(ValueStorage::new("value1".into())),
+                OwnedValue::String(StringValueStorage::new("value1".into())),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             );
 
@@ -879,7 +881,7 @@ mod tests {
                 "var1",
                 ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from([(
                     "subkey1".into(),
-                    OwnedValue::String(ValueStorage::new("hello world".into())),
+                    OwnedValue::String(StringValueStorage::new("hello world".into())),
                 )])))),
             );
 
@@ -912,19 +914,19 @@ mod tests {
         let record = TestRecord::new()
             .with_key_value(
                 "key1".into(),
-                OwnedValue::String(ValueStorage::new("value1".into())),
+                OwnedValue::String(StringValueStorage::new("value1".into())),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             )
             .with_key_value(
                 "key_to_remove".into(),
-                OwnedValue::String(ValueStorage::new("key1".into())),
+                OwnedValue::String(StringValueStorage::new("key1".into())),
             );
 
         let run_test = |transform_expression| {

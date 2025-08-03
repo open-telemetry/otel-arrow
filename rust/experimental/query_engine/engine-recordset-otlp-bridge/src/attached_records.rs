@@ -27,13 +27,9 @@ impl AttachedRecords for OtlpAttachedRecords<'_> {
     }
 }
 
-impl AsValue for Resource {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Map
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Map(self)
+impl AsStaticValue for Resource {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Map(self)
     }
 }
 
@@ -50,9 +46,9 @@ impl MapValue for Resource {
         key == "Attributes"
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)> {
+    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
         if key == "Attributes" {
-            return Some(&self.attributes as &dyn AsValue);
+            return Some(&self.attributes as &dyn AsStaticValue);
         }
 
         None
@@ -63,13 +59,9 @@ impl MapValue for Resource {
     }
 }
 
-impl AsValue for InstrumentationScope {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Map
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Map(self)
+impl AsStaticValue for InstrumentationScope {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Map(self)
     }
 }
 
@@ -86,11 +78,11 @@ impl MapValue for InstrumentationScope {
         matches!(key, "Attributes" | "Name" | "Version")
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)> {
+    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
         match key {
-            "Attributes" => Some(&self.attributes as &dyn AsValue),
-            "Name" => self.name.as_ref().map(|v| v as &dyn AsValue),
-            "Version" => self.version.as_ref().map(|v| v as &dyn AsValue),
+            "Attributes" => Some(&self.attributes as &dyn AsStaticValue),
+            "Name" => self.name.as_ref().map(|v| v as &dyn AsStaticValue),
+            "Version" => self.version.as_ref().map(|v| v as &dyn AsStaticValue),
             _ => None,
         }
     }

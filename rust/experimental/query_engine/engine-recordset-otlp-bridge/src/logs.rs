@@ -46,13 +46,9 @@ impl Record for LogRecord {
     }
 }
 
-impl AsValue for LogRecord {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Map
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Map(self)
+impl AsStaticValue for LogRecord {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Map(self)
     }
 }
 
@@ -90,18 +86,24 @@ impl MapValue for LogRecord {
         }
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)> {
+    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
         match key {
-            "Attributes" => Some(&self.attributes as &dyn AsValue),
-            "Timestamp" => self.timestamp.as_ref().map(|v| v as &dyn AsValue),
-            "ObservedTimestamp" => self.observed_timestamp.as_ref().map(|v| v as &dyn AsValue),
-            "SeverityNumber" => self.severity_number.as_ref().map(|v| v as &dyn AsValue),
-            "SeverityText" => self.severity_text.as_ref().map(|v| v as &dyn AsValue),
-            "Body" => self.body.as_ref().map(|v| v as &dyn AsValue),
-            "TraceId" => self.trace_id.as_ref().map(|v| v as &dyn AsValue),
-            "SpanId" => self.span_id.as_ref().map(|v| v as &dyn AsValue),
-            "TraceFlags" => self.flags.as_ref().map(|v| v as &dyn AsValue),
-            "EventName" => self.event_name.as_ref().map(|v| v as &dyn AsValue),
+            "Attributes" => Some(&self.attributes as &dyn AsStaticValue),
+            "Timestamp" => self.timestamp.as_ref().map(|v| v as &dyn AsStaticValue),
+            "ObservedTimestamp" => self
+                .observed_timestamp
+                .as_ref()
+                .map(|v| v as &dyn AsStaticValue),
+            "SeverityNumber" => self
+                .severity_number
+                .as_ref()
+                .map(|v| v as &dyn AsStaticValue),
+            "SeverityText" => self.severity_text.as_ref().map(|v| v as &dyn AsStaticValue),
+            "Body" => self.body.as_ref().map(|v| v as &dyn AsStaticValue),
+            "TraceId" => self.trace_id.as_ref().map(|v| v as &dyn AsStaticValue),
+            "SpanId" => self.span_id.as_ref().map(|v| v as &dyn AsStaticValue),
+            "TraceFlags" => self.flags.as_ref().map(|v| v as &dyn AsStaticValue),
+            "EventName" => self.event_name.as_ref().map(|v| v as &dyn AsStaticValue),
             _ => None,
         }
     }
@@ -160,9 +162,9 @@ impl MapValue for LogRecord {
     }
 }
 
-impl AsValueMut for LogRecord {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
-        Some(ValueMut::Map(self))
+impl AsStaticValueMut for LogRecord {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        Some(StaticValueMut::Map(self))
     }
 }
 
@@ -184,7 +186,7 @@ impl MapValueMut for LogRecord {
                 None => ValueMutGetResult::NotFound,
             },
             "Body" => match &mut self.body {
-                Some(b) => ValueMutGetResult::Found(b as &mut dyn AsValueMut),
+                Some(b) => ValueMutGetResult::Found(b),
                 None => ValueMutGetResult::NotFound,
             },
             "TraceId" => match &mut self.trace_id {
@@ -250,10 +252,10 @@ impl MapValueMut for LogRecord {
                     if value >= i32::MIN as i64 && value <= i32::MAX as i64 {
                         return match self
                             .severity_number
-                            .replace(ValueStorage::new(value as i32))
+                            .replace(IntegerValueStorage::new(value as i32))
                         {
                             Some(old) => ValueMutWriteResult::Updated(OwnedValue::Integer(
-                                ValueStorage::new(old.get_value()),
+                                IntegerValueStorage::new(old.get_value()),
                             )),
                             None => ValueMutWriteResult::Created,
                         };
@@ -312,9 +314,9 @@ impl MapValueMut for LogRecord {
                 if let AnyValue::Native(OtlpAnyValue::IntValue(i)) = value.convert() {
                     let value = i.get_value();
                     if value >= u32::MIN as i64 && value <= u32::MAX as i64 {
-                        return match self.flags.replace(ValueStorage::new(value as u32)) {
+                        return match self.flags.replace(IntegerValueStorage::new(value as u32)) {
                             Some(old) => ValueMutWriteResult::Updated(OwnedValue::Integer(
-                                ValueStorage::new(old.get_value()),
+                                IntegerValueStorage::new(old.get_value()),
                             )),
                             None => ValueMutWriteResult::Created,
                         };
@@ -360,9 +362,9 @@ impl MapValueMut for LogRecord {
                 None => ValueMutRemoveResult::NotFound,
             },
             "SeverityNumber" => match self.severity_number.take() {
-                Some(old) => ValueMutRemoveResult::Removed(OwnedValue::Integer(ValueStorage::new(
-                    old.get_value(),
-                ))),
+                Some(old) => ValueMutRemoveResult::Removed(OwnedValue::Integer(
+                    IntegerValueStorage::new(old.get_value()),
+                )),
                 None => ValueMutRemoveResult::NotFound,
             },
             "SeverityText" => match self.severity_text.take() {
@@ -386,9 +388,9 @@ impl MapValueMut for LogRecord {
                 None => ValueMutRemoveResult::NotFound,
             },
             "TraceFlags" => match self.flags.take() {
-                Some(old) => ValueMutRemoveResult::Removed(OwnedValue::Integer(ValueStorage::new(
-                    old.get_value(),
-                ))),
+                Some(old) => ValueMutRemoveResult::Removed(OwnedValue::Integer(
+                    IntegerValueStorage::new(old.get_value()),
+                )),
                 None => ValueMutRemoveResult::NotFound,
             },
             "EventName" => match self.event_name.take() {
@@ -400,51 +402,51 @@ impl MapValueMut for LogRecord {
     }
 
     fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
-        if let Some(v) = &self.timestamp {
-            if !item_callback.next("Timestamp", InnerValue::Value(v)) {
+        if let Some(v) = &mut self.timestamp {
+            if !item_callback.next("Timestamp", v) {
                 self.timestamp = None;
             }
         }
-        if let Some(v) = &self.observed_timestamp {
-            if !item_callback.next("ObservedTimestamp", InnerValue::Value(v)) {
+        if let Some(v) = &mut self.observed_timestamp {
+            if !item_callback.next("ObservedTimestamp", v) {
                 self.observed_timestamp = None;
             }
         }
-        if let Some(v) = &self.severity_number {
-            if !item_callback.next("SeverityNumber", InnerValue::Value(v)) {
+        if let Some(v) = &mut self.severity_number {
+            if !item_callback.next("SeverityNumber", v) {
                 self.severity_number = None;
             }
         }
         if let Some(v) = &mut self.severity_text {
-            if !item_callback.next("SeverityText", InnerValue::ValueMut(v)) {
+            if !item_callback.next("SeverityText", v) {
                 self.severity_text = None;
             }
         }
         if let Some(v) = &mut self.body {
-            if !item_callback.next("Body", InnerValue::ValueMut(v)) {
+            if !item_callback.next("Body", v) {
                 self.body = None;
             }
         }
-        if !item_callback.next("Attributes", InnerValue::ValueMut(&mut self.attributes)) {
+        if !item_callback.next("Attributes", &mut self.attributes) {
             self.attributes = MapValueStorage::new(HashMap::new());
         }
-        if let Some(v) = &self.flags {
-            if !item_callback.next("TraceFlags", InnerValue::Value(v)) {
+        if let Some(v) = &mut self.flags {
+            if !item_callback.next("TraceFlags", v) {
                 self.flags = None;
             }
         }
         if let Some(v) = &mut self.trace_id {
-            if !item_callback.next("TraceId", InnerValue::ValueMut(v)) {
+            if !item_callback.next("TraceId", v) {
                 self.trace_id = None;
             }
         }
         if let Some(v) = &mut self.span_id {
-            if !item_callback.next("SpanId", InnerValue::ValueMut(v)) {
+            if !item_callback.next("SpanId", v) {
                 self.span_id = None;
             }
         }
         if let Some(v) = &mut self.event_name {
-            if !item_callback.next("EventName", InnerValue::ValueMut(v)) {
+            if !item_callback.next("EventName", v) {
                 self.event_name = None;
             }
         }
