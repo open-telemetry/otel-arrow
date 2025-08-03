@@ -25,8 +25,7 @@ pub enum BorrowSource {
 }
 
 impl<'a> ResolvedValue<'a> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool
-    {
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
         if let ResolvedValue::Borrowed(s, v) = self {
             let writing_while_holding_borrow = match target {
                 MutableValueExpression::Source(_) => {
