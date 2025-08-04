@@ -232,11 +232,10 @@ where
             Ok(inner_value)
         }
         ScalarExpression::Case(c) => {
-            let conditions = c.get_conditions();
-            let expressions = c.get_expressions();
+            let expressions_with_conditions = c.get_expressions_with_conditions();
 
             // Evaluate conditions in order and return first matching result
-            for (condition, expression) in conditions.iter().zip(expressions.iter()) {
+            for (condition, expression) in expressions_with_conditions {
                 if execute_logical_expression(execution_context, condition)? {
                     let inner_value = execute_scalar_expression(execution_context, expression)?;
 
@@ -1338,15 +1337,17 @@ mod tests {
         run_test(
             ScalarExpression::Case(CaseScalarExpression::new(
                 QueryLocation::new_fake(),
-                vec![LogicalExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
                     )),
-                ))],
-                vec![ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "success"),
-                ))],
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                    )),
+                )],
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
                 )),
@@ -1358,15 +1359,17 @@ mod tests {
         run_test(
             ScalarExpression::Case(CaseScalarExpression::new(
                 QueryLocation::new_fake(),
-                vec![LogicalExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        false,
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            false,
+                        )),
                     )),
-                ))],
-                vec![ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "success"),
-                ))],
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                    )),
+                )],
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
                 )),
@@ -1379,26 +1382,28 @@ mod tests {
             ScalarExpression::Case(CaseScalarExpression::new(
                 QueryLocation::new_fake(),
                 vec![
-                    LogicalExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            false,
+                    (
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
                         )),
-                    )),
-                    LogicalExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            true,
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "first"),
                         )),
-                    )),
-                ],
-                vec![
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "first"),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "second"),
-                    )),
+                    ),
+                    (
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                true,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "second"),
+                        )),
+                    ),
                 ],
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "else"),

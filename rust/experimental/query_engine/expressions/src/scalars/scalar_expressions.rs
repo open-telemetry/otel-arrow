@@ -682,32 +682,25 @@ impl Expression for ConditionalScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaseScalarExpression {
     query_location: QueryLocation,
-    conditions: Vec<LogicalExpression>,
-    expressions: Vec<ScalarExpression>,
+    expressions_with_conditions: Vec<(LogicalExpression, ScalarExpression)>,
     else_expression: Box<ScalarExpression>,
 }
 
 impl CaseScalarExpression {
     pub fn new(
         query_location: QueryLocation,
-        conditions: Vec<LogicalExpression>,
-        expressions: Vec<ScalarExpression>,
+        expressions_with_conditions: Vec<(LogicalExpression, ScalarExpression)>,
         else_expression: ScalarExpression,
     ) -> CaseScalarExpression {
         Self {
             query_location,
-            conditions,
-            expressions,
+            expressions_with_conditions,
             else_expression: else_expression.into(),
         }
     }
 
-    pub fn get_conditions(&self) -> &Vec<LogicalExpression> {
-        &self.conditions
-    }
-
-    pub fn get_expressions(&self) -> &Vec<ScalarExpression> {
-        &self.expressions
+    pub fn get_expressions_with_conditions(&self) -> &Vec<(LogicalExpression, ScalarExpression)> {
+        &self.expressions_with_conditions
     }
 
     pub fn get_else_expression(&self) -> &ScalarExpression {
@@ -725,7 +718,7 @@ impl CaseScalarExpression {
         // Check if all expressions (including else) have the same static type
         let mut resolved_type: Option<ValueType> = None;
 
-        for expr in &self.expressions {
+        for (_, expr) in &self.expressions_with_conditions {
             if let Some(expr_static) = expr.try_resolve_static(pipeline)? {
                 let expr_type = expr_static.get_value_type();
                 if let Some(existing_type) = &resolved_type {
@@ -763,7 +756,7 @@ impl CaseScalarExpression {
         'b: 'c,
     {
         // Check each condition in order
-        for (condition, expression) in self.conditions.iter().zip(&self.expressions) {
+        for (condition, expression) in &self.expressions_with_conditions {
             let condition_result = condition.try_resolve_static(pipeline)?;
 
             if condition_result.is_none() {

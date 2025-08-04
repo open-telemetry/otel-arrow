@@ -37,8 +37,7 @@ pub(crate) fn parse_case_expression(
     let query_location = to_query_location(&case_expression_rule);
 
     let case_rules = case_expression_rule.into_inner();
-    let mut conditions = Vec::new();
-    let mut expressions = Vec::new();
+    let mut expressions_with_conditions = Vec::new();
 
     // The grammar ensures we have: logical_expression, scalar_expression, (logical_expression, scalar_expression)*, scalar_expression
     // So we alternate between conditions and expressions, with the last one being the else expression
@@ -47,10 +46,11 @@ pub(crate) fn parse_case_expression(
 
     // We need at least 3 elements: condition, then_expr, else_expr
     if rules_vec.len() < 3 {
-        return Err(ParserError::SyntaxError(
-            query_location,
-            "Case statement requires at least one condition, one then expression, and one else expression".to_string(),
-        ));
+        return Err(ParserError::QueryLanguageDiagnostic {
+            location: query_location,
+            diagnostic_id: "KS120",
+            message: "The function 'case' expects between 3 and 65535 arguments.".to_string(),
+        });
     }
 
     // Process pairs of (condition, expression) until we reach the last element (else)
@@ -58,20 +58,20 @@ pub(crate) fn parse_case_expression(
     while i < rules_vec.len() - 1 {
         // Parse condition
         let condition = parse_logical_expression(rules_vec[i].clone(), state)?;
-        conditions.push(condition);
         i += 1;
 
         // Parse corresponding expression
         if i < rules_vec.len() - 1 {
             // Not the last element (which is else)
             let expression = parse_scalar_expression(rules_vec[i].clone(), state)?;
-            expressions.push(expression);
+            expressions_with_conditions.push((condition, expression));
             i += 1;
         } else {
-            return Err(ParserError::SyntaxError(
-                query_location,
-                "Missing expression after condition in case statement".to_string(),
-            ));
+            return Err(ParserError::QueryLanguageDiagnostic {
+                location: query_location,
+                diagnostic_id: "KS120",
+                message: "The function 'case' expects between 3 and 65535 arguments.".to_string(),
+            });
         }
     }
 
@@ -80,8 +80,7 @@ pub(crate) fn parse_case_expression(
 
     Ok(ScalarExpression::Case(CaseScalarExpression::new(
         query_location,
-        conditions,
-        expressions,
+        expressions_with_conditions,
         else_expression,
     )))
 }
@@ -165,15 +164,17 @@ mod tests {
             "case(true, 1, 0)",
             ScalarExpression::Case(CaseScalarExpression::new(
                 QueryLocation::new_fake(),
-                vec![LogicalExpression::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
                     )),
-                ))],
-                vec![ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                ))],
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                )],
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                 )),
@@ -186,29 +187,31 @@ mod tests {
             ScalarExpression::Case(CaseScalarExpression::new(
                 QueryLocation::new_fake(),
                 vec![
-                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::Integer(
-                            IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
-                        )),
-                    )),
-                    LogicalExpression::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                    (
+                        LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
                             QueryLocation::new_fake(),
-                            false,
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                            )),
                         )),
-                    )),
-                ],
-                vec![
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "positive"),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "negative"),
-                    )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "positive"),
+                        )),
+                    ),
+                    (
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "negative"),
+                        )),
+                    ),
                 ],
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "zero"),
@@ -296,16 +299,18 @@ mod tests {
             ScalarExpression::Case(CaseScalarExpression::new(
                 QueryLocation::new_fake(),
                 vec![
-                    LogicalExpression::Chain(first_condition),
-                    LogicalExpression::Chain(second_condition),
-                ],
-                vec![
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
-                    )),
+                    (
+                        LogicalExpression::Chain(first_condition),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                    ),
+                    (
+                        LogicalExpression::Chain(second_condition),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                        )),
+                    ),
                 ],
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
