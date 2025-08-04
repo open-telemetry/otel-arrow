@@ -21,7 +21,12 @@ where
             });
             let mut selectors = s.get_value_accessor().get_selectors().iter();
 
-            let value = select_from_borrowed_value(execution_context, record, &mut selectors)?;
+            let value = select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Source,
+                record,
+                &mut selectors,
+            )?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -78,8 +83,12 @@ where
 
             let mut selectors = v.get_value_accessor().get_selectors().iter();
 
-            let value =
-                select_from_borrowed_value(execution_context, variable.unwrap(), &mut selectors)?;
+            let value = select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Variable,
+                variable.unwrap(),
+                &mut selectors,
+            )?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -231,6 +240,36 @@ where
 
             Ok(inner_value)
         }
+        ScalarExpression::Case(c) => {
+            let expressions_with_conditions = c.get_expressions_with_conditions();
+
+            // Evaluate conditions in order and return first matching result
+            for (condition, expression) in expressions_with_conditions {
+                if execute_logical_expression(execution_context, condition)? {
+                    let inner_value = execute_scalar_expression(execution_context, expression)?;
+
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar_expression,
+                        || format!("Evaluated as: {inner_value}"),
+                    );
+
+                    return Ok(inner_value);
+                }
+            }
+
+            // No condition matched, return else expression
+            let inner_value =
+                execute_scalar_expression(execution_context, c.get_else_expression())?;
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {inner_value}"),
+            );
+
+            Ok(inner_value)
+        }
         ScalarExpression::Convert(c) => {
             let value = match c {
                 ConvertScalarExpression::Boolean(c) => {
@@ -315,7 +354,8 @@ where
 
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
-    root: Ref<'b, dyn AsValue + 'static>,
+    borrow_source: BorrowSource,
+    borrow: Ref<'b, dyn AsValue + 'static>,
     selectors: &mut Iter<'a, ScalarExpression>,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -326,14 +366,14 @@ where
             let value = execute_scalar_expression(execution_context, s)?;
 
             let next = match value.to_value() {
-                Value::String(map_key) => Ref::filter_map(root, |v| {
+                Value::String(map_key) => Ref::filter_map(borrow, |v| {
                     if let Value::Map(m) = v.to_value() {
                         match m.get(map_key.get_value()) {
                             Some(v) => {
                                 execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Verbose,
                                                 s,
-                                                || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                                || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.to_value(), map_key.get_value()),
                                             );
                                 Some(v)
                             }
@@ -356,7 +396,7 @@ where
                         None
                     }
                 }),
-                Value::Integer(array_index) => Ref::filter_map(root, |v| {
+                Value::Integer(array_index) => Ref::filter_map(borrow, |v| {
                     if let Value::Array(a) = v.to_value() {
                         let mut index = array_index.get_value();
                         if index < 0 {
@@ -375,7 +415,7 @@ where
                                     execution_context.add_diagnostic_if_enabled(
                                                     RecordSetEngineDiagnosticLevel::Verbose,
                                                     s,
-                                                    || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                                    || format!("Resolved '{}' value for index '{index}' specified in accessor expression", v.to_value()),
                                                 );
                                     Some(v)
                                 }
@@ -409,12 +449,12 @@ where
             };
 
             if let Ok(v) = next {
-                select_from_borrowed_value(execution_context, v, selectors)
+                select_from_borrowed_value(execution_context, borrow_source, v, selectors)
             } else {
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
             }
         }
-        None => Ok(ResolvedValue::Borrowed(root)),
+        None => Ok(ResolvedValue::Borrowed(borrow_source, borrow)),
     }
 }
 
@@ -435,7 +475,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                 execution_context.add_diagnostic_if_enabled(
                                             RecordSetEngineDiagnosticLevel::Verbose,
                                             s,
-                                            || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                            || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.to_value(), map_key.get_value()),
                                         );
                                 Some(v.to_value())
                             }
@@ -476,7 +516,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                     execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Verbose,
                                                 s,
-                                                || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                                || format!("Resolved '{}' value for index '{index}' specified in accessor expression", v.to_value()),
                                             );
                                     Some(v.to_value())
                                 }
@@ -1282,5 +1322,104 @@ mod tests {
                 Value::Null,
             ),
         ]);
+    }
+
+    #[test]
+    fn test_execute_case_scalar_expression() {
+        let record = TestRecord::new();
+
+        let run_test = |scalar_expression, expected_value: Value| {
+            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
+
+            let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
+
+            assert_eq!(expected_value, value.to_value());
+        };
+
+        // Test simple case: case(true, "success", "failure") -> "success"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                    )),
+                )],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
+                )),
+            )),
+            Value::String(&ValueStorage::new("success".into())),
+        );
+
+        // Test fallback to else: case(false, "success", "failure") -> "failure"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            false,
+                        )),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                    )),
+                )],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
+                )),
+            )),
+            Value::String(&ValueStorage::new("failure".into())),
+        );
+
+        // Test multiple conditions: case(false, "first", true, "second", "else") -> "second"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    (
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "first"),
+                        )),
+                    ),
+                    (
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                true,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "second"),
+                        )),
+                    ),
+                ],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "else"),
+                )),
+            )),
+            Value::String(&ValueStorage::new("second".into())),
+        );
     }
 }
