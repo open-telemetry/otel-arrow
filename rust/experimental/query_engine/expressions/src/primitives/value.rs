@@ -11,15 +11,15 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
-    Array(&'a (dyn ArrayValue + 'static)),
-    Boolean(&'a (dyn BooleanValue + 'static)),
-    DateTime(&'a (dyn DateTimeValue + 'static)),
-    Double(&'a (dyn DoubleValue + 'static)),
-    Integer(&'a (dyn IntegerValue + 'static)),
-    Map(&'a (dyn MapValue + 'static)),
+    Array(&'a dyn ArrayValue),
+    Boolean(&'a dyn BooleanValue),
+    DateTime(&'a dyn DateTimeValue),
+    Double(&'a dyn DoubleValue),
+    Integer(&'a dyn IntegerValue),
+    Map(&'a dyn MapValue),
     Null,
-    Regex(&'a (dyn RegexValue + 'static)),
-    String(&'a (dyn StringValue + 'static)),
+    Regex(&'a dyn RegexValue),
+    String(&'a dyn StringValue),
 }
 
 impl Value<'_> {
@@ -445,7 +445,54 @@ pub trait AsValue: Debug {
     fn to_value(&self) -> Value;
 }
 
-pub trait BooleanValue: AsValue {
+#[derive(Debug, Clone)]
+pub enum StaticValue<'a> {
+    Array(&'a (dyn ArrayValue + 'static)),
+    Boolean(&'a (dyn BooleanValue + 'static)),
+    DateTime(&'a (dyn DateTimeValue + 'static)),
+    Double(&'a (dyn DoubleValue + 'static)),
+    Integer(&'a (dyn IntegerValue + 'static)),
+    Map(&'a (dyn MapValue + 'static)),
+    Null,
+    Regex(&'a (dyn RegexValue + 'static)),
+    String(&'a (dyn StringValue + 'static)),
+}
+
+pub trait AsStaticValue: AsValue {
+    fn to_static_value(&self) -> StaticValue;
+}
+
+impl<T: AsStaticValue> AsValue for T {
+    fn get_value_type(&self) -> ValueType {
+        match self.to_static_value() {
+            StaticValue::Array(_) => ValueType::Array,
+            StaticValue::Boolean(_) => ValueType::Boolean,
+            StaticValue::DateTime(_) => ValueType::DateTime,
+            StaticValue::Double(_) => ValueType::Double,
+            StaticValue::Integer(_) => ValueType::Integer,
+            StaticValue::Map(_) => ValueType::Map,
+            StaticValue::Null => ValueType::Null,
+            StaticValue::Regex(_) => ValueType::Regex,
+            StaticValue::String(_) => ValueType::String,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        match self.to_static_value() {
+            StaticValue::Array(a) => Value::Array(a),
+            StaticValue::Boolean(b) => Value::Boolean(b),
+            StaticValue::DateTime(d) => Value::DateTime(d),
+            StaticValue::Double(d) => Value::Double(d),
+            StaticValue::Integer(i) => Value::Integer(i),
+            StaticValue::Map(m) => Value::Map(m),
+            StaticValue::Null => Value::Null,
+            StaticValue::Regex(r) => Value::Regex(r),
+            StaticValue::String(s) => Value::String(s),
+        }
+    }
+}
+
+pub trait BooleanValue: Debug {
     fn get_value(&self) -> bool;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -453,7 +500,7 @@ pub trait BooleanValue: AsValue {
     }
 }
 
-pub trait IntegerValue: AsValue {
+pub trait IntegerValue: Debug {
     fn get_value(&self) -> i64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -461,7 +508,7 @@ pub trait IntegerValue: AsValue {
     }
 }
 
-pub trait DateTimeValue: AsValue {
+pub trait DateTimeValue: Debug {
     fn get_value(&self) -> DateTime<FixedOffset>;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -473,7 +520,7 @@ pub trait DateTimeValue: AsValue {
     }
 }
 
-pub trait DoubleValue: AsValue {
+pub trait DoubleValue: Debug {
     fn get_value(&self) -> f64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -481,7 +528,7 @@ pub trait DoubleValue: AsValue {
     }
 }
 
-pub trait RegexValue: AsValue {
+pub trait RegexValue: Debug {
     fn get_value(&self) -> &Regex;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -489,7 +536,7 @@ pub trait RegexValue: AsValue {
     }
 }
 
-pub trait StringValue: AsValue {
+pub trait StringValue: Debug {
     fn get_value(&self) -> &str;
 }
 
