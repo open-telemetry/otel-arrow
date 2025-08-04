@@ -93,6 +93,8 @@ mod tests {
                 "timespan(null)",
                 "guid(null)",
                 "dynamic(null)",
+                "tostring(\"hello\")",
+                "tostring(42)",
             ],
             &["!"],
         );
@@ -101,6 +103,8 @@ mod tests {
     #[test]
     fn test_parse_scalar_expression() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
+            println!("Testing: {}", input);
+
             let state = ParserState::new(input);
 
             let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
@@ -284,6 +288,123 @@ mod tests {
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                 )),
+            )),
+        );
+
+        run_test_success(
+            "tostring(42)",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring(true)",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring(false)",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring(bool(null))",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring(\"hello\")",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring(3.14)",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 3.14),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring(variable)",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "variable",
+                            )),
+                        )]),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring((42))",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tostring(datetime(6/9/2025))",
+            ScalarExpression::Convert(ConvertScalarExpression::String(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            create_utc(2025, 6, 9, 0, 0, 0, 0),
+                        ),
+                    )),
+                ),
             )),
         );
     }
