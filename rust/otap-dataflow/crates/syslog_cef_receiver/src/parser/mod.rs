@@ -1,14 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright The OpenTelemetry Authors
+
 use core::str;
 
-pub(crate) mod rfc5424;
-pub(crate) mod rfc3164;
 pub(crate) mod cef;
 pub(crate) mod parsed_message;
+pub(crate) mod rfc3164;
+pub(crate) mod rfc5424;
 
 use crate::parser::cef::parse_cef;
 use crate::parser::parsed_message::ParsedSyslogMessage;
-use crate::parser::rfc5424::parse_rfc5424;
 use crate::parser::rfc3164::parse_rfc3164;
+use crate::parser::rfc5424::parse_rfc5424;
 
 /// Priority structure containing facility and severity
 #[derive(Debug, Clone, PartialEq)]
@@ -36,12 +39,12 @@ pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
     if input.starts_with(b"CEF:") {
         return parse_cef(input).map(ParsedSyslogMessage::Cef);
     }
-    
+
     // Try RFC 5424 first
     if let Ok(msg) = parse_rfc5424(input) {
         return Ok(ParsedSyslogMessage::Rfc5424(msg));
     }
-    
+
     // Fallback to RFC 3164
     parse_rfc3164(input).map(ParsedSyslogMessage::Rfc3164)
 }
@@ -51,15 +54,20 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
     if input.is_empty() || input[0] != b'<' {
         return Err(ParseError::InvalidPriority);
     }
-    
-    let end = input.iter().position(|&b| b == b'>').ok_or(ParseError::InvalidPriority)?;
+
+    let end = input
+        .iter()
+        .position(|&b| b == b'>')
+        .ok_or(ParseError::InvalidPriority)?;
     let priority_bytes = &input[1..end];
     let priority_str = str::from_utf8(priority_bytes).map_err(|_| ParseError::InvalidUtf8)?;
-    let priority_num: u8 = priority_str.parse().map_err(|_| ParseError::InvalidPriority)?;
-    
+    let priority_num: u8 = priority_str
+        .parse()
+        .map_err(|_| ParseError::InvalidPriority)?;
+
     let facility = priority_num >> 3;
     let severity = priority_num & 0x07;
-    
+
     Ok((Priority { facility, severity }, &input[end + 1..]))
 }
 
@@ -90,7 +98,7 @@ mod tests {
         // Test minimum priority (0)
         let input = b"<0>1 - - - - - - Test message";
         let result = parse(input).unwrap();
-        
+
         if let ParsedSyslogMessage::Rfc5424(msg) = result {
             assert_eq!(msg.priority.facility, 0);
             assert_eq!(msg.priority.severity, 0);
@@ -99,7 +107,7 @@ mod tests {
         // Test maximum priority (191)
         let input = b"<191>1 - - - - - - Test message";
         let result = parse(input).unwrap();
-        
+
         if let ParsedSyslogMessage::Rfc5424(msg) = result {
             assert_eq!(msg.priority.facility, 23);
             assert_eq!(msg.priority.severity, 7);

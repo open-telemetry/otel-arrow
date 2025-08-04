@@ -1,15 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright The OpenTelemetry Authors
+
 use async_trait::async_trait;
 use otap_df_engine::control::ControlMsg;
 use otap_df_engine::{error::Error, local::receiver as local};
+use otap_df_otap::pdata::OtapPdata;
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+use crate::arrow_records_encoder::ArrowRecordsBuilder;
 
 #[allow(dead_code)]
 const SYLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
 const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
-const MAX_BATCH_SIZE: usize = 100; // Maximum number of messages to build an Arrow batch
+const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
 
 /// Protocol type for the receiver
 #[derive(Debug, Clone)]
@@ -52,16 +58,17 @@ impl SyslogCefReceiver {
     }
 }
 
-#[async_trait( ? Send)]
-impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for SyslogCefReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_chan: local::ControlChannel,
-        effect_handler: local::EffectHandler<Vec<u8>>,
-    ) -> Result<(), Error<Vec<u8>>> {
+        effect_handler: local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error<OtapPdata>> {
         match self.protocol {
             Protocol::Tcp => {
                 let listener = effect_handler.tcp_listener(self.listening_addr)?;
+
                 loop {
                     tokio::select! {
                         biased; //Prioritize control messages over data
@@ -92,36 +99,113 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
                                         let mut reader = BufReader::new(socket);
-                                        let mut line = String::new();
+                                        let mut line_bytes = Vec::new();
+
+                                        let mut arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                        let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
+                                        let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
 
                                         loop {
-                                            line.clear();
+                                            tokio::select! {
+                                                biased; // Prioritize incoming data over timeout
 
-                                            // ToDo: Need to handle malicious input
-                                            // This could lead to memory exhaustion if there is no newline in the input.
-                                            match reader.read_line(&mut line).await {
-                                                Ok(0) => {
-                                                    // EOF reached - connection closed
-                                                    // read_line() handles incomplete lines (without \n) automatically
-                                                    break;
-                                                },
-                                                Ok(_) => {
+                                                // Handle incoming data
+                                                read_result = reader.read_until(b'\n', &mut line_bytes) => {
+                                                    // ToDo: Need to handle malicious input
+                                                    // This could lead to memory exhaustion if there is no newline in the input.
+                                                    match read_result {
+                                                        Ok(0) => {
+                                                            // EOF reached - connection closed
+                                                            // Check if there's an incomplete line to process
+                                                            if !line_bytes.is_empty() {
+                                                                // Remove trailing newline if present
+                                                                let message_bytes = if line_bytes.last() == Some(&b'\n') {
+                                                                    &line_bytes[..line_bytes.len()-1]
+                                                                } else {
+                                                                    &line_bytes[..]
+                                                                };
+                                                                if let Ok(parsed_message) = crate::parser::parse(message_bytes) {
+                                                                    arrow_records_builder.append_syslog(parsed_message);
+                                                                }
+                                                            }
 
-                                                    let is_complete_line = line.ends_with('\n');
-                                                    if !is_complete_line {
-                                                        // ToDo: Handle incomplete lines
-                                                        // Do we process the incomplete line with partial data or discard it?
-                                                        // Handle incomplete line (log, emit metrics, etc.)
+                                                            // Send any remaining records before closing
+                                                            if arrow_records_builder.len() > 0 {
+                                                                let arrow_records = arrow_records_builder.build().unwrap();
+                                                                let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
+                                                            }
+                                                            break;
+                                                        },
+                                                        Ok(_) => {
+
+                                                            let is_complete_line = line_bytes.last() == Some(&b'\n');
+                                                            if !is_complete_line {
+                                                                // ToDo: Handle incomplete lines
+                                                                // Do we process the incomplete line with partial data or discard it?
+                                                                // Handle incomplete line (log, emit metrics, etc.)
+                                                            }
+
+                                                            // Strip the newline character for parsing
+                                                            let message_to_parse = if is_complete_line {
+                                                                &line_bytes[..line_bytes.len()-1]
+                                                            } else {
+                                                                &line_bytes[..]
+                                                            };
+
+                                                            let parsed_message = match crate::parser::parse(message_to_parse) {
+                                                                Ok(parsed) => parsed,
+                                                                Err(_e) => {
+                                                                    // ToDo: Handle parsing error (log, emit metrics, etc.)
+                                                                    continue; // Skip this message
+                                                                }
+                                                            };
+
+                                                            arrow_records_builder.append_syslog(parsed_message);
+
+                                                            // Clear the bytes for the next iteration
+                                                            line_bytes.clear();
+
+                                                            if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                                                // Build the Arrow records to send them
+                                                                let arrow_records = arrow_records_builder.build().unwrap();
+
+                                                                // Reset the builder for the next batch
+                                                                arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                                                // Reset the timer since we already built an arrow record batch due to size constraint
+                                                                interval.reset();
+
+                                                                if let Err(_e) = effect_handler.send_message(OtapPdata::from(arrow_records)).await {
+                                                                    return; // Break out of the entire task
+                                                                }
+                                                            }
+                                                        },
+                                                        Err(_e) => {
+                                                            // Send any remaining records before closing due to error
+                                                            if arrow_records_builder.len() > 0 {
+                                                                let arrow_records = arrow_records_builder.build().unwrap();
+                                                                let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
+                                                            }
+                                                            break; // ToDo: Handle read error properly
+                                                        }
                                                     }
-
-                                                    // ToDo: Validate the received data before processing
-                                                    if let Err(_e) = effect_handler.send_message(line.as_bytes().to_vec()).await {
-                                                        return; // Break out of the entire task
-                                                    }
-                                                },
-                                                Err(_e) => {
-                                                    break; // ToDo: Handle read error properly
                                                 }
+
+                                                // Handle timeout - send any accumulated records
+                                                _ = interval.tick() => {
+                                                    if arrow_records_builder.len() > 0 {
+                                                        // Build the Arrow records and send them
+                                                        let arrow_records = arrow_records_builder.build().unwrap();
+
+                                                        // Reset the builder for the next batch
+                                                        arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                                        if let Err(_e) = effect_handler.send_message(OtapPdata::from(arrow_records)).await {
+                                                            return; // Break out of the entire task
+                                                        }
+                                                    }
+                                                },
                                             }
                                         }
                                     });
@@ -137,6 +221,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
             Protocol::Udp => {
                 let socket = effect_handler.udp_socket(self.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
+                let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
                 let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
                 let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
@@ -159,18 +244,52 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                                 // ToDo: Handle other control messages if needed
                                 }
                             }
-                        }
+                        },
 
                         result = socket.recv_from(&mut buf) => {
                             match result {
                                 Ok((n, _peer_addr)) => {
                                     // ToDo: Validate the received data before processing
                                     // ToDo: Consider logging or using peer_addr for security/auditing
-                                    effect_handler.send_message(buf[..n].to_vec()).await?;
+                                    let parsed_message = match crate::parser::parse(&buf[..n]) {
+                                        Ok(parsed) => parsed,
+                                        Err(_e) => {
+                                            // ToDo: Handle parsing error (log, emit metrics, etc.)
+                                            continue; // Skip this message
+                                        }
+                                    };
+
+                                    arrow_records_builder.append_syslog(parsed_message);
+
+                                    if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                        // Build the Arrow records to send them
+                                        let arrow_records = arrow_records_builder.build().unwrap();
+
+                                        // Reset the builder for the next batch
+                                        arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                        // Reset the timer since we already built an arrow record batch due to size constraint
+                                        interval.reset();
+
+                                        effect_handler.send_message(OtapPdata::from(arrow_records)).await?;
+                                    }
                                 },
                                 Err(e) => {
                                     return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: e.to_string()});
                                 }
+                            }
+                        },
+
+                        _ = interval.tick() => {
+                            // Check if we have any records to send
+                            if arrow_records_builder.len() > 0 {
+                                // Build the Arrow records and send them
+                                let arrow_records = arrow_records_builder.build().unwrap();
+
+                                // Reset the builder for the next batch
+                                arrow_records_builder = ArrowRecordsBuilder::new();
+
+                                effect_handler.send_message(OtapPdata::from(arrow_records)).await?;
                             }
                         },
                     }
@@ -184,6 +303,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
@@ -206,24 +326,23 @@ mod tests {
                     .await
                     .expect("Failed to bind UDP socket");
 
-                // Sample syslog CEF message
-                let test_message = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|3|src=10.0.0.1 dst=10.0.0.2";
+                let test_message1 = b"<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
 
                 // Send the test message to the receiver
                 let _bytes_sent = socket
-                    .send_to(test_message, listening_addr)
+                    .send_to(test_message1, listening_addr)
                     .await
                     .expect("Failed to send UDP message");
 
                 // Send another test message
-                let test_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message";
+                let test_message2 = b"<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
                 let _bytes_sent2 = socket
                     .send_to(test_message2, listening_addr)
                     .await
                     .expect("Failed to send second UDP message");
 
                 // Wait a bit for messages to be processed
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
 
                 // Finally, send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
@@ -245,8 +364,8 @@ mod tests {
                     .expect("Failed to connect to TCP server");
 
                 // Sample syslog CEF messages
-                let test_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|3|src=10.0.0.1 dst=10.0.0.2\n";
-                let test_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message\n";
+                let test_message1 = b"<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8\n";
+                let test_message2 = b"<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully\n";
 
                 // Send test messages
                 stream
@@ -265,7 +384,7 @@ mod tests {
                     .expect("Failed to flush second message");
 
                 // Wait a bit for messages to be processed
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
 
                 // Close the connection
                 drop(stream);
@@ -289,9 +408,9 @@ mod tests {
                     .await
                     .expect("Failed to connect to TCP server");
 
-                // Sample syslog CEF messages - one with newline, one without
-                let test_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 - CEF:0|Security|threatmanager|1.0|100|complete message|3|src=10.0.0.1\n";
-                let test_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|incomplete message|5|msg=no newline";
+                // Sample syslog messages - one with newline, one without
+                let test_message1 = b"<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8\n";
+                let test_message2 = b"<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
 
                 // Send complete message with newline
                 stream
@@ -311,7 +430,7 @@ mod tests {
                     .expect("Failed to flush second message");
 
                 // Wait a bit for messages to be processed
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
 
                 // Close the connection - this should trigger sending of remaining data
                 drop(stream);
@@ -329,9 +448,11 @@ mod tests {
 
     /// Validation closure that checks the received messages for UDP test.
     fn udp_validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<Vec<u8>>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
+                use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
                 // Check that messages have been received through the effect_handler
 
                 // Read the first message
@@ -340,26 +461,104 @@ mod tests {
                     .expect("Timed out waiting for first message")
                     .expect("No first message received");
 
-                // Verify the content of the first message
-                let expected_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|3|src=10.0.0.1 dst=10.0.0.2";
+                // Extract arrow_records for further validation
+                let OtapPdata::OtapArrowRecords(arrow_records) = message1_received else {
+                    panic!("Expected OtapArrowRecords::Logs variant")
+                };
+
+                // Check that the ArrowRecords contains the expected payload types
+                let logs_record_batch = arrow_records
+                    .get(ArrowPayloadType::Logs)
+                    .expect("Expected Logs record batch to be present");
+
+                // Verify the number of log records
                 assert_eq!(
-                    message1_received,
-                    expected_message1.to_vec(),
-                    "First message content mismatch"
+                    logs_record_batch.num_rows(),
+                    2,
+                    "Expected 2 log records in the batch"
                 );
 
-                // Read the second message
-                let message2_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for second message")
-                    .expect("No second message received");
+                // Assert that LogAttrs payload is always present and has records
+                let log_attrs_batch = arrow_records
+                    .get(ArrowPayloadType::LogAttrs)
+                    .expect("LogAttrs batch should always be present");
+                assert!(
+                    log_attrs_batch.num_rows() > 0,
+                    "LogAttrs batch should have positive number of rows"
+                );
 
-                // Verify the content of the second message
-                let expected_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message";
+                // Verify the Arrow schema contains expected columns
+                let schema = logs_record_batch.schema();
+                let column_names: Vec<&str> =
+                    schema.fields().iter().map(|f| f.name().as_str()).collect();
+
+                // Check for essential log record columns
+                assert!(
+                    column_names.contains(&"body"),
+                    "Logs record batch should contain 'body' column"
+                );
+                assert!(
+                    column_names.contains(&"severity_number"),
+                    "Logs record batch should contain 'severity_number' column"
+                );
+                assert!(
+                    column_names.contains(&"severity_text"),
+                    "Logs record batch should contain 'severity_text' column"
+                );
+                assert!(
+                    column_names.contains(&"time_unix_nano"),
+                    "Logs record batch should contain 'time_unix_nano' column"
+                );
+
+                // Validate using Arrow record batch methods directly
+                // Check the body column to verify message content
+                let body_column = logs_record_batch
+                    .column_by_name("body")
+                    .expect("Body column should exist");
+
+                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
+                let struct_array = body_column
+                    .as_any()
+                    .downcast_ref::<arrow::array::StructArray>()
+                    .expect("Body column should be a StructArray");
+
+                // Get the str field which contains the actual string content
+                let str_field = struct_array
+                    .column_by_name("str")
+                    .expect("Body struct should have 'str' field");
+
+                // The str field is a Dictionary array
+                let dict_array = str_field
+                    .as_any()
+                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
+                    .expect("str field should be a Dictionary array");
+
+                // Get the values from the dictionary
+                let values = dict_array
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .expect("Dictionary values should be StringArray");
+
+                // Expected test messages
+                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
+                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
+
+                // Get the actual body content for each record
+                let body1_key = dict_array.key(0).expect("First record should exist");
+                let body2_key = dict_array.key(1).expect("Second record should exist");
+
+                let body1 = values.value(body1_key);
+                let body2 = values.value(body2_key);
+
+                // Verify that the body content matches the input messages
                 assert_eq!(
-                    message2_received,
-                    expected_message2.to_vec(),
-                    "Second message content mismatch"
+                    body1, expected_message1,
+                    "First message body content mismatch"
+                );
+                assert_eq!(
+                    body2, expected_message2,
+                    "Second message body content mismatch"
                 );
             })
         }
@@ -367,35 +566,117 @@ mod tests {
 
     /// Validation closure that checks the received messages for TCP test.
     fn tcp_validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<Vec<u8>>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
+                use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+                // Check that messages have been received through the effect_handler
+
                 // Read the first message
                 let message1_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for first message")
                     .expect("No first message received");
 
-                // Verify the content of the first message
-                let expected_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|3|src=10.0.0.1 dst=10.0.0.2\n";
+                // Extract arrow_records for further validation
+                let OtapPdata::OtapArrowRecords(arrow_records) = message1_received else {
+                    panic!("Expected OtapArrowRecords::Logs variant")
+                };
+
+                // Check that the ArrowRecords contains the expected payload types
+                let logs_record_batch = arrow_records
+                    .get(ArrowPayloadType::Logs)
+                    .expect("Expected Logs record batch to be present");
+
+                // Verify the number of log records
                 assert_eq!(
-                    message1_received,
-                    expected_message1.to_vec(),
-                    "First message content mismatch"
+                    logs_record_batch.num_rows(),
+                    2,
+                    "Expected 2 log records in the batch"
                 );
 
-                // Read the second message
-                let message2_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for second message")
-                    .expect("No second message received");
+                // Assert that LogAttrs payload is always present and has records
+                let log_attrs_batch = arrow_records
+                    .get(ArrowPayloadType::LogAttrs)
+                    .expect("LogAttrs batch should always be present");
+                assert!(
+                    log_attrs_batch.num_rows() > 0,
+                    "LogAttrs batch should have positive number of rows"
+                );
 
-                // Verify the content of the second message
-                let expected_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|test event|5|msg=test message\n";
+                // Verify the Arrow schema contains expected columns
+                let schema = logs_record_batch.schema();
+                let column_names: Vec<&str> =
+                    schema.fields().iter().map(|f| f.name().as_str()).collect();
+
+                // Check for essential log record columns
+                assert!(
+                    column_names.contains(&"body"),
+                    "Logs record batch should contain 'body' column"
+                );
+                assert!(
+                    column_names.contains(&"severity_number"),
+                    "Logs record batch should contain 'severity_number' column"
+                );
+                assert!(
+                    column_names.contains(&"severity_text"),
+                    "Logs record batch should contain 'severity_text' column"
+                );
+                assert!(
+                    column_names.contains(&"time_unix_nano"),
+                    "Logs record batch should contain 'time_unix_nano' column"
+                );
+
+                // Validate using Arrow record batch methods directly
+                // Check the body column to verify message content
+                let body_column = logs_record_batch
+                    .column_by_name("body")
+                    .expect("Body column should exist");
+
+                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
+                let struct_array = body_column
+                    .as_any()
+                    .downcast_ref::<arrow::array::StructArray>()
+                    .expect("Body column should be a StructArray");
+
+                // Get the str field which contains the actual string content
+                let str_field = struct_array
+                    .column_by_name("str")
+                    .expect("Body struct should have 'str' field");
+
+                // The str field is a Dictionary array
+                let dict_array = str_field
+                    .as_any()
+                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
+                    .expect("str field should be a Dictionary array");
+
+                // Get the values from the dictionary
+                let values = dict_array
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .expect("Dictionary values should be StringArray");
+
+                // Expected test messages
+                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
+                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
+
+                // Get the actual body content for each record
+                let body1_key = dict_array.key(0).expect("First record should exist");
+                let body2_key = dict_array.key(1).expect("Second record should exist");
+
+                let body1 = values.value(body1_key);
+                let body2 = values.value(body2_key);
+
+                // Verify that the body content matches the input messages
                 assert_eq!(
-                    message2_received,
-                    expected_message2.to_vec(),
-                    "Second message content mismatch"
+                    body1, expected_message1,
+                    "First message body content mismatch"
+                );
+                assert_eq!(
+                    body2, expected_message2,
+                    "Second message body content mismatch"
                 );
             })
         }
@@ -403,35 +684,129 @@ mod tests {
 
     /// Validation closure that checks the received messages for TCP incomplete test.
     fn tcp_incomplete_validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<Vec<u8>>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                // Read the first message (complete with newline)
-                let message1_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for first message")
-                    .expect("No first message received");
+                use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-                // Verify the content of the first message
-                let expected_message1 = b"<134>1 2023-06-25T10:30:00.123Z test-host test-app 1234 ID47 - CEF:0|Security|threatmanager|1.0|100|complete message|3|src=10.0.0.1\n";
+                // Check that messages have been received through the effect_handler
+                // Note: Messages might come in separate batches due to timing
+
+                let mut total_records = 0;
+                let mut received_messages = Vec::new();
+
+                // Collect all messages within a reasonable timeout
+                while total_records < 2 {
+                    match timeout(Duration::from_secs(3), ctx.recv()).await {
+                        Ok(Ok(message)) => {
+                            let OtapPdata::OtapArrowRecords(arrow_records) = message else {
+                                panic!("Expected OtapArrowRecords variant")
+                            };
+
+                            let logs_record_batch = arrow_records
+                                .get(ArrowPayloadType::Logs)
+                                .expect("Expected Logs record batch to be present");
+
+                            total_records += logs_record_batch.num_rows();
+                            received_messages.push(arrow_records);
+                        }
+                        Ok(Err(_)) => break, // Channel closed
+                        Err(_) => break,     // Timeout
+                    }
+                }
+
+                // Verify we received exactly 2 records total
                 assert_eq!(
-                    message1_received,
-                    expected_message1.to_vec(),
-                    "First message content mismatch"
+                    total_records, 2,
+                    "Expected 2 log records total across all batches"
                 );
 
-                // Read the second message (incomplete, should be sent on EOF)
-                let message2_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for second message")
-                    .expect("No second message received");
+                // Validate the content by checking the first message (should contain at least one record)
+                let first_arrow_records = &received_messages[0];
+                let logs_record_batch = first_arrow_records
+                    .get(ArrowPayloadType::Logs)
+                    .expect("Expected Logs record batch to be present");
 
-                // Verify the content of the second message (no newline)
-                let expected_message2 = b"<86>1 2023-06-25T10:31:00.456Z host2 app2 5678 ID48 - CEF:0|Vendor|Product|1.1|200|incomplete message|5|msg=no newline";
-                assert_eq!(
-                    message2_received,
-                    expected_message2.to_vec(),
-                    "Second message content mismatch"
+                // Assert that LogAttrs payload is always present and has records
+                let log_attrs_batch = first_arrow_records
+                    .get(ArrowPayloadType::LogAttrs)
+                    .expect("LogAttrs batch should always be present");
+                assert!(
+                    log_attrs_batch.num_rows() > 0,
+                    "LogAttrs batch should have positive number of rows"
+                );
+
+                // Verify the Arrow schema contains expected columns
+                let schema = logs_record_batch.schema();
+                let column_names: Vec<&str> =
+                    schema.fields().iter().map(|f| f.name().as_str()).collect();
+
+                // Check for essential log record columns
+                assert!(
+                    column_names.contains(&"body"),
+                    "Logs record batch should contain 'body' column"
+                );
+                assert!(
+                    column_names.contains(&"severity_number"),
+                    "Logs record batch should contain 'severity_number' column"
+                );
+                assert!(
+                    column_names.contains(&"severity_text"),
+                    "Logs record batch should contain 'severity_text' column"
+                );
+                assert!(
+                    column_names.contains(&"time_unix_nano"),
+                    "Logs record batch should contain 'time_unix_nano' column"
+                );
+
+                // Get all the message bodies from all batches for validation
+                let mut all_bodies = Vec::new();
+                for arrow_records in &received_messages {
+                    let logs_batch = arrow_records
+                        .get(ArrowPayloadType::Logs)
+                        .expect("Expected Logs record batch to be present");
+
+                    let body_column = logs_batch
+                        .column_by_name("body")
+                        .expect("Body column should exist");
+
+                    let struct_array = body_column
+                        .as_any()
+                        .downcast_ref::<arrow::array::StructArray>()
+                        .expect("Body column should be a StructArray");
+
+                    let str_field = struct_array
+                        .column_by_name("str")
+                        .expect("Body struct should have 'str' field");
+
+                    let dict_array = str_field.as_any().downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
+                        .expect("str field should be a Dictionary array");
+
+                    let values = dict_array
+                        .values()
+                        .as_any()
+                        .downcast_ref::<arrow::array::StringArray>()
+                        .expect("Dictionary values should be StringArray");
+
+                    for i in 0..logs_batch.num_rows() {
+                        let key = dict_array.key(i).expect("Record should exist");
+                        let body = values.value(key);
+                        all_bodies.push(body);
+                    }
+                }
+
+                // Expected test messages
+                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
+                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
+
+                // Verify that both expected messages are present (order doesn't matter)
+                assert!(
+                    all_bodies.contains(&expected_message1),
+                    "First message not found in received bodies"
+                );
+                assert!(
+                    all_bodies.contains(&expected_message2),
+                    "Second message not found in received bodies"
                 );
             })
         }
