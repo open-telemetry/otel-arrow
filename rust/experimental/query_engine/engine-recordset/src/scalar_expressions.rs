@@ -351,13 +351,21 @@ where
         }
         ScalarExpression::ReplaceString(r) => {
             let text_value = execute_scalar_expression(execution_context, r.get_text_expression())?;
-            let lookup_value = execute_scalar_expression(execution_context, r.get_lookup_expression())?;
-            let replacement_value = execute_scalar_expression(execution_context, r.get_replacement_expression())?;
+            let lookup_value =
+                execute_scalar_expression(execution_context, r.get_lookup_expression())?;
+            let replacement_value =
+                execute_scalar_expression(execution_context, r.get_replacement_expression())?;
 
-            let v = match (text_value.to_value(), lookup_value.to_value(), replacement_value.to_value()) {
+            let v = match (
+                text_value.to_value(),
+                lookup_value.to_value(),
+                replacement_value.to_value(),
+            ) {
                 (Value::String(text), Value::String(lookup), Value::String(replacement)) => {
-                    let result = text.get_value().replace(lookup.get_value(), replacement.get_value());
-                    ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(result.into())))
+                    let result = text
+                        .get_value()
+                        .replace(lookup.get_value(), replacement.get_value());
+                    ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(result)))
                 }
                 _ => ResolvedValue::Computed(OwnedValue::Null),
             };
@@ -1375,7 +1383,10 @@ mod tests {
         run_test(vec![
             (
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "A magic trick can turn a cat into a dog"),
+                    StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "A magic trick can turn a cat into a dog",
+                    ),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
@@ -1432,7 +1443,7 @@ mod tests {
             ),
         ]);
     }
-  
+
     #[test]
     fn test_execute_case_scalar_expression() {
         let record = TestRecord::new();

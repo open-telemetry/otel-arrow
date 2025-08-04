@@ -63,10 +63,10 @@ pub(crate) fn parse_strlen_expression(
     state: &ParserState,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strlen_expression_rule);
-    
+
     let mut strlen_rules = strlen_expression_rule.into_inner();
     let inner_expression = strlen_rules.next().unwrap();
-    
+
     Ok(ScalarExpression::Length(LengthScalarExpression::new(
         query_location,
         parse_scalar_expression(inner_expression, state)?,
@@ -78,18 +78,20 @@ pub(crate) fn parse_replace_string_expression(
     state: &ParserState,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&replace_string_expression_rule);
-    
+
     let mut replace_string_rules = replace_string_expression_rule.into_inner();
     let text_expression = replace_string_rules.next().unwrap();
     let lookup_expression = replace_string_rules.next().unwrap();
     let replacement_expression = replace_string_rules.next().unwrap();
-    
-    Ok(ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-        query_location,
-        parse_scalar_expression(text_expression, state)?,
-        parse_scalar_expression(lookup_expression, state)?,
-        parse_scalar_expression(replacement_expression, state)?,
-    )))
+
+    Ok(ScalarExpression::ReplaceString(
+        ReplaceStringScalarExpression::new(
+            query_location,
+            parse_scalar_expression(text_expression, state)?,
+            parse_scalar_expression(lookup_expression, state)?,
+            parse_scalar_expression(replacement_expression, state)?,
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -316,13 +318,19 @@ mod tests {
             ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "A magic trick can turn a cat into a dog"),
+                    StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "A magic trick can turn a cat into a dog",
+                    ),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
+                )),
+            )),
+        );
 
         run_test_success(
             "case(true, 1, 0)",

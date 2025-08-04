@@ -84,7 +84,12 @@ fn test_project_away() {
 fn test_strlen_function() {
     let log = LogRecord::new()
         .with_event_name("hello world".into())
-        .with_attribute("text", AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new("test string".into()))));
+        .with_attribute(
+            "text",
+            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+                "test string".into(),
+            ))),
+        );
 
     let mut request = ExportLogsServiceRequest::new().with_resource_logs(
         ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
@@ -108,12 +113,24 @@ fn test_strlen_function() {
 
     let attributes = log.attributes.get_values();
     assert_eq!(
-        attributes.get("name_length").map(|v| v.to_value().to_string()),
-        Some(AnyValue::Native(OtlpAnyValue::IntValue(ValueStorage::new(11))).to_value().to_string()) // "hello world" has 11 characters
+        attributes
+            .get("name_length")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::IntValue(ValueStorage::new(11)))
+                .to_value()
+                .to_string()
+        ) // "hello world" has 11 characters
     );
     assert_eq!(
-        attributes.get("text_length").map(|v| v.to_value().to_string()),
-        Some(AnyValue::Native(OtlpAnyValue::IntValue(ValueStorage::new(11))).to_value().to_string()) // "test string" has 11 characters
+        attributes
+            .get("text_length")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::IntValue(ValueStorage::new(11)))
+                .to_value()
+                .to_string()
+        ) // "test string" has 11 characters
     );
 }
 
@@ -121,7 +138,12 @@ fn test_strlen_function() {
 fn test_replace_string_function() {
     let log = LogRecord::new()
         .with_event_name("A magic trick can turn a cat into a dog".into())
-        .with_attribute("text", AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new("hello world hello".into()))));
+        .with_attribute(
+            "text",
+            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+                "hello world hello".into(),
+            ))),
+        );
 
     let mut request = ExportLogsServiceRequest::new().with_resource_logs(
         ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
@@ -148,11 +170,27 @@ fn test_replace_string_function() {
 
     let attributes = log.attributes.get_values();
     assert_eq!(
-        attributes.get("modified_name").map(|v| v.to_value().to_string()),
-        Some(AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new("A magic trick can turn a hamster into a dog".into()))).to_value().to_string())
+        attributes
+            .get("modified_name")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+                "A magic trick can turn a hamster into a dog".into()
+            )))
+            .to_value()
+            .to_string()
+        )
     );
     assert_eq!(
-        attributes.get("modified_text").map(|v| v.to_value().to_string()),
-        Some(AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new("hi world hi".into()))).to_value().to_string())
+        attributes
+            .get("modified_text")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+                "hi world hi".into()
+            )))
+            .to_value()
+            .to_string()
+        )
     );
 }

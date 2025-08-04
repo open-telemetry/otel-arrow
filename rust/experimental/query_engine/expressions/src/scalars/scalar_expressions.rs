@@ -950,24 +950,34 @@ impl ReplaceStringScalarExpression {
     {
         let text_static = self.get_text_expression().try_resolve_static(pipeline)?;
         let lookup_static = self.get_lookup_expression().try_resolve_static(pipeline)?;
-        let replacement_static = self.get_replacement_expression().try_resolve_static(pipeline)?;
+        let replacement_static = self
+            .get_replacement_expression()
+            .try_resolve_static(pipeline)?;
 
-        if let (Some(text), Some(lookup), Some(replacement)) = (text_static, lookup_static, replacement_static) {
+        if let (Some(text), Some(lookup), Some(replacement)) =
+            (text_static, lookup_static, replacement_static)
+        {
             match (text.to_value(), lookup.to_value(), replacement.to_value()) {
-                (Value::String(text_str), Value::String(lookup_str), Value::String(replacement_str)) => {
-                    let result = text_str.get_value().replace(lookup_str.get_value(), replacement_str.get_value());
+                (
+                    Value::String(text_str),
+                    Value::String(lookup_str),
+                    Value::String(replacement_str),
+                ) => {
+                    let result = text_str
+                        .get_value()
+                        .replace(lookup_str.get_value(), replacement_str.get_value());
                     Ok(Some(ResolvedStaticScalarExpression::Value(
                         StaticScalarExpression::String(StringScalarExpression::new(
                             self.query_location.clone(),
                             &result,
-                        ))
+                        )),
                     )))
                 }
                 _ => Ok(Some(ResolvedStaticScalarExpression::Value(
                     StaticScalarExpression::Null(NullScalarExpression::new(
                         self.query_location.clone(),
-                    ))
-                )))
+                    )),
+                ))),
             }
         } else {
             Ok(None)
@@ -1738,9 +1748,22 @@ mod tests {
 
     #[test]
     pub fn test_replace_string_scalar_expression_try_resolve() {
-        fn run_test(input: Vec<(ScalarExpression, ScalarExpression, ScalarExpression, Option<ValueType>, Option<Value>)>) {
+        fn run_test(
+            input: Vec<(
+                ScalarExpression,
+                ScalarExpression,
+                ScalarExpression,
+                Option<ValueType>,
+                Option<Value>,
+            )>,
+        ) {
             for (text, lookup, replacement, expected_type, expected_value) in input {
-                let e = ReplaceStringScalarExpression::new(QueryLocation::new_fake(), text, lookup, replacement);
+                let e = ReplaceStringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    text,
+                    lookup,
+                    replacement,
+                );
 
                 let pipeline = Default::default();
 
@@ -1755,7 +1778,10 @@ mod tests {
         run_test(vec![
             (
                 ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "A magic trick can turn a cat into a dog"),
+                    StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "A magic trick can turn a cat into a dog",
+                    ),
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
