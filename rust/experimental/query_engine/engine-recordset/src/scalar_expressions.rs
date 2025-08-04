@@ -1385,18 +1385,18 @@ mod tests {
 
         // Basic string replacement
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "A magic trick can turn a cat into a dog",
-                ),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "A magic trick can turn a cat into a dog",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "cat",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hamster",
+            ))),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "A magic trick can turn a hamster into a dog",
@@ -1405,15 +1405,18 @@ mod tests {
 
         // Multiple matches
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hello world hello"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world hello",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hi",
+            ))),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hi world hi",
@@ -1422,15 +1425,18 @@ mod tests {
 
         // No matches
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "no matches here"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "xyz"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "abc"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "no matches here",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "xyz",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "abc",
+            ))),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "no matches here",
@@ -1442,12 +1448,14 @@ mod tests {
             ScalarExpression::Static(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(QueryLocation::new_fake(), true),
             )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "search"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "replace"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "search",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "replace",
+            ))),
             Value::Null,
         );
     }
@@ -1487,18 +1495,18 @@ mod tests {
 
         // Simple regex replacement
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hello world 123"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::Regex(
-                RegexScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    Regex::new(r"\d+").unwrap(),
-                ),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "XXX"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world 123",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(r"\d+").unwrap(),
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "XXX",
+            ))),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world XXX",
@@ -1507,18 +1515,18 @@ mod tests {
 
         // Regex with capture groups
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "2023-12-25"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::Regex(
-                RegexScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap(),
-                ),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "$3/$2/$1"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "2023-12-25",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap(),
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "$3/$2/$1",
+            ))),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "25/12/2023",
@@ -1527,18 +1535,18 @@ mod tests {
 
         // Multiple matches
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "cat cat dog cat"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::Regex(
-                RegexScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    Regex::new(r"cat").unwrap(),
-                ),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "cat cat dog cat",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(r"cat").unwrap(),
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hamster",
+            ))),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hamster hamster dog hamster",
@@ -1547,18 +1555,18 @@ mod tests {
 
         // Regex with no matches
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::Regex(
-                RegexScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    Regex::new(r"\d+").unwrap(),
-                ),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "XXX"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(r"\d+").unwrap(),
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "XXX",
+            ))),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
@@ -1600,15 +1608,18 @@ mod tests {
 
         // Case-sensitive replacement (default)
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Hello World",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hi",
+            ))),
             false,
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1618,15 +1629,18 @@ mod tests {
 
         // Case-insensitive replacement
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Hello World",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hi",
+            ))),
             true,
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1636,15 +1650,18 @@ mod tests {
 
         // Case-insensitive with multiple matches
         run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "CAT cat Cat"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "dog"),
-            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "CAT cat Cat",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "cat",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "dog",
+            ))),
             true,
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
