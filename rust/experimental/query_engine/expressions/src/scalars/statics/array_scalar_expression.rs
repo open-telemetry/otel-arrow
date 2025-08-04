@@ -41,8 +41,8 @@ impl ArrayValue for ArrayScalarExpression {
         self.value.get(index).map(|v| v as &dyn AsStaticValue)
     }
 
-    fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
-        for (index, value) in self.value.iter().enumerate() {
+    fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback) -> bool {
+        for (index, value) in range.get_slice(&self.value).iter().enumerate() {
             if !item_callback.next(index, value.to_value()) {
                 return false;
             }
