@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn test_parse_scalar_expression() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            println!("Testing: {}", input);
+            println!("Testing: {input}");
 
             let state = ParserState::new(input);
 
