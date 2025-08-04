@@ -1,8 +1,6 @@
 use std::{collections::HashMap, mem};
 
-use chrono::{DateTime, FixedOffset};
 use data_engine_recordset::*;
-use regex::Regex;
 
 use data_engine_expressions::*;
 
@@ -10,8 +8,8 @@ use crate::serializer::ProtobufField;
 
 #[derive(Debug, Clone)]
 pub struct InstrumentationScope {
-    pub name: Option<ValueStorage<String>>,
-    pub version: Option<ValueStorage<String>>,
+    pub name: Option<StringValueStorage>,
+    pub version: Option<StringValueStorage>,
     pub attributes: MapValueStorage<AnyValue>,
     pub(crate) extra_fields: Vec<ProtobufField>,
 }
@@ -33,12 +31,12 @@ impl InstrumentationScope {
     }
 
     pub fn with_name(mut self, value: String) -> InstrumentationScope {
-        self.name = Some(ValueStorage::new(value));
+        self.name = Some(StringValueStorage::new(value));
         self
     }
 
     pub fn with_version(mut self, value: String) -> InstrumentationScope {
-        self.version = Some(ValueStorage::new(value));
+        self.version = Some(StringValueStorage::new(value));
         self
     }
 
@@ -57,53 +55,14 @@ pub enum AnyValue {
     Extended(ExtendedValue),
 }
 
-impl AsValue for AnyValue {
-    fn get_value_type(&self) -> ValueType {
-        match self {
-            AnyValue::Null => ValueType::Null,
-            AnyValue::Native(n) => match n {
-                OtlpAnyValue::StringValue(_) => ValueType::String,
-                OtlpAnyValue::BoolValue(_) => ValueType::Boolean,
-                OtlpAnyValue::IntValue(_) => ValueType::Integer,
-                OtlpAnyValue::DoubleValue(_) => ValueType::Double,
-                OtlpAnyValue::ArrayValue(_) => ValueType::Array,
-                OtlpAnyValue::KvlistValue(_) => ValueType::Map,
-                OtlpAnyValue::BytesValue(_) => ValueType::Array,
-            },
-            AnyValue::Extended(e) => match e {
-                ExtendedValue::DateTime(_) => ValueType::DateTime,
-                ExtendedValue::Regex(_) => ValueType::Regex,
-            },
-        }
-    }
-
-    fn to_value(&self) -> Value {
-        match self {
-            AnyValue::Null => Value::Null,
-            AnyValue::Native(n) => match n {
-                OtlpAnyValue::StringValue(s) => Value::String(s),
-                OtlpAnyValue::BoolValue(b) => Value::Boolean(b),
-                OtlpAnyValue::IntValue(i) => Value::Integer(i),
-                OtlpAnyValue::DoubleValue(d) => Value::Double(d),
-                OtlpAnyValue::ArrayValue(a) => Value::Array(a),
-                OtlpAnyValue::KvlistValue(m) => Value::Map(m),
-                OtlpAnyValue::BytesValue(b) => Value::Array(b),
-            },
-            AnyValue::Extended(e) => match e {
-                ExtendedValue::DateTime(d) => Value::DateTime(d),
-                ExtendedValue::Regex(r) => Value::Regex(r),
-            },
-        }
-    }
-}
-
-impl AsValueMut for AnyValue {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
+impl AsStaticValueMut for AnyValue {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
         match self {
             AnyValue::Native(n) => match n {
-                OtlpAnyValue::ArrayValue(a) => Some(ValueMut::Array(a)),
-                OtlpAnyValue::KvlistValue(m) => Some(ValueMut::Map(m)),
-                OtlpAnyValue::BytesValue(b) => Some(ValueMut::Array(b)),
+                OtlpAnyValue::StringValue(s) => Some(StaticValueMut::String(s)),
+                OtlpAnyValue::ArrayValue(a) => Some(StaticValueMut::Array(a)),
+                OtlpAnyValue::KvlistValue(m) => Some(StaticValueMut::Map(m)),
+                OtlpAnyValue::BytesValue(b) => Some(StaticValueMut::Array(b)),
                 _ => None,
             },
             _ => None,
@@ -111,8 +70,29 @@ impl AsValueMut for AnyValue {
     }
 }
 
-impl ValueSource<AnyValue> for AnyValue {
-    fn from_owned(value: OwnedValue) -> AnyValue {
+impl AsStaticValue for AnyValue {
+    fn to_static_value(&self) -> StaticValue {
+        match self {
+            AnyValue::Null => StaticValue::Null,
+            AnyValue::Native(n) => match n {
+                OtlpAnyValue::StringValue(s) => StaticValue::String(s),
+                OtlpAnyValue::BoolValue(b) => StaticValue::Boolean(b),
+                OtlpAnyValue::IntValue(i) => StaticValue::Integer(i),
+                OtlpAnyValue::DoubleValue(d) => StaticValue::Double(d),
+                OtlpAnyValue::ArrayValue(a) => StaticValue::Array(a),
+                OtlpAnyValue::KvlistValue(m) => StaticValue::Map(m),
+                OtlpAnyValue::BytesValue(b) => StaticValue::Array(b),
+            },
+            AnyValue::Extended(e) => match e {
+                ExtendedValue::DateTime(d) => StaticValue::DateTime(d),
+                ExtendedValue::Regex(r) => StaticValue::Regex(r),
+            },
+        }
+    }
+}
+
+impl From<OwnedValue> for AnyValue {
+    fn from(value: OwnedValue) -> Self {
         match value {
             OwnedValue::Array(a) => {
                 if a.len() > 0 {
@@ -122,7 +102,7 @@ impl ValueSource<AnyValue> for AnyValue {
                         if let Value::Integer(i) = v {
                             let v = i.get_value();
                             if v >= u8::MIN as i64 && v <= u8::MAX as i64 {
-                                byte_values.push(ValueStorage::new(v as u8));
+                                byte_values.push(IntegerValueStorage::new(v as u8));
                                 return true;
                             }
                         }
@@ -148,9 +128,11 @@ impl ValueSource<AnyValue> for AnyValue {
             OwnedValue::String(s) => AnyValue::Native(OtlpAnyValue::StringValue(s)),
         }
     }
+}
 
-    fn to_owned(self) -> OwnedValue {
-        match self {
+impl From<AnyValue> for OwnedValue {
+    fn from(val: AnyValue) -> Self {
+        match val {
             AnyValue::Null => OwnedValue::Null,
             AnyValue::Native(n) => match n {
                 OtlpAnyValue::StringValue(s) => OwnedValue::String(s),
@@ -162,7 +144,7 @@ impl ValueSource<AnyValue> for AnyValue {
                 OtlpAnyValue::BytesValue(mut b) => OwnedValue::Array(ArrayValueStorage::new(
                     b.values
                         .drain(..)
-                        .map(|v| OwnedValue::Integer(ValueStorage::new(v.get_value())))
+                        .map(|v| OwnedValue::Integer(IntegerValueStorage::new(v.get_value())))
                         .collect(),
                 )),
             },
@@ -176,16 +158,16 @@ impl ValueSource<AnyValue> for AnyValue {
 
 #[derive(Debug, Clone)]
 pub enum ExtendedValue {
-    DateTime(ValueStorage<DateTime<FixedOffset>>),
-    Regex(ValueStorage<Regex>),
+    DateTime(DateTimeValueStorage),
+    Regex(RegexValueStorage),
 }
 
 #[derive(Debug, Clone)]
 pub enum OtlpAnyValue {
-    StringValue(ValueStorage<String>),
-    BoolValue(ValueStorage<bool>),
-    IntValue(ValueStorage<i64>),
-    DoubleValue(ValueStorage<f64>),
+    StringValue(StringValueStorage),
+    BoolValue(BooleanValueStorage),
+    IntValue(IntegerValueStorage<i64>),
+    DoubleValue(DoubleValueStorage<f64>),
     ArrayValue(ArrayValueStorage<AnyValue>),
     KvlistValue(MapValueStorage<AnyValue>),
     BytesValue(ByteArrayValueStorage),
@@ -193,30 +175,32 @@ pub enum OtlpAnyValue {
 
 #[derive(Debug, Clone)]
 pub struct ByteArrayValueStorage {
-    values: Vec<ValueStorage<u8>>,
+    values: Vec<IntegerValueStorage<u8>>,
 }
 
 impl ByteArrayValueStorage {
-    pub fn new(values: Vec<ValueStorage<u8>>) -> ByteArrayValueStorage {
+    pub fn new(values: Vec<IntegerValueStorage<u8>>) -> ByteArrayValueStorage {
         Self { values }
     }
 
-    pub fn get_values(&self) -> &Vec<ValueStorage<u8>> {
+    pub fn get_values(&self) -> &Vec<IntegerValueStorage<u8>> {
         &self.values
     }
 
-    pub fn get_values_mut(&mut self) -> &mut Vec<ValueStorage<u8>> {
+    pub fn get_values_mut(&mut self) -> &mut Vec<IntegerValueStorage<u8>> {
         &mut self.values
     }
 }
 
-impl AsValue for ByteArrayValueStorage {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Array
+impl AsStaticValue for ByteArrayValueStorage {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Array(self)
     }
+}
 
-    fn to_value(&self) -> Value {
-        Value::Array(self)
+impl AsStaticValueMut for ByteArrayValueStorage {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        Some(StaticValueMut::Array(self))
     }
 }
 
@@ -229,8 +213,8 @@ impl ArrayValue for ByteArrayValueStorage {
         self.values.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue + 'static)> {
-        self.values.get(index).map(|v| v as &dyn AsValue)
+    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
+        self.values.get(index).map(|v| v as &dyn AsStaticValue)
     }
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
@@ -241,12 +225,6 @@ impl ArrayValue for ByteArrayValueStorage {
         }
 
         true
-    }
-}
-
-impl AsValueMut for ByteArrayValueStorage {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
-        Some(ValueMut::Array(self))
     }
 }
 
@@ -261,9 +239,9 @@ impl ArrayValueMut for ByteArrayValueStorage {
             if v >= u8::MIN as i64 && v <= u8::MAX as i64 {
                 match self.values.get_mut(index) {
                     Some(slot) => {
-                        let old = mem::replace(slot, ValueStorage::new(v as u8));
+                        let old = mem::replace(slot, IntegerValueStorage::new(v as u8));
                         return ValueMutWriteResult::Updated(OwnedValue::Integer(
-                            ValueStorage::new(old.get_value()),
+                            IntegerValueStorage::new(old.get_value()),
                         ));
                     }
                     None => {
@@ -283,7 +261,7 @@ impl ArrayValueMut for ByteArrayValueStorage {
         if let Value::Integer(i) = value.to_value() {
             let v = i.get_value();
             if v >= u8::MIN as i64 && v <= u8::MAX as i64 {
-                self.values.push(ValueStorage::new(v as u8));
+                self.values.push(IntegerValueStorage::new(v as u8));
                 return ValueMutWriteResult::Created;
             }
         }
@@ -302,7 +280,7 @@ impl ArrayValueMut for ByteArrayValueStorage {
         if let Value::Integer(i) = value.to_value() {
             let v = i.get_value();
             if v >= u8::MIN as i64 && v <= u8::MAX as i64 {
-                self.values.insert(index, ValueStorage::new(v as u8));
+                self.values.insert(index, IntegerValueStorage::new(v as u8));
                 return ValueMutWriteResult::Created;
             }
         }
@@ -320,13 +298,15 @@ impl ArrayValueMut for ByteArrayValueStorage {
 
         let old = self.values.remove(index);
 
-        ValueMutRemoveResult::Removed(OwnedValue::Integer(ValueStorage::new(old.get_value())))
+        ValueMutRemoveResult::Removed(OwnedValue::Integer(IntegerValueStorage::new(
+            old.get_value(),
+        )))
     }
 
     fn retain(&mut self, item_callback: &mut dyn IndexValueMutCallback) {
         let mut index = 0;
-        self.values.retain(|v| {
-            let r = item_callback.next(index, InnerValue::Value(v));
+        self.values.retain_mut(|v| {
+            let r = item_callback.next(index, v);
             index += 1;
             r
         });

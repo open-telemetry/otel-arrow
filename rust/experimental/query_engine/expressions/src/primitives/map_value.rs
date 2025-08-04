@@ -1,13 +1,15 @@
-use crate::{AsValue, ExpressionError, QueryLocation, Value};
+use std::fmt::Debug;
 
-pub trait MapValue: AsValue {
+use crate::*;
+
+pub trait MapValue: Debug {
     fn is_empty(&self) -> bool;
 
     fn len(&self) -> usize;
 
     fn contains_key(&self, key: &str) -> bool;
 
-    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)>;
+    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)>;
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool;
 

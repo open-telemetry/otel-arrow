@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset};
 use regex::Regex;
 
-use crate::{ArrayScalarExpression, Expression, MapScalarExpression, QueryLocation, primitives::*};
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StaticScalarExpression {
@@ -63,32 +63,18 @@ impl Expression for StaticScalarExpression {
     }
 }
 
-impl AsValue for StaticScalarExpression {
-    fn get_value_type(&self) -> ValueType {
+impl AsStaticValue for StaticScalarExpression {
+    fn to_static_value(&self) -> StaticValue {
         match self {
-            StaticScalarExpression::Array(_) => ValueType::Array,
-            StaticScalarExpression::Boolean(_) => ValueType::Boolean,
-            StaticScalarExpression::DateTime(_) => ValueType::DateTime,
-            StaticScalarExpression::Double(_) => ValueType::Double,
-            StaticScalarExpression::Integer(_) => ValueType::Integer,
-            StaticScalarExpression::Map(_) => ValueType::Map,
-            StaticScalarExpression::Null(_) => ValueType::Null,
-            StaticScalarExpression::Regex(_) => ValueType::Regex,
-            StaticScalarExpression::String(_) => ValueType::String,
-        }
-    }
-
-    fn to_value(&self) -> Value {
-        match self {
-            StaticScalarExpression::Array(a) => Value::Array(a),
-            StaticScalarExpression::Boolean(b) => Value::Boolean(b),
-            StaticScalarExpression::DateTime(d) => Value::DateTime(d),
-            StaticScalarExpression::Double(d) => Value::Double(d),
-            StaticScalarExpression::Integer(i) => Value::Integer(i),
-            StaticScalarExpression::Map(m) => Value::Map(m),
-            StaticScalarExpression::Null(_) => Value::Null,
-            StaticScalarExpression::Regex(r) => Value::Regex(r),
-            StaticScalarExpression::String(s) => Value::String(s),
+            StaticScalarExpression::Array(a) => StaticValue::Array(a),
+            StaticScalarExpression::Boolean(b) => StaticValue::Boolean(b),
+            StaticScalarExpression::DateTime(d) => StaticValue::DateTime(d),
+            StaticScalarExpression::Double(d) => StaticValue::Double(d),
+            StaticScalarExpression::Integer(i) => StaticValue::Integer(i),
+            StaticScalarExpression::Map(m) => StaticValue::Map(m),
+            StaticScalarExpression::Null(_) => StaticValue::Null,
+            StaticScalarExpression::Regex(r) => StaticValue::Regex(r),
+            StaticScalarExpression::String(s) => StaticValue::String(s),
         }
     }
 }
@@ -115,16 +101,6 @@ impl Expression for BooleanScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "BooleanScalarExpression"
-    }
-}
-
-impl AsValue for BooleanScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Boolean
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Boolean(self)
     }
 }
 
@@ -162,16 +138,6 @@ impl Expression for DateTimeScalarExpression {
     }
 }
 
-impl AsValue for DateTimeScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::DateTime
-    }
-
-    fn to_value(&self) -> Value {
-        Value::DateTime(self)
-    }
-}
-
 impl DateTimeValue for DateTimeScalarExpression {
     fn get_value(&self) -> DateTime<FixedOffset> {
         self.value
@@ -200,16 +166,6 @@ impl Expression for DoubleScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "DoubleScalarExpression"
-    }
-}
-
-impl AsValue for DoubleScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Double
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Double(self)
     }
 }
 
@@ -244,16 +200,6 @@ impl Expression for IntegerScalarExpression {
     }
 }
 
-impl AsValue for IntegerScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Integer
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Integer(self)
-    }
-}
-
 impl IntegerValue for IntegerScalarExpression {
     fn get_value(&self) -> i64 {
         self.value
@@ -278,16 +224,6 @@ impl Expression for NullScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "NullScalarExpression"
-    }
-}
-
-impl AsValue for NullScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Null
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Null
     }
 }
 
@@ -317,16 +253,6 @@ impl Expression for RegexScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "RegexScalarExpression"
-    }
-}
-
-impl AsValue for RegexScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Regex
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Regex(self)
     }
 }
 
@@ -364,16 +290,6 @@ impl Expression for StringScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "StringScalarExpression"
-    }
-}
-
-impl AsValue for StringScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::String
-    }
-
-    fn to_value(&self) -> Value {
-        Value::String(self)
     }
 }
 

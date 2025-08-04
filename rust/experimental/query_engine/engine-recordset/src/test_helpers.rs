@@ -72,7 +72,7 @@ impl TestRecord {
         let mut values = self.values;
         values.insert(
             "Timestamp".into(),
-            OwnedValue::DateTime(ValueStorage::new(value)),
+            OwnedValue::DateTime(DateTimeValueStorage::new(value)),
         );
         Self { values }
     }
@@ -81,7 +81,7 @@ impl TestRecord {
         let mut values = self.values;
         values.insert(
             "ObservedTimestamp".into(),
-            OwnedValue::DateTime(ValueStorage::new(value)),
+            OwnedValue::DateTime(DateTimeValueStorage::new(value)),
         );
         Self { values }
     }
@@ -102,7 +102,7 @@ impl Default for TestRecord {
 impl Record for TestRecord {
     fn get_timestamp(&self) -> Option<SystemTime> {
         if let Some(OwnedValue::DateTime(d)) = self.values.get("Timestamp") {
-            Some(d.get_value().into())
+            Some((*d.get_raw_value()).into())
         } else {
             None
         }
@@ -110,7 +110,7 @@ impl Record for TestRecord {
 
     fn get_observed_timestamp(&self) -> Option<SystemTime> {
         if let Some(OwnedValue::DateTime(d)) = self.values.get("ObservedTimestamp") {
-            Some(d.get_value().into())
+            Some((*d.get_raw_value()).into())
         } else {
             None
         }
@@ -121,13 +121,9 @@ impl Record for TestRecord {
     }
 }
 
-impl AsValue for TestRecord {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Map
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Map(self)
+impl AsStaticValue for TestRecord {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Map(self)
     }
 }
 
@@ -144,8 +140,8 @@ impl MapValue for TestRecord {
         self.values.contains_key(key)
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)> {
-        self.values.get(key).map(|v| v as &dyn AsValue)
+    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
+        self.values.get(key).map(|v| v as &dyn AsStaticValue)
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
@@ -159,17 +155,9 @@ impl MapValue for TestRecord {
     }
 }
 
-impl AsValueMut for TestRecord {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
-        Some(ValueMut::Map(self))
-    }
-}
-
 impl MapValueMut for TestRecord {
     fn get_mut(&mut self, key: &str) -> ValueMutGetResult {
-        if let Some(v) = self.values.get_mut(key)
-            && let Some(_) = v.to_value_mut()
-        {
+        if let Some(v) = self.values.get_mut(key) {
             ValueMutGetResult::Found(v)
         } else {
             ValueMutGetResult::NotFound
@@ -177,7 +165,7 @@ impl MapValueMut for TestRecord {
     }
 
     fn set(&mut self, key: &str, value: ResolvedValue) -> ValueMutWriteResult {
-        match self.values.insert(key.into(), value.to_owned()) {
+        match self.values.insert(key.into(), value.into()) {
             Some(old) => ValueMutWriteResult::Updated(old),
             None => ValueMutWriteResult::Created,
         }
@@ -198,7 +186,6 @@ impl MapValueMut for TestRecord {
     }
 
     fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
-        self.values
-            .retain(|k, v| item_callback.next(k, InnerValue::ValueMut(v)));
+        self.values.retain(|k, v| item_callback.next(k, v));
     }
 }

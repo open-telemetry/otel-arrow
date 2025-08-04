@@ -1,11 +1,13 @@
-use crate::{AsValue, ExpressionError, QueryLocation, Value};
+use std::fmt::Debug;
 
-pub trait ArrayValue: AsValue {
+use crate::*;
+
+pub trait ArrayValue: Debug {
     fn is_empty(&self) -> bool;
 
     fn len(&self) -> usize;
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue + 'static)>;
+    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)>;
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool;
 

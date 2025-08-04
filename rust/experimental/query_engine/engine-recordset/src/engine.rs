@@ -193,7 +193,7 @@ pub trait RecordSet<TRecord: Record>: Debug {
         F: FnMut(Option<&dyn AttachedRecords>, TRecord);
 }
 
-pub trait Record: MapValueMut {
+pub trait Record: MapValueMut + AsStaticValue {
     fn get_timestamp(&self) -> Option<SystemTime>;
 
     fn get_observed_timestamp(&self) -> Option<SystemTime>;

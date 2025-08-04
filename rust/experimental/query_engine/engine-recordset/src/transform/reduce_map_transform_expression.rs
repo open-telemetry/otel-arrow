@@ -32,7 +32,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
             let target = execute_mutable_value_expression(execution_context, target)?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
-                m.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+                m.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
                     for p in &reduction.key_patterns {
                         if p.get_value().is_match(k) {
                             execution_context.add_diagnostic_if_enabled(
@@ -45,9 +45,9 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     }
 
                     if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-                        let v = v.to_value_mut();
+                        let v = v.to_static_value_mut();
                         let remove = match v {
-                            Some(ValueMut::Map(m)) => {
+                            Some(StaticValueMut::Map(m)) => {
                                 if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -61,7 +61,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     true
                                 }
                             }
-                            Some(ValueMut::Array(a)) => {
+                            Some(StaticValueMut::Array(a)) => {
                                 if !inner_reduction.indices.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -114,7 +114,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
             let target = execute_mutable_value_expression(execution_context, target)?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
-                m.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+                m.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
                     for p in &reduction.key_patterns {
                         if p.get_value().is_match(k) {
                             return true;
@@ -122,9 +122,9 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     }
 
                     if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-                        let v = v.to_value_mut();
+                        let v = v.to_static_value_mut();
                         match v {
-                            Some(ValueMut::Map(m)) => {
+                            Some(StaticValueMut::Map(m)) => {
                                 if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -134,7 +134,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     keep_in_map(execution_context, r, m, inner_reduction);
                                 }
                             }
-                            Some(ValueMut::Array(a)) => {
+                            Some(StaticValueMut::Array(a)) => {
                                 if !inner_reduction.indices.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -408,7 +408,7 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
 ) {
-    map.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+    map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
         if !reduction.key_patterns.is_empty() {
             for p in &reduction.key_patterns {
                 if p.get_value().is_match(k) {
@@ -423,9 +423,9 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
         }
 
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             let remove = match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -439,7 +439,7 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
                         true
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -499,11 +499,11 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
         }
     }
 
-    array.retain(&mut IndexValueMutClosureCallback::new(|i, mut v| {
+    array.retain(&mut IndexValueMutClosureCallback::new(|i, v| {
         if let Some(inner_reduction) = elements.get(&i) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             let remove = match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -517,7 +517,7 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
                         true
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -554,7 +554,7 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
 ) {
-    map.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+    map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
         if !reduction.key_patterns.is_empty() {
             for p in &reduction.key_patterns {
                 if p.get_value().is_match(k) {
@@ -564,9 +564,9 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
         }
 
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -576,7 +576,7 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -632,11 +632,11 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
         }
     }
 
-    array.retain(&mut IndexValueMutClosureCallback::new(|i, mut v| {
+    array.retain(&mut IndexValueMutClosureCallback::new(|i, v| {
         if let Some(inner_reduction) = elements.get(&i) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -646,7 +646,7 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -688,29 +688,29 @@ mod tests {
                 OwnedValue::Map(MapValueStorage::new(HashMap::from([
                     (
                         "subkey1".into(),
-                        OwnedValue::String(ValueStorage::new("hello".into())),
+                        OwnedValue::String(StringValueStorage::new("hello".into())),
                     ),
                     (
                         "subkey2".into(),
-                        OwnedValue::String(ValueStorage::new("world".into())),
+                        OwnedValue::String(StringValueStorage::new("world".into())),
                     ),
                     (
                         "subkey3".into(),
-                        OwnedValue::String(ValueStorage::new("goodbye".into())),
+                        OwnedValue::String(StringValueStorage::new("goodbye".into())),
                     ),
                 ]))),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             )
             .with_key_value(
                 "key_to_remove".into(),
-                OwnedValue::String(ValueStorage::new("key1".into())),
+                OwnedValue::String(StringValueStorage::new("key1".into())),
             );
 
         let run_test = |transform_expression| {
@@ -987,24 +987,24 @@ mod tests {
                 OwnedValue::Map(MapValueStorage::new(HashMap::from([
                     (
                         "subkey1".into(),
-                        OwnedValue::String(ValueStorage::new("hello".into())),
+                        OwnedValue::String(StringValueStorage::new("hello".into())),
                     ),
                     (
                         "subkey2".into(),
-                        OwnedValue::String(ValueStorage::new("world".into())),
+                        OwnedValue::String(StringValueStorage::new("world".into())),
                     ),
                     (
                         "subkey3".into(),
-                        OwnedValue::String(ValueStorage::new("goodbye".into())),
+                        OwnedValue::String(StringValueStorage::new("goodbye".into())),
                     ),
                 ]))),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             );
 
@@ -1061,9 +1061,7 @@ mod tests {
         assert_eq!(2, result.len());
         assert!(result.contains_key("key1"));
 
-        if let Some(v) = result.get("key1").map(|v| v.to_value())
-            && let Value::Map(m) = v
-        {
+        if let Some(Value::Map(m)) = result.get("key1").map(|v| v.to_value()) {
             assert_eq!(0, m.len());
         } else {
             panic!()

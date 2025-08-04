@@ -1,7 +1,4 @@
-use crate::{
-    ArrayValue, AsValue, Expression, IndexValueCallback, QueryLocation, StaticScalarExpression,
-    Value, ValueType,
-};
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrayScalarExpression {
@@ -31,16 +28,6 @@ impl Expression for ArrayScalarExpression {
     }
 }
 
-impl AsValue for ArrayScalarExpression {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Array
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Array(self)
-    }
-}
-
 impl ArrayValue for ArrayScalarExpression {
     fn is_empty(&self) -> bool {
         self.value.is_empty()
@@ -50,8 +37,8 @@ impl ArrayValue for ArrayScalarExpression {
         self.value.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue + 'static)> {
-        self.value.get(index).map(|v| v as &dyn AsValue)
+    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
+        self.value.get(index).map(|v| v as &dyn AsStaticValue)
     }
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {

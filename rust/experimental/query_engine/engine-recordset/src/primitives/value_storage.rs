@@ -6,19 +6,85 @@ use regex::Regex;
 
 use crate::*;
 
-pub trait ValueSource<T>: AsValueMut {
-    fn from_owned(value: OwnedValue) -> T;
+#[derive(Debug, Clone)]
+pub struct BooleanValueStorage {
+    value: bool,
+}
 
-    fn to_owned(self) -> OwnedValue;
+impl BooleanValueStorage {
+    pub fn new(value: bool) -> BooleanValueStorage {
+        Self { value }
+    }
+
+    pub fn get_raw_value(&self) -> &bool {
+        &self.value
+    }
+
+    pub fn get_raw_value_mut(&mut self) -> &mut bool {
+        &mut self.value
+    }
+}
+
+impl BooleanValue for BooleanValueStorage {
+    fn get_value(&self) -> bool {
+        self.value
+    }
+}
+
+impl AsStaticValue for BooleanValueStorage {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Boolean(self)
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct ValueStorage<T> {
+pub struct DateTimeValueStorage {
+    value: DateTime<FixedOffset>,
+}
+
+impl DateTimeValueStorage {
+    pub fn new(value: DateTime<FixedOffset>) -> DateTimeValueStorage {
+        Self { value }
+    }
+
+    pub fn get_raw_value(&self) -> &DateTime<FixedOffset> {
+        &self.value
+    }
+
+    pub fn get_raw_value_mut(&mut self) -> &mut DateTime<FixedOffset> {
+        &mut self.value
+    }
+}
+
+impl DateTimeValue for DateTimeValueStorage {
+    fn get_value(&self) -> DateTime<FixedOffset> {
+        self.value
+    }
+}
+
+impl AsStaticValue for DateTimeValueStorage {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::DateTime(self)
+    }
+}
+
+impl AsStaticValueMut for DateTimeValueStorage {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        None
+    }
+}
+
+pub trait DoubleValueSource<T>: Into<f64> + Clone + Debug + 'static {}
+
+impl<T: Into<f64> + Clone + Debug + 'static> DoubleValueSource<T> for T {}
+
+#[derive(Debug, Clone)]
+pub struct DoubleValueStorage<T: DoubleValueSource<T>> {
     value: T,
 }
 
-impl<T> ValueStorage<T> {
-    pub fn new(value: T) -> ValueStorage<T> {
+impl<T: DoubleValueSource<T>> DoubleValueStorage<T> {
+    pub fn new(value: T) -> DoubleValueStorage<T> {
         Self { value }
     }
 
@@ -26,200 +92,172 @@ impl<T> ValueStorage<T> {
         &self.value
     }
 
-    pub fn get_raw_value_mut(&mut self) -> &T {
+    pub fn get_raw_value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl<T: DoubleValueSource<T>> DoubleValue for DoubleValueStorage<T> {
+    fn get_value(&self) -> f64 {
+        self.value.clone().into()
+    }
+}
+
+impl<T: DoubleValueSource<T>> AsStaticValue for DoubleValueStorage<T> {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Double(self)
+    }
+}
+
+impl<T: DoubleValueSource<T>> AsStaticValueMut for DoubleValueStorage<T> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        None
+    }
+}
+
+pub trait IntegerValueSource<T>: Into<i64> + Clone + Debug + 'static {}
+
+impl<T: Into<i64> + Clone + Debug + 'static> IntegerValueSource<T> for T {}
+
+#[derive(Debug, Clone)]
+pub struct IntegerValueStorage<T: IntegerValueSource<T>> {
+    value: T,
+}
+
+impl<T: IntegerValueSource<T>> IntegerValueStorage<T> {
+    pub fn new(value: T) -> IntegerValueStorage<T> {
+        Self { value }
+    }
+
+    pub fn get_raw_value(&self) -> &T {
         &self.value
     }
-}
 
-impl BooleanValue for ValueStorage<bool> {
-    fn get_value(&self) -> bool {
-        self.value
+    pub fn get_raw_value_mut(&mut self) -> &mut T {
+        &mut self.value
     }
 }
 
-impl AsValue for ValueStorage<bool> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Boolean
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Boolean(self)
-    }
-}
-
-impl IntegerValue for ValueStorage<i64> {
+impl<T: IntegerValueSource<T>> IntegerValue for IntegerValueStorage<T> {
     fn get_value(&self) -> i64 {
-        self.value
+        self.value.clone().into()
     }
 }
 
-impl AsValue for ValueStorage<i64> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Integer
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Integer(self)
+impl<T: IntegerValueSource<T>> AsStaticValue for IntegerValueStorage<T> {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Integer(self)
     }
 }
 
-impl IntegerValue for ValueStorage<i32> {
-    fn get_value(&self) -> i64 {
-        self.value as i64
+impl<T: IntegerValueSource<T>> AsStaticValueMut for IntegerValueStorage<T> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        None
     }
 }
 
-impl AsValue for ValueStorage<i32> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Integer
+#[derive(Debug, Clone)]
+pub struct RegexValueStorage {
+    value: Regex,
+}
+
+impl RegexValueStorage {
+    pub fn new(value: Regex) -> RegexValueStorage {
+        Self { value }
     }
 
-    fn to_value(&self) -> Value {
-        Value::Integer(self)
+    pub fn get_raw_value(&self) -> &Regex {
+        &self.value
+    }
+
+    pub fn get_raw_value_mut(&mut self) -> &mut Regex {
+        &mut self.value
     }
 }
 
-impl IntegerValue for ValueStorage<u32> {
-    fn get_value(&self) -> i64 {
-        self.value as i64
-    }
-}
-
-impl AsValue for ValueStorage<u32> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Integer
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Integer(self)
-    }
-}
-
-impl IntegerValue for ValueStorage<u8> {
-    fn get_value(&self) -> i64 {
-        self.value as i64
-    }
-}
-
-impl AsValue for ValueStorage<u8> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Integer
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Integer(self)
-    }
-}
-
-impl DateTimeValue for ValueStorage<DateTime<FixedOffset>> {
-    fn get_value(&self) -> DateTime<FixedOffset> {
-        self.value
-    }
-}
-
-impl AsValue for ValueStorage<DateTime<FixedOffset>> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::DateTime
-    }
-
-    fn to_value(&self) -> Value {
-        Value::DateTime(self)
-    }
-}
-
-impl DoubleValue for ValueStorage<f64> {
-    fn get_value(&self) -> f64 {
-        self.value
-    }
-}
-
-impl AsValue for ValueStorage<f64> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Double
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Double(self)
-    }
-}
-
-impl DoubleValue for ValueStorage<f32> {
-    fn get_value(&self) -> f64 {
-        self.value as f64
-    }
-}
-
-impl AsValue for ValueStorage<f32> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Double
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Double(self)
-    }
-}
-
-impl RegexValue for ValueStorage<Regex> {
+impl RegexValue for RegexValueStorage {
     fn get_value(&self) -> &Regex {
         &self.value
     }
 }
 
-impl AsValue for ValueStorage<Regex> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Regex
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Regex(self)
+impl AsStaticValue for RegexValueStorage {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Regex(self)
     }
 }
 
-impl StringValue for ValueStorage<String> {
+impl AsStaticValueMut for RegexValueStorage {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StringValueStorage {
+    value: String,
+}
+
+impl StringValueStorage {
+    pub fn new(value: String) -> StringValueStorage {
+        Self { value }
+    }
+
+    pub fn get_raw_value(&self) -> &String {
+        &self.value
+    }
+
+    pub fn get_raw_value_mut(&mut self) -> &mut String {
+        &mut self.value
+    }
+}
+
+impl StringValue for StringValueStorage {
     fn get_value(&self) -> &str {
         &self.value
     }
 }
 
-impl AsValue for ValueStorage<String> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::String
-    }
-
-    fn to_value(&self) -> Value {
-        Value::String(self)
-    }
-}
-
-impl StringValueMut for ValueStorage<String> {
+impl StringValueMut for StringValueStorage {
     fn get_value_mut(&mut self) -> &mut String {
         &mut self.value
     }
 }
 
-impl AsValueMut for ValueStorage<String> {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
-        Some(ValueMut::String(self))
+impl AsStaticValue for StringValueStorage {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::String(self)
     }
 }
 
+impl AsStaticValueMut for StringValueStorage {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        Some(StaticValueMut::String(self))
+    }
+}
+
+pub trait EnumerableValueSource<T>:
+    AsStaticValue + AsStaticValueMut + Into<OwnedValue> + From<OwnedValue> + 'static
+{
+}
+
+impl<T: AsStaticValue + AsStaticValueMut + Into<OwnedValue> + From<OwnedValue> + 'static>
+    EnumerableValueSource<T> for T
+{
+}
+
 #[derive(Debug, Clone)]
-pub struct ArrayValueStorage<T: ValueSource<T>> {
+pub struct ArrayValueStorage<T: EnumerableValueSource<T>> {
     values: Vec<T>,
 }
 
-impl<T: ValueSource<T>> ArrayValueStorage<T> {
+impl<T: EnumerableValueSource<T>> ArrayValueStorage<T> {
     pub fn new(values: Vec<T>) -> ArrayValueStorage<T> {
         Self { values }
     }
 
-    pub fn into<TTarget: ValueSource<TTarget>>(mut self) -> ArrayValueStorage<TTarget> {
-        ArrayValueStorage::<TTarget>::new(
-            self.values
-                .drain(..)
-                .map(|v| TTarget::from_owned(v.to_owned()))
-                .collect(),
-        )
+    pub fn into<TTarget: EnumerableValueSource<TTarget>>(mut self) -> ArrayValueStorage<TTarget> {
+        ArrayValueStorage::<TTarget>::new(self.values.drain(..).map(|v| v.into().into()).collect())
     }
 
     pub fn get_values(&self) -> &Vec<T> {
@@ -231,7 +269,7 @@ impl<T: ValueSource<T>> ArrayValueStorage<T> {
     }
 }
 
-impl<T: ValueSource<T> + 'static> ArrayValue for ArrayValueStorage<T> {
+impl<T: EnumerableValueSource<T>> ArrayValue for ArrayValueStorage<T> {
     fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -240,8 +278,8 @@ impl<T: ValueSource<T> + 'static> ArrayValue for ArrayValueStorage<T> {
         self.values.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsValue + 'static)> {
-        self.values.get(index).map(|v| v as &dyn AsValue)
+    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
+        self.values.get(index).map(|v| v as &dyn AsStaticValue)
     }
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
@@ -255,27 +293,22 @@ impl<T: ValueSource<T> + 'static> ArrayValue for ArrayValueStorage<T> {
     }
 }
 
-impl<T: ValueSource<T> + 'static> AsValue for ArrayValueStorage<T> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Array
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Array(self)
+impl<T: EnumerableValueSource<T>> AsStaticValue for ArrayValueStorage<T> {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Array(self)
     }
 }
 
-impl<T: ValueSource<T> + 'static> ArrayValueMut for ArrayValueStorage<T> {
+impl<T: EnumerableValueSource<T>> AsStaticValueMut for ArrayValueStorage<T> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        Some(StaticValueMut::Array(self))
+    }
+}
+
+impl<T: EnumerableValueSource<T>> ArrayValueMut for ArrayValueStorage<T> {
     fn get_mut(&mut self, index: usize) -> ValueMutGetResult {
         if let Some(v) = self.values.get_mut(index) {
-            if v.to_value_mut().is_some() {
-                ValueMutGetResult::Found(v)
-            } else {
-                ValueMutGetResult::NotSupported(format!(
-                    "Cannot mutate '{:?}' value at index '{index}'",
-                    v.get_value_type()
-                ))
-            }
+            ValueMutGetResult::Found(v)
         } else {
             ValueMutGetResult::NotFound
         }
@@ -284,15 +317,15 @@ impl<T: ValueSource<T> + 'static> ArrayValueMut for ArrayValueStorage<T> {
     fn set(&mut self, index: usize, value: ResolvedValue) -> ValueMutWriteResult {
         match self.values.get_mut(index) {
             Some(v) => {
-                let old = mem::replace(v, value.convert());
-                ValueMutWriteResult::Updated(old.to_owned())
+                let old = mem::replace(v, T::from(value.into()));
+                ValueMutWriteResult::Updated(old.into())
             }
             None => ValueMutWriteResult::NotFound,
         }
     }
 
     fn push(&mut self, value: ResolvedValue) -> ValueMutWriteResult {
-        self.values.push(value.convert());
+        self.values.push(T::from(value.into()));
 
         ValueMutWriteResult::Created
     }
@@ -302,7 +335,7 @@ impl<T: ValueSource<T> + 'static> ArrayValueMut for ArrayValueStorage<T> {
             return ValueMutWriteResult::NotFound;
         }
 
-        self.values.insert(index, value.convert());
+        self.values.insert(index, T::from(value.into()));
 
         ValueMutWriteResult::Created
     }
@@ -314,31 +347,25 @@ impl<T: ValueSource<T> + 'static> ArrayValueMut for ArrayValueStorage<T> {
 
         let old = self.values.remove(index);
 
-        ValueMutRemoveResult::Removed(old.to_owned())
+        ValueMutRemoveResult::Removed(old.into())
     }
 
     fn retain(&mut self, item_callback: &mut dyn IndexValueMutCallback) {
         let mut index = 0;
         self.values.retain_mut(|v| {
-            let r = item_callback.next(index, InnerValue::ValueMut(v));
+            let r = item_callback.next(index, v);
             index += 1;
             r
         });
     }
 }
 
-impl<T: ValueSource<T> + 'static> AsValueMut for ArrayValueStorage<T> {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
-        Some(ValueMut::Array(self))
-    }
-}
-
 #[derive(Debug, Clone)]
-pub struct MapValueStorage<T: ValueSource<T>> {
+pub struct MapValueStorage<T: EnumerableValueSource<T>> {
     values: HashMap<Box<str>, T>,
 }
 
-impl<T: ValueSource<T>> MapValueStorage<T> {
+impl<T: EnumerableValueSource<T>> MapValueStorage<T> {
     pub fn new(values: HashMap<Box<str>, T>) -> MapValueStorage<T> {
         Self { values }
     }
@@ -351,16 +378,14 @@ impl<T: ValueSource<T>> MapValueStorage<T> {
         &mut self.values
     }
 
-    pub fn into<TTarget: ValueSource<TTarget>>(mut self) -> MapValueStorage<TTarget> {
+    pub fn into<TTarget: EnumerableValueSource<TTarget>>(mut self) -> MapValueStorage<TTarget> {
         MapValueStorage::<TTarget>::new(HashMap::from_iter(
-            self.values
-                .drain()
-                .map(|(k, v)| (k, TTarget::from_owned(v.to_owned()))),
+            self.values.drain().map(|(k, v)| (k, v.into().into())),
         ))
     }
 }
 
-impl<T: ValueSource<T> + 'static> MapValue for MapValueStorage<T> {
+impl<T: EnumerableValueSource<T>> MapValue for MapValueStorage<T> {
     fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -373,8 +398,8 @@ impl<T: ValueSource<T> + 'static> MapValue for MapValueStorage<T> {
         self.values.contains_key(key)
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsValue + 'static)> {
-        self.values.get(key).map(|v| v as &dyn AsValue)
+    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
+        self.values.get(key).map(|v| v as &dyn AsStaticValue)
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
@@ -388,36 +413,29 @@ impl<T: ValueSource<T> + 'static> MapValue for MapValueStorage<T> {
     }
 }
 
-impl<T: ValueSource<T> + 'static> AsValue for MapValueStorage<T> {
-    fn get_value_type(&self) -> ValueType {
-        ValueType::Map
-    }
-
-    fn to_value(&self) -> Value {
-        Value::Map(self)
+impl<T: EnumerableValueSource<T>> AsStaticValue for MapValueStorage<T> {
+    fn to_static_value(&self) -> StaticValue {
+        StaticValue::Map(self)
     }
 }
 
-impl<T: ValueSource<T> + 'static> MapValueMut for MapValueStorage<T> {
+impl<T: EnumerableValueSource<T>> AsStaticValueMut for MapValueStorage<T> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+        Some(StaticValueMut::Map(self))
+    }
+}
+
+impl<T: EnumerableValueSource<T>> MapValueMut for MapValueStorage<T> {
     fn get_mut(&mut self, key: &str) -> ValueMutGetResult {
         match self.values.get_mut(key) {
-            Some(v) => {
-                if v.to_value_mut().is_some() {
-                    ValueMutGetResult::Found(v)
-                } else {
-                    ValueMutGetResult::NotSupported(format!(
-                        "Cannot mutate '{:?}' value at key '{key}'",
-                        v.get_value_type()
-                    ))
-                }
-            }
+            Some(v) => ValueMutGetResult::Found(v),
             None => ValueMutGetResult::NotFound,
         }
     }
 
     fn set(&mut self, key: &str, value: ResolvedValue) -> ValueMutWriteResult {
-        match self.values.insert(key.into(), value.convert()) {
-            Some(old) => ValueMutWriteResult::Updated(old.to_owned()),
+        match self.values.insert(key.into(), T::from(value.into())) {
+            Some(old) => ValueMutWriteResult::Updated(old.into()),
             None => ValueMutWriteResult::Created,
         }
     }
@@ -425,7 +443,7 @@ impl<T: ValueSource<T> + 'static> MapValueMut for MapValueStorage<T> {
     fn rename(&mut self, from_key: &str, to_key: &str) -> ValueMutWriteResult {
         match self.values.remove(from_key) {
             Some(v) => match self.values.insert(to_key.into(), v) {
-                Some(old) => ValueMutWriteResult::Updated(old.to_owned()),
+                Some(old) => ValueMutWriteResult::Updated(old.into()),
                 None => ValueMutWriteResult::Created,
             },
             None => ValueMutWriteResult::NotFound,
@@ -434,19 +452,12 @@ impl<T: ValueSource<T> + 'static> MapValueMut for MapValueStorage<T> {
 
     fn remove(&mut self, key: &str) -> ValueMutRemoveResult {
         match self.values.remove(key) {
-            Some(old) => ValueMutRemoveResult::Removed(old.to_owned()),
+            Some(old) => ValueMutRemoveResult::Removed(old.into()),
             None => ValueMutRemoveResult::NotFound,
         }
     }
 
     fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
-        self.values
-            .retain(|k, v| item_callback.next(k, InnerValue::ValueMut(v)));
-    }
-}
-
-impl<T: ValueSource<T> + 'static> AsValueMut for MapValueStorage<T> {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
-        Some(ValueMut::Map(self))
+        self.values.retain(|k, v| item_callback.next(k, v));
     }
 }
