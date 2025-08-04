@@ -86,7 +86,7 @@ fn test_strlen_function() {
         .with_event_name("hello world".into())
         .with_attribute(
             "text",
-            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
                 "test string".into(),
             ))),
         );
@@ -117,7 +117,7 @@ fn test_strlen_function() {
             .get("name_length")
             .map(|v| v.to_value().to_string()),
         Some(
-            AnyValue::Native(OtlpAnyValue::IntValue(ValueStorage::new(11)))
+            AnyValue::Native(OtlpAnyValue::IntValue(IntegerValueStorage::new(11)))
                 .to_value()
                 .to_string()
         ) // "hello world" has 11 characters
@@ -127,7 +127,7 @@ fn test_strlen_function() {
             .get("text_length")
             .map(|v| v.to_value().to_string()),
         Some(
-            AnyValue::Native(OtlpAnyValue::IntValue(ValueStorage::new(11)))
+            AnyValue::Native(OtlpAnyValue::IntValue(IntegerValueStorage::new(11)))
                 .to_value()
                 .to_string()
         ) // "test string" has 11 characters
@@ -140,7 +140,7 @@ fn test_replace_string_function() {
         .with_event_name("A magic trick can turn a cat into a dog".into())
         .with_attribute(
             "text",
-            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
                 "hello world hello".into(),
             ))),
         );
@@ -174,7 +174,7 @@ fn test_replace_string_function() {
             .get("modified_name")
             .map(|v| v.to_value().to_string()),
         Some(
-            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
                 "A magic trick can turn a hamster into a dog".into()
             )))
             .to_value()
@@ -186,7 +186,7 @@ fn test_replace_string_function() {
             .get("modified_text")
             .map(|v| v.to_value().to_string()),
         Some(
-            AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
                 "hi world hi".into()
             )))
             .to_value()

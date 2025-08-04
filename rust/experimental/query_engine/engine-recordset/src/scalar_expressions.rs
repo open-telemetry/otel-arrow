@@ -362,7 +362,7 @@ where
                 &replacement_value.to_value(),
                 r.get_case_insensitive(),
             ) {
-                ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(result)))
+                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(result)))
             } else {
                 ResolvedValue::Computed(OwnedValue::Null)
             };
