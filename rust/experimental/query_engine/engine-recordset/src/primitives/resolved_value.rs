@@ -10,14 +10,41 @@ pub enum ResolvedValue<'a> {
     /// A value resolved from the expression tree or an attached record
     Value(Value<'a>),
 
-    /// A value borrowed from the record being modified by the engine
-    Borrowed(Ref<'a, dyn AsValue + 'static>),
+    /// A value borrowed from the source being modified by the engine or
+    /// borrowed from a variable
+    Borrowed(BorrowSource, Ref<'a, dyn AsValue + 'static>),
 
     /// A value computed by the engine as the result of a dynamic expression
     Computed(OwnedValue),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BorrowSource {
+    Source,
+    Variable,
+}
+
 impl<'a> ResolvedValue<'a> {
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+        if let ResolvedValue::Borrowed(s, v) = self {
+            let writing_while_holding_borrow = match target {
+                MutableValueExpression::Source(_) => {
+                    matches!(s, BorrowSource::Source)
+                }
+                MutableValueExpression::Variable(_) => {
+                    matches!(s, BorrowSource::Variable)
+                }
+            };
+
+            if writing_while_holding_borrow {
+                *self = ResolvedValue::Computed(Self::into_owned(v.to_value()));
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub fn try_resolve_string(self) -> Result<ResolvedStringValue<'a>, Self> {
         if self.get_value_type() != ValueType::String {
             return Err(self);
@@ -31,7 +58,7 @@ impl<'a> ResolvedValue<'a> {
                     panic!()
                 }
             }
-            ResolvedValue::Borrowed(b) => {
+            ResolvedValue::Borrowed(_, b) => {
                 match Ref::filter_map(b, |v| {
                     if let Value::String(s) = v.to_value() {
                         Some(s)
@@ -66,7 +93,7 @@ impl<'a> ResolvedValue<'a> {
                     panic!()
                 }
             }
-            ResolvedValue::Borrowed(b) => {
+            ResolvedValue::Borrowed(_, b) => {
                 match Ref::filter_map(b, |v| {
                     if let Value::Regex(s) = v.to_value() {
                         Some(s)
@@ -91,7 +118,7 @@ impl<'a> ResolvedValue<'a> {
     pub fn to_owned(self) -> OwnedValue {
         match self {
             ResolvedValue::Value(v) => Self::into_owned(v),
-            ResolvedValue::Borrowed(b) => Self::into_owned(b.to_value()),
+            ResolvedValue::Borrowed(_, b) => Self::into_owned(b.to_value()),
             ResolvedValue::Computed(o) => o,
         }
     }
@@ -99,7 +126,7 @@ impl<'a> ResolvedValue<'a> {
     pub fn convert<T: ValueSource<T>>(self) -> T {
         match self {
             ResolvedValue::Value(v) => T::from_owned(Self::into_owned(v)),
-            ResolvedValue::Borrowed(b) => T::from_owned(Self::into_owned(b.to_value())),
+            ResolvedValue::Borrowed(_, b) => T::from_owned(Self::into_owned(b.to_value())),
             ResolvedValue::Computed(l) => T::from_owned(l),
         }
     }
@@ -141,7 +168,7 @@ impl AsValue for ResolvedValue<'_> {
     fn get_value_type(&self) -> ValueType {
         match self {
             ResolvedValue::Value(v) => v.get_value_type(),
-            ResolvedValue::Borrowed(b) => b.get_value_type(),
+            ResolvedValue::Borrowed(_, b) => b.get_value_type(),
             ResolvedValue::Computed(c) => c.get_value_type(),
         }
     }
@@ -149,7 +176,7 @@ impl AsValue for ResolvedValue<'_> {
     fn to_value(&self) -> Value {
         match self {
             ResolvedValue::Value(v) => v.clone(),
-            ResolvedValue::Borrowed(b) => b.to_value(),
+            ResolvedValue::Borrowed(_, b) => b.to_value(),
             ResolvedValue::Computed(c) => c.to_value(),
         }
     }
