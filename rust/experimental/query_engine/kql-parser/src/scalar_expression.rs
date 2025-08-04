@@ -90,6 +90,7 @@ pub(crate) fn parse_replace_string_expression(
             parse_scalar_expression(haystack_expression, state)?,
             parse_scalar_expression(needle_expression, state)?,
             parse_scalar_expression(replacement_expression, state)?,
+            false, // case_insensitive - set to false for KQL
         ),
     ))
 }
@@ -329,6 +330,7 @@ mod tests {
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
                 )),
+                false, // case_insensitive
             )),
         );
 

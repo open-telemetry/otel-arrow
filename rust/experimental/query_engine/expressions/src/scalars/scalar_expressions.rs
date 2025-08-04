@@ -894,6 +894,7 @@ pub struct ReplaceStringScalarExpression {
     haystack_expression: Box<ScalarExpression>,
     needle_expression: Box<ScalarExpression>,
     replacement_expression: Box<ScalarExpression>,
+    case_insensitive: bool,
 }
 
 impl ReplaceStringScalarExpression {
@@ -902,12 +903,14 @@ impl ReplaceStringScalarExpression {
         haystack_expression: ScalarExpression,
         needle_expression: ScalarExpression,
         replacement_expression: ScalarExpression,
+        case_insensitive: bool,
     ) -> ReplaceStringScalarExpression {
         Self {
             query_location,
             haystack_expression: haystack_expression.into(),
             needle_expression: needle_expression.into(),
             replacement_expression: replacement_expression.into(),
+            case_insensitive,
         }
     }
 
@@ -921,6 +924,10 @@ impl ReplaceStringScalarExpression {
 
     pub fn get_replacement_expression(&self) -> &ScalarExpression {
         &self.replacement_expression
+    }
+
+    pub fn get_case_insensitive(&self) -> bool {
+        self.case_insensitive
     }
 
     pub(crate) fn try_resolve_value_type(
@@ -959,48 +966,29 @@ impl ReplaceStringScalarExpression {
         if let (Some(haystack), Some(needle), Some(replacement)) =
             (haystack_static, needle_static, replacement_static)
         {
-            match (
-                haystack.to_value(),
-                needle.to_value(),
-                replacement.to_value(),
+            let haystack_value = haystack.to_value();
+            let needle_value = needle.to_value();
+            let replacement_value = replacement.to_value();
+
+            if let Some(result) = Value::replace_matches(
+                &self.query_location,
+                &haystack_value,
+                &needle_value,
+                &replacement_value,
+                self.case_insensitive,
             ) {
-                // String needle - simple text replacement
-                (
-                    Value::String(haystack_str),
-                    Value::String(needle_str),
-                    Value::String(replacement_str),
-                ) => {
-                    let result = haystack_str
-                        .get_value()
-                        .replace(needle_str.get_value(), replacement_str.get_value());
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            self.query_location.clone(),
-                            &result,
-                        )),
-                    )))
-                }
-                // Regex needle - regex replacement with capture group support
-                (
-                    Value::String(haystack_str),
-                    Value::Regex(needle_regex),
-                    Value::String(replacement_str),
-                ) => {
-                    let regex = needle_regex.get_value();
-                    let result =
-                        regex.replace_all(haystack_str.get_value(), replacement_str.get_value());
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            self.query_location.clone(),
-                            &result,
-                        )),
-                    )))
-                }
-                _ => Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Value(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        self.query_location.clone(),
+                        &result,
+                    )),
+                )))
+            } else {
+                Ok(Some(ResolvedStaticScalarExpression::Value(
                     StaticScalarExpression::Null(NullScalarExpression::new(
                         self.query_location.clone(),
                     )),
-                ))),
+                )))
             }
         } else {
             Ok(None)
@@ -1787,6 +1775,7 @@ mod tests {
                     text,
                     lookup,
                     replacement,
+                    false, // case_insensitive
                 );
 
                 let pipeline = Default::default();

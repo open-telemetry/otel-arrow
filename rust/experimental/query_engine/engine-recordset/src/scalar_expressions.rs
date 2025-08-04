@@ -357,31 +357,16 @@ where
             let replacement_value =
                 execute_scalar_expression(execution_context, r.get_replacement_expression())?;
 
-            let v = match (
-                haystack_value.to_value(),
-                needle_value.to_value(),
-                replacement_value.to_value(),
+            let v = if let Some(result) = Value::replace_matches(
+                r.get_query_location(),
+                &haystack_value.to_value(),
+                &needle_value.to_value(),
+                &replacement_value.to_value(),
+                r.get_case_insensitive(),
             ) {
-                // String needle - simple text replacement
-                (Value::String(haystack), Value::String(needle), Value::String(replacement)) => {
-                    let result = haystack
-                        .get_value()
-                        .replace(needle.get_value(), replacement.get_value());
-                    ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(result)))
-                }
-                // Regex needle - regex replacement with capture group support
-                (
-                    Value::String(haystack),
-                    Value::Regex(needle_regex),
-                    Value::String(replacement),
-                ) => {
-                    let regex = needle_regex.get_value();
-                    let result = regex.replace_all(haystack.get_value(), replacement.get_value());
-                    ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(
-                        result.to_string(),
-                    )))
-                }
-                _ => ResolvedValue::Computed(OwnedValue::Null),
+                ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(result)))
+            } else {
+                ResolvedValue::Computed(OwnedValue::Null)
             };
 
             execution_context.add_diagnostic_if_enabled(
@@ -1376,6 +1361,7 @@ mod tests {
                     text,
                     lookup,
                     replacement,
+                    false, // case_insensitive
                 ));
 
                 let pipeline = Default::default();
@@ -1469,6 +1455,7 @@ mod tests {
                     haystack,
                     needle,
                     replacement,
+                    false, // case_insensitive
                 ));
 
                 let pipeline = Default::default();
@@ -1562,6 +1549,97 @@ mod tests {
                 Value::String(&StringScalarExpression::new(
                     QueryLocation::new_fake(),
                     "hello world",
+                )),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_execute_replace_string_scalar_expression_case_insensitive() {
+        fn run_test(
+            input: Vec<(
+                ScalarExpression,
+                ScalarExpression,
+                ScalarExpression,
+                bool,
+                Value,
+            )>,
+        ) {
+            for (text, lookup, replacement, case_insensitive, expected) in input {
+                let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    text,
+                    lookup,
+                    replacement,
+                    case_insensitive,
+                ));
+
+                let pipeline = Default::default();
+
+                let record = TestRecord::new();
+
+                let execution_context = ExecutionContext::new(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    &pipeline,
+                    None,
+                    record,
+                );
+
+                let actual = execute_scalar_expression(&execution_context, &e).unwrap();
+                assert_eq!(expected, actual.to_value());
+            }
+        }
+
+        run_test(vec![
+            // Case-sensitive replacement (default)
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
+                )),
+                false,
+                Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "Hello World", // No replacement because "hello" != "Hello"
+                )),
+            ),
+            // Case-insensitive replacement
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
+                )),
+                true,
+                Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hi World", // "Hello" replaced with "hi"
+                )),
+            ),
+            // Case-insensitive with multiple matches
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "CAT cat Cat"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "dog"),
+                )),
+                true,
+                Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "dog dog dog", // All variants of "cat" replaced
                 )),
             ),
         ]);
