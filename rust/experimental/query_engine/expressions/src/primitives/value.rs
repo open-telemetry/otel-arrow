@@ -338,6 +338,65 @@ impl Value<'_> {
         }
     }
 
+    pub fn contains(
+        query_location: &QueryLocation,
+        haystack: &Value,
+        needle: &Value,
+        case_insensitive: bool,
+    ) -> Result<bool, ExpressionError> {
+        match haystack {
+            Value::Array(array) => {
+                let mut found = false;
+                array.get_items(&mut IndexValueClosureCallback::new(|_, item_value| {
+                    match Self::are_values_equal(query_location, &item_value, needle, case_insensitive) {
+                        Ok(is_equal) => {
+                            if is_equal {
+                                found = true;
+                                false // Stop iteration
+                            } else {
+                                true // Continue iteration
+                            }
+                        }
+                        Err(_) => true, // Continue iteration on error
+                    }
+                }));
+                Ok(found)
+            }
+            Value::String(string_val) => {
+                let haystack_str = string_val.get_value();
+                let mut needle_str = None;
+                needle.convert_to_string(&mut |s| {
+                    needle_str = Some(s.to_string());
+                });
+                
+                if let Some(needle_str) = needle_str {
+                    let contains_result = if case_insensitive {
+                        // For case-insensitive comparison, convert both to lowercase
+                        haystack_str.to_lowercase().contains(&needle_str.to_lowercase())
+                    } else {
+                        haystack_str.contains(&needle_str)
+                    };
+                    Ok(contains_result)
+                } else {
+                    Err(ExpressionError::TypeMismatch(
+                        query_location.clone(),
+                        format!(
+                            "{:?} needle value '{needle}' could not be converted to string for contains operation",
+                            needle.get_value_type(),
+                        ),
+                    ))
+                }
+            }
+            _ => Err(ExpressionError::TypeMismatch(
+                query_location.clone(),
+                format!(
+                    "{:?} haystack value '{haystack}' is not supported for contains operation. Only Array and String values are supported.",
+                    haystack.get_value_type(),
+                ),
+            )),
+        }
+    }
+
     fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
         let mut r = None;
 
@@ -1636,6 +1695,143 @@ mod tests {
                 Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
             )),
             "Double value '1.1' on left side of comparison operation could not be converted to DateTime",
+        );
+    }
+
+    #[test]
+    pub fn test_contains() {
+        let run_test_success = |haystack: Value, needle: Value, case_insensitive: bool, expected: bool| {
+            let actual = Value::contains(&QueryLocation::new_fake(), &haystack, &needle, case_insensitive).unwrap();
+            assert_eq!(expected, actual);
+        };
+
+        let run_test_failure = |haystack: Value, needle: Value, case_insensitive: bool, expected: &str| {
+            let actual = Value::contains(&QueryLocation::new_fake(), &haystack, &needle, case_insensitive).unwrap_err();
+
+            #[allow(irrefutable_let_patterns)]
+            if let ExpressionError::TypeMismatch(_, msg) = actual {
+                assert_eq!(expected, msg);
+            } else {
+                panic!("Expected TypeMismatch")
+            }
+        };
+
+        // Test Array contains
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "world",
+                    )),
+                ],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "world",
+                    )),
+                ],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "HELLO",
+            )),
+            true,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "world",
+                    )),
+                ],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "foo",
+            )),
+            false,
+            false,
+        );
+
+        // Test String contains
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "world",
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "WORLD",
+            )),
+            true,
+            true,
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "foo",
+            )),
+            false,
+            false,
+        );
+
+        // Test error cases
+        run_test_failure(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "world",
+            )),
+            false,
+            "Integer haystack value '42' is not supported for contains operation. Only Array and String values are supported.",
         );
     }
 }
