@@ -1747,6 +1747,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     pub fn test_replace_string_scalar_expression_try_resolve() {
         fn run_test(
             input: Vec<(
