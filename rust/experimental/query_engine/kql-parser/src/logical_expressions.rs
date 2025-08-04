@@ -25,7 +25,7 @@ pub(crate) fn parse_comparison_expression(
     let next_rule = comparison_rules.next().unwrap();
 
     match operation_rule.as_rule() {
-        Rule::in_token | Rule::in_cs_token | Rule::not_in_token | Rule::not_in_cs_token => {
+        Rule::in_token | Rule::in_insensitive_token | Rule::not_in_token | Rule::not_in_insensitive_token => {
             // For "in" operations, we expect parentheses and multiple values
             // The next_rule should be the first scalar_expression inside the parentheses
             let mut values = vec![parse_scalar_expression(next_rule, state)?];
@@ -53,7 +53,7 @@ pub(crate) fn parse_comparison_expression(
                 ),
             ));
 
-            let case_insensitive = false; // "in" operations are case-sensitive by default
+            let case_insensitive = matches!(operation_rule.as_rule(), Rule::in_insensitive_token | Rule::not_in_insensitive_token);
             let contains_expr = LogicalExpression::Contains(ContainsLogicalExpression::new(
                 query_location.clone(),
                 array_expr,
@@ -62,7 +62,7 @@ pub(crate) fn parse_comparison_expression(
             ));
 
             match operation_rule.as_rule() {
-                Rule::not_in_token | Rule::not_in_cs_token => Ok(LogicalExpression::Not(
+                Rule::not_in_token | Rule::not_in_insensitive_token => Ok(LogicalExpression::Not(
                     NotLogicalExpression::new(query_location, contains_expr),
                 )),
                 _ => Ok(contains_expr),
@@ -305,9 +305,9 @@ mod tests {
                 "field !has 'value'",
                 "field !has_cs 'value'",
                 "field in ('value1', 'value2')",
-                // "field in_cs ('value1', 'value2')",
+                "field in~ ('value1', 'value2')",
                 "field !in ('value1', 'value2')",
-                // "field !in_cs ('value1', 'value2')",
+                "field !in~ ('value1', 'value2')",
             ],
             &[],
         );
@@ -831,6 +831,35 @@ mod tests {
             )),
         );
 
+        // Test in~ operator (case insensitive)
+        run_test(
+            "variable in~ ('test1', 'test2')",
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "test1",
+                            )),
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "test2",
+                            )),
+                        ],
+                    ),
+                )),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                    ValueAccessor::new(),
+                )),
+                true, // in~ is case_insensitive
+            )),
+        );
+
         // Test !in operator
         run_test(
             "variable !in ('test1', 'test2')",
@@ -859,6 +888,38 @@ mod tests {
                         ValueAccessor::new(),
                     )),
                     false,
+                )),
+            )),
+        );
+
+        // Test !in~ operator (case insensitive)
+        run_test(
+            "variable !in~ ('test1', 'test2')",
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Contains(ContainsLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Array(
+                        ArrayScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "test1",
+                                )),
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "test2",
+                                )),
+                            ],
+                        ),
+                    )),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
+                    )),
+                    true, // !in~ is case_insensitive
                 )),
             )),
         );
