@@ -80,15 +80,15 @@ pub(crate) fn parse_replace_string_expression(
     let query_location = to_query_location(&replace_string_expression_rule);
 
     let mut replace_string_rules = replace_string_expression_rule.into_inner();
-    let text_expression = replace_string_rules.next().unwrap();
-    let lookup_expression = replace_string_rules.next().unwrap();
+    let haystack_expression = replace_string_rules.next().unwrap();
+    let needle_expression = replace_string_rules.next().unwrap();
     let replacement_expression = replace_string_rules.next().unwrap();
 
     Ok(ScalarExpression::ReplaceString(
         ReplaceStringScalarExpression::new(
             query_location,
-            parse_scalar_expression(text_expression, state)?,
-            parse_scalar_expression(lookup_expression, state)?,
+            parse_scalar_expression(haystack_expression, state)?,
+            parse_scalar_expression(needle_expression, state)?,
             parse_scalar_expression(replacement_expression, state)?,
         ),
     ))

@@ -891,32 +891,32 @@ impl Expression for LengthScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReplaceStringScalarExpression {
     query_location: QueryLocation,
-    text_expression: Box<ScalarExpression>,
-    lookup_expression: Box<ScalarExpression>,
+    haystack_expression: Box<ScalarExpression>,
+    needle_expression: Box<ScalarExpression>,
     replacement_expression: Box<ScalarExpression>,
 }
 
 impl ReplaceStringScalarExpression {
     pub fn new(
         query_location: QueryLocation,
-        text_expression: ScalarExpression,
-        lookup_expression: ScalarExpression,
+        haystack_expression: ScalarExpression,
+        needle_expression: ScalarExpression,
         replacement_expression: ScalarExpression,
     ) -> ReplaceStringScalarExpression {
         Self {
             query_location,
-            text_expression: text_expression.into(),
-            lookup_expression: lookup_expression.into(),
+            haystack_expression: haystack_expression.into(),
+            needle_expression: needle_expression.into(),
             replacement_expression: replacement_expression.into(),
         }
     }
 
-    pub fn get_text_expression(&self) -> &ScalarExpression {
-        &self.text_expression
+    pub fn get_haystack_expression(&self) -> &ScalarExpression {
+        &self.haystack_expression
     }
 
-    pub fn get_lookup_expression(&self) -> &ScalarExpression {
-        &self.lookup_expression
+    pub fn get_needle_expression(&self) -> &ScalarExpression {
+        &self.needle_expression
     }
 
     pub fn get_replacement_expression(&self) -> &ScalarExpression {
@@ -928,7 +928,7 @@ impl ReplaceStringScalarExpression {
         pipeline: &PipelineExpression,
     ) -> Result<Option<ValueType>, ExpressionError> {
         if let Some(v) = self
-            .get_text_expression()
+            .get_haystack_expression()
             .try_resolve_value_type(pipeline)?
         {
             Ok(Some(match v {
@@ -948,24 +948,47 @@ impl ReplaceStringScalarExpression {
         'a: 'c,
         'b: 'c,
     {
-        let text_static = self.get_text_expression().try_resolve_static(pipeline)?;
-        let lookup_static = self.get_lookup_expression().try_resolve_static(pipeline)?;
+        let haystack_static = self
+            .get_haystack_expression()
+            .try_resolve_static(pipeline)?;
+        let needle_static = self.get_needle_expression().try_resolve_static(pipeline)?;
         let replacement_static = self
             .get_replacement_expression()
             .try_resolve_static(pipeline)?;
 
-        if let (Some(text), Some(lookup), Some(replacement)) =
-            (text_static, lookup_static, replacement_static)
+        if let (Some(haystack), Some(needle), Some(replacement)) =
+            (haystack_static, needle_static, replacement_static)
         {
-            match (text.to_value(), lookup.to_value(), replacement.to_value()) {
+            match (
+                haystack.to_value(),
+                needle.to_value(),
+                replacement.to_value(),
+            ) {
+                // String needle - simple text replacement
                 (
-                    Value::String(text_str),
-                    Value::String(lookup_str),
+                    Value::String(haystack_str),
+                    Value::String(needle_str),
                     Value::String(replacement_str),
                 ) => {
-                    let result = text_str
+                    let result = haystack_str
                         .get_value()
-                        .replace(lookup_str.get_value(), replacement_str.get_value());
+                        .replace(needle_str.get_value(), replacement_str.get_value());
+                    Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            self.query_location.clone(),
+                            &result,
+                        )),
+                    )))
+                }
+                // Regex needle - regex replacement with capture group support
+                (
+                    Value::String(haystack_str),
+                    Value::Regex(needle_regex),
+                    Value::String(replacement_str),
+                ) => {
+                    let regex = needle_regex.get_value();
+                    let result =
+                        regex.replace_all(haystack_str.get_value(), replacement_str.get_value());
                     Ok(Some(ResolvedStaticScalarExpression::Value(
                         StaticScalarExpression::String(StringScalarExpression::new(
                             self.query_location.clone(),
