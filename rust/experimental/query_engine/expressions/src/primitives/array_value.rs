@@ -13,7 +13,8 @@ pub trait ArrayValue: Debug {
         self.get_item_range((..).into(), item_callback)
     }
 
-    fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback) -> bool;
+    fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback)
+    -> bool;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
         let mut values = Vec::new();
@@ -30,58 +31,76 @@ pub trait ArrayValue: Debug {
 #[derive(Debug)]
 pub struct ArrayRange {
     start_range_inclusize: Option<usize>,
-    end_range_exclusive: Option<usize>
+    end_range_exclusive: Option<usize>,
 }
 
 impl ArrayRange {
     pub fn get_start_range_inclusize(&self) -> Option<usize> {
-        self.start_range_inclusize.clone()
+        self.start_range_inclusize
     }
 
     pub fn get_end_range_exclusive(&self) -> Option<usize> {
-        self.end_range_exclusive.clone()
+        self.end_range_exclusive
     }
 
     pub fn get_slice<'a, T>(&self, value: &'a [T]) -> &'a [T] {
         let start = self.start_range_inclusize.unwrap_or(0);
-        let end = self.end_range_exclusive.unwrap_or_else(|| value.len());
+        let end = self.end_range_exclusive.unwrap_or(value.len());
         &value[start..end]
     }
 }
 
 impl From<RangeFull> for ArrayRange {
     fn from(_: RangeFull) -> Self {
-        Self { start_range_inclusize: None, end_range_exclusive: None }
+        Self {
+            start_range_inclusize: None,
+            end_range_exclusive: None,
+        }
     }
 }
 
 impl From<Range<usize>> for ArrayRange {
     fn from(value: Range<usize>) -> Self {
-        Self { start_range_inclusize: Some(value.start), end_range_exclusive: Some(value.end) }
+        Self {
+            start_range_inclusize: Some(value.start),
+            end_range_exclusive: Some(value.end),
+        }
     }
 }
 
 impl From<RangeFrom<usize>> for ArrayRange {
     fn from(value: RangeFrom<usize>) -> Self {
-        Self { start_range_inclusize: Some(value.start), end_range_exclusive: None }
+        Self {
+            start_range_inclusize: Some(value.start),
+            end_range_exclusive: None,
+        }
     }
 }
 
 impl From<RangeTo<usize>> for ArrayRange {
     fn from(value: RangeTo<usize>) -> Self {
-        Self { start_range_inclusize: None, end_range_exclusive: Some(value.end) }
+        Self {
+            start_range_inclusize: None,
+            end_range_exclusive: Some(value.end),
+        }
     }
 }
 
 impl From<RangeToInclusive<usize>> for ArrayRange {
     fn from(value: RangeToInclusive<usize>) -> Self {
-        Self { start_range_inclusize: None, end_range_exclusive: Some(value.end + 1) }
+        Self {
+            start_range_inclusize: None,
+            end_range_exclusive: Some(value.end + 1),
+        }
     }
 }
 
 impl From<RangeInclusive<usize>> for ArrayRange {
     fn from(value: RangeInclusive<usize>) -> Self {
-        Self { start_range_inclusize: Some(*value.start()), end_range_exclusive: Some(value.end() + 1) }
+        Self {
+            start_range_inclusize: Some(*value.start()),
+            end_range_exclusive: Some(value.end() + 1),
+        }
     }
 }
 

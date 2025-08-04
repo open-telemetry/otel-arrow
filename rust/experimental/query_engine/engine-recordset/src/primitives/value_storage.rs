@@ -282,7 +282,11 @@ impl<T: EnumerableValueSource<T>> ArrayValue for ArrayValueStorage<T> {
         self.values.get(index).map(|v| v as &dyn AsStaticValue)
     }
 
-    fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback) -> bool {
+    fn get_item_range(
+        &self,
+        range: ArrayRange,
+        item_callback: &mut dyn IndexValueCallback,
+    ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !item_callback.next(index, value.to_value()) {
                 return false;
