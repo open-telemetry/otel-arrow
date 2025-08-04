@@ -348,7 +348,12 @@ impl Value<'_> {
             Value::Array(array) => {
                 let mut found = false;
                 array.get_items(&mut IndexValueClosureCallback::new(|_, item_value| {
-                    match Self::are_values_equal(query_location, &item_value, needle, case_insensitive) {
+                    match Self::are_values_equal(
+                        query_location,
+                        &item_value,
+                        needle,
+                        case_insensitive,
+                    ) {
                         Ok(is_equal) => {
                             if is_equal {
                                 found = true;
@@ -368,11 +373,13 @@ impl Value<'_> {
                 needle.convert_to_string(&mut |s| {
                     needle_str = Some(s.to_string());
                 });
-                
+
                 if let Some(needle_str) = needle_str {
                     let contains_result = if case_insensitive {
                         // For case-insensitive comparison, convert both to lowercase
-                        haystack_str.to_lowercase().contains(&needle_str.to_lowercase())
+                        haystack_str
+                            .to_lowercase()
+                            .contains(&needle_str.to_lowercase())
                     } else {
                         haystack_str.contains(&needle_str)
                     };
@@ -1700,21 +1707,35 @@ mod tests {
 
     #[test]
     pub fn test_contains() {
-        let run_test_success = |haystack: Value, needle: Value, case_insensitive: bool, expected: bool| {
-            let actual = Value::contains(&QueryLocation::new_fake(), &haystack, &needle, case_insensitive).unwrap();
-            assert_eq!(expected, actual);
-        };
+        let run_test_success =
+            |haystack: Value, needle: Value, case_insensitive: bool, expected: bool| {
+                let actual = Value::contains(
+                    &QueryLocation::new_fake(),
+                    &haystack,
+                    &needle,
+                    case_insensitive,
+                )
+                .unwrap();
+                assert_eq!(expected, actual);
+            };
 
-        let run_test_failure = |haystack: Value, needle: Value, case_insensitive: bool, expected: &str| {
-            let actual = Value::contains(&QueryLocation::new_fake(), &haystack, &needle, case_insensitive).unwrap_err();
+        let run_test_failure =
+            |haystack: Value, needle: Value, case_insensitive: bool, expected: &str| {
+                let actual = Value::contains(
+                    &QueryLocation::new_fake(),
+                    &haystack,
+                    &needle,
+                    case_insensitive,
+                )
+                .unwrap_err();
 
-            #[allow(irrefutable_let_patterns)]
-            if let ExpressionError::TypeMismatch(_, msg) = actual {
-                assert_eq!(expected, msg);
-            } else {
-                panic!("Expected TypeMismatch")
-            }
-        };
+                #[allow(irrefutable_let_patterns)]
+                if let ExpressionError::TypeMismatch(_, msg) = actual {
+                    assert_eq!(expected, msg);
+                } else {
+                    panic!("Expected TypeMismatch")
+                }
+            };
 
         // Test Array contains
         run_test_success(
