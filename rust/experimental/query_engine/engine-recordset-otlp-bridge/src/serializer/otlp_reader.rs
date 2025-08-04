@@ -103,16 +103,16 @@ fn read_log_record(reader: &mut ProtobufReader) -> Result<LogRecord, SerializerE
 
         match tag.field_number {
             1 => {
-                log_record.timestamp = Some(ValueStorage::new(
+                log_record.timestamp = Some(DateTimeValueStorage::new(
                     Utc.timestamp_nanos(reader.read_fixed64()? as i64).into(),
                 ));
             }
             2 => {
                 log_record.severity_number =
-                    Some(ValueStorage::new(reader.read_varint64()? as i32));
+                    Some(IntegerValueStorage::new(reader.read_varint64()? as i32));
             }
             3 => {
-                log_record.severity_text = Some(ValueStorage::new(reader.read_string()?));
+                log_record.severity_text = Some(StringValueStorage::new(reader.read_string()?));
             }
             5 => {
                 if !reader.read_message(|mut reader| {
@@ -145,14 +145,14 @@ fn read_log_record(reader: &mut ProtobufReader) -> Result<LogRecord, SerializerE
                 })?;
             }
             8 => {
-                log_record.flags = Some(ValueStorage::new(reader.read_fixed32()?));
+                log_record.flags = Some(IntegerValueStorage::new(reader.read_fixed32()?));
             }
             9 => {
                 log_record.trace_id = Some(ByteArrayValueStorage::new(
                     reader
                         .read_bytes()?
                         .iter()
-                        .map(|v| ValueStorage::new(*v))
+                        .map(|v| IntegerValueStorage::new(*v))
                         .collect(),
                 ));
             }
@@ -161,17 +161,17 @@ fn read_log_record(reader: &mut ProtobufReader) -> Result<LogRecord, SerializerE
                     reader
                         .read_bytes()?
                         .iter()
-                        .map(|v| ValueStorage::new(*v))
+                        .map(|v| IntegerValueStorage::new(*v))
                         .collect(),
                 ));
             }
             11 => {
-                log_record.observed_timestamp = Some(ValueStorage::new(
+                log_record.observed_timestamp = Some(DateTimeValueStorage::new(
                     Utc.timestamp_nanos(reader.read_fixed64()? as i64).into(),
                 ));
             }
             12 => {
-                log_record.event_name = Some(ValueStorage::new(reader.read_string()?));
+                log_record.event_name = Some(StringValueStorage::new(reader.read_string()?));
             }
             _ => {
                 let field = reader.read_field(tag)?;
@@ -218,10 +218,10 @@ fn read_instrumentation_scope(
 
         match tag.field_number {
             1 => {
-                scope.name = Some(ValueStorage::new(reader.read_string()?));
+                scope.name = Some(StringValueStorage::new(reader.read_string()?));
             }
             2 => {
-                scope.version = Some(ValueStorage::new(reader.read_string()?));
+                scope.version = Some(StringValueStorage::new(reader.read_string()?));
             }
             3 => {
                 reader.read_message(|mut reader| {
@@ -245,10 +245,10 @@ fn read_value(reader: &mut ProtobufReader) -> Result<AnyValue, SerializerError> 
     let tag = reader.read_tag()?;
 
     Ok(AnyValue::Native(match tag.field_number {
-        1 => OtlpAnyValue::StringValue(ValueStorage::new(reader.read_string()?)),
-        2 => OtlpAnyValue::BoolValue(ValueStorage::new(reader.read_bool()?)),
-        3 => OtlpAnyValue::IntValue(ValueStorage::new(reader.read_int64()?)),
-        4 => OtlpAnyValue::DoubleValue(ValueStorage::new(reader.read_double()?)),
+        1 => OtlpAnyValue::StringValue(StringValueStorage::new(reader.read_string()?)),
+        2 => OtlpAnyValue::BoolValue(BooleanValueStorage::new(reader.read_bool()?)),
+        3 => OtlpAnyValue::IntValue(IntegerValueStorage::new(reader.read_int64()?)),
+        4 => OtlpAnyValue::DoubleValue(DoubleValueStorage::new(reader.read_double()?)),
         5 => {
             let mut values = Vec::new();
             reader.read_message(|mut reader| {
@@ -309,7 +309,7 @@ fn read_value(reader: &mut ProtobufReader) -> Result<AnyValue, SerializerError> 
             let bytes = reader.read_bytes()?;
 
             OtlpAnyValue::BytesValue(ByteArrayValueStorage::new(
-                bytes.iter().map(|v| ValueStorage::new(*v)).collect(),
+                bytes.iter().map(|v| IntegerValueStorage::new(*v)).collect(),
             ))
         }
         _ => {
@@ -365,7 +365,6 @@ mod tests {
     use std::collections::HashMap;
 
     use bytes::BytesMut;
-    use data_engine_expressions::AsValue;
     use prost::Message;
 
     use super::*;
@@ -406,7 +405,7 @@ mod tests {
             OtlpAnyValue {
                 value: Some(OtlpValue::StringValue("hello world".into())),
             },
-            AnyValue::Native(crate::OtlpAnyValue::StringValue(ValueStorage::new(
+            AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
                 "hello world".into(),
             ))),
         );
@@ -415,35 +414,41 @@ mod tests {
             OtlpAnyValue {
                 value: Some(OtlpValue::BoolValue(true)),
             },
-            AnyValue::Native(crate::OtlpAnyValue::BoolValue(ValueStorage::new(true))),
+            AnyValue::Native(crate::OtlpAnyValue::BoolValue(BooleanValueStorage::new(
+                true,
+            ))),
         );
 
         run_test(
             OtlpAnyValue {
                 value: Some(OtlpValue::BoolValue(false)),
             },
-            AnyValue::Native(crate::OtlpAnyValue::BoolValue(ValueStorage::new(false))),
+            AnyValue::Native(crate::OtlpAnyValue::BoolValue(BooleanValueStorage::new(
+                false,
+            ))),
         );
 
         run_test(
             OtlpAnyValue {
                 value: Some(OtlpValue::IntValue(18)),
             },
-            AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+            AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
         );
 
         run_test(
             OtlpAnyValue {
                 value: Some(OtlpValue::IntValue(-18)),
             },
-            AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(-18))),
+            AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(-18))),
         );
 
         run_test(
             OtlpAnyValue {
                 value: Some(OtlpValue::DoubleValue(-18.0)),
             },
-            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(ValueStorage::new(-18.0))),
+            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(DoubleValueStorage::new(
+                -18.0,
+            ))),
         );
 
         run_test(
@@ -469,7 +474,7 @@ mod tests {
             AnyValue::Native(crate::OtlpAnyValue::ArrayValue(ArrayValueStorage::new(
                 vec![
                     AnyValue::Null,
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
                 ],
             ))),
         );
@@ -512,7 +517,9 @@ mod tests {
                     ("key2".into(), AnyValue::Null),
                     (
                         "key3".into(),
-                        AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                        AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                            18,
+                        ))),
                     ),
                 ]),
             ))),
@@ -532,7 +539,10 @@ mod tests {
                 value: Some(OtlpValue::BytesValue(vec![0x00, 0xFF])),
             },
             AnyValue::Native(crate::OtlpAnyValue::BytesValue(ByteArrayValueStorage::new(
-                vec![ValueStorage::new(0x00), ValueStorage::new(0xFF)],
+                vec![
+                    IntegerValueStorage::new(0x00),
+                    IntegerValueStorage::new(0xFF),
+                ],
             ))),
         );
     }
@@ -603,7 +613,7 @@ mod tests {
             },
             Some((
                 "key1".into(),
-                AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
             )),
         );
     }
@@ -657,7 +667,7 @@ mod tests {
                 .with_attribute("key1", AnyValue::Null)
                 .with_attribute(
                     "key2",
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
                 ),
         );
 
@@ -741,7 +751,7 @@ mod tests {
                 .with_attribute("key1", AnyValue::Null)
                 .with_attribute(
                     "key2",
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
                 ),
         );
 
@@ -869,7 +879,7 @@ mod tests {
                 event_name: "".into(),
             },
             LogRecord::new().with_body(AnyValue::Native(crate::OtlpAnyValue::IntValue(
-                ValueStorage::new(18),
+                IntegerValueStorage::new(18),
             ))),
         );
 
@@ -911,7 +921,7 @@ mod tests {
                 .with_attribute("key2", AnyValue::Null)
                 .with_attribute(
                     "key3",
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
                 ),
         );
 

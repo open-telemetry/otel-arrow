@@ -193,7 +193,7 @@ fn process_log_record_results(
         if let Some(d) = diagnostic_output {
             log_record.attributes.get_values_mut().insert(
                 "query_engine.output".into(),
-                AnyValue::Native(OtlpAnyValue::StringValue(ValueStorage::new(d))),
+                AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(d))),
             );
         }
 

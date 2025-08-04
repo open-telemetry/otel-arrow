@@ -335,7 +335,7 @@ where
 
 fn select_from_as_value_mut<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
-    current_borrow: RefMut<'b, dyn AsValueMut + 'static>,
+    current_borrow: RefMut<'b, dyn AsStaticValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
     remaining_selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
 ) -> Result<Option<ResolvedValueMut<'b, 'c>>, ExpressionError>
@@ -346,7 +346,7 @@ where
     match current_borrow.get_value_type() {
         ValueType::Array => {
             let next_borrow = RefMut::map(current_borrow, |v| {
-                if let Some(ValueMut::Array(a)) = v.to_value_mut() {
+                if let Some(StaticValueMut::Array(a)) = v.to_static_value_mut() {
                     a
                 } else {
                     panic!("Array was not returned from ValueMut")
@@ -362,7 +362,7 @@ where
         }
         ValueType::Map => {
             let next_borrow = RefMut::map(current_borrow, |v| {
-                if let Some(ValueMut::Map(m)) = v.to_value_mut() {
+                if let Some(StaticValueMut::Map(m)) = v.to_static_value_mut() {
                     m
                 } else {
                     panic!("Map was not returned from ValueMut")
@@ -445,7 +445,7 @@ mod tests {
                     "hello world",
                 )),
             )),
-            Value::String(&ValueStorage::new("hello world".into())),
+            Value::String(&StringValueStorage::new("hello world".into())),
         );
     }
 
@@ -454,14 +454,14 @@ mod tests {
         let record = TestRecord::new()
             .with_key_value(
                 "key1".into(),
-                OwnedValue::String(ValueStorage::new("value1".into())),
+                OwnedValue::String(StringValueStorage::new("value1".into())),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             )
             .with_key_value(
@@ -510,7 +510,7 @@ mod tests {
             &|v| {
                 if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
                     assert_eq!(
-                        Value::String(&ValueStorage::new("key1".into())),
+                        Value::String(&StringValueStorage::new("key1".into())),
                         key.to_value()
                     );
                 } else {
@@ -535,7 +535,7 @@ mod tests {
             &|v| {
                 if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
                     assert_eq!(
-                        Value::String(&ValueStorage::new("sub-key".into())),
+                        Value::String(&StringValueStorage::new("sub-key".into())),
                         key.to_value()
                     );
                 } else {
@@ -608,14 +608,16 @@ mod tests {
 
                 variables.set(
                     "key1",
-                    ResolvedValue::Computed(OwnedValue::String(ValueStorage::new("value1".into()))),
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                        "value1".into(),
+                    ))),
                 );
                 variables.set(
                     "key2",
                     ResolvedValue::Computed(OwnedValue::Array(ArrayValueStorage::new(vec![
-                        OwnedValue::Integer(ValueStorage::new(1)),
-                        OwnedValue::Integer(ValueStorage::new(2)),
-                        OwnedValue::Integer(ValueStorage::new(3)),
+                        OwnedValue::Integer(IntegerValueStorage::new(1)),
+                        OwnedValue::Integer(IntegerValueStorage::new(2)),
+                        OwnedValue::Integer(IntegerValueStorage::new(3)),
                     ]))),
                 );
                 variables.set(
@@ -640,7 +642,7 @@ mod tests {
             &|v| {
                 if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
                     assert_eq!(
-                        Value::String(&ValueStorage::new("key1".into())),
+                        Value::String(&StringValueStorage::new("key1".into())),
                         key.to_value()
                     );
                 } else {
@@ -664,7 +666,7 @@ mod tests {
             &|v| {
                 if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
                     assert_eq!(
-                        Value::String(&ValueStorage::new("key1".into())),
+                        Value::String(&StringValueStorage::new("key1".into())),
                         key.to_value()
                     );
                 } else {

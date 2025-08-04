@@ -1,69 +1,79 @@
-use chrono::{DateTime, FixedOffset};
+use std::collections::HashMap;
+
 use data_engine_expressions::*;
-use regex::Regex;
 
 use crate::*;
 
 #[derive(Debug, Clone)]
 pub enum OwnedValue {
     Array(ArrayValueStorage<OwnedValue>),
-    Boolean(ValueStorage<bool>),
-    DateTime(ValueStorage<DateTime<FixedOffset>>),
-    Double(ValueStorage<f64>),
-    Integer(ValueStorage<i64>),
+    Boolean(BooleanValueStorage),
+    DateTime(DateTimeValueStorage),
+    Double(DoubleValueStorage<f64>),
+    Integer(IntegerValueStorage<i64>),
     Map(MapValueStorage<OwnedValue>),
     Null,
-    Regex(ValueStorage<Regex>),
-    String(ValueStorage<String>),
+    Regex(RegexValueStorage),
+    String(StringValueStorage),
 }
 
-impl AsValue for OwnedValue {
-    fn get_value_type(&self) -> ValueType {
+impl AsStaticValue for OwnedValue {
+    fn to_static_value(&self) -> StaticValue {
         match self {
-            OwnedValue::Array(_) => ValueType::Array,
-            OwnedValue::Boolean(_) => ValueType::Boolean,
-            OwnedValue::DateTime(_) => ValueType::DateTime,
-            OwnedValue::Double(_) => ValueType::Double,
-            OwnedValue::Integer(_) => ValueType::Integer,
-            OwnedValue::Map(_) => ValueType::Map,
-            OwnedValue::Null => ValueType::Null,
-            OwnedValue::Regex(_) => ValueType::Regex,
-            OwnedValue::String(_) => ValueType::String,
-        }
-    }
-
-    fn to_value(&self) -> Value {
-        match self {
-            OwnedValue::Array(a) => Value::Array(a),
-            OwnedValue::Boolean(b) => Value::Boolean(b),
-            OwnedValue::DateTime(d) => Value::DateTime(d),
-            OwnedValue::Double(v) => Value::Double(v),
-            OwnedValue::Integer(v) => Value::Integer(v),
-            OwnedValue::Map(m) => Value::Map(m),
-            OwnedValue::Null => Value::Null,
-            OwnedValue::Regex(r) => Value::Regex(r),
-            OwnedValue::String(s) => Value::String(s),
+            OwnedValue::Array(a) => StaticValue::Array(a),
+            OwnedValue::Boolean(b) => StaticValue::Boolean(b),
+            OwnedValue::DateTime(d) => StaticValue::DateTime(d),
+            OwnedValue::Double(d) => StaticValue::Double(d),
+            OwnedValue::Integer(i) => StaticValue::Integer(i),
+            OwnedValue::Map(m) => StaticValue::Map(m),
+            OwnedValue::Null => StaticValue::Null,
+            OwnedValue::Regex(r) => StaticValue::Regex(r),
+            OwnedValue::String(s) => StaticValue::String(s),
         }
     }
 }
 
-impl AsValueMut for OwnedValue {
-    fn to_value_mut(&mut self) -> Option<ValueMut> {
+impl AsStaticValueMut for OwnedValue {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
         match self {
-            OwnedValue::Array(a) => Some(ValueMut::Array(a)),
-            OwnedValue::Map(m) => Some(ValueMut::Map(m)),
-            OwnedValue::String(s) => Some(ValueMut::String(s)),
+            OwnedValue::Array(a) => Some(StaticValueMut::Array(a)),
+            OwnedValue::Map(m) => Some(StaticValueMut::Map(m)),
+            OwnedValue::String(s) => Some(StaticValueMut::String(s)),
             _ => None,
         }
     }
 }
 
-impl ValueSource<OwnedValue> for OwnedValue {
-    fn from_owned(value: OwnedValue) -> OwnedValue {
-        value
-    }
+impl From<Value<'_>> for OwnedValue {
+    fn from(value: Value<'_>) -> Self {
+        match value {
+            Value::Array(a) => {
+                let mut values = Vec::new();
 
-    fn to_owned(self) -> OwnedValue {
-        self
+                a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
+                    values.push(v.into());
+                    true
+                }));
+
+                OwnedValue::Array(ArrayValueStorage::new(values))
+            }
+            Value::Boolean(b) => OwnedValue::Boolean(BooleanValueStorage::new(b.get_value())),
+            Value::DateTime(d) => OwnedValue::DateTime(DateTimeValueStorage::new(d.get_value())),
+            Value::Double(d) => OwnedValue::Double(DoubleValueStorage::new(d.get_value())),
+            Value::Integer(i) => OwnedValue::Integer(IntegerValueStorage::new(i.get_value())),
+            Value::Map(m) => {
+                let mut values: HashMap<Box<str>, OwnedValue> = HashMap::new();
+
+                m.get_items(&mut KeyValueClosureCallback::new(|k, v| {
+                    values.insert(k.into(), v.into());
+                    true
+                }));
+
+                OwnedValue::Map(MapValueStorage::new(values))
+            }
+            Value::Null => OwnedValue::Null,
+            Value::Regex(r) => OwnedValue::Regex(RegexValueStorage::new(r.get_value().clone())),
+            Value::String(s) => OwnedValue::String(StringValueStorage::new(s.get_value().into())),
+        }
     }
 }
