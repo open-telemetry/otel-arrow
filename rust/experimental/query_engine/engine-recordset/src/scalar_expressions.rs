@@ -1354,295 +1354,303 @@ mod tests {
 
     #[test]
     fn test_execute_replace_string_scalar_expression() {
-        fn run_test(input: Vec<(ScalarExpression, ScalarExpression, ScalarExpression, Value)>) {
-            for (text, lookup, replacement, expected) in input {
-                let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    text,
-                    lookup,
-                    replacement,
-                    false, // case_insensitive
-                ));
+        fn run_test(
+            haystack: ScalarExpression,
+            needle: ScalarExpression,
+            replacement: ScalarExpression,
+            expected: Value,
+        ) {
+            let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
+                QueryLocation::new_fake(),
+                haystack,
+                needle,
+                replacement,
+                false, // case_insensitive
+            ));
 
-                let pipeline = Default::default();
+            let pipeline = Default::default();
 
-                let record = TestRecord::new();
+            let record = TestRecord::new();
 
-                let execution_context = ExecutionContext::new(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    &pipeline,
-                    None,
-                    record,
-                );
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
 
-                let actual = execute_scalar_expression(&execution_context, &e).unwrap();
-                assert_eq!(expected, actual.to_value());
-            }
+            let actual = execute_scalar_expression(&execution_context, &e).unwrap();
+            assert_eq!(expected, actual.to_value());
         }
 
-        run_test(vec![
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "A magic trick can turn a cat into a dog",
-                    ),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
-                )),
-                Value::String(&StringScalarExpression::new(
+        // Basic string replacement
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "A magic trick can turn a hamster into a dog",
-                )),
-            ),
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world hello"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
-                )),
-                Value::String(&StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hi world hi",
-                )),
-            ),
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "no matches here"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "xyz"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "abc"),
-                )),
-                Value::String(&StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "no matches here",
-                )),
-            ),
-            (
-                ScalarExpression::Static(StaticScalarExpression::Boolean(
-                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "search"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "replace"),
-                )),
-                Value::Null,
-            ),
-        ]);
+                    "A magic trick can turn a cat into a dog",
+                ),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "A magic trick can turn a hamster into a dog",
+            )),
+        );
+
+        // Multiple matches
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hello world hello"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hi world hi",
+            )),
+        );
+
+        // No matches
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "no matches here"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "xyz"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "abc"),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "no matches here",
+            )),
+        );
+
+        // Invalid input type
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "search"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "replace"),
+            )),
+            Value::Null,
+        );
     }
 
     #[test]
     fn test_execute_replace_string_scalar_expression_with_regex() {
         use regex::Regex;
 
-        fn run_test(input: Vec<(ScalarExpression, ScalarExpression, ScalarExpression, Value)>) {
-            for (haystack, needle, replacement, expected) in input {
-                let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    haystack,
-                    needle,
-                    replacement,
-                    false, // case_insensitive
-                ));
+        fn run_test(
+            haystack: ScalarExpression,
+            needle: ScalarExpression,
+            replacement: ScalarExpression,
+            expected: Value,
+        ) {
+            let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
+                QueryLocation::new_fake(),
+                haystack,
+                needle,
+                replacement,
+                false, // case_insensitive
+            ));
 
-                let pipeline = Default::default();
+            let pipeline = Default::default();
 
-                let record = TestRecord::new();
+            let record = TestRecord::new();
 
-                let execution_context = ExecutionContext::new(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    &pipeline,
-                    None,
-                    record,
-                );
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
 
-                let actual = execute_scalar_expression(&execution_context, &e).unwrap();
-                assert_eq!(expected, actual.to_value());
-            }
+            let actual = execute_scalar_expression(&execution_context, &e).unwrap();
+            assert_eq!(expected, actual.to_value());
         }
 
-        run_test(vec![
-            // Test simple regex replacement
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world 123"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Regex(
-                    RegexScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        Regex::new(r"\d+").unwrap(),
-                    ),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "XXX"),
-                )),
-                Value::String(&StringScalarExpression::new(
+        // Simple regex replacement
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hello world 123"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Regex(
+                RegexScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "hello world XXX",
-                )),
-            ),
-            // Test regex with capture groups - replace with fixed text first
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "2023-12-25"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Regex(
-                    RegexScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap(),
-                    ),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "$3/$2/$1"),
-                )),
-                Value::String(&StringScalarExpression::new(
+                    Regex::new(r"\d+").unwrap(),
+                ),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "XXX"),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world XXX",
+            )),
+        );
+
+        // Regex with capture groups
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "2023-12-25"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Regex(
+                RegexScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "25/12/2023",
-                )),
-            ),
-            // Test multiple matches
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "cat cat dog cat"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Regex(
-                    RegexScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        Regex::new(r"cat").unwrap(),
-                    ),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
-                )),
-                Value::String(&StringScalarExpression::new(
+                    Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap(),
+                ),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "$3/$2/$1"),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "25/12/2023",
+            )),
+        );
+
+        // Multiple matches
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "cat cat dog cat"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Regex(
+                RegexScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "hamster hamster dog hamster",
-                )),
-            ),
-            // Test regex with no matches
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Regex(
-                    RegexScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        Regex::new(r"\d+").unwrap(),
-                    ),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "XXX"),
-                )),
-                Value::String(&StringScalarExpression::new(
+                    Regex::new(r"cat").unwrap(),
+                ),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hamster hamster dog hamster",
+            )),
+        );
+
+        // Regex with no matches
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Regex(
+                RegexScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "hello world",
-                )),
-            ),
-        ]);
+                    Regex::new(r"\d+").unwrap(),
+                ),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "XXX"),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+        );
     }
 
     #[test]
     fn test_execute_replace_string_scalar_expression_case_insensitive() {
         fn run_test(
-            input: Vec<(
-                ScalarExpression,
-                ScalarExpression,
-                ScalarExpression,
-                bool,
-                Value,
-            )>,
+            haystack: ScalarExpression,
+            needle: ScalarExpression,
+            replacement: ScalarExpression,
+            case_insensitive: bool,
+            expected: Value,
         ) {
-            for (text, lookup, replacement, case_insensitive, expected) in input {
-                let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    text,
-                    lookup,
-                    replacement,
-                    case_insensitive,
-                ));
+            let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
+                QueryLocation::new_fake(),
+                haystack,
+                needle,
+                replacement,
+                case_insensitive,
+            ));
 
-                let pipeline = Default::default();
+            let pipeline = Default::default();
 
-                let record = TestRecord::new();
+            let record = TestRecord::new();
 
-                let execution_context = ExecutionContext::new(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    &pipeline,
-                    None,
-                    record,
-                );
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
 
-                let actual = execute_scalar_expression(&execution_context, &e).unwrap();
-                assert_eq!(expected, actual.to_value());
-            }
+            let actual = execute_scalar_expression(&execution_context, &e).unwrap();
+            assert_eq!(expected, actual.to_value());
         }
 
-        run_test(vec![
-            // Case-sensitive replacement (default)
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
-                )),
-                false,
-                Value::String(&StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "Hello World", // No replacement because "hello" != "Hello"
-                )),
-            ),
-            // Case-insensitive replacement
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
-                )),
-                true,
-                Value::String(&StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "hi World", // "Hello" replaced with "hi"
-                )),
-            ),
-            // Case-insensitive with multiple matches
-            (
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "CAT cat Cat"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "dog"),
-                )),
-                true,
-                Value::String(&StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "dog dog dog", // All variants of "cat" replaced
-                )),
-            ),
-        ]);
+        // Case-sensitive replacement (default)
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
+            )),
+            false,
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Hello World", // No replacement because "hello" != "Hello"
+            )),
+        );
+
+        // Case-insensitive replacement
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "Hello World"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
+            )),
+            true,
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hi World", // "Hello" replaced with "hi"
+            )),
+        );
+
+        // Case-insensitive with multiple matches
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "CAT cat Cat"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "dog"),
+            )),
+            true,
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "dog dog dog", // All variants of "cat" replaced
+            )),
+        );
     }
 
     #[test]

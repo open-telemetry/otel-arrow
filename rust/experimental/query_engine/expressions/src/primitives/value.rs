@@ -372,18 +372,36 @@ impl Value<'_> {
 
                 if case_insensitive {
                     // Use caseless crate for case-insensitive replacement
-                    // Since caseless only provides matching, we need to implement replacement manually
                     let mut result = String::new();
-                    let mut last_end = 0;
-                    let haystack_lower = haystack_val.to_lowercase();
-                    let needle_lower = needle_val.to_lowercase();
+                    let mut remaining = haystack_val;
 
-                    for (start, _) in haystack_lower.match_indices(&needle_lower) {
-                        result.push_str(&haystack_val[last_end..start]);
-                        result.push_str(replacement_val);
-                        last_end = start + needle_val.len();
+                    loop {
+                        // Find the first occurrence of needle in remaining text (case-insensitive)
+                        let mut match_start = None;
+                        let mut match_end = None;
+
+                        // Search for needle at each position in remaining
+                        for i in 0..=remaining.len() {
+                            if i + needle_val.len() <= remaining.len() {
+                                let candidate = &remaining[i..i + needle_val.len()];
+                                if caseless::default_caseless_match_str(candidate, needle_val) {
+                                    match_start = Some(i);
+                                    match_end = Some(i + needle_val.len());
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let (Some(start), Some(end)) = (match_start, match_end) {
+                            result.push_str(&remaining[..start]);
+                            result.push_str(replacement_val);
+                            remaining = &remaining[end..];
+                        } else {
+                            result.push_str(remaining);
+                            break;
+                        }
                     }
-                    result.push_str(&haystack_val[last_end..]);
+
                     Some(result)
                 } else {
                     Some(haystack_val.replace(needle_val, replacement_val))
