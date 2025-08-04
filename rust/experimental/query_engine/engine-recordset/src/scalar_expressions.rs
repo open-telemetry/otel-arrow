@@ -319,6 +319,27 @@ where
 
             Ok(v)
         }
+        ScalarExpression::ReplaceString(r) => {
+            let text_value = execute_scalar_expression(execution_context, r.get_text_expression())?;
+            let lookup_value = execute_scalar_expression(execution_context, r.get_lookup_expression())?;
+            let replacement_value = execute_scalar_expression(execution_context, r.get_replacement_expression())?;
+
+            let v = match (text_value.to_value(), lookup_value.to_value(), replacement_value.to_value()) {
+                (Value::String(text), Value::String(lookup), Value::String(replacement)) => {
+                    let result = text.get_value().replace(lookup.get_value(), replacement.get_value());
+                    ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(result.into())))
+                }
+                _ => ResolvedValue::Computed(OwnedValue::Null),
+            };
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {v}"),
+            );
+
+            Ok(v)
+        }
     }
 }
 
@@ -1288,6 +1309,94 @@ mod tests {
             (
                 ScalarExpression::Static(StaticScalarExpression::Boolean(
                     BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                )),
+                Value::Null,
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_execute_replace_string_scalar_expression() {
+        fn run_test(input: Vec<(ScalarExpression, ScalarExpression, ScalarExpression, Value)>) {
+            for (text, lookup, replacement, expected) in input {
+                let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    text,
+                    lookup,
+                    replacement,
+                ));
+
+                let pipeline = Default::default();
+
+                let record = TestRecord::new();
+
+                let execution_context = ExecutionContext::new(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    &pipeline,
+                    None,
+                    record,
+                );
+
+                let actual = execute_scalar_expression(&execution_context, &e).unwrap();
+                assert_eq!(expected, actual.to_value());
+            }
+        }
+
+        run_test(vec![
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "A magic trick can turn a cat into a dog"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
+                )),
+                Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "A magic trick can turn a hamster into a dog",
+                )),
+            ),
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world hello"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
+                )),
+                Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hi world hi",
+                )),
+            ),
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "no matches here"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "xyz"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "abc"),
+                )),
+                Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "no matches here",
+                )),
+            ),
+            (
+                ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "search"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "replace"),
                 )),
                 Value::Null,
             ),
