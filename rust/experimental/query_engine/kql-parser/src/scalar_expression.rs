@@ -352,12 +352,12 @@ mod tests {
         );
 
         run_test_success(
-            "tostring(3.14)",
+            "tostring(4.44)",
             ScalarExpression::Convert(ConvertScalarExpression::String(
                 ConversionScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(QueryLocation::new_fake(), 3.14),
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
                     )),
                 ),
             )),

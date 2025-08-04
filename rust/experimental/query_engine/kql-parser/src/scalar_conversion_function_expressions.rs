@@ -103,7 +103,7 @@ mod tests {
         let test_cases = vec![
             ("tostring(42)", "integer literal"),
             ("tostring(true)", "boolean literal"),
-            ("tostring(3.14)", "float literal"),
+            ("tostring(4.44)", "float literal"),
             ("tostring(\"hello\")", "string literal"),
         ];
 
