@@ -1,4 +1,4 @@
-use std::{cell::Ref, collections::HashMap, fmt::Display};
+use std::{cell::Ref, fmt::Display};
 
 use data_engine_expressions::*;
 use regex::Regex;
@@ -12,7 +12,7 @@ pub enum ResolvedValue<'a> {
 
     /// A value borrowed from the source being modified by the engine or
     /// borrowed from a variable
-    Borrowed(BorrowSource, Ref<'a, dyn AsValue + 'static>),
+    Borrowed(BorrowSource, Ref<'a, dyn AsStaticValue + 'static>),
 
     /// A value computed by the engine as the result of a dynamic expression
     Computed(OwnedValue),
@@ -37,7 +37,7 @@ impl<'a> ResolvedValue<'a> {
             };
 
             if writing_while_holding_borrow {
-                *self = ResolvedValue::Computed(Self::into_owned(v.to_value()));
+                *self = ResolvedValue::Computed(v.to_value().into());
                 return true;
             }
         }
@@ -60,7 +60,7 @@ impl<'a> ResolvedValue<'a> {
             }
             ResolvedValue::Borrowed(_, b) => {
                 match Ref::filter_map(b, |v| {
-                    if let Value::String(s) = v.to_value() {
+                    if let StaticValue::String(s) = v.to_static_value() {
                         Some(s)
                     } else {
                         None
@@ -95,8 +95,8 @@ impl<'a> ResolvedValue<'a> {
             }
             ResolvedValue::Borrowed(_, b) => {
                 match Ref::filter_map(b, |v| {
-                    if let Value::Regex(s) = v.to_value() {
-                        Some(s)
+                    if let StaticValue::Regex(r) = v.to_static_value() {
+                        Some(r)
                     } else {
                         None
                     }
@@ -114,52 +114,14 @@ impl<'a> ResolvedValue<'a> {
             }
         }
     }
+}
 
-    pub fn to_owned(self) -> OwnedValue {
-        match self {
-            ResolvedValue::Value(v) => Self::into_owned(v),
-            ResolvedValue::Borrowed(_, b) => Self::into_owned(b.to_value()),
+impl From<ResolvedValue<'_>> for OwnedValue {
+    fn from(val: ResolvedValue<'_>) -> Self {
+        match val {
+            ResolvedValue::Value(v) => v.into(),
+            ResolvedValue::Borrowed(_, b) => b.to_value().into(),
             ResolvedValue::Computed(o) => o,
-        }
-    }
-
-    pub fn convert<T: ValueSource<T>>(self) -> T {
-        match self {
-            ResolvedValue::Value(v) => T::from_owned(Self::into_owned(v)),
-            ResolvedValue::Borrowed(_, b) => T::from_owned(Self::into_owned(b.to_value())),
-            ResolvedValue::Computed(l) => T::from_owned(l),
-        }
-    }
-
-    fn into_owned(value: Value) -> OwnedValue {
-        match value {
-            Value::Array(a) => {
-                let mut values = Vec::new();
-
-                a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
-                    values.push(Self::into_owned(v));
-                    true
-                }));
-
-                OwnedValue::Array(ArrayValueStorage::new(values))
-            }
-            Value::Boolean(b) => OwnedValue::Boolean(ValueStorage::new(b.get_value())),
-            Value::DateTime(d) => OwnedValue::DateTime(ValueStorage::new(d.get_value())),
-            Value::Double(d) => OwnedValue::Double(ValueStorage::new(d.get_value())),
-            Value::Integer(i) => OwnedValue::Integer(ValueStorage::new(i.get_value())),
-            Value::Map(m) => {
-                let mut values: HashMap<Box<str>, OwnedValue> = HashMap::new();
-
-                m.get_items(&mut KeyValueClosureCallback::new(|k, v| {
-                    values.insert(k.into(), Self::into_owned(v));
-                    true
-                }));
-
-                OwnedValue::Map(MapValueStorage::new(values))
-            }
-            Value::Null => OwnedValue::Null,
-            Value::Regex(r) => OwnedValue::Regex(ValueStorage::new(r.get_value().clone())),
-            Value::String(s) => OwnedValue::String(ValueStorage::new(s.get_value().into())),
         }
     }
 }
@@ -197,7 +159,7 @@ pub enum ResolvedStringValue<'a> {
     Borrowed(Ref<'a, dyn StringValue + 'static>),
 
     /// A value computed by the engine as the result of a dynamic expression
-    Computed(ValueStorage<String>),
+    Computed(StringValueStorage),
 }
 
 impl StringValue for ResolvedStringValue<'_> {
@@ -205,7 +167,7 @@ impl StringValue for ResolvedStringValue<'_> {
         match self {
             ResolvedStringValue::Value(s) => s.get_value(),
             ResolvedStringValue::Borrowed(b) => b.get_value(),
-            ResolvedStringValue::Computed(v) => v.get_value(),
+            ResolvedStringValue::Computed(v) => v.get_raw_value(),
         }
     }
 }
@@ -217,9 +179,9 @@ impl AsValue for ResolvedStringValue<'_> {
 
     fn to_value(&self) -> Value {
         match self {
-            ResolvedStringValue::Value(v) => v.to_value(),
-            ResolvedStringValue::Borrowed(b) => b.to_value(),
-            ResolvedStringValue::Computed(c) => c.to_value(),
+            ResolvedStringValue::Value(v) => Value::String(*v),
+            ResolvedStringValue::Borrowed(b) => Value::String(&**b),
+            ResolvedStringValue::Computed(c) => Value::String(c),
         }
     }
 }
@@ -239,7 +201,7 @@ pub enum ResolvedRegexValue<'a> {
     Borrowed(Ref<'a, dyn RegexValue + 'static>),
 
     /// A value computed by the engine as the result of a dynamic expression
-    Computed(ValueStorage<Regex>),
+    Computed(RegexValueStorage),
 }
 
 impl RegexValue for ResolvedRegexValue<'_> {
@@ -247,7 +209,7 @@ impl RegexValue for ResolvedRegexValue<'_> {
         match self {
             ResolvedRegexValue::Value(s) => s.get_value(),
             ResolvedRegexValue::Borrowed(b) => b.get_value(),
-            ResolvedRegexValue::Computed(v) => v.get_value(),
+            ResolvedRegexValue::Computed(v) => v.get_raw_value(),
         }
     }
 }
@@ -259,9 +221,9 @@ impl AsValue for ResolvedRegexValue<'_> {
 
     fn to_value(&self) -> Value {
         match self {
-            ResolvedRegexValue::Value(v) => v.to_value(),
-            ResolvedRegexValue::Borrowed(b) => b.to_value(),
-            ResolvedRegexValue::Computed(c) => c.to_value(),
+            ResolvedRegexValue::Value(v) => Value::Regex(*v),
+            ResolvedRegexValue::Borrowed(b) => Value::Regex(&**b),
+            ResolvedRegexValue::Computed(c) => Value::Regex(c),
         }
     }
 }
