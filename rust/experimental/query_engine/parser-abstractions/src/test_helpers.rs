@@ -20,10 +20,8 @@ pub mod pest_test_helpers {
             );
         }
         for input in err_inputs {
-            assert!(
-                P::parse(parser_rule, input).is_err(),
-                "Expected Err for input: {input}"
-            );
+            let result = P::parse(parser_rule, input);
+            assert!(result.is_err(), "Expected Err for input: {input}");
         }
     }
 
