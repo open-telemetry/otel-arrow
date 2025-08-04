@@ -83,6 +83,7 @@ datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
+tostring_expression = { "tostring(" ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
 
 scalar_expression = {
@@ -92,6 +93,7 @@ scalar_expression = {
     | conditional_expression
     | strlen_expression
     | replace_string_expression
+    | tostring_expression
     | case_expression
     | boolean_expression
     | double_literal
