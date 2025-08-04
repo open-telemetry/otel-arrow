@@ -21,10 +21,19 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
 ) -> Result<(), ExpressionError> {
     match transform_expression {
         TransformExpression::Set(s) => {
-            let source = execute_immutable_value_expression(execution_context, s.get_source())?;
+            let mut source = execute_immutable_value_expression(execution_context, s.get_source())?;
+
+            let mutable_value_expression = s.get_destination();
+
+            if source.copy_if_borrowed_from_target(mutable_value_expression) {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    s,
+                    || "Copied the resolved source value into temporary storage because the value came from the mutable target".into());
+            }
 
             let destination =
-                execute_mutable_value_expression(execution_context, s.get_destination())?;
+                execute_mutable_value_expression(execution_context, mutable_value_expression)?;
 
             match destination {
                 Some(d) => match d {
@@ -181,7 +190,9 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
         }
         TransformExpression::RemoveMapKeys(r) => match r {
             RemoveMapKeysTransformExpression::Remove(m) => {
-                let map_keys = resolve_map_keys(execution_context, m)?;
+                let target = m.get_target();
+
+                let map_keys = resolve_map_keys(execution_context, target, m)?;
 
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
@@ -189,7 +200,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                     || format!("Resolved map keys: {map_keys}"),
                 );
 
-                let target = execute_mutable_value_expression(execution_context, m.get_target())?;
+                let target = execute_mutable_value_expression(execution_context, target)?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
@@ -229,7 +240,9 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                 Ok(())
             }
             RemoveMapKeysTransformExpression::Retain(m) => {
-                let map_keys = resolve_map_keys(execution_context, m)?;
+                let target = m.get_target();
+
+                let map_keys = resolve_map_keys(execution_context, target, m)?;
 
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
@@ -237,7 +250,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                     || format!("Resolved map keys: {map_keys}"),
                 );
 
-                let target = execute_mutable_value_expression(execution_context, m.get_target())?;
+                let target = execute_mutable_value_expression(execution_context, target)?;
 
                 match resolve_map_destination(target) {
                     Some(mut target_map) => {
@@ -305,6 +318,7 @@ impl Display for MapKeys<'_> {
 
 fn resolve_map_keys<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    target: &'a MutableValueExpression,
     key_list: &'a MapKeyListExpression,
 ) -> Result<MapKeys<'c>, ExpressionError>
 where
@@ -314,7 +328,14 @@ where
     let mut keys = Vec::new();
 
     for key_scalar in key_list.get_keys() {
-        let value = execute_scalar_expression(execution_context, key_scalar)?;
+        let mut value = execute_scalar_expression(execution_context, key_scalar)?;
+
+        if value.copy_if_borrowed_from_target(target) {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                target,
+                || format!("Copied the resolved key value '{value}' into temporary storage because the value came from the mutable target"));
+        }
 
         keys.push(value);
     }
@@ -373,6 +394,14 @@ mod tests {
                     OwnedValue::Integer(ValueStorage::new(2)),
                     OwnedValue::Integer(ValueStorage::new(3)),
                 ])),
+            )
+            .with_key_value(
+                "key3".into(),
+                OwnedValue::String(ValueStorage::new("Hello world!".into())),
+            )
+            .with_key_value(
+                "key4".into(),
+                OwnedValue::String(ValueStorage::new("key1".into())),
             );
 
         let run_test = |transform_expression| {
@@ -401,7 +430,7 @@ mod tests {
             result.take_record()
         };
 
-        // Test updating a key
+        // Test updating a key on source
         let result = run_test(TransformExpression::Set(SetTransformExpression::new(
             QueryLocation::new_fake(),
             ImmutableValueExpression::Scalar(ScalarExpression::Static(
@@ -423,6 +452,41 @@ mod tests {
 
         assert_eq!(
             Value::String(&ValueStorage::new("hello world".into())),
+            result.get("key1").unwrap().to_value()
+        );
+
+        // Test updating a key on source using data read from the source
+        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
+            QueryLocation::new_fake(),
+            ImmutableValueExpression::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key3",
+                        )),
+                    )]),
+                ),
+            )),
+            MutableValueExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key4",
+                            )),
+                        )]),
+                    ),
+                )]),
+            )),
+        )));
+
+        assert_eq!(
+            Value::String(&ValueStorage::new("Hello world!".into())),
             result.get("key1").unwrap().to_value()
         );
 
@@ -539,15 +603,33 @@ mod tests {
                 )])))),
             );
 
+            execution_context.get_variables().borrow_mut().set(
+                "var2",
+                ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(
+                    "Hello world!".into(),
+                ))),
+            );
+
+            execution_context.get_variables().borrow_mut().set(
+                "var3",
+                ResolvedValue::Computed(OwnedValue::String(ValueStorage::new("subkey1".into()))),
+            );
+
             if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
                 execute_transform_expression(&execution_context, t).unwrap();
             } else {
                 panic!("Unexpected expression");
             }
 
-            execution_context
+            let variables = execution_context
                 .get_variables()
-                .replace(MapValueStorage::new(HashMap::new()))
+                .replace(MapValueStorage::new(HashMap::new()));
+
+            let result = execution_context.consume_into_record();
+
+            println!("{result}");
+
+            variables
         };
 
         // Test setting a variable
@@ -561,15 +643,38 @@ mod tests {
             )),
             MutableValueExpression::Variable(VariableScalarExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var2"),
+                StringScalarExpression::new(QueryLocation::new_fake(), "var4"),
                 ValueAccessor::new(),
             )),
         )));
 
-        assert_eq!(2, result.len());
+        assert_eq!(4, result.len());
         assert_eq!(
             OwnedValue::String(ValueStorage::new("hello world!".into())).to_value(),
-            result.get("var2").unwrap().to_value()
+            result.get("var4").unwrap().to_value()
+        );
+
+        // Test setting a variable from another variable
+        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
+            QueryLocation::new_fake(),
+            ImmutableValueExpression::Scalar(ScalarExpression::Variable(
+                VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var2"),
+                    ValueAccessor::new(),
+                ),
+            )),
+            MutableValueExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new_fake(),
+                StringScalarExpression::new(QueryLocation::new_fake(), "var3"),
+                ValueAccessor::new(),
+            )),
+        )));
+
+        assert_eq!(3, result.len());
+        assert_eq!(
+            OwnedValue::String(ValueStorage::new("Hello world!".into())).to_value(),
+            result.get("var3").unwrap().to_value()
         );
 
         // Test updating a variable
@@ -588,7 +693,7 @@ mod tests {
             )),
         )));
 
-        assert_eq!(1, result.len());
+        assert_eq!(3, result.len());
         assert_eq!(
             OwnedValue::String(ValueStorage::new("goodebye world".into())).to_value(),
             result.get("var1").unwrap().to_value()
@@ -615,7 +720,35 @@ mod tests {
             )),
         )));
 
-        assert_eq!(1, result.len());
+        assert_eq!(3, result.len());
+        assert_eq!(
+            "{\"subkey1\":\"goodebye world\"}",
+            result.get("var1").unwrap().to_value().to_string()
+        );
+
+        // Test updating a variable with path pointing to another variable
+        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
+            QueryLocation::new_fake(),
+            ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "goodebye world",
+                )),
+            )),
+            MutableValueExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new_fake(),
+                StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Variable(
+                    VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "var3"),
+                        ValueAccessor::new(),
+                    ),
+                )]),
+            )),
+        )));
+
+        assert_eq!(3, result.len());
         assert_eq!(
             "{\"subkey1\":\"goodebye world\"}",
             result.get("var1").unwrap().to_value().to_string()
@@ -788,6 +921,10 @@ mod tests {
                     OwnedValue::Integer(ValueStorage::new(2)),
                     OwnedValue::Integer(ValueStorage::new(3)),
                 ])),
+            )
+            .with_key_value(
+                "key_to_remove".into(),
+                OwnedValue::String(ValueStorage::new("key1".into())),
             );
 
         let run_test = |transform_expression| {
@@ -830,7 +967,30 @@ mod tests {
             )),
         ));
 
-        assert_eq!(1, result.len());
+        assert_eq!(2, result.len());
+        assert!(!result.contains_key("key1"));
+
+        // Test removing a key using path referencing data on source
+        let result = run_test(TransformExpression::RemoveMapKeys(
+            RemoveMapKeysTransformExpression::Remove(MapKeyListExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key_to_remove",
+                        )),
+                    )]),
+                ))],
+            )),
+        ));
+
+        assert_eq!(2, result.len());
         assert!(!result.contains_key("key1"));
 
         // Test retaining a key
