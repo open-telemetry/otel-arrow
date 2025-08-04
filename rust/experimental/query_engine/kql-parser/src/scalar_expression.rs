@@ -19,6 +19,10 @@ pub(crate) fn parse_scalar_expression(
         Rule::datetime_expression => {
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
         }
+        Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
+        Rule::strlen_expression => parse_strlen_expression(scalar_rule, state)?,
+        Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
+        Rule::case_expression => parse_case_expression(scalar_rule, state)?,
         Rule::true_literal | Rule::false_literal => {
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
@@ -47,9 +51,6 @@ pub(crate) fn parse_scalar_expression(
                 ScalarExpression::Logical(l.into())
             }
         }
-        Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
-        Rule::strlen_expression => parse_strlen_expression(scalar_rule, state)?,
-        Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
@@ -115,6 +116,8 @@ mod tests {
                 "variable",
                 "(1)",
                 "iff(true, 0, 1)",
+                "case(true, 1, false)",
+                "case(true, 1, false, 2, 0)",
                 "bool(null)",
                 "int(null)",
                 "long(null)",
@@ -320,6 +323,24 @@ mod tests {
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
+
+        run_test_success(
+            "case(true, 1, 0)",
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                )],
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                 )),
             )),
         );
