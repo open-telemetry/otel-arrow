@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use data_engine_expressions::*;
 
 use crate::*;
@@ -42,12 +44,36 @@ impl AsStaticValueMut for OwnedValue {
     }
 }
 
-impl ValueSource<OwnedValue> for OwnedValue {
-    fn from_owned(value: OwnedValue) -> OwnedValue {
-        value
-    }
+impl From<Value<'_>> for OwnedValue {
+    fn from(value: Value<'_>) -> Self {
+        match value {
+            Value::Array(a) => {
+                let mut values = Vec::new();
 
-    fn to_owned(self) -> OwnedValue {
-        self
+                a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
+                    values.push(v.into());
+                    true
+                }));
+
+                OwnedValue::Array(ArrayValueStorage::new(values))
+            }
+            Value::Boolean(b) => OwnedValue::Boolean(BooleanValueStorage::new(b.get_value())),
+            Value::DateTime(d) => OwnedValue::DateTime(DateTimeValueStorage::new(d.get_value())),
+            Value::Double(d) => OwnedValue::Double(DoubleValueStorage::new(d.get_value())),
+            Value::Integer(i) => OwnedValue::Integer(IntegerValueStorage::new(i.get_value())),
+            Value::Map(m) => {
+                let mut values: HashMap<Box<str>, OwnedValue> = HashMap::new();
+
+                m.get_items(&mut KeyValueClosureCallback::new(|k, v| {
+                    values.insert(k.into(), v.into());
+                    true
+                }));
+
+                OwnedValue::Map(MapValueStorage::new(values))
+            }
+            Value::Null => OwnedValue::Null,
+            Value::Regex(r) => OwnedValue::Regex(RegexValueStorage::new(r.get_value().clone())),
+            Value::String(s) => OwnedValue::String(StringValueStorage::new(s.get_value().into())),
+        }
     }
 }

@@ -211,9 +211,11 @@ impl MapValueMut for LogRecord {
     fn set(&mut self, key: &str, value: ResolvedValue) -> ValueMutWriteResult {
         let value_type = value.get_value_type();
 
+        let any_value = Into::<OwnedValue>::into(value).into();
+
         match key {
             "Attributes" => {
-                if let AnyValue::Native(OtlpAnyValue::KvlistValue(k)) = value.convert() {
+                if let AnyValue::Native(OtlpAnyValue::KvlistValue(k)) = any_value {
                     let old = mem::replace(&mut self.attributes, k);
                     return ValueMutWriteResult::Updated(OwnedValue::Map(old.into()));
                 }
@@ -223,7 +225,7 @@ impl MapValueMut for LogRecord {
                 ))
             }
             "Timestamp" => {
-                if let AnyValue::Extended(ExtendedValue::DateTime(d)) = value.convert() {
+                if let AnyValue::Extended(ExtendedValue::DateTime(d)) = any_value {
                     return match self.timestamp.replace(d) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::DateTime(old)),
                         None => ValueMutWriteResult::Created,
@@ -235,7 +237,7 @@ impl MapValueMut for LogRecord {
                 ))
             }
             "ObservedTimestamp" => {
-                if let AnyValue::Extended(ExtendedValue::DateTime(d)) = value.convert() {
+                if let AnyValue::Extended(ExtendedValue::DateTime(d)) = any_value {
                     return match self.observed_timestamp.replace(d) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::DateTime(old)),
                         None => ValueMutWriteResult::Created,
@@ -247,7 +249,7 @@ impl MapValueMut for LogRecord {
                 ))
             }
             "SeverityNumber" => {
-                if let AnyValue::Native(OtlpAnyValue::IntValue(i)) = value.convert() {
+                if let AnyValue::Native(OtlpAnyValue::IntValue(i)) = any_value {
                     let value = i.get_value();
                     if value >= i32::MIN as i64 && value <= i32::MAX as i64 {
                         return match self
@@ -267,7 +269,7 @@ impl MapValueMut for LogRecord {
                 ))
             }
             "SeverityText" => {
-                if let AnyValue::Native(OtlpAnyValue::StringValue(s)) = value.convert() {
+                if let AnyValue::Native(OtlpAnyValue::StringValue(s)) = any_value {
                     return match self.severity_text.replace(s) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::String(old)),
                         None => ValueMutWriteResult::Created,
@@ -278,15 +280,15 @@ impl MapValueMut for LogRecord {
                     "SeverityText cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "Body" => match self.body.replace(value.convert()) {
-                Some(old) => ValueMutWriteResult::Updated(old.to_owned()),
+            "Body" => match self.body.replace(any_value) {
+                Some(old) => ValueMutWriteResult::Updated(old.into()),
                 None => ValueMutWriteResult::Created,
             },
             "TraceId" => {
-                if let AnyValue::Native(OtlpAnyValue::BytesValue(b)) = value.convert() {
+                if let AnyValue::Native(OtlpAnyValue::BytesValue(b)) = any_value {
                     return match self.trace_id.replace(b) {
                         Some(old) => ValueMutWriteResult::Updated(
-                            AnyValue::Native(OtlpAnyValue::BytesValue(old)).to_owned(),
+                            AnyValue::Native(OtlpAnyValue::BytesValue(old)).into(),
                         ),
                         None => ValueMutWriteResult::Created,
                     };
@@ -297,10 +299,10 @@ impl MapValueMut for LogRecord {
                 ))
             }
             "SpanId" => {
-                if let AnyValue::Native(OtlpAnyValue::BytesValue(b)) = value.convert() {
+                if let AnyValue::Native(OtlpAnyValue::BytesValue(b)) = any_value {
                     return match self.span_id.replace(b) {
                         Some(old) => ValueMutWriteResult::Updated(
-                            AnyValue::Native(OtlpAnyValue::BytesValue(old)).to_owned(),
+                            AnyValue::Native(OtlpAnyValue::BytesValue(old)).into(),
                         ),
                         None => ValueMutWriteResult::Created,
                     };
@@ -311,7 +313,7 @@ impl MapValueMut for LogRecord {
                 ))
             }
             "TraceFlags" => {
-                if let AnyValue::Native(OtlpAnyValue::IntValue(i)) = value.convert() {
+                if let AnyValue::Native(OtlpAnyValue::IntValue(i)) = any_value {
                     let value = i.get_value();
                     if value >= u32::MIN as i64 && value <= u32::MAX as i64 {
                         return match self.flags.replace(IntegerValueStorage::new(value as u32)) {
@@ -328,7 +330,7 @@ impl MapValueMut for LogRecord {
                 ))
             }
             "EventName" => {
-                if let AnyValue::Native(OtlpAnyValue::StringValue(s)) = value.convert() {
+                if let AnyValue::Native(OtlpAnyValue::StringValue(s)) = any_value {
                     return match self.event_name.replace(s) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::String(old)),
                         None => ValueMutWriteResult::Created,
@@ -372,18 +374,18 @@ impl MapValueMut for LogRecord {
                 None => ValueMutRemoveResult::NotFound,
             },
             "Body" => match self.body.take() {
-                Some(old) => ValueMutRemoveResult::Removed(old.to_owned()),
+                Some(old) => ValueMutRemoveResult::Removed(old.into()),
                 None => ValueMutRemoveResult::NotFound,
             },
             "TraceId" => match self.trace_id.take() {
                 Some(old) => ValueMutRemoveResult::Removed(
-                    AnyValue::Native(OtlpAnyValue::BytesValue(old)).to_owned(),
+                    AnyValue::Native(OtlpAnyValue::BytesValue(old)).into(),
                 ),
                 None => ValueMutRemoveResult::NotFound,
             },
             "SpanId" => match self.span_id.take() {
                 Some(old) => ValueMutRemoveResult::Removed(
-                    AnyValue::Native(OtlpAnyValue::BytesValue(old)).to_owned(),
+                    AnyValue::Native(OtlpAnyValue::BytesValue(old)).into(),
                 ),
                 None => ValueMutRemoveResult::NotFound,
             },

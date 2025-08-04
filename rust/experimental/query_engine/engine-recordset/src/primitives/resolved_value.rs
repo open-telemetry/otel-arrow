@@ -1,4 +1,4 @@
-use std::{cell::Ref, collections::HashMap, fmt::Display};
+use std::{cell::Ref, fmt::Display};
 
 use data_engine_expressions::*;
 use regex::Regex;
@@ -37,7 +37,7 @@ impl<'a> ResolvedValue<'a> {
             };
 
             if writing_while_holding_borrow {
-                *self = ResolvedValue::Computed(Self::into_owned(v.to_value()));
+                *self = ResolvedValue::Computed(v.to_value().into());
                 return true;
             }
         }
@@ -114,52 +114,14 @@ impl<'a> ResolvedValue<'a> {
             }
         }
     }
+}
 
-    pub fn to_owned(self) -> OwnedValue {
-        match self {
-            ResolvedValue::Value(v) => Self::into_owned(v),
-            ResolvedValue::Borrowed(_, b) => Self::into_owned(b.to_value()),
+impl From<ResolvedValue<'_>> for OwnedValue {
+    fn from(val: ResolvedValue<'_>) -> Self {
+        match val {
+            ResolvedValue::Value(v) => v.into(),
+            ResolvedValue::Borrowed(_, b) => b.to_value().into(),
             ResolvedValue::Computed(o) => o,
-        }
-    }
-
-    pub fn convert<T: ValueSource<T>>(self) -> T {
-        match self {
-            ResolvedValue::Value(v) => T::from_owned(Self::into_owned(v)),
-            ResolvedValue::Borrowed(_, b) => T::from_owned(Self::into_owned(b.to_value())),
-            ResolvedValue::Computed(l) => T::from_owned(l),
-        }
-    }
-
-    fn into_owned(value: Value) -> OwnedValue {
-        match value {
-            Value::Array(a) => {
-                let mut values = Vec::new();
-
-                a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
-                    values.push(Self::into_owned(v));
-                    true
-                }));
-
-                OwnedValue::Array(ArrayValueStorage::new(values))
-            }
-            Value::Boolean(b) => OwnedValue::Boolean(BooleanValueStorage::new(b.get_value())),
-            Value::DateTime(d) => OwnedValue::DateTime(DateTimeValueStorage::new(d.get_value())),
-            Value::Double(d) => OwnedValue::Double(DoubleValueStorage::new(d.get_value())),
-            Value::Integer(i) => OwnedValue::Integer(IntegerValueStorage::new(i.get_value())),
-            Value::Map(m) => {
-                let mut values: HashMap<Box<str>, OwnedValue> = HashMap::new();
-
-                m.get_items(&mut KeyValueClosureCallback::new(|k, v| {
-                    values.insert(k.into(), Self::into_owned(v));
-                    true
-                }));
-
-                OwnedValue::Map(MapValueStorage::new(values))
-            }
-            Value::Null => OwnedValue::Null,
-            Value::Regex(r) => OwnedValue::Regex(RegexValueStorage::new(r.get_value().clone())),
-            Value::String(s) => OwnedValue::String(StringValueStorage::new(s.get_value().into())),
         }
     }
 }

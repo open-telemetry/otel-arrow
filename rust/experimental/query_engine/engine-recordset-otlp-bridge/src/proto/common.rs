@@ -91,8 +91,8 @@ impl AsStaticValue for AnyValue {
     }
 }
 
-impl ValueSource<AnyValue> for AnyValue {
-    fn from_owned(value: OwnedValue) -> AnyValue {
+impl From<OwnedValue> for AnyValue {
+    fn from(value: OwnedValue) -> Self {
         match value {
             OwnedValue::Array(a) => {
                 if a.len() > 0 {
@@ -128,9 +128,11 @@ impl ValueSource<AnyValue> for AnyValue {
             OwnedValue::String(s) => AnyValue::Native(OtlpAnyValue::StringValue(s)),
         }
     }
+}
 
-    fn to_owned(self) -> OwnedValue {
-        match self {
+impl From<AnyValue> for OwnedValue {
+    fn from(val: AnyValue) -> Self {
+        match val {
             AnyValue::Null => OwnedValue::Null,
             AnyValue::Native(n) => match n {
                 OtlpAnyValue::StringValue(s) => OwnedValue::String(s),

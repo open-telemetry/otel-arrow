@@ -165,7 +165,7 @@ impl MapValueMut for TestRecord {
     }
 
     fn set(&mut self, key: &str, value: ResolvedValue) -> ValueMutWriteResult {
-        match self.values.insert(key.into(), value.to_owned()) {
+        match self.values.insert(key.into(), value.into()) {
             Some(old) => ValueMutWriteResult::Updated(old),
             None => ValueMutWriteResult::Created,
         }
