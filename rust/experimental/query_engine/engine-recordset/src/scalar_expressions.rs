@@ -1360,7 +1360,7 @@ mod tests {
                     StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
                 )),
             )),
-            Value::String(&ValueStorage::new("success".into())),
+            Value::String(&StringValueStorage::new("success".into())),
         );
 
         // Test fallback to else: case(false, "success", "failure") -> "failure"
@@ -1382,7 +1382,7 @@ mod tests {
                     StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
                 )),
             )),
-            Value::String(&ValueStorage::new("failure".into())),
+            Value::String(&StringValueStorage::new("failure".into())),
         );
 
         // Test multiple conditions: case(false, "first", true, "second", "else") -> "second"
@@ -1417,7 +1417,7 @@ mod tests {
                     StringScalarExpression::new(QueryLocation::new_fake(), "else"),
                 )),
             )),
-            Value::String(&ValueStorage::new("second".into())),
+            Value::String(&StringValueStorage::new("second".into())),
         );
     }
 }
