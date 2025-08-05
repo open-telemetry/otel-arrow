@@ -76,6 +76,8 @@ ignore = [
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
     { id="RUSTSEC-2024-0436", reason="unmaintained `paste` crate is a dependency of parquet"},
     { id="RUSTSEC-2021-0127", reason="`serde_cbor` is archived, but current implementation meets needs" },
+    { id="RUSTSEC-2025-0021", reason="security vulnurability from `gix-features` crate" }, # remove after next weaver release
+    { id="RUSTSEC-2023-0018", reason="security vulnurability from `remove_dir_all` crate" }, # remove after next weaver release
     { id="RUSTSEC-2023-0028", reason = "unmaintained `buf_redux` crate that is a dependency of weaver_semconv"}, # is a warning level in weaver deny.toml
     { id="RUSTSEC-2023-0050", reason = "unmaintained `multipart` crate that is a dependency of weaver_semconv and weaver_forge"}, # is a warning level in weaver deny.toml
     { id="RUSTSEC-2023-0081", reason = "unmaintained `safemem` crate that is a dependency of weaver_semconv"}, # is a warning level in weaver deny.toml
