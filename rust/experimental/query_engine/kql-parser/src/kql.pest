@@ -53,13 +53,6 @@ string_literal = @{
     ("\"" ~ double_quote_string_char* ~ "\"")
     | ("'" ~ single_quote_string_char* ~ "'")
 }
-datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
-identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
-identifier_or_pattern_literal = ${
-	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
-    | ("[" ~ string_literal ~ "]")
-}
-
 null_literal = { 
     ("bool(" ~ "null" ~ ")") |
     ("datetime(" ~ "null" ~ ")") |
@@ -71,6 +64,13 @@ null_literal = {
     ("double(" ~ "null" ~ ")") |
     ("timespan(" ~ "null" ~ ")")
 }
+datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
+
+identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+identifier_or_pattern_literal = ${
+	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
+    | ("[" ~ string_literal ~ "]")
+}
 
 // Expressions
 accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ scalar_expression)) ~ "]" }
@@ -81,27 +81,31 @@ boolean_expression = _{ true_literal | false_literal }
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
 datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
-tostring_expression = { "tostring(" ~ scalar_expression ~ ")" }
-toint_expression = { "toint(" ~ scalar_expression ~ ")" }
-tobool_expression = { "tobool(" ~ scalar_expression ~ ")" }
-tofloat_expression = { "tofloat(" ~ scalar_expression ~ ")" }
-tolong_expression = { "tolong(" ~ scalar_expression ~ ")" }
-toreal_expression = { "toreal(" ~ scalar_expression ~ ")" }
-todouble_expression = { "todouble(" ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
 
-scalar_expression = {
-    null_literal
-    | real_expression
-    | datetime_expression
-    | conditional_expression
-    | tostring_expression
+tostring_expression = { "tostring" ~ "(" ~ scalar_expression ~ ")" }
+toint_expression = { "toint" ~ "(" ~ scalar_expression ~ ")" }
+tobool_expression = { "tobool" ~ "(" ~ scalar_expression ~ ")" }
+tofloat_expression = { "tofloat" ~ "(" ~ scalar_expression ~ ")" }
+tolong_expression = { "tolong" ~ "(" ~ scalar_expression ~ ")" }
+toreal_expression = { "toreal" ~ "(" ~ scalar_expression ~ ")" }
+todouble_expression = { "todouble" ~ "(" ~ scalar_expression ~ ")" }
+conversion_expressions = _{
+    tostring_expression
     | toint_expression
     | tobool_expression
     | tofloat_expression
     | tolong_expression
     | toreal_expression
     | todouble_expression
+}
+
+scalar_expression = {
+    null_literal
+    | real_expression
+    | datetime_expression
+    | conditional_expression
+    | conversion_expressions
     | case_expression
     | boolean_expression
     | double_literal

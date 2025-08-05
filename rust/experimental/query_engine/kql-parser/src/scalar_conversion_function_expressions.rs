@@ -143,6 +143,7 @@ mod tests {
                 "tostring(iff(true, 1, 0))",
                 "tostring( 42 )",
                 "tostring(  42  )",
+                "tostring (42)"
             ],
             &[
                 "tostring()",
@@ -247,6 +248,7 @@ mod tests {
                 "toint((42))",
                 "toint(iff(true, 1, 0))",
                 "toint( 42 )",
+                "toint (42)"
             ],
             &[
                 "toint()",
@@ -309,6 +311,7 @@ mod tests {
                 "tobool((42))",
                 "tobool(iff(true, 1, 0))",
                 "tobool( 42 )",
+                "tobool (42)"
             ],
             &[
                 "tobool()",
@@ -372,6 +375,7 @@ mod tests {
                 "tofloat((42))",
                 "tofloat(iff(true, 1, 0))",
                 "tofloat( 42 )",
+                "tofloat (42)"
             ],
             &[
                 "tofloat()",
@@ -435,6 +439,7 @@ mod tests {
                 "tolong((42))",
                 "tolong(iff(true, 1, 0))",
                 "tolong( 42 )",
+                "tolong (42)"
             ],
             &[
                 "tolong()",
@@ -498,6 +503,7 @@ mod tests {
                 "toreal((42))",
                 "toreal(iff(true, 1, 0))",
                 "toreal( 42 )",
+                "toreal (42)"
             ],
             &[
                 "toreal()",
@@ -561,6 +567,7 @@ mod tests {
                 "todouble((42))",
                 "todouble(iff(true, 1, 0))",
                 "todouble( 42 )",
+                "todouble (42)"
             ],
             &[
                 "todouble()",
