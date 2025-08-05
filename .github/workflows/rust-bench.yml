@@ -1,0 +1,40 @@
+name: Rust-Benchmarks
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    # Only run when PR has 'cargobench' label
+    if: contains(github.event.pull_request.labels.*.name, 'cargobench')
+    strategy:
+      fail-fast: false
+      matrix:
+        folder:
+        - otap-dataflow
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/query_engine
+        - experimental/syslog-cef-receivers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+        with:
+          toolchain: stable
+      - name: cargo bench ${{ matrix.folder }}
+        run: cargo bench
+        working-directory: ./rust/${{ matrix.folder }}
