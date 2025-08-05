@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::control::{ControlMsg, NodeRequestSender};
+use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -58,16 +58,16 @@ pub trait Receiver<PData> {
 
 /// A channel for receiving control messages (in a Send environment).
 ///
-/// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
+/// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel {
-    rx: SharedReceiver<ControlMsg>,
+    rx: SharedReceiver<NodeControlMsg>,
 }
 
 impl ControlChannel {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
-    pub fn new(rx: SharedReceiver<ControlMsg>) -> Self {
+    pub fn new(rx: SharedReceiver<NodeControlMsg>) -> Self {
         Self { rx }
     }
 
@@ -76,7 +76,7 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
+    pub async fn recv(&mut self) -> Result<NodeControlMsg, RecvError> {
         self.rx.recv().await
     }
 }
@@ -100,10 +100,10 @@ impl<PData> EffectHandler<PData> {
     pub fn new(
         node_id: NodeId,
         msg_sender: SharedSender<PData>,
-        node_request_sender: NodeRequestSender,
+        node_request_sender: PipelineCtrlMsgSender,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
-        core.set_node_request_sender(node_request_sender);
+        core.set_pipeline_ctrl_msg_sender(node_request_sender);
         EffectHandler { core, msg_sender }
     }
 

@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::control::ControlMsg;
+use crate::control::NodeControlMsg;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
@@ -64,19 +64,19 @@ pub trait Exporter<PData> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<SharedReceiver<ControlMsg>>,
+    control_rx: Option<SharedReceiver<NodeControlMsg>>,
     pdata_rx: Option<SharedReceiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
-    pending_shutdown: Option<ControlMsg>,
+    pending_shutdown: Option<NodeControlMsg>,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(control_rx: SharedReceiver<ControlMsg>, pdata_rx: SharedReceiver<PData>) -> Self {
+    pub fn new(control_rx: SharedReceiver<NodeControlMsg>, pdata_rx: SharedReceiver<PData>) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
@@ -161,16 +161,16 @@ impl<PData> MessageChannel<PData> {
 
                 // A) Control first
                 ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
-                    Ok(ControlMsg::Shutdown { deadline, reason }) => {
+                    Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
                             self.shutdown();
-                            return Ok(Message::Control(ControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
+                            return Ok(Message::Control(NodeControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
                         }
                         // Begin draining mode, but don’t return Shutdown yet
                         let when = Instant::now() + deadline;
                         self.shutting_down_deadline = Some(when);
-                        self.pending_shutdown = Some(ControlMsg::Shutdown { deadline: Duration::ZERO, reason });
+                        self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline: Duration::ZERO, reason });
                         continue; // re-enter the loop into draining mode
                     }
                     Ok(msg) => return Ok(Message::Control(msg)),

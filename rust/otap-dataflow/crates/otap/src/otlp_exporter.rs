@@ -9,7 +9,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
@@ -112,7 +112,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         loop {
             match msg_chan.recv().await? {
-                Message::Control(ControlMsg::Shutdown { .. }) => break,
+                Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
                     let service_req: OtlpProtoBytes = data.try_into()?;
                     _ = match service_req {

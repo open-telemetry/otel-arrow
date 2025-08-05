@@ -29,7 +29,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
@@ -141,7 +141,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
         loop {
             match msg_chan.recv().await? {
                 // handle control messages
-                Message::Control(ControlMsg::TimerTick { .. }) => {
+                Message::Control(NodeControlMsg::TimerTick { .. }) => {
                     writer.write("Timer tick received\n").await?;
 
                     // output count of messages received since last timertick
@@ -151,11 +151,11 @@ impl local::Exporter<OTLPData> for DebugExporter {
                     // reset counters after timertick
                     counter.reset_signal_count();
                 }
-                Message::Control(ControlMsg::Config { .. }) => {
+                Message::Control(NodeControlMsg::Config { .. }) => {
                     writer.write("Config message received\n").await?;
                 }
                 // shutdown the exporter
-                Message::Control(ControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
                     writer.write("Shutdown message received\n").await?;
                     let report = counter.debug_report();

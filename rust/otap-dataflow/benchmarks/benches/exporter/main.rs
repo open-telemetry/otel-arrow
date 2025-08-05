@@ -57,7 +57,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::control::{ControlMsg, Controllable, node_request_channel};
+use otap_df_engine::control::{NodeControlMsg, Controllable, pipeline_ctrl_msg_channel};
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
@@ -405,7 +405,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let control_sender = exporter.control_sender();
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
+                    let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -424,9 +424,9 @@ fn bench_exporter(c: &mut Criterion) {
                         _ = pdata_sender.send(signal.clone().into()).await;
                     }
 
-                    _ = control_sender.send(ControlMsg::TimerTick {}).await;
+                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
-                        .send(ControlMsg::Shutdown {
+                        .send(NodeControlMsg::Shutdown {
                             deadline: Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
@@ -455,7 +455,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let control_sender = exporter.control_sender();
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
+                    let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -475,9 +475,9 @@ fn bench_exporter(c: &mut Criterion) {
                         _ = pdata_sender.send(otap_signal.clone().into()).await;
                     }
 
-                    _ = control_sender.send(ControlMsg::TimerTick {}).await;
+                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
                     _ = control_sender
-                        .send(ControlMsg::Shutdown {
+                        .send(NodeControlMsg::Shutdown {
                             deadline: Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
@@ -509,7 +509,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let control_sender = exporter.control_sender();
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
+                    let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -530,7 +530,7 @@ fn bench_exporter(c: &mut Criterion) {
                     }
 
                     _ = control_sender
-                        .send(ControlMsg::Shutdown {
+                        .send(NodeControlMsg::Shutdown {
                             deadline: Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })
@@ -561,7 +561,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
+                    let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -583,7 +583,7 @@ fn bench_exporter(c: &mut Criterion) {
                     }
 
                     _ = control_sender
-                        .send(ControlMsg::Shutdown {
+                        .send(NodeControlMsg::Shutdown {
                             deadline: Duration::from_millis(2000),
                             reason: "shutdown".to_string(),
                         })

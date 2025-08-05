@@ -2,7 +2,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{NodeRequestSender, PipelineControlMsg};
+use crate::control::{PipelineCtrlMsgSender, PipelineControlMsg};
 use crate::error::Error;
 use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
@@ -17,7 +17,8 @@ use tokio::net::{TcpListener, UdpSocket};
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
     pub(crate) node_id: NodeId,
-    pub(crate) node_request_sender: Option<NodeRequestSender>,
+    // ToDo refactor the code to avoid using Option here.
+    pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender>,
 }
 
 impl EffectHandlerCore {
@@ -25,12 +26,12 @@ impl EffectHandlerCore {
     pub(crate) fn new(node_id: NodeId) -> Self {
         Self {
             node_id,
-            node_request_sender: None,
+            pipeline_ctrl_msg_sender: None,
         }
     }
 
-    pub(crate) fn set_node_request_sender(&mut self, node_request_sender: NodeRequestSender) {
-        self.node_request_sender = Some(node_request_sender);
+    pub(crate) fn set_pipeline_ctrl_msg_sender(&mut self, pipeline_ctrl_msg_sender: PipelineCtrlMsgSender) {
+        self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
     }
 
     /// Returns the id of the node associated with this effect handler.
@@ -148,13 +149,15 @@ impl EffectHandlerCore {
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
+    /// 
+    /// Current limitation: The timer can only be started once per node.
     pub async fn start_periodic_timer<PData>(
         &self,
         duration: Duration,
     ) -> Result<TimerCancelHandle, Error<PData>> {
-        let node_request_sender = self.node_request_sender.clone()
+        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        node_request_sender
+        pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::StartTimer {
                 node_id: self.node_id.clone(),
                 duration,
@@ -164,7 +167,7 @@ impl EffectHandlerCore {
 
         Ok(TimerCancelHandle {
             node_id: self.node_id.clone(),
-            node_request_sender,
+            pipeline_ctrl_msg_sender,
         })
     }
 }
@@ -172,13 +175,13 @@ impl EffectHandlerCore {
 /// Handle to cancel a running timer.
 pub struct TimerCancelHandle {
     node_id: NodeId,
-    node_request_sender: NodeRequestSender,
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
 }
 
 impl TimerCancelHandle {
     /// Cancels the timer.
     pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg>> {
-        self.node_request_sender
+        self.pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::CancelTimer {
                 node_id: self.node_id,
             })

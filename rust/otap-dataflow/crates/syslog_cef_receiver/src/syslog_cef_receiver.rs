@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::{error::Error, local::receiver as local};
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -66,7 +66,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(ControlMsg::Shutdown {..}) => {
+                                Ok(NodeControlMsg::Shutdown {..}) => {
                                 // ToDo: Add proper deadline function
                                 break;
                                 },
@@ -141,7 +141,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(ControlMsg::Shutdown {..}) => {
+                                Ok(NodeControlMsg::Shutdown {..}) => {
                                 // ToDo: Add proper deadline function
                                 break;
                                 },

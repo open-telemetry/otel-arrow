@@ -3,7 +3,7 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::control::{
-    ControlMsg, Controllable, NodeRequestReceiver, PipelineControlMsg, node_request_channel,
+    NodeControlMsg, Controllable, PipelineCtrlMsgReceiver, PipelineControlMsg, pipeline_ctrl_msg_channel,
 };
 use crate::error::Error;
 use crate::message::Sender;
@@ -18,6 +18,9 @@ use tokio::task::LocalSet;
 use tokio::time::Instant;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
+///
+/// Note: Having a Debug bound on `PData` allows us to use it in logging and debugging contexts,
+/// which is useful for tracing the pipeline's execution and state.
 pub struct RuntimePipeline<PData: Debug> {
     /// The pipeline configuration that defines the structure and behavior of the pipeline.
     config: PipelineConfig,
@@ -95,36 +98,36 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = HashMap::new();
-        let (node_req_tx, node_req_rx) = node_request_channel(
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
             self.config
                 .pipeline_settings()
                 .default_pipeline_ctrl_msg_channel_size,
         );
 
-        // Create a task for each node type and pass the node request channel to each node, so
+        // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.
         for (node_id, exporter) in self.exporters {
             _ = control_senders.insert(node_id, exporter.control_sender());
-            let node_req_tx = node_req_tx.clone();
-            futures.push(local_tasks.spawn_local(async move { exporter.start(node_req_tx).await }));
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            futures.push(local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }));
         }
         for (node_id, processor) in self.processors {
             _ = control_senders.insert(node_id, processor.control_sender());
-            let node_req_tx = node_req_tx.clone();
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures
-                .push(local_tasks.spawn_local(async move { processor.start(node_req_tx).await }));
+                .push(local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }));
         }
         for (node_id, receiver) in self.receivers {
             _ = control_senders.insert(node_id, receiver.control_sender());
-            let node_req_tx = node_req_tx.clone();
-            futures.push(local_tasks.spawn_local(async move { receiver.start(node_req_tx).await }));
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            futures.push(local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }));
         }
 
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
-            let timer_manager = NodeRequestManager::new(node_req_rx, control_senders);
-            timer_manager.run().await;
+            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders);
+            manager.run().await;
             Ok(())
         }));
 
@@ -170,16 +173,16 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
         }
     }
 
-    /// Sends a control message to the specified node.
-    pub async fn send_control_message(
+    /// Sends a node control message to the specified node.
+    pub async fn send_node_control_message(
         &self,
         node_id: NodeId,
-        ctrl_msg: ControlMsg,
+        ctrl_msg: NodeControlMsg,
     ) -> Result<(), Error<PData>> {
         if let Some(node) = self.get_node(&node_id) {
             node.send_control_msg(ctrl_msg)
                 .await
-                .map_err(|e| Error::ControlMsgSendError {
+                .map_err(|e| Error::NodeControlMsgSendError {
                     node: node_id.clone(),
                     error: e,
                 })
@@ -189,7 +192,7 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
     }
 }
 
-/// Manages node requests such as recurrent and cancelable timers.
+/// Manages pipeline control messages such as recurrent and cancelable timers.
 ///
 /// For now, this manager is only responsible for managing timers for nodes in the pipeline.
 /// It uses a priority queue to efficiently handle timer expirations and cancellations.
@@ -203,21 +206,21 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
 /// Current limitations:
 /// - Does not support multiple timers for the same node.
 /// - Does not support other types of node requests yet (ACK/NACK).
-pub struct NodeRequestManager {
-    node_request_receiver: NodeRequestReceiver,
-    control_senders: HashMap<NodeId, Sender<ControlMsg>>,
+pub struct PipelineCtrlMsgManager {
+    node_request_receiver: PipelineCtrlMsgReceiver,
+    control_senders: HashMap<NodeId, Sender<NodeControlMsg>>,
     timers: BinaryHeap<Reverse<(Instant, NodeId)>>,
     canceled: HashSet<NodeId>,
     timer_map: HashMap<NodeId, Instant>,
     durations: HashMap<NodeId, std::time::Duration>,
 }
 
-impl NodeRequestManager {
-    /// Creates a new NodeRequestManager.
+impl PipelineCtrlMsgManager {
+    /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
-        node_request_receiver: NodeRequestReceiver,
-        control_senders: HashMap<NodeId, Sender<ControlMsg>>,
+        node_request_receiver: PipelineCtrlMsgReceiver,
+        control_senders: HashMap<NodeId, Sender<NodeControlMsg>>,
     ) -> Self {
         Self {
             node_request_receiver,
@@ -269,7 +272,7 @@ impl NodeRequestManager {
                                 if exp == when {
                                     // Timer fires: handle expiration
                                     if let Some(sender) = self.control_senders.get(&node_id) {
-                                        let _ = sender.send(ControlMsg::TimerTick {}).await;
+                                        let _ = sender.send(NodeControlMsg::TimerTick {}).await;
                                     } else {
                                         eprintln!("No control sender for node: {node_id}");
                                     }

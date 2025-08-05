@@ -34,7 +34,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
@@ -111,17 +111,17 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
         loop {
             match msg_chan.recv().await? {
-                Message::Control(ControlMsg::TimerTick { .. }) => {
+                Message::Control(NodeControlMsg::TimerTick { .. }) => {
                     // TODO periodically we should tell the writer to flush any data
                     // that has been buffered in memory longer than some time threshold
                     // https://github.com/open-telemetry/otel-arrow/issues/497
                 }
-                Message::Control(ControlMsg::Config { .. }) => {
+                Message::Control(NodeControlMsg::Config { .. }) => {
                     // TODO when we have the ability to inject dynamic config into the
                     // pipeline, we'll handle updating the exporter config here.
                     // https://github.com/open-telemetry/otel-arrow/issues/500
                 }
-                Message::Control(ControlMsg::Shutdown {
+                Message::Control(NodeControlMsg::Shutdown {
                     deadline,
                     reason: _,
                 }) => {

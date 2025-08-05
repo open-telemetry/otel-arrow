@@ -10,7 +10,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
@@ -100,7 +100,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {..}) => {
+                        Ok(NodeControlMsg::Shutdown {..}) => {
                             break;
                         },
                         Err(e) => {

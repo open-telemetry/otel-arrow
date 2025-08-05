@@ -6,7 +6,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
-use crate::control::{ControlMsg, Controllable, NodeRequestReceiver, node_request_channel};
+use crate::control::{NodeControlMsg, Controllable, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel};
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -26,7 +26,7 @@ use tokio::time::sleep;
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
     /// Sender for control messages
-    control_tx: Sender<ControlMsg>,
+    control_tx: Sender<NodeControlMsg>,
     /// Sender for pipeline data
     pdata_tx: Sender<PData>,
     /// Message counter for tracking processed messages
@@ -47,7 +47,7 @@ impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
     #[must_use]
     pub fn new(
-        control_tx: Sender<ControlMsg>,
+        control_tx: Sender<NodeControlMsg>,
         pdata_tx: Sender<PData>,
         counters: CtrlMsgCounters,
     ) -> Self {
@@ -69,8 +69,8 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_timer_tick(&self) -> Result<(), SendError<ControlMsg>> {
-        self.control_tx.send(ControlMsg::TimerTick {}).await
+    pub async fn send_timer_tick(&self) -> Result<(), SendError<NodeControlMsg>> {
+        self.control_tx.send(NodeControlMsg::TimerTick {}).await
     }
 
     /// Sends a config control message.
@@ -78,8 +78,8 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_config(&self, config: Value) -> Result<(), SendError<ControlMsg>> {
-        self.control_tx.send(ControlMsg::Config { config }).await
+    pub async fn send_config(&self, config: Value) -> Result<(), SendError<NodeControlMsg>> {
+        self.control_tx.send(NodeControlMsg::Config { config }).await
     }
 
     /// Sends a shutdown control message.
@@ -91,9 +91,9 @@ impl<PData> TestContext<PData> {
         &self,
         deadline: Duration,
         reason: &str,
-    ) -> Result<(), SendError<ControlMsg>> {
+    ) -> Result<(), SendError<NodeControlMsg>> {
         self.control_tx
-            .send(ControlMsg::Shutdown {
+            .send(NodeControlMsg::Shutdown {
                 deadline,
                 reason: reason.to_owned(),
             })
@@ -143,13 +143,13 @@ pub struct TestPhase<PData> {
 
     counters: CtrlMsgCounters,
 
-    control_sender: Sender<ControlMsg>,
+    control_sender: Sender<NodeControlMsg>,
     pdata_sender: Sender<PData>,
 
     /// Join handle for the starting the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
 
-    node_request_receiver: NodeRequestReceiver,
+    node_request_receiver: PipelineCtrlMsgReceiver,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -215,7 +215,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 )
             }
         };
-        let (node_req_tx, node_req_rx) = node_request_channel(10);
+        let (node_req_tx, node_req_rx) = pipeline_ctrl_msg_channel(10);
 
         exporter
             .set_pdata_receiver(self.config.name, pdata_rx)

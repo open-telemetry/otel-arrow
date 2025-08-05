@@ -15,7 +15,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
@@ -123,10 +123,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         loop {
             match msg_chan.recv().await? {
                 // handle control messages
-                Message::Control(ControlMsg::TimerTick { .. })
-                | Message::Control(ControlMsg::Config { .. }) => {}
+                Message::Control(NodeControlMsg::TimerTick { .. })
+                | Message::Control(NodeControlMsg::Config { .. }) => {}
                 // shutdown the exporter
-                Message::Control(ControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
                     break;
                 }

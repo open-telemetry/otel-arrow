@@ -6,7 +6,7 @@
 //! Receivers and processors implement the [`NodeWithPDataSender`] trait.
 //! Processors and exporters implement the [`NodeWithPDataReceiver`] trait.
 
-use crate::control::ControlMsg;
+use crate::control::NodeControlMsg;
 use crate::error::Error;
 use crate::message::{Receiver, Sender};
 use otap_df_channel::error::SendError;
@@ -26,7 +26,7 @@ pub trait Node {
     fn user_config(&self) -> Arc<NodeUserConfig>;
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>>;
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
 }
 
 /// Trait for nodes that can send pdata to a specific port.

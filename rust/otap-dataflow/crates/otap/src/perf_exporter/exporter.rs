@@ -17,7 +17,7 @@ use byte_unit::Byte;
 use fluke_hpack::Decoder;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
@@ -218,7 +218,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
-                Message::Control(ControlMsg::TimerTick { .. }) => {
+                Message::Control(NodeControlMsg::TimerTick { .. }) => {
                     generate_report(
                         received_arrow_records_count,
                         received_otlp_signal_count,
@@ -242,8 +242,8 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     last_perf_time = Instant::now();
                 }
                 // ToDo: Handle configuration changes
-                Message::Control(ControlMsg::Config { .. }) => {}
-                Message::Control(ControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Config { .. }) => {}
+                Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     // Generate final performance report before shutting down
                     generate_report(
                         received_arrow_records_count,

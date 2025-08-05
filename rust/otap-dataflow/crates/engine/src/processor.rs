@@ -7,7 +7,7 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
-use crate::control::{ControlMsg, Controllable, NodeRequestSender};
+use crate::control::{NodeControlMsg, Controllable, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -36,9 +36,9 @@ pub enum ProcessorWrapper<PData> {
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
         /// A sender for control messages.
-        control_sender: LocalSender<ControlMsg>,
+        control_sender: LocalSender<NodeControlMsg>,
         /// A receiver for control messages.
-        control_receiver: LocalReceiver<ControlMsg>,
+        control_receiver: LocalReceiver<NodeControlMsg>,
         /// Sender for PData messages.
         /// ToDo(LQ): Support multiple ports
         pdata_sender: Option<LocalSender<PData>>,
@@ -54,9 +54,9 @@ pub enum ProcessorWrapper<PData> {
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
         /// A sender for control messages.
-        control_sender: SharedSender<ControlMsg>,
+        control_sender: SharedSender<NodeControlMsg>,
         /// A receiver for control messages.
-        control_receiver: SharedReceiver<ControlMsg>,
+        control_receiver: SharedReceiver<NodeControlMsg>,
         /// Sender for PData messages.
         /// ToDo(LQ): Support multiple ports
         pdata_sender: Option<SharedSender<PData>>,
@@ -204,7 +204,7 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
-    pub async fn start(self, node_req_tx: NodeRequestSender) -> Result<(), Error<PData>> {
+    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error<PData>> {
         let runtime = self.prepare_runtime().await?;
 
         match runtime {
@@ -213,7 +213,7 @@ impl<PData> ProcessorWrapper<PData> {
                 mut message_channel,
                 mut effect_handler,
             } => {
-                effect_handler.core.set_node_request_sender(node_req_tx);
+                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
@@ -223,7 +223,7 @@ impl<PData> ProcessorWrapper<PData> {
                 mut message_channel,
                 mut effect_handler,
             } => {
-                effect_handler.core.set_node_request_sender(node_req_tx);
+                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
@@ -268,7 +268,7 @@ impl<PData> Node for ProcessorWrapper<PData> {
     }
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ProcessorWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
@@ -279,12 +279,12 @@ impl<PData> Node for ProcessorWrapper<PData> {
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable for ProcessorWrapper<PData> {
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
         self.control_sender().send(msg).await
     }
 
     /// Returns the control message sender for the processor.
-    fn control_sender(&self) -> Sender<ControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg> {
         match self {
             ProcessorWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ProcessorWrapper::Shared { control_sender, .. } => {
@@ -351,7 +351,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::ControlMsg::{Config, Shutdown, TimerTick};
+    use crate::control::NodeControlMsg::{Config, Shutdown, TimerTick};
     use crate::local::processor as local;
     use crate::message::Message;
     use crate::processor::{Error, ProcessorWrapper};

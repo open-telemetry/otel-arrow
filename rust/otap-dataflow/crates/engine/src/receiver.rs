@@ -7,7 +7,7 @@
 //! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
-use crate::control::{ControlMsg, Controllable, NodeRequestSender};
+use crate::control::{NodeControlMsg, Controllable, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
@@ -35,9 +35,9 @@ pub enum ReceiverWrapper<PData> {
         /// The receiver instance.
         receiver: Box<dyn local::Receiver<PData>>,
         /// A sender for control messages.
-        control_sender: LocalSender<ControlMsg>,
+        control_sender: LocalSender<NodeControlMsg>,
         /// A receiver for control messages.
-        control_receiver: LocalReceiver<ControlMsg>,
+        control_receiver: LocalReceiver<NodeControlMsg>,
         /// Sender for PData messages.
         /// ToDo(LQ): Support multiple ports
         pdata_sender: Option<LocalSender<PData>>,
@@ -53,9 +53,9 @@ pub enum ReceiverWrapper<PData> {
         /// The receiver instance.
         receiver: Box<dyn shared::Receiver<PData>>,
         /// A sender for control messages.
-        control_sender: SharedSender<ControlMsg>,
+        control_sender: SharedSender<NodeControlMsg>,
         /// A receiver for control messages.
-        control_receiver: SharedReceiver<ControlMsg>,
+        control_receiver: SharedReceiver<NodeControlMsg>,
         /// Sender for PData messages.
         /// ToDo(LQ): Support multiple ports
         pdata_sender: Option<SharedSender<PData>>,
@@ -67,12 +67,12 @@ pub enum ReceiverWrapper<PData> {
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable for ReceiverWrapper<PData> {
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
         self.control_sender().send(msg).await
     }
 
     /// Returns the control message sender for the receiver.
-    fn control_sender(&self) -> Sender<ControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg> {
         match self {
             ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ReceiverWrapper::Shared { control_sender, .. } => {
@@ -122,7 +122,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Starts the receiver and begins receiver incoming data.
-    pub async fn start(self, node_req_tx: NodeRequestSender) -> Result<(), Error<PData>> {
+    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error<PData>> {
         match self {
             ReceiverWrapper::Local {
                 runtime_config,
@@ -144,7 +144,7 @@ impl<PData> ReceiverWrapper<PData> {
                 let effect_handler = local::EffectHandler::new(
                     runtime_config.name.clone(),
                     pdata_sender,
-                    node_req_tx,
+                    pipeline_ctrl_msg_tx,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -168,7 +168,7 @@ impl<PData> ReceiverWrapper<PData> {
                 let effect_handler = shared::EffectHandler::new(
                     runtime_config.name.clone(),
                     pdata_sender,
-                    node_req_tx,
+                    pipeline_ctrl_msg_tx,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -211,7 +211,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
     }
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
         match self {
             ReceiverWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ReceiverWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,

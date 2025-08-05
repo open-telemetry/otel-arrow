@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Control message infrastructure.
+//! Provides types and traits for control messages exchanged between the pipeline engine and nodes.
+//! Enables management of node behavior, configuration, and lifecycle events, including shutdown,
+//! configuration updates, and timer management.
 
 use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -8,95 +10,125 @@ use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
 use std::time::Duration;
 
-/// Control messages are sent by the pipeline engine to nodes to manage their behavior and
-/// operations.
+/// Control messages sent by the pipeline engine to nodes to manage their behavior,
+/// configuration, and lifecycle.
 #[derive(Debug, Clone)]
-pub enum ControlMsg {
-    /// Indicates that a downstream component (either internal or external) has reliably received
-    /// and processed telemetry data.
+pub enum NodeControlMsg {
+    /// Acknowledges that a downstream component (internal or external) has reliably received
+    /// and processed telemetry data for the specified message ID.
+    ///
+    /// Typically used for confirming successful delivery or processing.
     Ack {
-        /// The ID of the message being acknowledged.
+        /// Unique identifier of the message being acknowledged.
         id: u64,
     },
 
-    /// Indicates that a downstream component (either internal or external) failed to process or
-    /// deliver telemetry data. The NACK signal includes a reason, such as exceeding a deadline,
-    /// downstream system unavailability, or other conditions preventing successful processing.
+    /// Indicates that a downstream component failed to process or deliver telemetry data.
+    ///
+    /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
+    /// unavailability, or other conditions preventing successful processing.
     Nack {
-        /// The ID of the message not being acknowledged.
+        /// Unique identifier of the message not being acknowledged.
         id: u64,
-        /// The reason for the NACK.
+        /// Human-readable reason for the NACK.
         reason: String,
     },
 
-    /// Indicates a change in the configuration of a node. For example, a config message can
-    /// instruct a Filter Processor to include or exclude certain attributes, or notify a Retry
+    /// Notifies the node of a configuration change.
+    ///
+    /// For example, instructs a Filter Processor to include/exclude attributes, or a Retry
     /// Processor to adjust backoff settings.
     Config {
-        /// The new configuration.
+        /// The new configuration as a JSON value.
         config: serde_json::Value,
     },
 
-    /// Emitted upon timer expiration, used to trigger scheduled tasks (e.g., batch emissions).
-    TimerTick {
-        // TBD
-    },
+    /// Emitted when a scheduled timer expires, used to trigger periodic or scheduled tasks
+    /// (e.g., batch emissions).
+    ///
+    /// This variant currently carries no additional data.
+    TimerTick,
 
-    /// A graceful shutdown message requiring the node to finish processing messages and release
-    /// resources by a specified deadline. A deadline of 0 indicates an immediate shutdown.
+    /// Requests a graceful shutdown, requiring the node to finish processing messages and
+    /// release resources by the specified deadline.
+    ///
+    /// A deadline of zero duration indicates an immediate shutdown.
     Shutdown {
-        /// The deadline for the shutdown.
+        /// Deadline for shutdown (in seconds).
         deadline: Duration,
-        /// The reason for the shutdown.
+        /// Human-readable reason for the shutdown.
         reason: String,
     },
 }
 
-/// Requests sent from nodes to the pipeline engine for node-specific control operations.
+/// Control messages sent by nodes to the pipeline engine to manage node-specific operations
+/// and control pipeline behavior.
 #[derive(Debug, Clone)]
 pub enum PipelineControlMsg {
-    /// Start a periodic timer for a node.
+    /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
-        /// The ID of the node for which the timer is being started.
+        /// Identifier of the node for which the timer is being started.
         node_id: NodeId,
-        /// The duration of the timer.
+        /// Duration of the timer interval.
         duration: Duration,
     },
-    /// Cancel a periodic timer for a node.
+    /// Requests cancellation of a periodic timer for the specified node.
     CancelTimer {
-        /// The ID of the node for which the timer is being canceled.
+        /// Identifier of the node for which the timer is being canceled.
         node_id: NodeId,
     },
-    /// Shutdown the node request manager.
+    /// Requests shutdown of the node request manager.
     Shutdown,
 }
 
-/// Trait for nodes that can receive control messages.
+/// Trait for nodes that can receive and process control messages from the pipeline engine.
+///
+/// Implement this trait for node types that need to handle control messages such as configuration
+/// updates, shutdown requests, or timer events. Implementers are not required to be thread-safe.
 #[async_trait::async_trait(?Send)]
 pub trait Controllable {
-    /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>>;
+    /// Sends a control message to the node asynchronously.
+    ///
+    /// Returns an error if the message could not be delivered.
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
 
-    /// Returns the control message sender for the node.
-    fn control_sender(&self) -> Sender<ControlMsg>;
+    /// Returns the sender for control messages to this node.
+    ///
+    /// Used for direct message passing from the pipeline engine.
+    fn control_sender(&self) -> Sender<NodeControlMsg>;
 }
 
-impl ControlMsg {
-    /// Checks if this control message is a shutdown message.
+impl NodeControlMsg {
+    /// Returns `true` if this control message is a shutdown request.
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
-        matches!(self, ControlMsg::Shutdown { .. })
+        matches!(self, NodeControlMsg::Shutdown { .. })
     }
 }
 
-/// Channel sender for node requests to the pipeline engine.
-pub type NodeRequestSender = SharedSender<PipelineControlMsg>;
+/// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
+///
+/// This is a multi-producer, single-consumer (MPSC) channel.
+pub type PipelineCtrlMsgSender = SharedSender<PipelineControlMsg>;
 
-/// Channel receiver for node requests from the pipeline engine.
-pub type NodeRequestReceiver = SharedReceiver<PipelineControlMsg>;
+/// Type alias for the channel receiver used by the pipeline engine to receive node requests.
+///
+/// This is a multi-producer, single-consumer (MPSC) channel.
+pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
 
-/// Helper to create a shared node request channel (n nodes, 1 pipeline engine -> MPSC).
-pub fn node_request_channel(capacity: usize) -> (NodeRequestSender, NodeRequestReceiver) {
+/// Creates a shared node request channel for communication from nodes to the pipeline engine.
+///
+/// The channel is multi-producer, single-consumer (MPSC), allowing multiple nodes to send requests
+/// to a single pipeline engine instance.
+///
+/// # Arguments
+///
+/// * `capacity` - The maximum number of messages the channel can buffer.
+///
+/// # Returns
+///
+/// A tuple containing the sender and receiver ends of the channel.
+pub fn pipeline_ctrl_msg_channel(capacity: usize) -> (PipelineCtrlMsgSender, PipelineCtrlMsgReceiver) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
         SharedSender::MpscSender(tx),
