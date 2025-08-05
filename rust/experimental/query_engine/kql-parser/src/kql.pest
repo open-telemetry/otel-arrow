@@ -82,6 +82,12 @@ real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|d
 datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 tostring_expression = { "tostring(" ~ scalar_expression ~ ")" }
+toint_expression = { "toint(" ~ scalar_expression ~ ")" }
+tobool_expression = { "tobool(" ~ scalar_expression ~ ")" }
+tofloat_expression = { "tofloat(" ~ scalar_expression ~ ")" }
+tolong_expression = { "tolong(" ~ scalar_expression ~ ")" }
+toreal_expression = { "toreal(" ~ scalar_expression ~ ")" }
+todouble_expression = { "todouble(" ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
 
 scalar_expression = {
@@ -90,6 +96,12 @@ scalar_expression = {
     | datetime_expression
     | conditional_expression
     | tostring_expression
+    | toint_expression
+    | tobool_expression
+    | tofloat_expression
+    | tolong_expression
+    | toreal_expression
+    | todouble_expression
     | case_expression
     | boolean_expression
     | double_literal

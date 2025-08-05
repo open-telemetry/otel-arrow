@@ -51,6 +51,12 @@ pub(crate) fn parse_scalar_expression(
             }
         }
         Rule::tostring_expression => parse_tostring_expression(scalar_rule, state)?,
+        Rule::toint_expression => parse_toint_expression(scalar_rule, state)?,
+        Rule::tobool_expression => parse_tobool_expression(scalar_rule, state)?,
+        Rule::tofloat_expression => parse_tofloat_expression(scalar_rule, state)?,
+        Rule::tolong_expression => parse_tolong_expression(scalar_rule, state)?,
+        Rule::toreal_expression => parse_toreal_expression(scalar_rule, state)?,
+        Rule::todouble_expression => parse_todouble_expression(scalar_rule, state)?,
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
@@ -403,6 +409,228 @@ mod tests {
                             QueryLocation::new_fake(),
                             create_utc(2025, 6, 9, 0, 0, 0, 0),
                         ),
+                    )),
+                ),
+            )),
+        );
+
+        // Test toint expressions
+        run_test_success(
+            "toint(42)",
+            ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "toint(true)",
+            ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "toint(4.44)",
+            ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
+                    )),
+                ),
+            )),
+        );
+
+        // Test tobool expressions
+        run_test_success(
+            "tobool(1)",
+            ScalarExpression::Convert(ConvertScalarExpression::Boolean(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tobool(true)",
+            ScalarExpression::Convert(ConvertScalarExpression::Boolean(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tobool(4.44)",
+            ScalarExpression::Convert(ConvertScalarExpression::Boolean(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
+                    )),
+                ),
+            )),
+        );
+
+        // Test tofloat expressions
+        run_test_success(
+            "tofloat(42)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tofloat(true)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tofloat(4.44)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
+                    )),
+                ),
+            )),
+        );
+
+        // Test tolong expressions
+        run_test_success(
+            "tolong(42)",
+            ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tolong(true)",
+            ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "tolong(4.44)",
+            ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
+                    )),
+                ),
+            )),
+        );
+
+        // Test toreal expressions
+        run_test_success(
+            "toreal(42)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "toreal(true)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "toreal(4.44)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
+                    )),
+                ),
+            )),
+        );
+
+        // Test todouble expressions
+        run_test_success(
+            "todouble(42)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "todouble(true)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                ),
+            )),
+        );
+
+        run_test_success(
+            "todouble(4.44)",
+            ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
                     )),
                 ),
             )),
