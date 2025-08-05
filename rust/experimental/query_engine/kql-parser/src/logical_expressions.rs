@@ -25,7 +25,10 @@ pub(crate) fn parse_comparison_expression(
     let next_rule = comparison_rules.next().unwrap();
 
     match operation_rule.as_rule() {
-        Rule::in_token | Rule::in_insensitive_token | Rule::not_in_token | Rule::not_in_insensitive_token => {
+        Rule::in_token
+        | Rule::in_insensitive_token
+        | Rule::not_in_token
+        | Rule::not_in_insensitive_token => {
             // For "in" operations, we expect parentheses and multiple values
             // The next_rule should be the first scalar_expression inside the parentheses
             let mut values = vec![parse_scalar_expression(next_rule, state)?];
@@ -53,7 +56,10 @@ pub(crate) fn parse_comparison_expression(
                 ),
             ));
 
-            let case_insensitive = matches!(operation_rule.as_rule(), Rule::in_insensitive_token | Rule::not_in_insensitive_token);
+            let case_insensitive = matches!(
+                operation_rule.as_rule(),
+                Rule::in_insensitive_token | Rule::not_in_insensitive_token
+            );
             let contains_expr = LogicalExpression::Contains(ContainsLogicalExpression::new(
                 query_location.clone(),
                 array_expr,
