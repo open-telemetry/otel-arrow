@@ -7,7 +7,7 @@ use crate::parser::ParseError;
 
 /// RFC 5424 message structure
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Rfc5424Message<'a> {
+pub(crate) struct Rfc5424Message<'a> {
     pub(super) priority: crate::parser::Priority,
     pub(super) version: u8,
     pub(super) timestamp: Option<&'a [u8]>,

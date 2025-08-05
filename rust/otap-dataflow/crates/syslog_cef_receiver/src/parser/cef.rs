@@ -5,7 +5,7 @@ use core::str;
 
 /// CEF message structure
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct CefMessage<'a> {
+pub(crate) struct CefMessage<'a> {
     pub(super) version: u8,
     pub(super) device_vendor: &'a [u8],
     pub(super) device_product: &'a [u8],

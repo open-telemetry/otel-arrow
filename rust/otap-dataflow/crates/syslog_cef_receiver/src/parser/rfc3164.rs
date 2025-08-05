@@ -3,7 +3,7 @@
 
 /// RFC 3164 message structure
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Rfc3164Message<'a> {
+pub(crate) struct Rfc3164Message<'a> {
     pub(super) priority: crate::parser::Priority,
     pub(super) timestamp: Option<&'a [u8]>,
     pub(super) hostname: Option<&'a [u8]>,
