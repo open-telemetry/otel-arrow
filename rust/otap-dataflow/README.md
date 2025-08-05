@@ -66,70 +66,7 @@ TBD
 
 ### :dart: Usage Example
 
-The OTAP dataflow library requires explicit configuration for all processors, including the SignalTypeRouter. Here's a basic example:
-
-```yaml
-type: otap
-description: "Example pipeline with explicit signal type routing"
-settings:
-  default_control_channel_size: 100
-  default_pdata_channel_size: 100
-nodes:
-  # OTLP Receiver
-  otlp_receiver:
-    kind: receiver
-    plugin_urn: "urn:otap:receiver:otlp"
-    config:
-      endpoint: "0.0.0.0:4317"
-      protocols:
-        grpc:
-          enabled: true
-
-  # SignalTypeRouter with explicit configuration
-  signal_router:
-    kind: processor
-    plugin_urn: "urn:otap:processor:signal_type_router"
-    out_ports:
-      traces_out:
-        dispatch_strategy: round_robin
-        destinations: [traces_processor]
-      metrics_out:
-        dispatch_strategy: broadcast
-        destinations: [metrics_processor]
-      logs_out:
-        dispatch_strategy: random
-        destinations: [logs_processor]
-    config:
-      drop_unknown_signals: false
-
-  # Downstream processors
-  traces_processor:
-    kind: processor
-    plugin_urn: "urn:otap:processor:batch"
-    config:
-      timeout: "1s"
-      send_batch_size: 512
-
-  metrics_processor:
-    kind: processor
-    plugin_urn: "urn:otap:processor:batch"
-    config:
-      timeout: "5s"
-      send_batch_size: 1024
-
-  logs_processor:
-    kind: processor
-    plugin_urn: "urn:otap:processor:batch"
-    config:
-      timeout: "2s"
-      send_batch_size: 256
-```
-
-**Key Features:**
-- **Explicit Configuration**: All nodes require complete configuration specification
-- **Zero-Copy Routing**: SignalTypeRouter forwards signal references without data duplication
-- **Multi-Port Dispatch**: Different signal types route to dedicated output ports
-- **Flexible Strategies**: Support for broadcast, round-robin, random, and least-loaded routing
+TBD
 
 ## :books: Documentation
 
