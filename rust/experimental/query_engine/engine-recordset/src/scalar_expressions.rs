@@ -375,6 +375,72 @@ where
 
             Ok(v)
         }
+        ScalarExpression::Slice(s) => {
+            let inner_value = execute_scalar_expression(execution_context, s.get_source())?;
+
+            let range_start_inclusive = match s.get_range_start_inclusive() {
+                Some(start) => s.validate_resolved_range_value(
+                    "start",
+                    execute_scalar_expression(execution_context, start)?.to_value(),
+                )?,
+                None => 0,
+            };
+            let range_end_exclusive = match s.get_range_end_exclusive() {
+                Some(end) => Some(s.validate_resolved_range_value(
+                    "end",
+                    execute_scalar_expression(execution_context, end)?.to_value(),
+                )?),
+                None => None,
+            };
+
+            let v = match inner_value.try_resolve_string() {
+                Ok(string_value) => {
+                    let range_end_exclusive = s.validate_slice_range(
+                        "String",
+                        string_value.get_value().chars().count(),
+                        range_start_inclusive,
+                        range_end_exclusive,
+                    )?;
+
+                    ResolvedValue::Slice(
+                        string_value.get_borrow_source(),
+                        Slice::String(StringSlice::new(
+                            string_value,
+                            range_start_inclusive,
+                            range_end_exclusive,
+                        )),
+                    )
+                }
+                Err(v) => match v.try_resolve_array() {
+                    Ok(array_value) => {
+                        let range_end_exclusive = s.validate_slice_range(
+                            "Array",
+                            array_value.len(),
+                            range_start_inclusive,
+                            range_end_exclusive,
+                        )?;
+
+                        ResolvedValue::Slice(
+                            array_value.get_borrow_source(),
+                            Slice::Array(ArraySlice::new(
+                                array_value,
+                                range_start_inclusive,
+                                range_end_exclusive,
+                            )),
+                        )
+                    }
+                    Err(_) => ResolvedValue::Computed(OwnedValue::Null),
+                },
+            };
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {v}"),
+            );
+
+            Ok(v)
+        }
     }
 }
 
@@ -1764,6 +1830,479 @@ mod tests {
                 )),
             )),
             Value::String(&StringValueStorage::new("second".into())),
+        );
+    }
+
+    #[test]
+    fn test_execute_slice_scalar_expression() {
+        fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
+            let pipeline = Default::default();
+
+            let record = TestRecord::new();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
+
+            let expression = ScalarExpression::Slice(input);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap_err();
+
+            match expected {
+                ExpressionError::TypeMismatch(_, msg) => {
+                    if let ExpressionError::TypeMismatch(_, actual_msg) = actual {
+                        assert_eq!(msg, actual_msg)
+                    } else {
+                        panic!("Unexpected ExpressionError")
+                    }
+                }
+                ExpressionError::ValidationFailure(_, msg) => {
+                    if let ExpressionError::ValidationFailure(_, actual_msg) = actual {
+                        assert_eq!(msg, actual_msg)
+                    } else {
+                        panic!("Unexpected ExpressionError")
+                    }
+                }
+            }
+        }
+
+        let string_source = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "Hello world!"),
+        ));
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+                ))),
+                None,
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "Range start for a slice expression cannot be a negative value".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                ))),
+                None,
+            ),
+            ExpressionError::TypeMismatch(
+                QueryLocation::new_fake(),
+                "Range start for a slice expression should be an integer type".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+                ))),
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "Range end for a slice expression cannot be a negative value".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                ))),
+            ),
+            ExpressionError::TypeMismatch(
+                QueryLocation::new_fake(),
+                "Range end for a slice expression should be an integer type".into(),
+            ),
+        );
+    }
+
+    #[test]
+    fn test_execute_string_slice_scalar_expression() {
+        fn run_test_success(input: SliceScalarExpression, expected: Value) {
+            let pipeline = Default::default();
+
+            let record = TestRecord::new();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
+
+            let expression = ScalarExpression::Slice(input);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
+
+            assert_eq!(expected, actual.to_value());
+        }
+
+        fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
+            let pipeline = Default::default();
+
+            let record = TestRecord::new();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
+
+            let expression = ScalarExpression::Slice(input);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap_err();
+
+            match expected {
+                ExpressionError::TypeMismatch(_, msg) => {
+                    if let ExpressionError::TypeMismatch(_, actual_msg) = actual {
+                        assert_eq!(msg, actual_msg)
+                    } else {
+                        panic!("Unexpected ExpressionError")
+                    }
+                }
+                ExpressionError::ValidationFailure(_, msg) => {
+                    if let ExpressionError::ValidationFailure(_, actual_msg) = actual {
+                        assert_eq!(msg, actual_msg)
+                    } else {
+                        panic!("Unexpected ExpressionError")
+                    }
+                }
+            }
+        }
+
+        let string_source = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "こんにちは"),
+        ));
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                None,
+                None,
+            ),
+            Value::String(&StringValueStorage::new("こんにちは".into())),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                None,
+            ),
+            Value::String(&StringValueStorage::new("んにちは".into())),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+            ),
+            Value::String(&StringValueStorage::new("".into())),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+            ),
+            Value::String(&StringValueStorage::new("ん".into())),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+            ),
+            Value::String(&StringValueStorage::new("こん".into())),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
+                ))),
+            ),
+            Value::String(&StringValueStorage::new("こんにちは".into())),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "String slice index starts at '2' but ends at '1'".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
+                ))),
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "String slice index ends at '6' which is beyond the length of '5'".into(),
+            ),
+        );
+    }
+
+    #[test]
+    fn test_execute_array_slice_scalar_expression() {
+        fn run_test_success(input: SliceScalarExpression, expected: Value) {
+            let pipeline = Default::default();
+
+            let record = TestRecord::new();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
+
+            let expression = ScalarExpression::Slice(input);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
+
+            assert_eq!(expected, actual.to_value());
+        }
+
+        fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
+            let pipeline = Default::default();
+
+            let record = TestRecord::new();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
+
+            let expression = ScalarExpression::Slice(input);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap_err();
+
+            match expected {
+                ExpressionError::TypeMismatch(_, msg) => {
+                    if let ExpressionError::TypeMismatch(_, actual_msg) = actual {
+                        assert_eq!(msg, actual_msg)
+                    } else {
+                        panic!("Unexpected ExpressionError")
+                    }
+                }
+                ExpressionError::ValidationFailure(_, msg) => {
+                    if let ExpressionError::ValidationFailure(_, actual_msg) = actual {
+                        assert_eq!(msg, actual_msg)
+                    } else {
+                        panic!("Unexpected ExpressionError")
+                    }
+                }
+            }
+        }
+
+        let array_values = vec![
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                0,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                1,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                2,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                3,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                4,
+            )),
+        ];
+
+        let array_source = ScalarExpression::Static(StaticScalarExpression::Array(
+            ArrayScalarExpression::new(QueryLocation::new_fake(), array_values.clone()),
+        ));
+
+        run_test_success(
+            SliceScalarExpression::new(QueryLocation::new_fake(), array_source.clone(), None, None),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_values.clone(),
+            )),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                None,
+            ),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_values.clone().drain(1..).collect(),
+            )),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+            ),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_values.clone().drain(1..1).collect(),
+            )),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+            ),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_values.clone().drain(1..2).collect(),
+            )),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+            ),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_values.clone().drain(..2).collect(),
+            )),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
+                ))),
+            ),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_values.clone().drain(..5).collect(),
+            )),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "Array slice index starts at '2' but ends at '1'".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
+                ))),
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "Array slice index ends at '6' which is beyond the length of '5'".into(),
+            ),
         );
     }
 }
