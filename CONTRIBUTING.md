@@ -48,7 +48,10 @@ functional). (TBD)
 
 ### Micro Benchmarks
 
-With certain code changes in the rust code base, running micro benchmarks to see if there are any issues with the performace could be a good idea. In order to do this `cargobench` label can be added to the pull request, which will trigger the [Rust-Benchmarks](.github/workflows/rust-bench.yml) workflow.
+With certain code changes in the rust code base, running micro benchmarks to
+see if there are any issues with the performace could be a good idea. In order
+to do this `cargobench` label can be added to the pull request, which will
+trigger the [Rust-Benchmarks](.github/workflows/rust-bench.yml) workflow.
 
 ## Contribution Guidelines
 
