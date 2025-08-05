@@ -417,6 +417,76 @@ impl Value<'_> {
 
         r.expect("Encountered a type which does not correctly implement convert_to_string")
     }
+
+    pub fn replace_matches(
+        _query_location: &QueryLocation,
+        haystack: &Value,
+        needle: &Value,
+        replacement: &Value,
+        case_insensitive: bool,
+    ) -> Option<String> {
+        match (haystack, needle, replacement) {
+            // String needle - simple text replacement (with case sensitivity support)
+            (
+                Value::String(haystack_str),
+                Value::String(needle_str),
+                Value::String(replacement_str),
+            ) => {
+                let haystack_val = haystack_str.get_value();
+                let needle_val = needle_str.get_value();
+                let replacement_val = replacement_str.get_value();
+
+                if case_insensitive {
+                    // Use caseless crate for case-insensitive replacement
+                    let mut result = String::new();
+                    let mut remaining = haystack_val;
+
+                    loop {
+                        // Find the first occurrence of needle in remaining text (case-insensitive)
+                        let mut match_start = None;
+                        let mut match_end = None;
+
+                        // Search for needle at each position in remaining
+                        for i in 0..=remaining.len() {
+                            if i + needle_val.len() <= remaining.len() {
+                                let candidate = &remaining[i..i + needle_val.len()];
+                                if caseless::default_caseless_match_str(candidate, needle_val) {
+                                    match_start = Some(i);
+                                    match_end = Some(i + needle_val.len());
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let (Some(start), Some(end)) = (match_start, match_end) {
+                            result.push_str(&remaining[..start]);
+                            result.push_str(replacement_val);
+                            remaining = &remaining[end..];
+                        } else {
+                            result.push_str(remaining);
+                            break;
+                        }
+                    }
+
+                    Some(result)
+                } else {
+                    Some(haystack_val.replace(needle_val, replacement_val))
+                }
+            }
+            // Regex needle - regex replacement with capture group support
+            (
+                Value::String(haystack_str),
+                Value::Regex(needle_regex),
+                Value::String(replacement_str),
+            ) => {
+                let regex = needle_regex.get_value();
+                let result =
+                    regex.replace_all(haystack_str.get_value(), replacement_str.get_value());
+                Some(result.to_string())
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Display for Value<'_> {
