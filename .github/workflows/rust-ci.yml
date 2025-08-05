@@ -211,4 +211,4 @@ jobs:
           echo "## :bulb: Build Options" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Add the label \`cargobench\` to your PR to run micro benchmarks." >> $GITHUB_STEP_SUMMARY
-          echo "- More info: [link to docs](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md)" >> $GITHUB_STEP_SUMMARY
+          echo "- More info: [link to docs](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#micro-benchmarks)" >> $GITHUB_STEP_SUMMARY
