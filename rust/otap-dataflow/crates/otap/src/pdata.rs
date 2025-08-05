@@ -89,6 +89,7 @@
 //!                                                                           
 //! ```
 
+use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
@@ -155,6 +156,58 @@ pub enum OtapPdata {
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
     OtapArrowRecords(OtapArrowRecords),
 }
+
+impl OtapPdata {
+    /// Returns the type of signal represented by this `OtapPdata` instance.
+    #[must_use]
+    pub fn signal_type(&self) -> SignalType {
+        match self {
+            Self::OtlpBytes(inner) => inner.signal_type(),
+            Self::OtapArrowBytes(inner) => inner.signal_type(),
+            Self::OtapArrowRecords(inner) => inner.signal_type(),
+        }
+    }
+}
+
+/* -------- Helper trait implementations -------- */
+
+/// Helper methods that internal representations of OTAP PData should implement
+trait OtapPdataHelpers {
+    /// Returns the type of signal represented by this `OtapPdata` instance.
+    fn signal_type(&self) -> SignalType;
+}
+
+impl OtapPdataHelpers for OtlpProtoBytes {
+    fn signal_type(&self) -> SignalType {
+        match self {
+            Self::ExportLogsRequest(_) => SignalType::Logs,
+            Self::ExportMetricsRequest(_) => SignalType::Metrics,
+            Self::ExportTracesRequest(_) => SignalType::Traces,
+        }
+    }
+}
+
+impl OtapPdataHelpers for OtapArrowRecords {
+    fn signal_type(&self) -> SignalType {
+        match self {
+            Self::Logs(_) => SignalType::Logs,
+            Self::Metrics(_) => SignalType::Metrics,
+            Self::Traces(_) => SignalType::Traces,
+        }
+    }
+}
+
+impl OtapPdataHelpers for OtapArrowBytes {
+    fn signal_type(&self) -> SignalType {
+        match self {
+            Self::ArrowLogs(_) => SignalType::Logs,
+            Self::ArrowMetrics(_) => SignalType::Metrics,
+            Self::ArrowTraces(_) => SignalType::Traces,
+        }
+    }
+}
+
+/* -------- Conversion implementations -------- */
 
 impl From<OtapArrowRecords> for OtapPdata {
     fn from(value: OtapArrowRecords) -> Self {
@@ -407,4 +460,45 @@ mod test {
     // once we have the ability to convert between OTLP bytes -> OTAP for
     // these signal types
     // https://github.com/open-telemetry/otel-arrow/issues/768
+
+    #[test]
+    fn test_signal_type() {
+        // Test signal_type for OtlpProtoBytes variants
+        let logs_bytes = OtlpProtoBytes::ExportLogsRequest(vec![]);
+        let metrics_bytes = OtlpProtoBytes::ExportMetricsRequest(vec![]);
+        let traces_bytes = OtlpProtoBytes::ExportTracesRequest(vec![]);
+
+        assert_eq!(logs_bytes.signal_type(), SignalType::Logs);
+        assert_eq!(metrics_bytes.signal_type(), SignalType::Metrics);
+        assert_eq!(traces_bytes.signal_type(), SignalType::Traces);
+
+        // Test signal_type for OtapArrowRecords variants
+        let logs_records = OtapArrowRecords::Logs(Default::default());
+        let metrics_records = OtapArrowRecords::Metrics(Default::default());
+        let traces_records = OtapArrowRecords::Traces(Default::default());
+
+        assert_eq!(logs_records.signal_type(), SignalType::Logs);
+        assert_eq!(metrics_records.signal_type(), SignalType::Metrics);
+        assert_eq!(traces_records.signal_type(), SignalType::Traces);
+
+        // Test signal_type for OtapArrowBytes variants
+        let logs_bytes = OtapArrowBytes::ArrowLogs(Default::default());
+        let metrics_bytes = OtapArrowBytes::ArrowMetrics(Default::default());
+        let traces_bytes = OtapArrowBytes::ArrowTraces(Default::default());
+
+        assert_eq!(logs_bytes.signal_type(), SignalType::Logs);
+        assert_eq!(metrics_bytes.signal_type(), SignalType::Metrics);
+        assert_eq!(traces_bytes.signal_type(), SignalType::Traces);
+
+        // Test signal_type for OtapPdata variants
+        let pdata_logs = OtapPdata::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(vec![]));
+        let pdata_metrics =
+            OtapPdata::OtapArrowRecords(OtapArrowRecords::Metrics(Default::default()));
+        let pdata_traces =
+            OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowTraces(Default::default()));
+
+        assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
+        assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);
+        assert_eq!(pdata_traces.signal_type(), SignalType::Traces);
+    }
 }
