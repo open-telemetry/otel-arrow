@@ -98,7 +98,7 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
         let (node_req_tx, node_req_rx) = node_request_channel(
             self.config
                 .pipeline_settings()
-                .default_node_request_channel_size,
+                .default_pipeline_ctrl_msg_channel_size,
         );
 
         // Create a task for each node type and pass the node request channel to each node, so

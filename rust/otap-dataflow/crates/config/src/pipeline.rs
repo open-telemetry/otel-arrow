@@ -25,6 +25,9 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
+    ///
+    /// Note: Even though technically our engine can support several types of pdata, we
+    /// are focusing our efforts on the OTAP pipeline (hence the default value).
     #[serde(default = "default_pipeline_type")]
     r#type: PipelineType,
 
@@ -35,18 +38,8 @@ pub struct PipelineConfig {
     /// All nodes in this pipeline, keyed by node ID.
     ///
     /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
-    /// across multiple threads without cloning the entire configuration.
+    /// across multiple cores/threads without cloning the entire configuration.
     nodes: HashMap<NodeId, Arc<NodeUserConfig>>,
-}
-
-fn default_control_channel_size() -> usize {
-    100
-}
-fn default_node_request_channel_size() -> usize {
-    100
-}
-fn default_pdata_channel_size() -> usize {
-    100
 }
 
 fn default_pipeline_type() -> PipelineType {
@@ -67,26 +60,36 @@ pub enum PipelineType {
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineSettings {
-    /// The default size of the control channels.
+    /// The default size of the node control message channels.
     /// These channels are used for sending control messages by the pipeline engine to nodes.
-    #[serde(default = "default_control_channel_size")]
-    pub default_control_channel_size: usize,
+    #[serde(default = "default_node_ctrl_msg_channel_size")]
+    pub default_node_ctrl_msg_channel_size: usize,
 
-    /// The default size of the node request channels.
-    /// This MPSC channel is used for sending requests from nodes to the pipeline engine.
-    #[serde(default = "default_node_request_channel_size")]
-    pub default_node_request_channel_size: usize,
+    /// The default size of the pipeline control message channels.
+    /// This MPSC channel is used for sending control messages from nodes to the pipeline engine.
+    #[serde(default = "default_pipeline_ctrl_msg_channel_size")]
+    pub default_pipeline_ctrl_msg_channel_size: usize,
 
     /// The default size of the pdata channels.
     #[serde(default = "default_pdata_channel_size")]
     pub default_pdata_channel_size: usize,
 }
 
+fn default_node_ctrl_msg_channel_size() -> usize {
+    100
+}
+fn default_pipeline_ctrl_msg_channel_size() -> usize {
+    100
+}
+fn default_pdata_channel_size() -> usize {
+    100
+}
+
 impl Default for PipelineSettings {
     fn default() -> Self {
         Self {
-            default_control_channel_size: default_control_channel_size(),
-            default_node_request_channel_size: default_node_request_channel_size(),
+            default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
+            default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
         }
     }
@@ -122,6 +125,8 @@ impl PipelineConfig {
         })?;
         Self::from_json(pipeline_group_id, pipeline_id, &contents)
     }
+
+    // ToDo : Add support for YAML format.
 
     /// Returns the general settings for this pipeline.
     #[must_use]
