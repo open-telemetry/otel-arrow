@@ -4,58 +4,62 @@ This directory contains example pipeline configurations for the OTAP dataflow en
 
 ## Available Configurations
 
-### `otlp-basic.json`
+### `otap-otap.json`
+
+A basic OTAP pipeline configuration that:
+
+- Receives OTAP traffic on `127.0.1:4317`
+- Exports OTAP traffic to `http://127.0.1:1235`
+- Default channel sizes of 100
+
+### `otap-otlp.json`
+
+A basic OTAP to OTLP pipeline configuration that:
+
+- Receives OTAP traffic on `127.0.0.1:4317`
+- Exports OTLP traffic to `http://127.0.0.1:1235`
+- Default channel sizes of 100
+
+### `otlp-otap.json`
+
+A basic OTLP to OTAP pipeline configuration that:
+
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Exports OTAP traffic to `http://127.0.0.1:1235`
+- Default channel sizes of 100
+
+### `otlp-otlp.json`
 
 A basic OTLP pipeline configuration that:
 
-- Receives OTLP data on `127.0.0.1:4317`
-- Exports to `http://127.0.0.1:1235`
-- Uses round-robin dispatch strategy
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Exports OTLP traffic to `http://127.0.0.1:1235`
+- Default channel sizes of 100
+
+### `otap-perf.json`
+
+A pipeline configuration to measure performance metrics, which:
+
+- Receives OTAP traffic on `127.0.0.1:4317`
+- Measures and exports performance metrics
+- Default channel sizes of 100
+
+### `otlp-perf.json`
+
+A pipeline configuration to measure performance metrics, which:
+
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Measures and exports performance metrics
 - Default channel sizes of 100
 
 ## Usage
 
-You can use these configurations with the mini_collector example:
+You can use these configurations with the following CLI command:
 
 ```bash
-# Use the default basic OTLP configuration
-cargo run --example mini_collector
-
 # Use a specific configuration
-cargo run --example mini_collector -- -p configs/otlp-otlp.json
+cargo run -- -p configs/otlp-otlp.json
 
 # Combine with custom core count
-cargo run --example mini_collector -- -p configs/otlp-otlp.json --num-cores 4
+cargo run -- -p configs/otlp-otlp.json --num-cores 4
 ```
-
-## Creating Custom Configurations
-
-Pipeline configurations follow this JSON structure:
-
-```json5
-{
-  "type": "otlp",
-  "settings": {
-    "default_control_channel_size": 100,
-    "default_pdata_channel_size": 100
-  },
-  "nodes": {
-    "node_name": {
-      "kind": "receiver|processor|exporter",
-      "plugin_urn": "urn:plugin:identifier",
-      "config": {
-        // Node-specific configuration
-      },
-      "out_ports": {
-        "port_name": {
-          "destinations": ["target_node"],
-          "dispatch_strategy": "round_robin|broadcast|..."
-        }
-      }
-    }
-  }
-}
-```
-
-Add your custom configuration files to this directory and reference them using
-the `-p` parameter.
