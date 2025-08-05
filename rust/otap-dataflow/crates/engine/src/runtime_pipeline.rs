@@ -2,15 +2,20 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use crate::control::{ControlMsg, Controllable};
+use crate::control::{
+    ControlMsg, Controllable, NodeRequestReceiver, PipelineControlMsg, node_request_channel,
+};
 use crate::error::Error;
+use crate::message::Sender;
 use crate::node::Node;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::{NodeId, pipeline::PipelineConfig};
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
+use tokio::time::Instant;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 pub struct RuntimePipeline<PData: Debug> {
@@ -81,27 +86,47 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(self) -> Result<Vec<()>, Error<PData>> {
         use futures::stream::{FuturesUnordered, StreamExt};
-        let mut futures = FuturesUnordered::new();
+
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
+        // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
+        let mut futures = FuturesUnordered::new();
         let mut control_senders = HashMap::new();
-        // let mut handlers = Vec::with_capacity(self.node_count());
+        let (node_req_tx, node_req_rx) = node_request_channel(
+            self.config
+                .pipeline_settings()
+                .default_node_request_channel_size,
+        );
 
+        // Create a task for each node type and pass the node request channel to each node, so
+        // they can communicate with the runtime pipeline.
         for (node_id, exporter) in self.exporters {
             _ = control_senders.insert(node_id, exporter.control_sender());
-            futures.push(local_tasks.spawn_local(async move { exporter.start().await }));
+            let node_req_tx = node_req_tx.clone();
+            futures.push(local_tasks.spawn_local(async move { exporter.start(node_req_tx).await }));
         }
         for (node_id, processor) in self.processors {
             _ = control_senders.insert(node_id, processor.control_sender());
-            futures.push(local_tasks.spawn_local(async move { processor.start().await }));
+            let node_req_tx = node_req_tx.clone();
+            futures
+                .push(local_tasks.spawn_local(async move { processor.start(node_req_tx).await }));
         }
         for (node_id, receiver) in self.receivers {
             _ = control_senders.insert(node_id, receiver.control_sender());
-            futures.push(local_tasks.spawn_local(async move { receiver.start().await }));
+            let node_req_tx = node_req_tx.clone();
+            futures.push(local_tasks.spawn_local(async move { receiver.start(node_req_tx).await }));
         }
+
+        // Create a task to process pipeline control messages, i.e. messages sent from nodes to
+        // the pipeline engine.
+        futures.push(local_tasks.spawn_local(async move {
+            let timer_manager = NodeRequestManager::new(node_req_rx, control_senders);
+            timer_manager.run().await;
+            Ok(())
+        }));
 
         rt.block_on(async {
             local_tasks
@@ -114,11 +139,11 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
                             Ok(Ok(res)) => {
                                 // Task completed successfully, collect its result
                                 task_results.push(res);
-                            },
+                            }
                             Ok(Err(e)) => {
                                 // A task returned an error
                                 return Err(e);
-                            },
+                            }
                             Err(e) => {
                                 // JoinError (panic or cancellation)
                                 return Err(Error::JoinTaskError {
@@ -160,6 +185,111 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
                 })
         } else {
             Err(Error::UnknownNode { node_id })
+        }
+    }
+}
+
+/// Manages node requests such as recurrent and cancelable timers.
+///
+/// For now, this manager is only responsible for managing timers for nodes in the pipeline.
+/// It uses a priority queue to efficiently handle timer expirations and cancellations.
+///
+/// - On StartTimer: adds a timer for the node with the specified duration.
+/// - On CancelTimer: marks the timer for the node as canceled.
+/// - On timer expiration: if not canceled, processes the timer expiration for the node.
+///
+/// This manager is optimized for a single-threaded runtime.
+///
+/// Current limitations:
+/// - Does not support multiple timers for the same node.
+/// - Does not support other types of node requests yet (ACK/NACK).
+pub struct NodeRequestManager {
+    node_request_receiver: NodeRequestReceiver,
+    control_senders: HashMap<NodeId, Sender<ControlMsg>>,
+    timers: BinaryHeap<Reverse<(Instant, NodeId)>>,
+    canceled: HashSet<NodeId>,
+    timer_map: HashMap<NodeId, Instant>,
+    durations: HashMap<NodeId, std::time::Duration>,
+}
+
+impl NodeRequestManager {
+    /// Creates a new NodeRequestManager.
+    #[must_use]
+    pub fn new(
+        node_request_receiver: NodeRequestReceiver,
+        control_senders: HashMap<NodeId, Sender<ControlMsg>>,
+    ) -> Self {
+        Self {
+            node_request_receiver,
+            control_senders,
+            timers: BinaryHeap::new(),
+            canceled: HashSet::new(),
+            timer_map: HashMap::new(),
+            durations: HashMap::new(),
+        }
+    }
+
+    /// Runs the manager event loop.
+    pub async fn run(mut self) {
+        loop {
+            let next_expiry = self.timers.peek().map(|Reverse((instant, _))| *instant);
+            tokio::select! {
+                biased;
+                msg = self.node_request_receiver.recv() => {
+                    let Some(msg) = msg.ok() else { break; };
+                    match msg {
+                        PipelineControlMsg::Shutdown => break,
+                        PipelineControlMsg::StartTimer { node_id, duration } => {
+                            let when = Instant::now() + duration;
+                            self.timers.push(Reverse((when, node_id.clone())));
+                            let _ = self.timer_map.insert(node_id.clone(), when);
+                            let _ = self.durations.insert(node_id.clone(), duration);
+                            let _ = self.canceled.remove(&node_id);
+                        }
+                        PipelineControlMsg::CancelTimer { node_id } => {
+                            let _ = self.canceled.insert(node_id.clone());
+                            let _ = self.timer_map.remove(&node_id);
+                            let _ = self.durations.remove(&node_id);
+                        }
+                    }
+                }
+                _ = async {
+                    if let Some(when) = next_expiry {
+                        let now = Instant::now();
+                        if when > now {
+                            tokio::time::sleep_until(when).await;
+                        }
+                    } else {
+                        futures::future::pending::<()>().await;
+                    }
+                }, if next_expiry.is_some() => {
+                    if let Some(Reverse((when, node_id))) = self.timers.pop() {
+                        if !self.canceled.contains(&node_id) {
+                            if let Some(&exp) = self.timer_map.get(&node_id) {
+                                if exp == when {
+                                    // Timer fires: handle expiration
+                                    if let Some(sender) = self.control_senders.get(&node_id) {
+                                        let _ = sender.send(ControlMsg::TimerTick {}).await;
+                                    } else {
+                                        eprintln!("No control sender for node: {node_id}");
+                                    }
+
+                                    // Schedule next recurrence if still not canceled
+                                    if let Some(&duration) = self.durations.get(&node_id) {
+                                        let next_when = Instant::now() + duration;
+                                        self.timers.push(Reverse((next_when, node_id.clone())));
+                                        let _ = self.timer_map.insert(node_id.clone(), next_when);
+                                    }
+                                }
+                            }
+                        } else {
+                            let _ = self.timer_map.remove(&node_id);
+                            let _ = self.durations.remove(&node_id);
+                            let _ = self.canceled.remove(&node_id);
+                        }
+                    }
+                }
+            }
         }
     }
 }

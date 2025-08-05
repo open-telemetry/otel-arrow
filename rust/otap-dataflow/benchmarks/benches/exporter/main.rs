@@ -57,7 +57,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::control::{ControlMsg, Controllable};
+use otap_df_engine::control::{ControlMsg, Controllable, node_request_channel};
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;
@@ -405,6 +405,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let control_sender = exporter.control_sender();
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
+                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -412,7 +413,10 @@ fn bench_exporter(c: &mut Criterion) {
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter.start().await.expect("Exporter event loop failed");
+                        exporter
+                            .start(node_req_tx)
+                            .await
+                            .expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter
@@ -451,6 +455,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let control_sender = exporter.control_sender();
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
+                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -459,7 +464,10 @@ fn bench_exporter(c: &mut Criterion) {
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter.start().await.expect("Exporter event loop failed");
+                        exporter
+                            .start(node_req_tx)
+                            .await
+                            .expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter
@@ -501,6 +509,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let control_sender = exporter.control_sender();
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
+                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -509,7 +518,10 @@ fn bench_exporter(c: &mut Criterion) {
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter.start().await.expect("Exporter event loop failed");
+                        exporter
+                            .start(node_req_tx)
+                            .await
+                            .expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter
@@ -549,6 +561,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
+                    let (node_req_tx, _node_req_rx) = node_request_channel(10);
 
                     exporter
                         .set_pdata_receiver(exporter_config.name, pdata_receiver)
@@ -558,7 +571,10 @@ fn bench_exporter(c: &mut Criterion) {
                     // start the exporter
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
-                        exporter.start().await.expect("Exporter event loop failed");
+                        exporter
+                            .start(node_req_tx)
+                            .await
+                            .expect("Exporter event loop failed");
                     });
 
                     // send signals to the exporter

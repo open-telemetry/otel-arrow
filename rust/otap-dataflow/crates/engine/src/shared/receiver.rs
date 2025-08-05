@@ -31,14 +31,15 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::control::ControlMsg;
-use crate::effect_handler::EffectHandlerCore;
+use crate::control::{ControlMsg, NodeRequestSender};
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_config::NodeId;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 /// A trait for ingress receivers (Send definition).
@@ -96,11 +97,14 @@ impl<PData> EffectHandler<PData> {
     /// Use this constructor when your receiver do need to be sent across threads or
     /// when it uses components that are `Send`.
     #[must_use]
-    pub fn new(node_id: NodeId, msg_sender: SharedSender<PData>) -> Self {
-        EffectHandler {
-            core: EffectHandlerCore { node_id },
-            msg_sender,
-        }
+    pub fn new(
+        node_id: NodeId,
+        msg_sender: SharedSender<PData>,
+        node_request_sender: NodeRequestSender,
+    ) -> Self {
+        let mut core = EffectHandlerCore::new(node_id);
+        core.set_node_request_sender(node_request_sender);
+        EffectHandler { core, msg_sender }
     }
 
     /// Returns the name of the receiver associated with this handler.
@@ -135,6 +139,15 @@ impl<PData> EffectHandler<PData> {
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.

@@ -6,11 +6,11 @@
   "nodes": {
     "otlp_receiver": {
       "kind": "receiver",
-      "plugin_urn": "urn::otel::otlp::receiver",
+      "plugin_urn": "urn:otel:otap:receiver",
       "out_ports": {
         "out_port": {
           "destinations": [
-            "perf"
+            "otlp_exporter"
           ],
           "dispatch_strategy": "round_robin"
         }
@@ -19,15 +19,11 @@
         "listening_addr": "127.0.0.1:4317"
       }
     },
-    "perf": {
+    "otlp_exporter": {
       "kind": "exporter",
-      "plugin_urn": "urn:otel:otap:perf:exporter",
+      "plugin_urn": "urn:otel:otlp:exporter",
       "config": {
-        "frequency": 5000,
-        "cpu_usage": false,
-        "memory_usage": false,
-        "disk_usage": false,
-        "io_usage": false
+        "grpc_endpoint": "http://127.0.0.1:1235"
       }
     }
   }

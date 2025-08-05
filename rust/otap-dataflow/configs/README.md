@@ -22,10 +22,10 @@ You can use these configurations with the mini_collector example:
 cargo run --example mini_collector
 
 # Use a specific configuration
-cargo run --example mini_collector -- -p configs/otlp-basic.json
+cargo run --example mini_collector -- -p configs/otlp-otlp.json
 
 # Combine with custom core count
-cargo run --example mini_collector -- -p configs/otlp-basic.json --num-cores 4
+cargo run --example mini_collector -- -p configs/otlp-otlp.json --num-cores 4
 ```
 
 ## Creating Custom Configurations

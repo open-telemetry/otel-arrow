@@ -136,6 +136,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         let sys_refresh_list = sys_refresh_list(&self.config);
 
         effect_handler.info("Starting Perf Exporter\n").await;
+        _ = effect_handler
+            .start_periodic_timer(Duration::from_millis(self.config.frequency()))
+            .await?;
 
         // Helper function to generate performance report
         let generate_report = async |received_arrow_records_count: u64,

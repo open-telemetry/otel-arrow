@@ -5,7 +5,7 @@
 //! Important note: It is important not to use `!Send` data types in errors (e.g. avoid using Rc) to
 //! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
-use crate::control::ControlMsg;
+use crate::control::{ControlMsg, PipelineControlMsg};
 use otap_df_channel::error::SendError;
 use otap_df_config::{NodeId, PortName, Urn};
 use std::borrow::Cow;
@@ -24,6 +24,10 @@ pub enum Error<T> {
     /// A wrapper for the channel errors.
     #[error("A channel error occurred: {0}")]
     ChannelSendError(#[from] SendError<T>),
+
+    /// A wrapper for the pipeline control message send errors.
+    #[error("A pipeline control channel error occurred: {0}")]
+    PipelineControlMsgError(SendError<PipelineControlMsg>),
 
     /// A wrapper for the control message send errors.
     #[error("A control message send error occurred in node {node}: {error}")]

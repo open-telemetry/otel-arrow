@@ -6,7 +6,7 @@
   "nodes": {
     "otlp_receiver": {
       "kind": "receiver",
-      "plugin_urn": "urn::otel::otlp::receiver",
+      "plugin_urn": "urn:otel:otap:receiver",
       "out_ports": {
         "out_port": {
           "destinations": [

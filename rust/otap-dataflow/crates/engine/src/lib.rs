@@ -12,10 +12,10 @@ use crate::{
     runtime_pipeline::RuntimePipeline,
 };
 use serde_json::Value;
+use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{collections::HashMap, sync::OnceLock};
-use std::fmt::Debug;
 
 pub mod error;
 pub mod exporter;

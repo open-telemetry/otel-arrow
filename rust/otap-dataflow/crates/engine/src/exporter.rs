@@ -7,7 +7,7 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
-use crate::control::{ControlMsg, Controllable};
+use crate::control::{ControlMsg, Controllable, NodeRequestSender};
 use crate::error::Error;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -117,10 +117,10 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(self) -> Result<(), Error<PData>> {
+    pub async fn start(self, node_req_tx: NodeRequestSender) -> Result<(), Error<PData>> {
         match self {
             ExporterWrapper::Local {
-                effect_handler,
+                mut effect_handler,
                 exporter,
                 control_receiver,
                 pdata_receiver,
@@ -134,12 +134,13 @@ impl<PData> ExporterWrapper<PData> {
                     exporter: effect_handler.exporter_id(),
                     error: "PData receiver not initialized".to_owned(),
                 })?;
+                effect_handler.core.set_node_request_sender(node_req_tx);
                 let message_channel =
                     message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             ExporterWrapper::Shared {
-                effect_handler,
+                mut effect_handler,
                 exporter,
                 control_receiver,
                 pdata_receiver,
@@ -153,6 +154,7 @@ impl<PData> ExporterWrapper<PData> {
                     exporter: effect_handler.exporter_id(),
                     error: "PData receiver not initialized".to_owned(),
                 })?;
+                effect_handler.core.set_node_request_sender(node_req_tx);
                 let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }

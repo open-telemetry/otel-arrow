@@ -6,7 +6,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
-use crate::control::{ControlMsg, Controllable};
+use crate::control::{ControlMsg, Controllable, NodeRequestReceiver, node_request_channel};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
@@ -166,6 +166,8 @@ pub struct ValidationPhase<PData> {
 
     /// Join handle for the running the test task
     run_test_handle: tokio::task::JoinHandle<()>,
+
+    node_request_receiver: NodeRequestReceiver,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -241,13 +243,15 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 )
             }
         };
+        let (node_req_tx, node_req_rx) = node_request_channel(10);
+
         self.receiver
             .set_pdata_sender(node_id, "".into(), pdata_sender)
             .expect("Failed to set pdata sender");
 
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
-                .start()
+                .start(node_req_tx)
                 .await
                 .expect("Receiver event loop failed");
         });
@@ -265,6 +269,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
+            node_request_receiver: node_req_rx,
         }
     }
 }

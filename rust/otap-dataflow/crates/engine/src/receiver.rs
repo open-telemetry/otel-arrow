@@ -7,7 +7,7 @@
 //! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
-use crate::control::{ControlMsg, Controllable};
+use crate::control::{ControlMsg, Controllable, NodeRequestSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
@@ -122,7 +122,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Starts the receiver and begins receiver incoming data.
-    pub async fn start(self) -> Result<(), Error<PData>> {
+    pub async fn start(self, node_req_tx: NodeRequestSender) -> Result<(), Error<PData>> {
         match self {
             ReceiverWrapper::Local {
                 runtime_config,
@@ -141,8 +141,11 @@ impl<PData> ReceiverWrapper<PData> {
                     }
                 };
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-                let effect_handler =
-                    local::EffectHandler::new(runtime_config.name.clone(), pdata_sender);
+                let effect_handler = local::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender,
+                    node_req_tx,
+                );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
@@ -162,8 +165,11 @@ impl<PData> ReceiverWrapper<PData> {
                     }
                 };
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
-                let effect_handler =
-                    shared::EffectHandler::new(runtime_config.name.clone(), pdata_sender);
+                let effect_handler = shared::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender,
+                    node_req_tx,
+                );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }

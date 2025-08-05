@@ -3,10 +3,13 @@
 //! Control message infrastructure.
 
 use crate::message::Sender;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
+use otap_df_config::NodeId;
 use std::time::Duration;
 
-/// Control messages used for managing pipeline operations and node behaviors.
+/// Control messages are sent by the pipeline engine to nodes to manage their behavior and
+/// operations.
 #[derive(Debug, Clone)]
 pub enum ControlMsg {
     /// Indicates that a downstream component (either internal or external) has reliably received
@@ -49,6 +52,25 @@ pub enum ControlMsg {
     },
 }
 
+/// Requests sent from nodes to the pipeline engine for node-specific control operations.
+#[derive(Debug, Clone)]
+pub enum PipelineControlMsg {
+    /// Start a periodic timer for a node.
+    StartTimer {
+        /// The ID of the node for which the timer is being started.
+        node_id: NodeId,
+        /// The duration of the timer.
+        duration: Duration,
+    },
+    /// Cancel a periodic timer for a node.
+    CancelTimer {
+        /// The ID of the node for which the timer is being canceled.
+        node_id: NodeId,
+    },
+    /// Shutdown the node request manager.
+    Shutdown,
+}
+
 /// Trait for nodes that can receive control messages.
 #[async_trait::async_trait(?Send)]
 pub trait Controllable {
@@ -65,4 +87,19 @@ impl ControlMsg {
     pub fn is_shutdown(&self) -> bool {
         matches!(self, ControlMsg::Shutdown { .. })
     }
+}
+
+/// Channel sender for node requests to the pipeline engine.
+pub type NodeRequestSender = SharedSender<PipelineControlMsg>;
+
+/// Channel receiver for node requests from the pipeline engine.
+pub type NodeRequestReceiver = SharedReceiver<PipelineControlMsg>;
+
+/// Helper to create a shared node request channel (n nodes, 1 pipeline engine -> MPSC).
+pub fn node_request_channel(capacity: usize) -> (NodeRequestSender, NodeRequestReceiver) {
+    let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+    (
+        SharedSender::MpscSender(tx),
+        SharedReceiver::MpscReceiver(rx),
+    )
 }

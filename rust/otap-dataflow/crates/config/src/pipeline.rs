@@ -25,6 +25,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
+    #[serde(default = "default_pipeline_type")]
     r#type: PipelineType,
 
     /// Settings for this pipeline.
@@ -41,8 +42,15 @@ pub struct PipelineConfig {
 fn default_control_channel_size() -> usize {
     100
 }
+fn default_node_request_channel_size() -> usize {
+    100
+}
 fn default_pdata_channel_size() -> usize {
     100
+}
+
+fn default_pipeline_type() -> PipelineType {
+    PipelineType::Otap
 }
 
 /// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
@@ -60,8 +68,14 @@ pub enum PipelineType {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineSettings {
     /// The default size of the control channels.
+    /// These channels are used for sending control messages by the pipeline engine to nodes.
     #[serde(default = "default_control_channel_size")]
     pub default_control_channel_size: usize,
+
+    /// The default size of the node request channels.
+    /// This MPSC channel is used for sending requests from nodes to the pipeline engine.
+    #[serde(default = "default_node_request_channel_size")]
+    pub default_node_request_channel_size: usize,
 
     /// The default size of the pdata channels.
     #[serde(default = "default_pdata_channel_size")]
@@ -72,6 +86,7 @@ impl Default for PipelineSettings {
     fn default() -> Self {
         Self {
             default_control_channel_size: default_control_channel_size(),
+            default_node_request_channel_size: default_node_request_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
         }
     }
@@ -106,6 +121,12 @@ impl PipelineConfig {
             details: e.to_string(),
         })?;
         Self::from_json(pipeline_group_id, pipeline_id, &contents)
+    }
+
+    /// Returns the general settings for this pipeline.
+    #[must_use]
+    pub fn pipeline_settings(&self) -> &PipelineSettings {
+        &self.settings
     }
 
     /// Returns an iterator visiting all nodes in the pipeline.

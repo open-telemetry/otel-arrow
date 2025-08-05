@@ -36,6 +36,7 @@ otap-df-otap = { path = "crates/otap" }
 thiserror.workspace = true
 serde_json.workspace = true
 clap = { version = "4.5.42", features = ["derive"] }
+mimalloc-rust = "0.2.1"
 
 [workspace.dependencies]
 arrow = "55.2"

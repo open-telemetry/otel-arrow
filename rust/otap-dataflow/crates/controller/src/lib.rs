@@ -38,11 +38,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Starts the controller with the given pipeline configuration and quota.
-    pub fn run_forever(
-        &self,
-        pipeline: PipelineConfig,
-        quota: Quota,
-    ) -> Result<(), error::Error> {
+    pub fn run_forever(&self, pipeline: PipelineConfig, quota: Quota) -> Result<(), error::Error> {
         // Get available CPU cores for pinning
         let all_core_ids =
             core_affinity::get_core_ids().ok_or_else(|| error::Error::InternalError {

@@ -32,7 +32,7 @@
 //! in parallel on different cores, each with its own exporter instance.
 
 use crate::control::ControlMsg;
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
 use crate::shared::message::SharedReceiver;
@@ -202,20 +202,16 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
-
-    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
-    /// will consume.
+    pub(crate) core: EffectHandlerCore,
     _pd: PhantomData<PData>,
 }
 
-/// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter name.
     #[must_use]
     pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_id },
+            core: EffectHandlerCore::new(node_id),
             _pd: PhantomData,
         }
     }
@@ -232,6 +228,15 @@ impl<PData> EffectHandler<PData> {
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.
