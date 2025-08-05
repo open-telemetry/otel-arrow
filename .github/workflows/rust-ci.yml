@@ -201,3 +201,14 @@ jobs:
       - name: cargo xtask ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
+
+  document-build-options:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Document Build Options
+        run: |
+          echo "## :bulb: Build Options" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Add the label \`cargobench\` to your PR to run micro benchmarks." >> $GITHUB_STEP_SUMMARY
+          echo "- More info: [link to docs]" >> $GITHUB_STEP_SUMMARY
