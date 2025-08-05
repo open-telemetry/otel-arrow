@@ -19,7 +19,9 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
 ) -> Result<(), ExpressionError> {
     match reduce_map_transform_expression {
         ReduceMapTransformExpression::Remove(r) => {
-            let reduction = resolve_map_reduction(execution_context, r)?;
+            let target = r.get_target();
+
+            let reduction = resolve_map_reduction(execution_context, target, r)?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -27,10 +29,10 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                 || format!("Resolved map reduction: {reduction}"),
             );
 
-            let target = execute_mutable_value_expression(execution_context, r.get_target())?;
+            let target = execute_mutable_value_expression(execution_context, target)?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
-                m.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+                m.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
                     for p in &reduction.key_patterns {
                         if p.get_value().is_match(k) {
                             execution_context.add_diagnostic_if_enabled(
@@ -43,9 +45,9 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     }
 
                     if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-                        let v = v.to_value_mut();
+                        let v = v.to_static_value_mut();
                         let remove = match v {
-                            Some(ValueMut::Map(m)) => {
+                            Some(StaticValueMut::Map(m)) => {
                                 if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -59,7 +61,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     true
                                 }
                             }
-                            Some(ValueMut::Array(a)) => {
+                            Some(StaticValueMut::Array(a)) => {
                                 if !inner_reduction.indices.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -99,7 +101,9 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
             Ok(())
         }
         ReduceMapTransformExpression::Retain(r) => {
-            let reduction = resolve_map_reduction(execution_context, r)?;
+            let target = r.get_target();
+
+            let reduction = resolve_map_reduction(execution_context, target, r)?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -107,10 +111,10 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                 || format!("Resolved map reduction: {reduction}"),
             );
 
-            let target = execute_mutable_value_expression(execution_context, r.get_target())?;
+            let target = execute_mutable_value_expression(execution_context, target)?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
-                m.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+                m.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
                     for p in &reduction.key_patterns {
                         if p.get_value().is_match(k) {
                             return true;
@@ -118,9 +122,9 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     }
 
                     if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-                        let v = v.to_value_mut();
+                        let v = v.to_static_value_mut();
                         match v {
-                            Some(ValueMut::Map(m)) => {
+                            Some(StaticValueMut::Map(m)) => {
                                 if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -130,7 +134,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     keep_in_map(execution_context, r, m, inner_reduction);
                                 }
                             }
-                            Some(ValueMut::Array(a)) => {
+                            Some(StaticValueMut::Array(a)) => {
                                 if !inner_reduction.indices.is_empty() {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
@@ -282,6 +286,7 @@ impl Eq for MapReductionKey<'_> {}
 
 fn resolve_map_reduction<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    target: &'a MutableValueExpression,
     map_selection: &'a MapSelectionExpression,
 ) -> Result<MapReduction<'c>, ExpressionError>
 where
@@ -293,7 +298,14 @@ where
     for selector in map_selection.get_selectors() {
         match selector {
             MapSelector::KeyOrKeyPattern(s) => {
-                let value = execute_scalar_expression(execution_context, s)?;
+                let mut value = execute_scalar_expression(execution_context, s)?;
+
+                if value.copy_if_borrowed_from_target(target) {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        target,
+                        || format!("Copied the resolved key or pattern value '{value}' into temporary storage because the value came from the mutable target"));
+                }
 
                 let value_type = value.get_value_type();
 
@@ -320,6 +332,7 @@ where
             }
             MapSelector::ValueAccessor(a) => process_map_reduction_accessor(
                 execution_context,
+                target,
                 a.get_selectors().iter(),
                 &mut reduction,
             )?,
@@ -331,6 +344,7 @@ where
 
 fn process_map_reduction_accessor<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    target: &'a MutableValueExpression,
     mut selectors: Iter<'a, ScalarExpression>,
     current_reduction: &mut MapReduction<'c>,
 ) -> Result<(), ExpressionError>
@@ -339,31 +353,38 @@ where
     'b: 'c,
 {
     if let Some(selector) = selectors.next() {
-        let value = execute_scalar_expression(execution_context, selector)?;
+        let mut value = execute_scalar_expression(execution_context, selector)?;
+
+        if value.copy_if_borrowed_from_target(target) {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                target,
+                || format!("Copied the resolved accessor value '{value}' into temporary storage because the value came from the mutable target"));
+        }
 
         let value_type = value.get_value_type();
 
         if value_type == ValueType::String {
             let key = MapReductionKey::Resolved(value.try_resolve_string().unwrap());
             if let Some(t) = current_reduction.keys.get_mut(&key) {
-                return process_map_reduction_accessor(execution_context, selectors, t);
+                return process_map_reduction_accessor(execution_context, target, selectors, t);
             } else {
                 let t = current_reduction
                     .keys
                     .entry(key)
                     .or_insert(MapReduction::new());
-                return process_map_reduction_accessor(execution_context, selectors, t);
+                return process_map_reduction_accessor(execution_context, target, selectors, t);
             }
         } else if let Value::Integer(i) = value.to_value() {
             let index = i.get_value();
             if let Some(t) = current_reduction.indices.get_mut(&index) {
-                return process_map_reduction_accessor(execution_context, selectors, t);
+                return process_map_reduction_accessor(execution_context, target, selectors, t);
             } else {
                 let t = current_reduction
                     .indices
                     .entry(index)
                     .or_insert(MapReduction::new());
-                return process_map_reduction_accessor(execution_context, selectors, t);
+                return process_map_reduction_accessor(execution_context, target, selectors, t);
             }
         } else if let Value::Regex(_) = value.to_value() {
             current_reduction
@@ -387,7 +408,7 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
 ) {
-    map.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+    map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
         if !reduction.key_patterns.is_empty() {
             for p in &reduction.key_patterns {
                 if p.get_value().is_match(k) {
@@ -402,9 +423,9 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
         }
 
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             let remove = match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -418,7 +439,7 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
                         true
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -478,11 +499,11 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
         }
     }
 
-    array.retain(&mut IndexValueMutClosureCallback::new(|i, mut v| {
+    array.retain(&mut IndexValueMutClosureCallback::new(|i, v| {
         if let Some(inner_reduction) = elements.get(&i) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             let remove = match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -496,7 +517,7 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
                         true
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -533,7 +554,7 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
 ) {
-    map.retain(&mut KeyValueMutClosureCallback::new(|k, mut v| {
+    map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
         if !reduction.key_patterns.is_empty() {
             for p in &reduction.key_patterns {
                 if p.get_value().is_match(k) {
@@ -543,9 +564,9 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
         }
 
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -555,7 +576,7 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -611,11 +632,11 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
         }
     }
 
-    array.retain(&mut IndexValueMutClosureCallback::new(|i, mut v| {
+    array.retain(&mut IndexValueMutClosureCallback::new(|i, v| {
         if let Some(inner_reduction) = elements.get(&i) {
-            let v = v.to_value_mut();
+            let v = v.to_static_value_mut();
             match v {
-                Some(ValueMut::Map(m)) => {
+                Some(StaticValueMut::Map(m)) => {
                     if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -625,7 +646,7 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
                 }
-                Some(ValueMut::Array(a)) => {
+                Some(StaticValueMut::Array(a)) => {
                     if !inner_reduction.indices.is_empty() {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
@@ -667,25 +688,29 @@ mod tests {
                 OwnedValue::Map(MapValueStorage::new(HashMap::from([
                     (
                         "subkey1".into(),
-                        OwnedValue::String(ValueStorage::new("hello".into())),
+                        OwnedValue::String(StringValueStorage::new("hello".into())),
                     ),
                     (
                         "subkey2".into(),
-                        OwnedValue::String(ValueStorage::new("world".into())),
+                        OwnedValue::String(StringValueStorage::new("world".into())),
                     ),
                     (
                         "subkey3".into(),
-                        OwnedValue::String(ValueStorage::new("goodbye".into())),
+                        OwnedValue::String(StringValueStorage::new("goodbye".into())),
                     ),
                 ]))),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
+            )
+            .with_key_value(
+                "key_to_remove".into(),
+                OwnedValue::String(StringValueStorage::new("key1".into())),
             );
 
         let run_test = |transform_expression| {
@@ -731,7 +756,59 @@ mod tests {
             )),
         ));
 
-        assert_eq!(1, result.len());
+        assert_eq!(2, result.len());
+        assert!(!result.contains_key("key1"));
+
+        // Test removing a key using key referencing data on source
+        let result = run_test(TransformExpression::ReduceMap(
+            ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![MapSelector::KeyOrKeyPattern(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key_to_remove",
+                            )),
+                        )]),
+                    ),
+                ))],
+            )),
+        ));
+
+        assert_eq!(2, result.len());
+        assert!(!result.contains_key("key1"));
+
+        // Test removing a key using accessor referencing data on source
+        let result = run_test(TransformExpression::ReduceMap(
+            ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![MapSelector::ValueAccessor(
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "key_to_remove",
+                                )),
+                            )]),
+                        ),
+                    )]),
+                )],
+            )),
+        ));
+
+        assert_eq!(2, result.len());
         assert!(!result.contains_key("key1"));
 
         // Test removing keys using regex
@@ -823,7 +900,7 @@ mod tests {
         ));
 
         assert_eq!(
-            "{\"key1\":{\"subkey2\":\"world\"},\"key2\":[2]}",
+            "{\"key1\":{\"subkey2\":\"world\"},\"key2\":[2],\"key_to_remove\":\"key1\"}",
             Value::Map(&result).to_string()
         );
 
@@ -910,24 +987,24 @@ mod tests {
                 OwnedValue::Map(MapValueStorage::new(HashMap::from([
                     (
                         "subkey1".into(),
-                        OwnedValue::String(ValueStorage::new("hello".into())),
+                        OwnedValue::String(StringValueStorage::new("hello".into())),
                     ),
                     (
                         "subkey2".into(),
-                        OwnedValue::String(ValueStorage::new("world".into())),
+                        OwnedValue::String(StringValueStorage::new("world".into())),
                     ),
                     (
                         "subkey3".into(),
-                        OwnedValue::String(ValueStorage::new("goodbye".into())),
+                        OwnedValue::String(StringValueStorage::new("goodbye".into())),
                     ),
                 ]))),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             );
 
@@ -984,9 +1061,7 @@ mod tests {
         assert_eq!(2, result.len());
         assert!(result.contains_key("key1"));
 
-        if let Some(v) = result.get("key1").map(|v| v.to_value())
-            && let Value::Map(m) = v
-        {
+        if let Some(Value::Map(m)) = result.get("key1").map(|v| v.to_value()) {
             assert_eq!(0, m.len());
         } else {
             panic!()

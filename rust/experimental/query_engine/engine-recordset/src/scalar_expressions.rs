@@ -17,11 +17,16 @@ where
     match scalar_expression {
         ScalarExpression::Source(s) => {
             let record = Ref::map(execution_context.get_record().borrow(), |v| {
-                v as &dyn AsValue
+                v as &dyn AsStaticValue
             });
             let mut selectors = s.get_value_accessor().get_selectors().iter();
 
-            let value = select_from_borrowed_value(execution_context, record, &mut selectors)?;
+            let value = select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Source,
+                record,
+                &mut selectors,
+            )?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -78,8 +83,12 @@ where
 
             let mut selectors = v.get_value_accessor().get_selectors().iter();
 
-            let value =
-                select_from_borrowed_value(execution_context, variable.unwrap(), &mut selectors)?;
+            let value = select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Variable,
+                variable.unwrap(),
+                &mut selectors,
+            )?;
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -155,13 +164,11 @@ where
                 execute_scalar_expression(execution_context, n.get_inner_expression())?;
 
             let v = match inner_value.to_value() {
-                Value::Integer(i) => {
-                    ResolvedValue::Computed(OwnedValue::Integer(ValueStorage::<i64>::new(
-                        -i.get_value(),
-                    )))
-                }
+                Value::Integer(i) => ResolvedValue::Computed(OwnedValue::Integer(
+                    IntegerValueStorage::new(-i.get_value()),
+                )),
                 Value::Double(d) => ResolvedValue::Computed(OwnedValue::Double(
-                    ValueStorage::<f64>::new(-d.get_value()),
+                    DoubleValueStorage::new(-d.get_value()),
                 )),
                 _ => {
                     return Err(ExpressionError::TypeMismatch(
@@ -189,7 +196,7 @@ where
             );
 
             Ok(ResolvedValue::Computed(OwnedValue::Boolean(
-                ValueStorage::new(value),
+                BooleanValueStorage::new(value),
             )))
         }
         ScalarExpression::Coalesce(c) => {
@@ -231,13 +238,43 @@ where
 
             Ok(inner_value)
         }
+        ScalarExpression::Case(c) => {
+            let expressions_with_conditions = c.get_expressions_with_conditions();
+
+            // Evaluate conditions in order and return first matching result
+            for (condition, expression) in expressions_with_conditions {
+                if execute_logical_expression(execution_context, condition)? {
+                    let inner_value = execute_scalar_expression(execution_context, expression)?;
+
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar_expression,
+                        || format!("Evaluated as: {inner_value}"),
+                    );
+
+                    return Ok(inner_value);
+                }
+            }
+
+            // No condition matched, return else expression
+            let inner_value =
+                execute_scalar_expression(execution_context, c.get_else_expression())?;
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {inner_value}"),
+            );
+
+            Ok(inner_value)
+        }
         ScalarExpression::Convert(c) => {
             let value = match c {
                 ConvertScalarExpression::Boolean(c) => {
                     let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
                     if let Some(b) = v.to_value().convert_to_bool() {
-                        ResolvedValue::Computed(OwnedValue::Boolean(ValueStorage::new(b)))
+                        ResolvedValue::Computed(OwnedValue::Boolean(BooleanValueStorage::new(b)))
                     } else {
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
@@ -246,7 +283,7 @@ where
                     let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
                     if let Some(d) = v.to_value().convert_to_double() {
-                        ResolvedValue::Computed(OwnedValue::Double(ValueStorage::new(d)))
+                        ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
                     } else {
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
@@ -255,7 +292,7 @@ where
                     let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
                     if let Some(i) = v.to_value().convert_to_integer() {
-                        ResolvedValue::Computed(OwnedValue::Integer(ValueStorage::new(i)))
+                        ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
                     } else {
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
@@ -268,7 +305,7 @@ where
                     } else {
                         let mut string_value = None;
                         v.to_value().convert_to_string(&mut |s| {
-                            string_value = Some(ValueStorage::new(s.into()))
+                            string_value = Some(StringValueStorage::new(s.into()))
                         });
                         ResolvedValue::Computed(OwnedValue::String(
                             string_value.expect("Inner value did not return a string"),
@@ -291,14 +328,14 @@ where
 
             let v = match inner_value.to_value() {
                 Value::String(s) => ResolvedValue::Computed(OwnedValue::Integer(
-                    ValueStorage::new(s.get_value().chars().count() as i64),
+                    IntegerValueStorage::new(s.get_value().chars().count() as i64),
                 )),
-                Value::Array(a) => {
-                    ResolvedValue::Computed(OwnedValue::Integer(ValueStorage::new(a.len() as i64)))
-                }
-                Value::Map(m) => {
-                    ResolvedValue::Computed(OwnedValue::Integer(ValueStorage::new(m.len() as i64)))
-                }
+                Value::Array(a) => ResolvedValue::Computed(OwnedValue::Integer(
+                    IntegerValueStorage::new(a.len() as i64),
+                )),
+                Value::Map(m) => ResolvedValue::Computed(OwnedValue::Integer(
+                    IntegerValueStorage::new(m.len() as i64),
+                )),
                 _ => ResolvedValue::Computed(OwnedValue::Null),
             };
 
@@ -315,7 +352,8 @@ where
 
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
-    root: Ref<'b, dyn AsValue + 'static>,
+    borrow_source: BorrowSource,
+    borrow: Ref<'b, dyn AsStaticValue + 'static>,
     selectors: &mut Iter<'a, ScalarExpression>,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -326,14 +364,14 @@ where
             let value = execute_scalar_expression(execution_context, s)?;
 
             let next = match value.to_value() {
-                Value::String(map_key) => Ref::filter_map(root, |v| {
+                Value::String(map_key) => Ref::filter_map(borrow, |v| {
                     if let Value::Map(m) = v.to_value() {
                         match m.get(map_key.get_value()) {
                             Some(v) => {
                                 execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Verbose,
                                                 s,
-                                                || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                                || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.to_value(), map_key.get_value()),
                                             );
                                 Some(v)
                             }
@@ -356,7 +394,7 @@ where
                         None
                     }
                 }),
-                Value::Integer(array_index) => Ref::filter_map(root, |v| {
+                Value::Integer(array_index) => Ref::filter_map(borrow, |v| {
                     if let Value::Array(a) = v.to_value() {
                         let mut index = array_index.get_value();
                         if index < 0 {
@@ -375,7 +413,7 @@ where
                                     execution_context.add_diagnostic_if_enabled(
                                                     RecordSetEngineDiagnosticLevel::Verbose,
                                                     s,
-                                                    || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                                    || format!("Resolved '{}' value for index '{index}' specified in accessor expression", v.to_value()),
                                                 );
                                     Some(v)
                                 }
@@ -409,12 +447,12 @@ where
             };
 
             if let Ok(v) = next {
-                select_from_borrowed_value(execution_context, v, selectors)
+                select_from_borrowed_value(execution_context, borrow_source, v, selectors)
             } else {
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
             }
         }
-        None => Ok(ResolvedValue::Borrowed(root)),
+        None => Ok(ResolvedValue::Borrowed(borrow_source, borrow)),
     }
 }
 
@@ -435,7 +473,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                 execution_context.add_diagnostic_if_enabled(
                                             RecordSetEngineDiagnosticLevel::Verbose,
                                             s,
-                                            || format!("Resolved '{:?}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
+                                            || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.to_value(), map_key.get_value()),
                                         );
                                 Some(v.to_value())
                             }
@@ -476,7 +514,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                     execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Verbose,
                                                 s,
-                                                || format!("Resolved '{:?}' value for index '{index}' specified in accessor expression", v.get_value_type()),
+                                                || format!("Resolved '{}' value for index '{index}' specified in accessor expression", v.to_value()),
                                             );
                                     Some(v.to_value())
                                 }
@@ -532,14 +570,14 @@ mod tests {
         let record = TestRecord::new()
             .with_key_value(
                 "key1".into(),
-                OwnedValue::String(ValueStorage::new("value1".into())),
+                OwnedValue::String(StringValueStorage::new("value1".into())),
             )
             .with_key_value(
                 "key2".into(),
                 OwnedValue::Array(ArrayValueStorage::new(vec![
-                    OwnedValue::Integer(ValueStorage::new(1)),
-                    OwnedValue::Integer(ValueStorage::new(2)),
-                    OwnedValue::Integer(ValueStorage::new(3)),
+                    OwnedValue::Integer(IntegerValueStorage::new(1)),
+                    OwnedValue::Integer(IntegerValueStorage::new(2)),
+                    OwnedValue::Integer(IntegerValueStorage::new(3)),
                 ])),
             );
 
@@ -578,7 +616,7 @@ mod tests {
                     )),
                 )]),
             )),
-            Value::String(&ValueStorage::new("value1".into())),
+            Value::String(&StringValueStorage::new("value1".into())),
         );
 
         // Test selecting an unknown string key
@@ -608,7 +646,7 @@ mod tests {
                     )),
                 ]),
             )),
-            Value::Integer(&ValueStorage::new(1)),
+            Value::Integer(&IntegerValueStorage::new(1)),
         );
 
         // Test selecting a negative array index
@@ -624,7 +662,7 @@ mod tests {
                     )),
                 ]),
             )),
-            Value::Integer(&ValueStorage::new(3)),
+            Value::Integer(&IntegerValueStorage::new(3)),
         );
 
         // Test selecting an invalid array index
@@ -654,7 +692,7 @@ mod tests {
             "resource",
             MapValueStorage::new(HashMap::from([(
                 "key1".into(),
-                OwnedValue::String(ValueStorage::new("hello world".into())),
+                OwnedValue::String(StringValueStorage::new("hello world".into())),
             )])),
         );
 
@@ -695,7 +733,7 @@ mod tests {
                     )),
                 )]),
             )),
-            Value::String(&ValueStorage::new("hello world".into())),
+            Value::String(&StringValueStorage::new("hello world".into())),
         );
     }
 
@@ -715,7 +753,7 @@ mod tests {
 
             execution_context.get_variables().borrow_mut().set(
                 "var1",
-                ResolvedValue::Computed(OwnedValue::String(ValueStorage::new(
+                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
                     "hello world".into(),
                 ))),
             );
@@ -723,7 +761,7 @@ mod tests {
                 "var2",
                 ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from([(
                     "key1".into(),
-                    OwnedValue::String(ValueStorage::new("hello world".into())),
+                    OwnedValue::String(StringValueStorage::new("hello world".into())),
                 )])))),
             );
 
@@ -749,7 +787,7 @@ mod tests {
                 StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
                 ValueAccessor::new(),
             )),
-            Value::String(&ValueStorage::new("hello world".into())),
+            Value::String(&StringValueStorage::new("hello world".into())),
         );
 
         // Test path resolution
@@ -764,7 +802,7 @@ mod tests {
                     )),
                 )]),
             )),
-            Value::String(&ValueStorage::new("hello world".into())),
+            Value::String(&StringValueStorage::new("hello world".into())),
         );
     }
 
@@ -800,7 +838,7 @@ mod tests {
                     0,
                 ),
             )),
-            Value::Integer(&ValueStorage::new(18)),
+            Value::Integer(&IntegerValueStorage::new(18)),
         );
 
         run_test(
@@ -814,7 +852,7 @@ mod tests {
                     )),
                 ),
             )),
-            Value::Integer(&ValueStorage::new(99)),
+            Value::Integer(&IntegerValueStorage::new(99)),
         );
     }
 
@@ -844,7 +882,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
                 )),
             )),
-            Value::Integer(&ValueStorage::new(-18)),
+            Value::Integer(&IntegerValueStorage::new(-18)),
         );
 
         run_test(
@@ -854,7 +892,7 @@ mod tests {
                     DoubleScalarExpression::new(QueryLocation::new_fake(), 18.18),
                 )),
             )),
-            Value::Double(&ValueStorage::new(-18.18)),
+            Value::Double(&DoubleValueStorage::new(-18.18)),
         );
     }
 
@@ -891,7 +929,7 @@ mod tests {
                 ))
                 .into(),
             ),
-            Value::Boolean(&ValueStorage::new(true)),
+            Value::Boolean(&BooleanValueStorage::new(true)),
         );
     }
 
@@ -921,7 +959,7 @@ mod tests {
                     BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                 ))],
             )),
-            Value::Boolean(&ValueStorage::new(true)),
+            Value::Boolean(&BooleanValueStorage::new(true)),
         );
 
         run_test(
@@ -936,7 +974,7 @@ mod tests {
                     )),
                 ],
             )),
-            Value::Boolean(&ValueStorage::new(false)),
+            Value::Boolean(&BooleanValueStorage::new(false)),
         );
 
         run_test(
@@ -983,7 +1021,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), -18),
                 )),
             )),
-            Value::Integer(&ValueStorage::new(18)),
+            Value::Integer(&IntegerValueStorage::new(18)),
         );
 
         run_test(
@@ -1002,7 +1040,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), -18),
                 )),
             )),
-            Value::Integer(&ValueStorage::new(-18)),
+            Value::Integer(&IntegerValueStorage::new(-18)),
         );
     }
 
@@ -1282,5 +1320,104 @@ mod tests {
                 Value::Null,
             ),
         ]);
+    }
+
+    #[test]
+    fn test_execute_case_scalar_expression() {
+        let record = TestRecord::new();
+
+        let run_test = |scalar_expression, expected_value: Value| {
+            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
+
+            let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
+
+            assert_eq!(expected_value, value.to_value());
+        };
+
+        // Test simple case: case(true, "success", "failure") -> "success"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                    )),
+                )],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
+                )),
+            )),
+            Value::String(&StringValueStorage::new("success".into())),
+        );
+
+        // Test fallback to else: case(false, "success", "failure") -> "failure"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![(
+                    LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            false,
+                        )),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "success"),
+                    )),
+                )],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "failure"),
+                )),
+            )),
+            Value::String(&StringValueStorage::new("failure".into())),
+        );
+
+        // Test multiple conditions: case(false, "first", true, "second", "else") -> "second"
+        run_test(
+            ScalarExpression::Case(CaseScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    (
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "first"),
+                        )),
+                    ),
+                    (
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                true,
+                            )),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "second"),
+                        )),
+                    ),
+                ],
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "else"),
+                )),
+            )),
+            Value::String(&StringValueStorage::new("second".into())),
+        );
     }
 }
