@@ -5,7 +5,7 @@ A zero-copy signal routing processor for the OTAP (OpenTelemetry Arrow Protocol)
 ## Features
 
 - **Zero-copy routing**: Routes signal references without cloning or deserializing telemetry data
-- **Efficient signal detection**: Uses `OTLPData` enum matching for fast signal type identification  
+- **Efficient signal detection**: Uses native `signal_type()` method for fast signal type identification
 - **Multi-port routing**: Routes different signal types to different output ports
 - **Flexible dispatch strategies**: Supports broadcast, round-robin, random, and least-loaded routing
 - **Configuration validation**: Comprehensive configuration parsing and validation
@@ -14,7 +14,7 @@ A zero-copy signal routing processor for the OTAP (OpenTelemetry Arrow Protocol)
 
 The SignalTypeRouter operates by:
 
-1. **Signal Type Detection**: Efficiently identifies the type of incoming OpenTelemetry signals using pattern matching on the `OTLPData` enum
+1. **Signal Type Detection**: Efficiently identifies the type of incoming OpenTelemetry signals using the native `signal_type()` method
 2. **Zero-Copy Routing**: Passes signal references (not clones) to downstream processors based on configured routing rules
 3. **Port-Based Distribution**: Routes signals to different output ports based on signal type
 4. **Dispatch Strategy Application**: Applies configured dispatch strategies (broadcast, round-robin, etc.) when multiple destinations exist

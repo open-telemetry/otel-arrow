@@ -15,7 +15,6 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine" }
 otap-df-config = { path = "../config" }
-otap-df-otlp = { path = "../otlp" }
 otap-df-otap = { path = "../otap" }
 
 thiserror = { workspace = true }

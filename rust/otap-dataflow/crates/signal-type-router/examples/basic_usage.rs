@@ -7,11 +7,7 @@
 //! within a complete OTAP pipeline using the proper YAML configuration format.
 
 use log::{debug, error, info};
-use otap_df_otlp::grpc::OTLPData;
-use otap_df_otlp::proto::opentelemetry::collector::{
-    logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
-    trace::v1::ExportTraceServiceRequest,
-};
+use otap_df_otap::pdata::{OtapPdata, OtlpProtoBytes};
 use otap_df_signal_type_router::{SignalTypeRouter, SignalTypeRouterConfig};
 use serde_json::json;
 
@@ -53,32 +49,23 @@ fn main() {
     // Example 4: Signal type detection examples
     info!("4. Signal type detection examples...");
 
-    // Create sample signals
-    let traces_signal = OTLPData::Traces(ExportTraceServiceRequest {
-        resource_spans: vec![],
-    });
-
-    let metrics_signal = OTLPData::Metrics(ExportMetricsServiceRequest {
-        resource_metrics: vec![],
-    });
-
-    let logs_signal = OTLPData::Logs(ExportLogsServiceRequest {
-        resource_logs: vec![],
-    });
+    // Create sample signals using OtapPdata
+    let traces_signal = OtapPdata::OtlpBytes(OtlpProtoBytes::ExportTracesRequest(vec![]));
+    let metrics_signal = OtapPdata::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(vec![]));
+    let logs_signal = OtapPdata::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(vec![]));
 
     debug!("   Created sample signals:");
+    debug!("   - Traces signal type: {:?}", traces_signal.signal_type());
     debug!(
-        "   - Traces signal: {:?}",
-        matches!(traces_signal, OTLPData::Traces(_))
+        "   - Metrics signal type: {:?}",
+        metrics_signal.signal_type()
     );
-    debug!(
-        "   - Metrics signal: {:?}",
-        matches!(metrics_signal, OTLPData::Metrics(_))
-    );
-    debug!(
-        "   - Logs signal: {:?}",
-        matches!(logs_signal, OTLPData::Logs(_))
-    );
+    debug!("   - Logs signal type: {:?}", logs_signal.signal_type());
+
+    info!("   Signal type detection using native signal_type() method:");
+    info!("   - Traces: {:?}", traces_signal.signal_type());
+    info!("   - Metrics: {:?}", metrics_signal.signal_type());
+    info!("   - Logs: {:?}", logs_signal.signal_type());
 
     // Example 5: Factory usage
     info!("5. Using the processor factory...");
