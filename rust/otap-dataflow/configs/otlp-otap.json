@@ -4,13 +4,13 @@
     "default_pdata_channel_size": 100
   },
   "nodes": {
-    "otlp_receiver": {
+    "receiver": {
       "kind": "receiver",
       "plugin_urn": "urn::otel::otlp::receiver",
       "out_ports": {
         "out_port": {
           "destinations": [
-            "otap_exporter"
+            "exporter"
           ],
           "dispatch_strategy": "round_robin"
         }
@@ -19,7 +19,7 @@
         "listening_addr": "127.0.0.1:4317"
       }
     },
-    "otap_exporter": {
+    "exporter": {
       "kind": "exporter",
       "plugin_urn": "urn:otel:otap:exporter",
       "config": {

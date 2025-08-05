@@ -4,7 +4,7 @@
     "default_pdata_channel_size": 100
   },
   "nodes": {
-    "otlp_receiver": {
+    "receiver": {
       "kind": "receiver",
       "plugin_urn": "urn:otel:otap:receiver",
       "out_ports": {

@@ -2,6 +2,9 @@
 
 This directory contains example pipeline configurations for the OTAP dataflow engine.
 
+Note: These configurations are based on the native OTAP dataflow engine configuration model, which is a superset of the 
+Go Collector configuration model. Support for the Go Collector YAML format is planned for the future.
+
 ## Available Configurations
 
 ### `otap-otap.json`
