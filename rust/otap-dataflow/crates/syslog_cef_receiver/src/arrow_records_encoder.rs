@@ -82,9 +82,7 @@ impl ArrowRecordsBuilder {
                 .append_observed_time_unix_nano(Some(observed_time));
         }
 
-        for _ in 0..log_record_count {
-            self.logs.append_schema_url(None);
-        }
+        self.logs.append_schema_url_n(None, log_record_count);
 
         for _ in 0..log_record_count {
             self.logs.append_dropped_attributes_count(0);
@@ -152,11 +150,7 @@ mod tests {
             let observed_time = observed_time_array.value(i);
             assert!(
                 observed_time >= start_time && observed_time <= end_time,
-                "Observed timestamp {} should be between {} and {}",
-                observed_time,
-                start_time,
-                end_time
-            );
+                "Observed timestamp {observed_time} should be between {start_time} and {end_time}");
         }
     }
 
@@ -170,11 +164,7 @@ mod tests {
         let observed_time = observed_timestamp as i64;
         assert!(
             observed_time >= start_time && observed_time <= end_time,
-            "OTLP observed timestamp {} should be between {} and {}",
-            observed_time,
-            start_time,
-            end_time
-        );
+            "OTLP observed timestamp {observed_time} should be between {start_time} and {end_time}");
     }
 
     #[test]
@@ -481,7 +471,7 @@ mod tests {
 
                     _ = log_attributes
                         .entry(parent_id)
-                        .or_insert_with(std::collections::HashMap::new)
+                        .or_default()
                         .insert(key.to_string(), value);
                 }
 
@@ -965,7 +955,7 @@ mod tests {
 
                     _ = log_attributes
                         .entry(parent_id)
-                        .or_insert_with(std::collections::HashMap::new)
+                        .or_default()
                         .insert(key.to_string(), value);
                 }
 
@@ -1384,7 +1374,7 @@ mod tests {
 
                     _ = log_attributes
                         .entry(parent_id)
-                        .or_insert_with(std::collections::HashMap::new)
+                        .or_default()
                         .insert(key.to_string(), value);
                 }
 
@@ -1623,7 +1613,7 @@ mod tests {
                         let dict_index = dict_array.key(i).unwrap();
                         let severity = values.value(dict_index);
                         assert!(
-                            severity >= 0 && severity <= 23,
+                            (0..=23).contains(&severity),
                             "Severity should be valid OpenTelemetry value"
                         );
                     }
@@ -1637,7 +1627,7 @@ mod tests {
                     for i in 0..3 {
                         let severity = severity_num_array.value(i);
                         assert!(
-                            severity >= 0 && severity <= 23,
+                            (0..=23).contains(&severity),
                             "Severity should be valid OpenTelemetry value"
                         );
                     }
@@ -1867,7 +1857,7 @@ mod tests {
 
                     _ = log_attributes
                         .entry(parent_id)
-                        .or_insert_with(std::collections::HashMap::new)
+                        .or_default()
                         .insert(key.to_string(), value);
                 }
 

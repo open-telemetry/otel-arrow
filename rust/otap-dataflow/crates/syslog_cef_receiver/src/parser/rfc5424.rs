@@ -336,8 +336,7 @@ mod tests {
         // Test with very long hostname (over 255 chars)
         let long_hostname = "a".repeat(300);
         let input = format!(
-            "<34>1 2003-10-11T22:14:15.003Z {} app proc msgid - Message",
-            long_hostname
+            "<34>1 2003-10-11T22:14:15.003Z {long_hostname} app proc msgid - Message"
         );
         let result = parse_rfc5424(input.as_bytes());
         // Should either truncate or reject based on RFC compliance level desired

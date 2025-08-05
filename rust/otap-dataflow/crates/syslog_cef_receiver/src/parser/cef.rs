@@ -108,7 +108,7 @@ fn parse_cef_extensions(extensions_bytes: &[u8]) -> Vec<(&[u8], &[u8])> {
 
             if j < extensions_bytes.len() {
                 let remaining = &extensions_bytes[j..];
-                if remaining.iter().any(|&b| b == b'=') {
+                if remaining.contains(&b'=') {
                     let key = &extensions_bytes[key_start..key_end];
                     let value = &extensions_bytes[key_end + 1..i];
                     extensions.push((key, value));

@@ -308,7 +308,7 @@ mod tests {
         let timestamp_nanos = result.timestamp().unwrap();
         // For RFC 3164, we expect the current year to be used since it's not specified
         let current_year = Local::now().year();
-        let full_timestamp = format!("{} Oct 11 22:14:15", current_year);
+        let full_timestamp = format!("{current_year} Oct 11 22:14:15");
         if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&full_timestamp, "%Y %b %d %H:%M:%S") {
             if let Some(local_dt) = Local.from_local_datetime(&naive_dt).single() {
                 let expected_nanos = local_dt

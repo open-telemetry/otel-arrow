@@ -132,7 +132,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             // Send any remaining records before closing
                                                             if arrow_records_builder.len() > 0 {
-                                                                let arrow_records = arrow_records_builder.build().unwrap();
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
                                                                 let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
                                                             }
                                                             break;
@@ -168,7 +168,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             if arrow_records_builder.len() >= MAX_BATCH_SIZE {
                                                                 // Build the Arrow records to send them
-                                                                let arrow_records = arrow_records_builder.build().unwrap();
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
 
                                                                 // Reset the builder for the next batch
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
@@ -184,7 +184,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         Err(_e) => {
                                                             // Send any remaining records before closing due to error
                                                             if arrow_records_builder.len() > 0 {
-                                                                let arrow_records = arrow_records_builder.build().unwrap();
+                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
                                                                 let _ = effect_handler.send_message(OtapPdata::from(arrow_records)).await;
                                                             }
                                                             break; // ToDo: Handle read error properly
@@ -196,7 +196,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 _ = interval.tick() => {
                                                     if arrow_records_builder.len() > 0 {
                                                         // Build the Arrow records and send them
-                                                        let arrow_records = arrow_records_builder.build().unwrap();
+                                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
 
                                                         // Reset the builder for the next batch
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
@@ -263,7 +263,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     if arrow_records_builder.len() >= MAX_BATCH_SIZE {
                                         // Build the Arrow records to send them
-                                        let arrow_records = arrow_records_builder.build().unwrap();
+                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
 
                                         // Reset the builder for the next batch
                                         arrow_records_builder = ArrowRecordsBuilder::new();
@@ -284,7 +284,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                             // Check if we have any records to send
                             if arrow_records_builder.len() > 0 {
                                 // Build the Arrow records and send them
-                                let arrow_records = arrow_records_builder.build().unwrap();
+                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
 
                                 // Reset the builder for the next batch
                                 arrow_records_builder = ArrowRecordsBuilder::new();
