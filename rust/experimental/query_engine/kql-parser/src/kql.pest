@@ -81,12 +81,16 @@ boolean_expression = _{ true_literal | false_literal }
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
 datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
+tostring_expression = { "tostring(" ~ scalar_expression ~ ")" }
+case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
 
 scalar_expression = {
     null_literal
     | real_expression
     | datetime_expression
     | conditional_expression
+    | tostring_expression
+    | case_expression
     | boolean_expression
     | double_literal
     | integer_literal

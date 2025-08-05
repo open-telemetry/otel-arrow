@@ -275,7 +275,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::{SecondsFormat, Utc};
-    use data_engine_recordset2::{ArrayValueStorage, MapValueStorage, ValueStorage};
+    use data_engine_recordset::*;
     use prost::Message;
     use regex::Regex;
 
@@ -327,7 +327,7 @@ mod tests {
         run_test(
             (
                 "key1",
-                AnyValue::Native(crate::OtlpAnyValue::StringValue(ValueStorage::new(
+                AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
                     "value1".into(),
                 ))),
             ),
@@ -355,7 +355,7 @@ mod tests {
         run_test(AnyValue::Null, OtlpAnyValue { value: None });
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::StringValue(ValueStorage::new(
+            AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
                 "".into(),
             ))),
             OtlpAnyValue {
@@ -364,7 +364,7 @@ mod tests {
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::StringValue(ValueStorage::new(
+            AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
                 "hello world".into(),
             ))),
             OtlpAnyValue {
@@ -373,42 +373,50 @@ mod tests {
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::BoolValue(ValueStorage::new(true))),
+            AnyValue::Native(crate::OtlpAnyValue::BoolValue(BooleanValueStorage::new(
+                true,
+            ))),
             OtlpAnyValue {
                 value: Some(OtlpValue::BoolValue(true)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::BoolValue(ValueStorage::new(false))),
+            AnyValue::Native(crate::OtlpAnyValue::BoolValue(BooleanValueStorage::new(
+                false,
+            ))),
             OtlpAnyValue {
                 value: Some(OtlpValue::BoolValue(false)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+            AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
             OtlpAnyValue {
                 value: Some(OtlpValue::IntValue(18)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(-18))),
+            AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(-18))),
             OtlpAnyValue {
                 value: Some(OtlpValue::IntValue(-18)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(ValueStorage::new(18.0))),
+            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(DoubleValueStorage::new(
+                18.0,
+            ))),
             OtlpAnyValue {
                 value: Some(OtlpValue::DoubleValue(18.0)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(ValueStorage::new(-18.0))),
+            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(DoubleValueStorage::new(
+                -18.0,
+            ))),
             OtlpAnyValue {
                 value: Some(OtlpValue::DoubleValue(-18.0)),
             },
@@ -427,7 +435,7 @@ mod tests {
             AnyValue::Native(crate::OtlpAnyValue::ArrayValue(ArrayValueStorage::new(
                 vec![
                     AnyValue::Null,
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
                 ],
             ))),
             OtlpAnyValue {
@@ -460,7 +468,9 @@ mod tests {
                     ("key1".into(), AnyValue::Null),
                     (
                         "key2".into(),
-                        AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                        AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                            18,
+                        ))),
                     ),
                 ]),
             ))),
@@ -497,7 +507,10 @@ mod tests {
 
         run_test(
             AnyValue::Native(crate::OtlpAnyValue::BytesValue(ByteArrayValueStorage::new(
-                vec![ValueStorage::new(0x00), ValueStorage::new(0xFF)],
+                vec![
+                    IntegerValueStorage::new(0x00),
+                    IntegerValueStorage::new(0xFF),
+                ],
             ))),
             OtlpAnyValue {
                 value: Some(OtlpValue::BytesValue(vec![0x00, 0xFF])),
@@ -507,7 +520,9 @@ mod tests {
         // Extended
         let now = Utc::now();
         run_test(
-            AnyValue::Extended(ExtendedValue::DateTime(ValueStorage::new(now.into()))),
+            AnyValue::Extended(ExtendedValue::DateTime(DateTimeValueStorage::new(
+                now.into(),
+            ))),
             OtlpAnyValue {
                 value: Some(OtlpValue::StringValue(
                     now.to_rfc3339_opts(SecondsFormat::AutoSi, true),
@@ -516,7 +531,7 @@ mod tests {
         );
 
         run_test(
-            AnyValue::Extended(ExtendedValue::Regex(ValueStorage::new(
+            AnyValue::Extended(ExtendedValue::Regex(RegexValueStorage::new(
                 Regex::new(".*").unwrap(),
             ))),
             OtlpAnyValue {
@@ -552,7 +567,9 @@ mod tests {
                     ("key1".into(), AnyValue::Null),
                     (
                         "key2".into(),
-                        AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                        AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                            18,
+                        ))),
                     ),
                 ])),
                 extra_fields: Vec::new(),
@@ -623,8 +640,8 @@ mod tests {
 
         run_test(
             InstrumentationScope {
-                name: Some(ValueStorage::new("name".into())),
-                version: Some(ValueStorage::new("version".into())),
+                name: Some(StringValueStorage::new("name".into())),
+                version: Some(StringValueStorage::new("version".into())),
                 attributes: MapValueStorage::new(HashMap::new()),
                 extra_fields: Vec::new(),
             },
@@ -644,7 +661,9 @@ mod tests {
                     ("key1".into(), AnyValue::Null),
                     (
                         "key2".into(),
-                        AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                        AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                            18,
+                        ))),
                     ),
                 ])),
                 extra_fields: Vec::new(),
@@ -758,7 +777,7 @@ mod tests {
                 .with_attribute("key1", AnyValue::Null)
                 .with_attribute(
                     "key2",
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(ValueStorage::new(18))),
+                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
                 ),
             OtlpLogRecord {
                 time_unix_nano: 0,

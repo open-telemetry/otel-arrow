@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
-use data_engine_recordset2::*;
+use data_engine_recordset::*;
 
 use crate::{serializer::ProtobufField, *};
 
@@ -76,16 +76,16 @@ pub struct LogRecord {
     pub(crate) resource_id: Option<usize>,
     pub(crate) scope_id: Option<usize>,
     pub(crate) diagnostic_level: Option<RecordSetEngineDiagnosticLevel>,
-    pub timestamp: Option<ValueStorage<DateTime<FixedOffset>>>,
-    pub observed_timestamp: Option<ValueStorage<DateTime<FixedOffset>>>,
-    pub severity_number: Option<ValueStorage<i32>>,
-    pub severity_text: Option<ValueStorage<String>>,
+    pub timestamp: Option<DateTimeValueStorage>,
+    pub observed_timestamp: Option<DateTimeValueStorage>,
+    pub severity_number: Option<IntegerValueStorage<i32>>,
+    pub severity_text: Option<StringValueStorage>,
     pub body: Option<AnyValue>,
     pub attributes: MapValueStorage<AnyValue>,
-    pub flags: Option<ValueStorage<u32>>,
+    pub flags: Option<IntegerValueStorage<u32>>,
     pub trace_id: Option<ByteArrayValueStorage>,
     pub span_id: Option<ByteArrayValueStorage>,
-    pub event_name: Option<ValueStorage<String>>,
+    pub event_name: Option<StringValueStorage>,
     pub(crate) extra_fields: Vec<ProtobufField>,
 }
 
@@ -116,32 +116,36 @@ impl LogRecord {
     }
 
     pub fn with_timestamp(mut self, value: DateTime<FixedOffset>) -> LogRecord {
-        self.timestamp = Some(ValueStorage::new(value));
+        self.timestamp = Some(DateTimeValueStorage::new(value));
         self
     }
 
     pub fn with_timestamp_unix_nanos(mut self, value: u64) -> LogRecord {
-        self.timestamp = Some(ValueStorage::new(Utc.timestamp_nanos(value as i64).into()));
+        self.timestamp = Some(DateTimeValueStorage::new(
+            Utc.timestamp_nanos(value as i64).into(),
+        ));
         self
     }
 
     pub fn with_observed_timestamp(mut self, value: DateTime<FixedOffset>) -> LogRecord {
-        self.observed_timestamp = Some(ValueStorage::new(value));
+        self.observed_timestamp = Some(DateTimeValueStorage::new(value));
         self
     }
 
     pub fn with_observed_timestamp_unix_nanos(mut self, value: u64) -> LogRecord {
-        self.observed_timestamp = Some(ValueStorage::new(Utc.timestamp_nanos(value as i64).into()));
+        self.observed_timestamp = Some(DateTimeValueStorage::new(
+            Utc.timestamp_nanos(value as i64).into(),
+        ));
         self
     }
 
     pub fn with_severity_number(mut self, value: i32) -> LogRecord {
-        self.severity_number = Some(ValueStorage::new(value));
+        self.severity_number = Some(IntegerValueStorage::new(value));
         self
     }
 
     pub fn with_severity_text(mut self, value: String) -> LogRecord {
-        self.severity_text = Some(ValueStorage::new(value));
+        self.severity_text = Some(StringValueStorage::new(value));
         self
     }
 
@@ -158,26 +162,26 @@ impl LogRecord {
     }
 
     pub fn with_flags(mut self, value: u32) -> LogRecord {
-        self.flags = Some(ValueStorage::new(value));
+        self.flags = Some(IntegerValueStorage::new(value));
         self
     }
 
     pub fn with_trace_id(mut self, value: Vec<u8>) -> LogRecord {
         self.trace_id = Some(ByteArrayValueStorage::new(
-            value.iter().map(|v| ValueStorage::new(*v)).collect(),
+            value.iter().map(|v| IntegerValueStorage::new(*v)).collect(),
         ));
         self
     }
 
     pub fn with_span_id(mut self, value: Vec<u8>) -> LogRecord {
         self.span_id = Some(ByteArrayValueStorage::new(
-            value.iter().map(|v| ValueStorage::new(*v)).collect(),
+            value.iter().map(|v| IntegerValueStorage::new(*v)).collect(),
         ));
         self
     }
 
     pub fn with_event_name(mut self, value: String) -> LogRecord {
-        self.event_name = Some(ValueStorage::new(value));
+        self.event_name = Some(StringValueStorage::new(value));
         self
     }
 }
