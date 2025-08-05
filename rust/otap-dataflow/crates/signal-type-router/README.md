@@ -155,11 +155,6 @@ Run the test suite:
 cargo test -p otap-df-signal-type-router
 ```
 
-Run the basic usage example:
-
-```bash
-cargo run --example basic_usage -p otap-df-signal-type-router
-```
 
 ## Integration
 
@@ -172,8 +167,6 @@ The SignalTypeRouter integrates with the OTAP dataflow engine through:
 
 ## Documentation
 
-- See [`SignalTypeRouter.md`](./SignalTypeRouter.md) for detailed implementation documentation
-- View the [basic usage example](./examples/basic_usage.rs) for practical usage patterns
 - Check the [API documentation](https://docs.rs/otap-df-signal-type-router) for full API reference
 
 ## License
