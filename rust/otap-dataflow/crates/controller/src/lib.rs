@@ -2,30 +2,33 @@
 
 //! OTAP Dataflow Engine Controller
 //!
-//! This controller is responsible for managing and monitoring the execution of pipelines within
-//! the current process. The execution model supported by this controller is based on a
-//! thread-per-core approach, allowing efficient use of multi-core architectures while
-//! minimizing contention risks between threads. Additionally, each thread created by this
-//! controller is associated with a specific core, ensuring that pipelines run optimally by
-//! using CPU resources efficiently and predictably.
+//! This controller manages and monitors the execution of pipelines within the current process.
+//! It uses a thread-per-core model, where each thread is pinned to a specific CPU core.
+//! This approach maximizes multi-core efficiency and reduces contention between threads,
+//! ensuring that each pipeline runs on a dedicated core for predictable and optimal CPU usage.
 //!
 //! Future work includes:
-//! - todo: Status and health checks for pipelines
-//! - todo: Graceful shutdown of pipelines
-//! - todo: Auto-restart threads in case of panic
-//! - todo: Live pipeline updates
-//! - todo: Better resource control
-//! - todo: Monitoring
-//! - todo: Support pipeline groups
+//! - TODO: Status and health checks for pipelines
+//! - TODO: Graceful shutdown of pipelines
+//! - TODO: Auto-restart threads in case of panic
+//! - TODO: Live pipeline updates
+//! - TODO: Better resource control
+//! - TODO: Monitoring
+//! - TODO: Support pipeline groups
 
 use otap_df_config::{pipeline::PipelineConfig, pipeline_group::Quota};
 use otap_df_engine::PipelineFactory;
 use std::thread;
 
-/// Error messages.
+/// Error types and helpers for the controller module.
 pub mod error;
 
-/// Controller for managing pipelines.
+/// Controller for managing pipelines in a thread-per-core model.
+///
+/// # Thread Safety
+/// This struct is designed to be used in multi-threaded contexts. Each pipeline is run on a
+/// dedicated thread pinned to a CPU core.
+/// Intended for use as a long-lived process controller.
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
@@ -110,7 +113,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<Vec<()>, error::Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
-            // Continue execution even if pinning fails
+            // Continue execution even if pinning fails.
+            // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
+            // ToDo Add a warning here once logging is implemented.
         }
 
         // Build the runtime pipeline from the configuration
