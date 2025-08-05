@@ -56,7 +56,6 @@ impl ArrowRecordsBuilder {
         self.curr_log_id += 1;
     }
 
-    #[must_use]
     pub(crate) fn build(mut self) -> Result<OtapArrowRecords> {
         let log_record_count = self.curr_log_id.into();
 
@@ -150,7 +149,8 @@ mod tests {
             let observed_time = observed_time_array.value(i);
             assert!(
                 observed_time >= start_time && observed_time <= end_time,
-                "Observed timestamp {observed_time} should be between {start_time} and {end_time}");
+                "Observed timestamp {observed_time} should be between {start_time} and {end_time}"
+            );
         }
     }
 
@@ -164,7 +164,8 @@ mod tests {
         let observed_time = observed_timestamp as i64;
         assert!(
             observed_time >= start_time && observed_time <= end_time,
-            "OTLP observed timestamp {observed_time} should be between {start_time} and {end_time}");
+            "OTLP observed timestamp {observed_time} should be between {start_time} and {end_time}"
+        );
     }
 
     #[test]

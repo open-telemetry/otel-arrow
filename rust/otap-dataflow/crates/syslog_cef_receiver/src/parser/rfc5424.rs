@@ -335,9 +335,8 @@ mod tests {
     fn test_rfc5424_field_length_limits() {
         // Test with very long hostname (over 255 chars)
         let long_hostname = "a".repeat(300);
-        let input = format!(
-            "<34>1 2003-10-11T22:14:15.003Z {long_hostname} app proc msgid - Message"
-        );
+        let input =
+            format!("<34>1 2003-10-11T22:14:15.003Z {long_hostname} app proc msgid - Message");
         let result = parse_rfc5424(input.as_bytes());
         // Should either truncate or reject based on RFC compliance level desired
         assert!(result.is_ok());

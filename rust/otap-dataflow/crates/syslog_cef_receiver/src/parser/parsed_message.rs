@@ -73,7 +73,7 @@ impl ParsedSyslogMessage<'_> {
                     let current_year = Local::now().year();
 
                     // Parse the timestamp with assumed year
-                    let full_timestamp = format!("{} {}", current_year, timestamp_str);
+                    let full_timestamp = format!("{current_year} {timestamp_str}");
 
                     // Try to parse with format "%Y %b %d %H:%M:%S"
                     if let Ok(naive_dt) =
