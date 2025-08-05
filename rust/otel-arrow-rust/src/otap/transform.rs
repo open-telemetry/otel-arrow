@@ -5,15 +5,16 @@ use std::ops::AddAssign;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
-    PrimitiveBuilder, RecordBatch,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, Int32Array, OffsetBufferBuilder, PrimitiveArray, PrimitiveBuilder, RecordBatch, Scalar, StringArray, StringBuilder
 };
-use arrow::compute::and;
+use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::compute::kernels::numeric::add;
+use arrow::compute::{and, SlicesIterator};
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
+use arrow::datatypes::{DataType, Int32Type, UInt16Type, UInt8Type};
 use snafu::{OptionExt, ResultExt};
 
-use crate::arrays::{NullableArrayAccessor, get_u8_array};
+use crate::arrays::{get_string_array, get_u8_array, NullableArrayAccessor};
 use crate::error::{self, Result};
 use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
 use crate::schema::consts::{self, metadata};
@@ -455,6 +456,139 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     // which because of what we're passing here, these conditions are satisfied
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
 }
+
+/// TODO
+pub fn rename_attr(attrs_record_batch: &RecordBatch, old_key: &str, new_key: &str) -> Result<RecordBatch> {
+    let schema = attrs_record_batch.schema();
+    let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| error::ColumnNotFoundSnafu {
+        name: consts::ATTRIBUTE_KEY
+    }.build())?;
+
+    let new_keys = match schema.field(key_column_idx).data_type() {
+        DataType::Utf8 => {
+            // TODO -- return unexpected erro for safety?
+            let arr = attrs_record_batch.column(key_column_idx).as_any().downcast_ref()
+                .expect("can downcast Utf8 Column to string array");
+            // replace_str_naive(arr, old_key, new_key)
+            replace_str_v2(arr, old_key, new_key)
+        },
+        _ => {
+            todo!()
+        }
+    };
+
+    let new_keys = Arc::new(new_keys);
+    let columns = attrs_record_batch
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(i, col)| {
+            if i == key_column_idx {
+                // TODO is there a way to avoid clone?
+                new_keys.clone()
+            } else {
+                col.clone()
+            }
+        })
+        .collect::<Vec<ArrayRef>>();
+
+    RecordBatch::try_new(schema, columns).map_err(|e| {
+        // this actually shouldn't happen ... maybe can call expect?
+        error::UnexpectedRecordBatchStateSnafu {
+            reason: format!("could not replace key column {e}"),
+        }
+        .build()
+    })
+}
+
+pub fn replace_str_naive(array: &StringArray, target: &str, replacement: &str) -> StringArray {
+    // naive
+    let mut builder = StringBuilder::new();
+
+    for i in 0..array.len() {
+        if array.is_null(i) {
+            builder.append_null();
+        } else {
+            let value = array.value(i);
+            if value == target {
+                builder.append_value(replacement);
+            } else {
+                builder.append_value(value);
+            }
+        }
+    }
+
+    return builder.finish();
+}
+
+pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> StringArray {
+    let mask = eq(array, &StringArray::new_scalar(target)).unwrap();
+    // let ranges_iter = SlicesIterator::new(&mask);
+
+    let old_values = array.values();
+    let old_offsets = array.offsets();
+
+    let mut new_values = MutableBuffer::new(0);
+    
+    let mut new_offsets = MutableBuffer::new(4 * array.len());
+
+    let offset_adjustment = target.len() as i32 - replacement.len() as i32;
+
+    let mut last_eq_range_end = 0;
+    let mut curr_total_offset_adjustment = 0;
+
+    for eq_indices_range in SlicesIterator::new(&mask) {
+        // copy offsets, but add adjustment
+        // let offsets_slice = old_offsets.slice(last_eq_range_end, eq_indices_range.1 - eq_indices_range.0);
+        // // TODO there's an extra copy here that's not needed?
+        // let scalar_buffer = offsets_slice.into_inner();
+        let scalar_buffer = old_offsets.inner().slice(last_eq_range_end, eq_indices_range.0 - last_eq_range_end);
+        let offsets_arr: PrimitiveArray<Int32Type> = PrimitiveArray::new(scalar_buffer, None);
+        let add_result = add(&offsets_arr, &Int32Array::new_scalar(curr_total_offset_adjustment))
+            .unwrap();
+        let new_slice_offsets: &PrimitiveArray<Int32Type> = add_result
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        new_offsets.extend_from_slice(new_slice_offsets.values());
+
+        // copy values
+        let eq_start_offset = old_offsets[eq_indices_range.0] as usize;
+        // let eq_end_offset = old_offsets[eq_indices_range.1] as usize;
+
+        let last_end_offset = old_offsets[last_eq_range_end] as usize;
+
+        new_values.extend_from_slice(&old_values.slice_with_length(
+            last_end_offset,
+            eq_start_offset - last_end_offset,
+        ));
+
+
+        for i in eq_indices_range.0..eq_indices_range.1 {
+            new_values.extend_from_slice(replacement.as_bytes());
+            curr_total_offset_adjustment += offset_adjustment;
+            new_offsets.push(curr_total_offset_adjustment + old_offsets[i])
+            
+        }
+        
+        // update pointer to last end range
+        last_eq_range_end = eq_indices_range.1;
+    }
+
+    new_values.extend_from_slice(&old_values.slice(last_eq_range_end));
+    new_offsets.push(old_offsets[array.len()]);
+
+    #[allow(unsafe_code)]
+    let new_offsets = unsafe {
+        let len = new_offsets.len() / 4;
+        let scalar_buffer = ScalarBuffer::<i32>::new(new_offsets.into(), 0, len);
+        OffsetBuffer::new_unchecked(scalar_buffer)
+    };
+
+    StringArray::new(new_offsets, new_values.into(), None)
+}
+
+
 
 #[cfg(test)]
 mod test {
@@ -1117,5 +1251,104 @@ mod test {
 
         let expected = UInt16Array::from(vec![Some(1), Some(1), None, Some(1), Some(1), None]);
         assert_eq!(transformed_column, &expected);
+    }
+
+    #[test]
+    fn test_rename_attr_basic() {
+        let keys = StringArray::from_iter_values(vec!["foo", "bar", "foo", "baz", "foo"]);
+        let values = UInt8Array::from_iter_values(vec![1, 2, 3, 4, 5]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new("value", DataType::UInt8, false),
+        ]));
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(keys.clone()), Arc::new(values.clone())],
+        ).unwrap();
+
+        let renamed_batch = rename_attr(&record_batch, "foo", "qux").unwrap();
+        let renamed_keys = renamed_batch
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        let expected = StringArray::from_iter_values(vec!["qux", "bar", "qux", "baz", "qux"]);
+        assert_eq!(renamed_keys, &expected);
+
+        // Ensure other columns are unchanged
+        let renamed_values = renamed_batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        assert_eq!(renamed_values, &values);
+    }
+
+    #[test]
+    fn test_rename_attr_with_nulls() {
+        let keys = StringArray::from(vec![Some("foo"), None, Some("bar"), Some("foo")]);
+        let values = UInt8Array::from(vec![Some(1), Some(2), Some(3), Some(4)]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
+            Field::new("value", DataType::UInt8, true),
+        ]));
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(keys.clone()), Arc::new(values.clone())],
+        ).unwrap();
+
+        let renamed_batch = rename_attr(&record_batch, "foo", "qux").unwrap();
+        let renamed_keys = renamed_batch
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        let expected = StringArray::from(vec![Some("qux"), None, Some("bar"), Some("qux")]);
+        assert_eq!(renamed_keys, &expected);
+    }
+
+    #[test]
+    fn test_rename_attr_no_match() {
+        let keys = StringArray::from_iter_values(vec!["foo", "bar", "baz"]);
+        let values = UInt8Array::from_iter_values(vec![1, 2, 3]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new("value", DataType::UInt8, false),
+        ]));
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(keys.clone()), Arc::new(values.clone())],
+        ).unwrap();
+
+        let renamed_batch = rename_attr(&record_batch, "notfound", "qux").unwrap();
+        let renamed_keys = renamed_batch
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        // Should be unchanged
+        assert_eq!(renamed_keys, &keys);
+    }
+
+    #[test]
+    fn test_rename_attr_column_not_found() {
+        let keys = StringArray::from_iter_values(vec!["foo", "bar"]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("not_the_key", DataType::Utf8, false),
+        ]));
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(keys.clone())],
+        ).unwrap();
+
+        let result = rename_attr(&record_batch, "foo", "qux");
+        assert!(matches!(result, Err(Error::ColumnNotFound { .. })));
     }
 }
