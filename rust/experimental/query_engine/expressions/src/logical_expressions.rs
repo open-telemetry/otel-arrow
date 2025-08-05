@@ -31,6 +31,9 @@ pub enum LogicalExpression {
     /// Returns the result of a sequence of logical expressions chained using
     /// logical `AND(&&)` and/or `OR(||)` operations.
     Chain(ChainLogicalExpression),
+
+    /// Returns true if the haystack contains the needle.
+    Contains(ContainsLogicalExpression),
 }
 
 impl LogicalExpression {
@@ -50,6 +53,7 @@ impl LogicalExpression {
             LogicalExpression::GreaterThanOrEqualTo(_) => Ok(None),
             LogicalExpression::Not(_) => Ok(None),
             LogicalExpression::Chain(_) => Ok(None),
+            LogicalExpression::Contains(_) => Ok(None),
         }
     }
 }
@@ -63,6 +67,7 @@ impl Expression for LogicalExpression {
             LogicalExpression::GreaterThanOrEqualTo(g) => g.get_query_location(),
             LogicalExpression::Not(n) => n.get_query_location(),
             LogicalExpression::Chain(c) => c.get_query_location(),
+            LogicalExpression::Contains(c) => c.get_query_location(),
         }
     }
 
@@ -74,6 +79,7 @@ impl Expression for LogicalExpression {
             LogicalExpression::GreaterThanOrEqualTo(_) => "LogicalExpression(GreaterThanOrEqualTo)",
             LogicalExpression::Not(_) => "LogicalExpression(Not)",
             LogicalExpression::Chain(_) => "LogicalExpression(Chain)",
+            LogicalExpression::Contains(_) => "LogicalExpression(Contains)",
         }
     }
 }
@@ -281,5 +287,51 @@ impl Expression for NotLogicalExpression {
 
     fn get_name(&self) -> &'static str {
         "NotLogicalExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainsLogicalExpression {
+    query_location: QueryLocation,
+    haystack: ScalarExpression,
+    needle: ScalarExpression,
+    case_insensitive: bool,
+}
+
+impl ContainsLogicalExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        haystack: ScalarExpression,
+        needle: ScalarExpression,
+        case_insensitive: bool,
+    ) -> ContainsLogicalExpression {
+        Self {
+            query_location,
+            haystack,
+            needle,
+            case_insensitive,
+        }
+    }
+
+    pub fn get_case_insensitive(&self) -> bool {
+        self.case_insensitive
+    }
+
+    pub fn get_haystack(&self) -> &ScalarExpression {
+        &self.haystack
+    }
+
+    pub fn get_needle(&self) -> &ScalarExpression {
+        &self.needle
+    }
+}
+
+impl Expression for ContainsLogicalExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ContainsLogicalExpression"
     }
 }

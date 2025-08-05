@@ -151,6 +151,27 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
 
             Ok(result)
         }
+        LogicalExpression::Contains(c) => {
+            let haystack = execute_scalar_expression(execution_context, c.get_haystack())?;
+            let needle = execute_scalar_expression(execution_context, c.get_needle())?;
+
+            match Value::contains(
+                c.get_query_location(),
+                &haystack.to_value(),
+                &needle.to_value(),
+                c.get_case_insensitive(),
+            ) {
+                Ok(b) => {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        logical_expression,
+                        || format!("Evaluated as: {b}"),
+                    );
+                    Ok(b)
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -543,5 +564,125 @@ mod tests {
         )));
 
         run_test(LogicalExpression::Chain(chain), true);
+    }
+
+    #[test]
+    fn test_execute_contains_logical_expression() {
+        let record = TestRecord::new();
+
+        let run_test = |logical_expression, expected_value: bool| {
+            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record.clone(),
+            );
+
+            let value =
+                execute_logical_expression(&execution_context, &logical_expression).unwrap();
+
+            assert_eq!(expected_value, value);
+        };
+
+        // Test array contains string
+        run_test(
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "hello",
+                            )),
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "world",
+                            )),
+                        ],
+                    ),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                )),
+                false,
+            )),
+            true,
+        );
+
+        // Test array does not contain string
+        run_test(
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "hello",
+                            )),
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "world",
+                            )),
+                        ],
+                    ),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "foo"),
+                )),
+                false,
+            )),
+            false,
+        );
+
+        // Test string contains string
+        run_test(
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "world"),
+                )),
+                false,
+            )),
+            true,
+        );
+
+        // Test string contains string case insensitive
+        run_test(
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "WORLD"),
+                )),
+                true,
+            )),
+            true,
+        );
+
+        // Test string does not contain string
+        run_test(
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "foo"),
+                )),
+                false,
+            )),
+            false,
+        );
     }
 }
