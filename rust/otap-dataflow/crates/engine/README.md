@@ -64,7 +64,7 @@ The pipeline engine supports two types of control messages:
    starting or stopping.
 
 Note: Each node in a pipeline can receive node control messages, which must be
-handled with priority. 
+handled with priority.
 
 ## Effect Handlers
 

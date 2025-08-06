@@ -13,15 +13,10 @@ use crate::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
 use async_trait::async_trait;
-use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use serde_json::Value;
-use std::sync::Arc;
 use tokio::time::{Duration, sleep};
 
 /// The URN for the fake signal receiver
@@ -32,23 +27,17 @@ pub struct FakeSignalReceiver {
     config: Config,
 }
 
-// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPData type. We must unify this in the future.
-/// Declares the Fake Signal receiver as a local receiver factory
-///
-/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
-/// This macro is part of the `linkme` crate which is considered safe and well maintained.
-#[allow(unsafe_code)]
-#[distributed_slice(OTLP_RECEIVER_FACTORIES)]
-pub static FAKE_SIGNAL_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
-    name: FAKE_SIGNAL_RECEIVER_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
-        Ok(ReceiverWrapper::local(
-            FakeSignalReceiver::from_config(&node_config.config)?,
-            node_config,
-            receiver_config,
-        ))
-    },
-};
+// ToDo: The fake signal receiver pdata type is not the same as the other OTLP nodes which are based on the OTLPSignal type. We must unify this in the future.
+// /// Declares the Fake Signal receiver as a local receiver factory
+// ///
+// /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+// /// This macro is part of the `linkme` crate which is considered safe and well maintained.
+// #[allow(unsafe_code)]
+// #[distributed_slice(LOCAL_RECEIVERS)]
+// pub static FAKE_SIGNAL_RECEIVER: LocalReceiverFactory<OTLPSignal> = LocalReceiverFactory {
+//     name: "urn:otel:fake:signal:receiver",
+//     create: |config: &Value| Box::new(FakeSignalReceiver::from_config(config)),
+// };
 
 impl FakeSignalReceiver {
     /// creates a new FakeSignalReceiver
