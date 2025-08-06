@@ -94,7 +94,7 @@ impl Value<'_> {
             Value::Double(d) => d.to_string(action),
             Value::Integer(i) => i.to_string(action),
             Value::Map(m) => m.to_string(action),
-            Value::Null => (action)(""),
+            Value::Null => (action)("null"),
             Value::Regex(r) => r.to_string(action),
             Value::String(s) => (action)(s.get_value()),
         }

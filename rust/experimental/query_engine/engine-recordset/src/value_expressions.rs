@@ -22,7 +22,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 immutable_value_expression,
-                || format!("Evaluated as: {value}"),
+                || format!("Evaluated as: '{value}'"),
             );
 
             Ok(value)
