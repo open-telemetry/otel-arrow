@@ -50,14 +50,26 @@ jobs:
 
       - name: Update collector build version
         run: |
+          echo "Before updating otelarrowcol-build.yaml version:"
+          grep "version:" collector/otelarrowcol-build.yaml || true
+          
           # Update version in collector/otelarrowcol-build.yaml
           sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: ${{ inputs.version }}/" collector/otelarrowcol-build.yaml
+          
+          echo "After updating otelarrowcol-build.yaml version:"
+          grep "version:" collector/otelarrowcol-build.yaml || true
           echo "Updated collector/otelarrowcol-build.yaml version to ${{ inputs.version }}"
 
       - name: Update collector main.go version
         run: |
+          echo "Before updating main.go version:"
+          grep "Version:" collector/cmd/otelarrowcol/main.go || true
+          
           # Update version in collector/cmd/otelarrowcol/main.go
           sed -i "s/Version:     \"[0-9]\+\.[0-9]\+\.[0-9]\+\"/Version:     \"${{ inputs.version }}\"/" collector/cmd/otelarrowcol/main.go
+          
+          echo "After updating main.go version:"
+          grep "Version:" collector/cmd/otelarrowcol/main.go || true
           echo "Updated collector/cmd/otelarrowcol/main.go version to ${{ inputs.version }}"
 
       - name: Update CHANGELOG.md
