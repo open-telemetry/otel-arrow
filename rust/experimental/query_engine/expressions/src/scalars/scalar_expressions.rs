@@ -2542,4 +2542,33 @@ mod tests {
             "Array slice index ends at '6' which is beyond the length of '5'",
         );
     }
+
+    #[test]
+    pub fn test_parse_json_scalar_expression_try_resolve() {
+        fn run_test_success(input: &str, expected_value: Value) {
+            let pipeline = Default::default();
+
+            let expression = ParseJsonScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), input),
+                )),
+            );
+
+            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            assert_eq!(Some(expected_value.get_value_type()), actual_type);
+
+            let actual_value = expression.try_resolve_static(&pipeline).unwrap();
+            assert_eq!(
+                Some(expected_value),
+                actual_value.as_ref().map(|v| v.to_value())
+            );
+        }
+
+        run_test_success(
+            "18",
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+        );
+        run_test_success("hello world", Value::Null);
+    }
 }

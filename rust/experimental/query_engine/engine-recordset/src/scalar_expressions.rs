@@ -2324,4 +2324,36 @@ mod tests {
             ),
         );
     }
+
+    #[test]
+    pub fn test_execute_parse_json_scalar_expression() {
+        fn run_test_success(input: &str, expected_value: Value) {
+            let pipeline = Default::default();
+
+            let expression = ScalarExpression::ParseJson(ParseJsonScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), input),
+                )),
+            ));
+
+            let record = TestRecord::new();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value());
+        }
+
+        run_test_success(
+            "18",
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+        );
+        run_test_success("hello world", Value::Null);
+    }
 }
