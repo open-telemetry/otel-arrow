@@ -91,7 +91,7 @@ pub struct EffectHandler<PData> {
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new shared (Send) `EffectHandler` with the given processor name and timer request sender.
+    /// Creates a new shared (Send) `EffectHandler` with the given processor name and pdata sender.
     #[must_use]
     pub fn new(node_id: NodeId, msg_sender: SharedSender<PData>) -> Self {
         let core = EffectHandlerCore::new(node_id);
@@ -123,6 +123,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a processor at a time.
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,

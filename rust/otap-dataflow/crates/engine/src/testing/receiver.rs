@@ -167,7 +167,7 @@ pub struct ValidationPhase<PData> {
     /// Join handle for the running the test task
     run_test_handle: tokio::task::JoinHandle<()>,
 
-    node_request_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -243,7 +243,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 )
             }
         };
-        let (node_req_tx, node_req_rx) = pipeline_ctrl_msg_channel(10);
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         self.receiver
             .set_pdata_sender(node_id, "".into(), pdata_sender)
@@ -251,7 +251,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
 
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
-                .start(node_req_tx)
+                .start(pipeline_ctrl_msg_tx)
                 .await
                 .expect("Receiver event loop failed");
         });
@@ -269,7 +269,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
-            node_request_receiver: node_req_rx,
+            pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
         }
     }
 }

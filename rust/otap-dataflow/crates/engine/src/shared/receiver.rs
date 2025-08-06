@@ -100,10 +100,10 @@ impl<PData> EffectHandler<PData> {
     pub fn new(
         node_id: NodeId,
         msg_sender: SharedSender<PData>,
-        node_request_sender: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
-        core.set_pipeline_ctrl_msg_sender(node_request_sender);
+        core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
         EffectHandler { core, msg_sender }
     }
 
@@ -143,6 +143,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a processor at a time.
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,

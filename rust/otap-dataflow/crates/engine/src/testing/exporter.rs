@@ -149,7 +149,7 @@ pub struct TestPhase<PData> {
     /// Join handle for the starting the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
 
-    node_request_receiver: PipelineCtrlMsgReceiver,
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -215,14 +215,14 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 )
             }
         };
-        let (node_req_tx, node_req_rx) = pipeline_ctrl_msg_channel(10);
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         exporter
             .set_pdata_receiver(self.config.name, pdata_rx)
             .expect("Failed to set PData receiver");
         let run_exporter_handle = self
             .local_tasks
-            .spawn_local(async move { exporter.start(node_req_tx).await });
+            .spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await });
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -230,7 +230,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             control_sender,
             pdata_sender: pdata_tx,
             run_exporter_handle,
-            node_request_receiver: node_req_rx,
+            pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
         }
     }
 }

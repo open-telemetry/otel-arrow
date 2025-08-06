@@ -232,6 +232,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
+    /// 
+    /// Current limitation: Only one timer can be started by an exporter at a time.
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
