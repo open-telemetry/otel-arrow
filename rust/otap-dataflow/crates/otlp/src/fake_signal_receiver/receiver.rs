@@ -17,7 +17,7 @@ use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use serde_json::Value;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep};
 
 /// The URN for the fake signal receiver
 pub const FAKE_SIGNAL_RECEIVER_URN: &str = "urn:otel:fake:signal:receiver";
@@ -105,15 +105,17 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
 
     for step in steps {
         // create batches if specified
-
-        // need to calculate the next time to send batches to take into account time it takes to generate batches
         let batches = step.get_batches_to_generate() as usize;
-        let batch_interval = steps.get_batches_to_generate() / step.get_messages_per_second();
-        // get time before creating signals to account
-        let current_time = std::time::SystemTime::now();
-        // using the batch_interval get the time when the next batch should be generated
-        let next_send_time = current_time + Duration::from_secs(batch_interval);
+
+        let delay_per_message = if step.get_messages_per_second() != 0 {
+            1.0f64 / (step.get_messages_per_second() as f64)
+        } else {
+            0.0f64
+        };
+        // represent delay as duration
+        let message_delta = Duration::from_secs_f64(delay_per_message);
         for _ in 0..batches {
+            let next_message_send = Instant::now() + message_delta;
             let signal = match step.get_signal_type() {
                 SignalType::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(
                     load.resource_count(),
@@ -132,11 +134,11 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
                 )),
             };
             _ = effect_handler.send_message(signal).await;
-        }
-        // check if need to sleep before interval
-        let remaining_time = next_send_time - std::time::SystemTime::now();
-        if remaining_time > 0 {
-            sleep(remaining_time).await;
+            let time_till_next = next_message_send - Instant::now();
+            if time_till_next.as_secs_f64() > 0.0 {
+                sleep(time_till_next).await;
+            }
+            // ToDo: handle negative time_till_next where we can't keep up with the specified message_rate
         }
     }
 }
@@ -160,8 +162,9 @@ mod tests {
     const RESOURCE_COUNT: usize = 1;
     const SCOPE_COUNT: usize = 1;
     const BATCH_COUNT: u64 = 1;
-    const DELAY: u64 = 0;
-
+    const NO_DELAY_MESSAGE_PER_SECOND: u64 = 0;
+    const RUN_TILL_SHUTDOWN: u64 = 1000;
+    const MESSAGE_PER_SECOND: u64 = 3;
     const RESOLVED_REGISTRY_JSON: &str = r#"
     {
   "registry_url": "",
@@ -688,7 +691,7 @@ mod tests {
             Box::pin(async move {
                 // no scenario to run here as scenario is already defined in the configuration
                 // wait for the scenario to finish running
-                sleep(Duration::from_millis(1000)).await;
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
                     .await
@@ -836,18 +839,18 @@ mod tests {
         steps.push(ScenarioStep::new(
             SignalType::Metrics(load.clone()),
             BATCH_COUNT,
-            DELAY,
+            NO_DELAY_MESSAGE_PER_SECOND,
         ));
 
         steps.push(ScenarioStep::new(
             SignalType::Traces(load.clone()),
             BATCH_COUNT,
-            DELAY,
+            NO_DELAY_MESSAGE_PER_SECOND,
         ));
         steps.push(ScenarioStep::new(
             SignalType::Logs(load.clone()),
             BATCH_COUNT,
-            DELAY,
+            NO_DELAY_MESSAGE_PER_SECOND,
         ));
         let config = Config::new(steps, registry);
 
@@ -869,6 +872,23 @@ mod tests {
             .run_validation(validation_procedure());
     }
 
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure_message_rate()
+    -> impl FnOnce(NotSendValidateContext<OTLPSignal>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                for num_message in 0..MESSAGE_PER_SECOND + 1 {
+                    if num_message < MESSAGE_PER_SECOND {
+                        _ = timeout(Duration::from_secs(1), ctx.recv()).await.expect("Timed out waiting for message")
+                    .expect("No message received");
+                    } else {
+                        _ = timeout(Duration::from_secs(1), ctx.recv()).await.is_err();
+                    }
+                }
+            })
+        }
+    }
+
     #[test]
     fn test_fake_signal_receiver_message_rate() {
         let test_runtime = TestRuntime::new();
@@ -882,11 +902,12 @@ mod tests {
         steps.push(ScenarioStep::new(
             SignalType::Metrics(load.clone()),
             BATCH_COUNT,
-            DELAY,
+            MESSAGE_PER_SECOND,
         ));
         let config = Config::new(steps, registry);
 
-        let node_config = Rc::new(NodeUserConfig::new_receiver_config(
+        // create our receiver
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             FAKE_SIGNAL_RECEIVER_URN,
         ));
         // create our receiver
@@ -900,6 +921,6 @@ mod tests {
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario())
-            .run_validation(validation_procedure());
+            .run_validation(validation_procedure_message_rate());
     }
 }
