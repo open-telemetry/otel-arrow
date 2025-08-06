@@ -522,27 +522,54 @@ pub fn replace_str_naive(array: &StringArray, target: &str, replacement: &str) -
 }
 
 pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> StringArray {
-    let mask = eq(array, &StringArray::new_scalar(target)).unwrap();
-    // let ranges_iter = SlicesIterator::new(&mask);
+    let eq_mask = eq(array, &StringArray::new_scalar(target)).unwrap();
 
-    let old_values = array.values();
-    let old_offsets = array.offsets();
+    let values = array.values();
+    let offsets = array.offsets();
 
+    // 1. Create a new values buffer ... (TODO finish comment)
+
+    // byte buffer for new values
     let mut new_values = MutableBuffer::new(0);
-    
+
+    // as we're filling in the new values, we're iterating ranges of equal values and we use this
+    // pointer to the previous offset in the values buffer that was equal
+    // TODO naming -- should this be "neq" ?
+    let mut prev_eq_offset_end = 0;
+
+    // fill new values buffer
+    for (eq_start_idx, eq_end_idx) in SlicesIterator::new(&eq_mask) {
+        // copy all the values that were not replaced
+        let eq_start_offset = offsets[eq_start_idx] as usize;
+        new_values.extend_from_slice(&values.slice_with_length(prev_eq_offset_end, eq_start_offset - prev_eq_offset_end));
+
+        // append `replacement` for each index where value == `target`
+        for _ in eq_start_idx..eq_end_idx {
+            // TODO, will it help to avoid calling as_bytes each iteration here?
+            new_values.extend_from_slice(replacement.as_bytes());
+        }
+        
+        prev_eq_offset_end = offsets[eq_end_idx] as usize;
+    }
+
+    // copy any non replaced bytes at the tail of the previous values buffer
+    new_values.extend_from_slice(&values.slice(prev_eq_offset_end));
+
+    // 2. Create a new offset buffer ... (TODO finish comment)
+
+    // byte buffer for new offsets - this is a buffer of i32, so 4 bytes per value
     let mut new_offsets = MutableBuffer::new(4 * array.len());
-
-    let offset_adjustment = target.len() as i32 - replacement.len() as i32;
-
-    let mut last_eq_range_end = 0;
+    
+    // TODO comment on what these are for
+    let offset_adjustment = target.len() as i32 - replacement.len() as i32; // TODO, should be length in bytes (add test)
     let mut curr_total_offset_adjustment = 0;
 
-    for eq_indices_range in SlicesIterator::new(&mask) {
-        // copy offsets, but add adjustment
-        // let offsets_slice = old_offsets.slice(last_eq_range_end, eq_indices_range.1 - eq_indices_range.0);
-        // // TODO there's an extra copy here that's not needed?
-        // let scalar_buffer = offsets_slice.into_inner();
-        let scalar_buffer = old_offsets.inner().slice(last_eq_range_end, eq_indices_range.0 - last_eq_range_end);
+    // pointer to the end of the previous range where the value were equal to target
+    let mut prev_eq_index_end = 0;
+
+    for (eq_start_idx, eq_end_idx) in SlicesIterator::new(&eq_mask) {
+        // copy offsets for values that were not replaced, but add the offset adjustment
+        let scalar_buffer = offsets.inner().slice(prev_eq_index_end, eq_start_idx - prev_eq_index_end);
         let offsets_arr: PrimitiveArray<Int32Type> = PrimitiveArray::new(scalar_buffer, None);
         let add_result = add(&offsets_arr, &Int32Array::new_scalar(curr_total_offset_adjustment))
             .unwrap();
@@ -552,31 +579,51 @@ pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> S
             .unwrap();
         new_offsets.extend_from_slice(new_slice_offsets.values());
 
-        // copy values
-        let eq_start_offset = old_offsets[eq_indices_range.0] as usize;
-        // let eq_end_offset = old_offsets[eq_indices_range.1] as usize;
-
-        let last_end_offset = old_offsets[last_eq_range_end] as usize;
-
-        new_values.extend_from_slice(&old_values.slice_with_length(
-            last_end_offset,
-            eq_start_offset - last_end_offset,
-        ));
-
-
-        for i in eq_indices_range.0..eq_indices_range.1 {
-            new_values.extend_from_slice(replacement.as_bytes());
+        // append offsets for values that were replaced
+        for i in eq_start_idx..eq_end_idx {
             curr_total_offset_adjustment += offset_adjustment;
-            new_offsets.push(curr_total_offset_adjustment + old_offsets[i])
-            
+            new_offsets.push(curr_total_offset_adjustment + offsets[i]);
         }
-        
-        // update pointer to last end range
-        last_eq_range_end = eq_indices_range.1;
-    }
 
-    new_values.extend_from_slice(&old_values.slice(last_eq_range_end));
-    new_offsets.push(old_offsets[array.len()]);
+        prev_eq_index_end = eq_end_idx;
+    }
+    
+    // add the final offset
+    new_offsets.push(new_values.len() as i32);
+
+
+    // for eq_indices_range in SlicesIterator::new(&eq_mask) {
+    //     // copy offsets, but add adjustment
+    //     let scalar_buffer = old_offsets.inner().slice(last_eq_range_end, eq_indices_range.0 - last_eq_range_end);
+    //     let offsets_arr: PrimitiveArray<Int32Type> = PrimitiveArray::new(scalar_buffer, None);
+    //     let add_result = add(&offsets_arr, &Int32Array::new_scalar(curr_total_offset_adjustment))
+    //         .unwrap();
+    //     let new_slice_offsets: &PrimitiveArray<Int32Type> = add_result
+    //         .as_any()
+    //         .downcast_ref()
+    //         .unwrap();
+    //     new_offsets.extend_from_slice(new_slice_offsets.values());
+
+    //     // copy values
+    //     let eq_start_offset = old_offsets[eq_indices_range.0] as usize;
+    //     let last_end_offset = old_offsets[last_eq_range_end] as usize;
+
+    //     new_values.extend_from_slice(&old_values.slice_with_length(
+    //         last_end_offset,
+    //         eq_start_offset - last_end_offset,
+    //     ));
+    //     for i in eq_indices_range.0..eq_indices_range.1 {
+    //         new_values.extend_from_slice(replacement.as_bytes());
+    //         curr_total_offset_adjustment += offset_adjustment;
+    //         new_offsets.push(curr_total_offset_adjustment + old_offsets[i])
+    //     }
+        
+    //     // update pointer to last end range
+    //     last_eq_range_end = eq_indices_range.1;
+    // }
+
+
+    // new_offsets.push(offsets[array.len()]);
 
     #[allow(unsafe_code)]
     let new_offsets = unsafe {
