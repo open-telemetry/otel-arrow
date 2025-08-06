@@ -31,7 +31,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {value}"),
+                || format!("Evaluated as: '{value}'"),
             );
 
             Ok(value)
@@ -49,7 +49,7 @@ where
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
                     scalar_expression,
-                    || format!("Evaluated as: {value}"),
+                    || format!("Evaluated as: '{value}'"),
                 );
 
                 Ok(value)
@@ -93,7 +93,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {value}"),
+                || format!("Evaluated as: '{value}'"),
             );
 
             Ok(value)
@@ -104,7 +104,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {value}"),
+                || format!("Evaluated as: '{value}'"),
             );
 
             Ok(ResolvedValue::Value(value))
@@ -181,7 +181,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {v}"),
+                || format!("Evaluated as: '{v}'"),
             );
 
             Ok(v)
@@ -192,7 +192,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {value}"),
+                || format!("Evaluated as: '{value}'"),
             );
 
             Ok(ResolvedValue::Computed(OwnedValue::Boolean(
@@ -206,7 +206,7 @@ where
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         scalar_expression,
-                        || format!("Evaluated as: {value}"),
+                        || format!("Evaluated as: '{value}'"),
                     );
 
                     return Ok(value);
@@ -216,7 +216,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || "Evaluated as: null".into(),
+                || "Evaluated as: 'null'".into(),
             );
 
             Ok(ResolvedValue::Computed(OwnedValue::Null))
@@ -233,7 +233,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {inner_value}"),
+                || format!("Evaluated as: '{inner_value}'"),
             );
 
             Ok(inner_value)
@@ -249,7 +249,7 @@ where
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         scalar_expression,
-                        || format!("Evaluated as: {inner_value}"),
+                        || format!("Evaluated as: '{inner_value}'"),
                     );
 
                     return Ok(inner_value);
@@ -263,7 +263,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {inner_value}"),
+                || format!("Evaluated as: '{inner_value}'"),
             );
 
             Ok(inner_value)
@@ -299,9 +299,13 @@ where
                 }
                 ConvertScalarExpression::String(c) => {
                     let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-                    if v.get_value_type() == ValueType::String {
+                    let value_type = v.get_value_type();
+                    if value_type == ValueType::String {
                         v
+                    } else if value_type == ValueType::Null {
+                        ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                            "".into(),
+                        )))
                     } else {
                         let mut string_value = None;
                         v.to_value().convert_to_string(&mut |s| {
@@ -317,7 +321,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {value}"),
+                || format!("Evaluated as: '{value}'"),
             );
 
             Ok(value)
@@ -342,7 +346,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {v}"),
+                || format!("Evaluated as: '{v}'"),
             );
 
             Ok(v)
@@ -370,7 +374,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {v}"),
+                || format!("Evaluated as: '{v}'"),
             );
 
             Ok(v)
@@ -436,7 +440,7 @@ where
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
-                || format!("Evaluated as: {v}"),
+                || format!("Evaluated as: '{v}'"),
             );
 
             Ok(v)
@@ -1971,7 +1975,7 @@ mod tests {
 
             let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
 
-            assert_eq!(expected, actual.to_value());
+            assert_eq!(expected.to_string(), actual.to_value().to_string());
         }
 
         fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {

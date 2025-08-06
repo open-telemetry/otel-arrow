@@ -16,14 +16,14 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
                     logical_expression,
-                    || format!("Evaluated as: {b}"),
+                    || format!("Evaluated as: '{b}'"),
                 );
                 Ok(b)
             } else {
                 Err(ExpressionError::TypeMismatch(
                     s.get_query_location().clone(),
                     format!(
-                        "{:?} value '{value}' returned by scalar expression could not be converted to bool",
+                        "Value of '{:?}' type returned by scalar expression could not be converted to bool",
                         value.get_value_type()
                     ),
                 ))
@@ -44,7 +44,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         logical_expression,
-                        || format!("Evaluated as: {b}"),
+                        || format!("Evaluated as: '{b}'"),
                     );
                     Ok(b)
                 }
@@ -63,7 +63,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         logical_expression,
-                        || format!("Evaluated as: {r}"),
+                        || format!("Evaluated as: '{r}'"),
                     );
                     Ok(r)
                 }
@@ -82,7 +82,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         logical_expression,
-                        || format!("Evaluated as: {r}"),
+                        || format!("Evaluated as: '{r}'"),
                     );
                     Ok(r)
                 }
@@ -96,7 +96,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         logical_expression,
-                        || format!("Evaluated as: {b}"),
+                        || format!("Evaluated as: '{b}'"),
                     );
                     Ok(b)
                 }
@@ -146,7 +146,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 logical_expression,
-                || format!("Evaluated as: {result}"),
+                || format!("Evaluated as: '{result}'"),
             );
 
             Ok(result)
@@ -165,7 +165,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                     execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         logical_expression,
-                        || format!("Evaluated as: {b}"),
+                        || format!("Evaluated as: '{b}'"),
                     );
                     Ok(b)
                 }

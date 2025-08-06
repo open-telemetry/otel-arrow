@@ -52,7 +52,8 @@ pub enum ScalarExpression {
     /// items in an inner array/map values, or null for invalid input.
     Length(LengthScalarExpression),
 
-    /// Replaces all occurrences of a lookup string with a replacement string.
+    /// Returns a string with all occurrences of a lookup value replaced with a
+    /// replacement value or null for invalid input.
     ReplaceString(ReplaceStringScalarExpression),
 
     /// Returns a slice of characters from an inner string value, a slice of
@@ -1126,9 +1127,8 @@ impl SliceScalarExpression {
 
                     // Note: We only return statically small string slices. The
                     // idea here is to prevent expansion of the expression tree
-                    // for large values. This could potentially be improved by
-                    // promoting common slices to constants automatically and
-                    // then referencing them when a slice is requested.
+                    // for large values. At runtime a slice of a string is just
+                    // a pointer to some data.
                     if range_end_exclusive - range_start_inclusive > 32 {
                         Ok(None)
                     } else {

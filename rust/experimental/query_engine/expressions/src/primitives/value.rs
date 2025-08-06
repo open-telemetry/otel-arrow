@@ -94,7 +94,7 @@ impl Value<'_> {
             Value::Double(d) => d.to_string(action),
             Value::Integer(i) => i.to_string(action),
             Value::Map(m) => m.to_string(action),
-            Value::Null => (action)(""),
+            Value::Null => (action)("null"),
             Value::Regex(r) => r.to_string(action),
             Value::String(s) => (action)(s.get_value()),
         }
@@ -164,7 +164,7 @@ impl Value<'_> {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{right}' on right side of equality operation could not be converted to an array",
+                            "Value of '{:?}' type on right side of equality operation could not be converted to an array",
                             right.get_value_type(),
                         ),
                     ))
@@ -175,7 +175,7 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{right}' on right side of equality operation could not be converted to bool",
+                        "Value of '{:?}' type on right side of equality operation could not be converted to bool",
                         right.get_value_type(),
                     ),
                 )),
@@ -185,7 +185,7 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{right}' on right side of equality operation could not be converted to DateTime",
+                        "Value of '{:?}' type on right side of equality operation could not be converted to DateTime",
                         right.get_value_type(),
                     ),
                 )),
@@ -195,7 +195,7 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{right}' on right side of equality operation could not be converted to double",
+                        "Value of '{:?}' type on right side of equality operation could not be converted to double",
                         right.get_value_type(),
                     ),
                 )),
@@ -205,7 +205,7 @@ impl Value<'_> {
                 None => Err(ExpressionError::TypeMismatch(
                     query_location.clone(),
                     format!(
-                        "{:?} value '{right}' on right side of equality operation could not be converted to int",
+                        "Value of '{:?}' type on right side of equality operation could not be converted to int",
                         right.get_value_type(),
                     ),
                 )),
@@ -223,7 +223,7 @@ impl Value<'_> {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{right}' on right side of equality operation could not be converted to a map",
+                            "Value of '{:?}' type on right side of equality operation could not be converted to a map",
                             right.get_value_type(),
                         ),
                     ))
@@ -258,7 +258,7 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{left}' on left side of comparison operation could not be converted to DateTime",
+                            "Value of '{:?}' type on left side of comparison operation could not be converted to DateTime",
                             left.get_value_type(),
                         ),
                     ));
@@ -271,7 +271,7 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{right}' on right side of comparison operation could not be converted to DateTime",
+                            "Value of '{:?}' type on right side of comparison operation could not be converted to DateTime",
                             right.get_value_type(),
                         ),
                     ));
@@ -286,7 +286,7 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{left}' on left side of comparison operation could not be converted to double",
+                            "Value of '{:?}' type on left side of comparison operation could not be converted to double",
                             left.get_value_type(),
                         ),
                     ));
@@ -299,7 +299,7 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{right}' on right side of comparison operation could not be converted to double",
+                            "Value of '{:?}' type on right side of comparison operation could not be converted to double",
                             right.get_value_type(),
                         ),
                     ));
@@ -314,7 +314,7 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{left}' on left side of comparison operation could not be converted to int",
+                            "Value of '{:?}' type on left side of comparison operation could not be converted to int",
                             left.get_value_type(),
                         ),
                     ));
@@ -327,7 +327,7 @@ impl Value<'_> {
                     return Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "{:?} value '{right}' on right side of comparison operation could not be converted to int",
+                            "Value of '{:?}' type on right side of comparison operation could not be converted to int",
                             right.get_value_type(),
                         ),
                     ));
@@ -369,35 +369,32 @@ impl Value<'_> {
             }
             Value::String(string_val) => {
                 let haystack_str = string_val.get_value();
-                let mut needle_str = None;
+
+                let mut result = None;
                 needle.convert_to_string(&mut |s| {
-                    needle_str = Some(s.to_string());
+                    let contains_result = if case_insensitive {
+                        let folded_haystack = caseless::default_case_fold_str(haystack_str);
+                        let folded_needle = caseless::default_case_fold_str(s);
+
+                        folded_haystack.contains(&folded_needle)
+                    } else {
+                        haystack_str.contains(s)
+                    };
+                    result = Some(contains_result)
                 });
 
-                if let Some(needle_str) = needle_str {
-                    let contains_result = if case_insensitive {
-                        // For case-insensitive comparison, convert both to lowercase
-                        haystack_str
-                            .to_lowercase()
-                            .contains(&needle_str.to_lowercase())
-                    } else {
-                        haystack_str.contains(&needle_str)
-                    };
-                    Ok(contains_result)
+                if let Some(r) = result {
+                    Ok(r)
                 } else {
-                    Err(ExpressionError::TypeMismatch(
-                        query_location.clone(),
-                        format!(
-                            "{:?} needle value '{needle}' could not be converted to string for contains operation",
-                            needle.get_value_type(),
-                        ),
-                    ))
+                    panic!(
+                        "Encountered a Value type which does not correctly implement convert_to_string"
+                    )
                 }
             }
             _ => Err(ExpressionError::TypeMismatch(
                 query_location.clone(),
                 format!(
-                    "{:?} haystack value '{haystack}' is not supported for contains operation. Only Array and String values are supported.",
+                    "Haystack value of '{:?}' type is not supported for contains operation. Only Array and String values are supported.",
                     haystack.get_value_type(),
                 ),
             )),
@@ -1090,7 +1087,7 @@ mod tests {
                 "hello world",
             )),
             false,
-            "String value 'hello world' on right side of equality operation could not be converted to bool",
+            "Value of 'String' type on right side of equality operation could not be converted to bool",
         );
 
         run_test_success(
@@ -1114,7 +1111,7 @@ mod tests {
                 "hello world",
             )),
             false,
-            "String value 'hello world' on right side of equality operation could not be converted to int",
+            "Value of 'String' type on right side of equality operation could not be converted to int",
         );
 
         run_test_success(
@@ -1138,7 +1135,7 @@ mod tests {
                 "hello world",
             )),
             false,
-            "String value 'hello world' on right side of equality operation could not be converted to double",
+            "Value of 'String' type on right side of equality operation could not be converted to double",
         );
 
         run_test_success(
@@ -1164,7 +1161,7 @@ mod tests {
                 "hello world",
             )),
             false,
-            "String value 'hello world' on right side of equality operation could not be converted to DateTime",
+            "Value of 'String' type on right side of equality operation could not be converted to DateTime",
         );
 
         run_test_success(
@@ -1726,7 +1723,7 @@ mod tests {
                 "hello world",
             )),
             Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
-            "String value 'hello world' on left side of comparison operation could not be converted to int",
+            "Value of 'String' type on left side of comparison operation could not be converted to int",
         );
 
         run_test_failure(
@@ -1735,7 +1732,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 "hello world",
             )),
-            "String value 'hello world' on right side of comparison operation could not be converted to int",
+            "Value of 'String' type on right side of comparison operation could not be converted to int",
         );
 
         run_test_failure(
@@ -1744,7 +1741,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 "hello world",
             )),
-            "String value 'hello world' on right side of comparison operation could not be converted to double",
+            "Value of 'String' type on right side of comparison operation could not be converted to double",
         );
 
         run_test_failure(
@@ -1753,7 +1750,7 @@ mod tests {
                 "hello world",
             )),
             Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
-            "String value 'hello world' on left side of comparison operation could not be converted to double",
+            "Value of 'String' type on left side of comparison operation could not be converted to double",
         );
 
         run_test_failure(
@@ -1762,7 +1759,7 @@ mod tests {
                 Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
             )),
             Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
-            "Integer value '1' on right side of comparison operation could not be converted to DateTime",
+            "Value of 'Integer' type on right side of comparison operation could not be converted to DateTime",
         );
 
         run_test_failure(
@@ -1771,7 +1768,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
             )),
-            "Double value '1.1' on left side of comparison operation could not be converted to DateTime",
+            "Value of 'Double' type on left side of comparison operation could not be converted to DateTime",
         );
     }
 
@@ -1922,7 +1919,7 @@ mod tests {
                 "world",
             )),
             false,
-            "Integer haystack value '42' is not supported for contains operation. Only Array and String values are supported.",
+            "Haystack value of 'Integer' type is not supported for contains operation. Only Array and String values are supported.",
         );
     }
 }
