@@ -11,15 +11,15 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
-    Array(&'a (dyn ArrayValue + 'static)),
-    Boolean(&'a (dyn BooleanValue + 'static)),
-    DateTime(&'a (dyn DateTimeValue + 'static)),
-    Double(&'a (dyn DoubleValue + 'static)),
-    Integer(&'a (dyn IntegerValue + 'static)),
-    Map(&'a (dyn MapValue + 'static)),
+    Array(&'a dyn ArrayValue),
+    Boolean(&'a dyn BooleanValue),
+    DateTime(&'a dyn DateTimeValue),
+    Double(&'a dyn DoubleValue),
+    Integer(&'a dyn IntegerValue),
+    Map(&'a dyn MapValue),
     Null,
-    Regex(&'a (dyn RegexValue + 'static)),
-    String(&'a (dyn StringValue + 'static)),
+    Regex(&'a dyn RegexValue),
+    String(&'a dyn StringValue),
 }
 
 impl Value<'_> {
@@ -338,6 +338,72 @@ impl Value<'_> {
         }
     }
 
+    pub fn contains(
+        query_location: &QueryLocation,
+        haystack: &Value,
+        needle: &Value,
+        case_insensitive: bool,
+    ) -> Result<bool, ExpressionError> {
+        match haystack {
+            Value::Array(array) => {
+                let mut found = false;
+                array.get_items(&mut IndexValueClosureCallback::new(|_, item_value| {
+                    match Self::are_values_equal(
+                        query_location,
+                        &item_value,
+                        needle,
+                        case_insensitive,
+                    ) {
+                        Ok(is_equal) => {
+                            if is_equal {
+                                found = true;
+                                false // Stop iteration
+                            } else {
+                                true // Continue iteration
+                            }
+                        }
+                        Err(_) => true, // Continue iteration on error
+                    }
+                }));
+                Ok(found)
+            }
+            Value::String(string_val) => {
+                let haystack_str = string_val.get_value();
+                let mut needle_str = None;
+                needle.convert_to_string(&mut |s| {
+                    needle_str = Some(s.to_string());
+                });
+
+                if let Some(needle_str) = needle_str {
+                    let contains_result = if case_insensitive {
+                        // For case-insensitive comparison, convert both to lowercase
+                        haystack_str
+                            .to_lowercase()
+                            .contains(&needle_str.to_lowercase())
+                    } else {
+                        haystack_str.contains(&needle_str)
+                    };
+                    Ok(contains_result)
+                } else {
+                    Err(ExpressionError::TypeMismatch(
+                        query_location.clone(),
+                        format!(
+                            "{:?} needle value '{needle}' could not be converted to string for contains operation",
+                            needle.get_value_type(),
+                        ),
+                    ))
+                }
+            }
+            _ => Err(ExpressionError::TypeMismatch(
+                query_location.clone(),
+                format!(
+                    "{:?} haystack value '{haystack}' is not supported for contains operation. Only Array and String values are supported.",
+                    haystack.get_value_type(),
+                ),
+            )),
+        }
+    }
+
     fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
         let mut r = None;
 
@@ -350,6 +416,76 @@ impl Value<'_> {
         });
 
         r.expect("Encountered a type which does not correctly implement convert_to_string")
+    }
+
+    pub fn replace_matches(
+        _query_location: &QueryLocation,
+        haystack: &Value,
+        needle: &Value,
+        replacement: &Value,
+        case_insensitive: bool,
+    ) -> Option<String> {
+        match (haystack, needle, replacement) {
+            // String needle - simple text replacement (with case sensitivity support)
+            (
+                Value::String(haystack_str),
+                Value::String(needle_str),
+                Value::String(replacement_str),
+            ) => {
+                let haystack_val = haystack_str.get_value();
+                let needle_val = needle_str.get_value();
+                let replacement_val = replacement_str.get_value();
+
+                if case_insensitive {
+                    // Use caseless crate for case-insensitive replacement
+                    let mut result = String::new();
+                    let mut remaining = haystack_val;
+
+                    loop {
+                        // Find the first occurrence of needle in remaining text (case-insensitive)
+                        let mut match_start = None;
+                        let mut match_end = None;
+
+                        // Search for needle at each position in remaining
+                        for i in 0..=remaining.len() {
+                            if i + needle_val.len() <= remaining.len() {
+                                let candidate = &remaining[i..i + needle_val.len()];
+                                if caseless::default_caseless_match_str(candidate, needle_val) {
+                                    match_start = Some(i);
+                                    match_end = Some(i + needle_val.len());
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let (Some(start), Some(end)) = (match_start, match_end) {
+                            result.push_str(&remaining[..start]);
+                            result.push_str(replacement_val);
+                            remaining = &remaining[end..];
+                        } else {
+                            result.push_str(remaining);
+                            break;
+                        }
+                    }
+
+                    Some(result)
+                } else {
+                    Some(haystack_val.replace(needle_val, replacement_val))
+                }
+            }
+            // Regex needle - regex replacement with capture group support
+            (
+                Value::String(haystack_str),
+                Value::Regex(needle_regex),
+                Value::String(replacement_str),
+            ) => {
+                let regex = needle_regex.get_value();
+                let result =
+                    regex.replace_all(haystack_str.get_value(), replacement_str.get_value());
+                Some(result.to_string())
+            }
+            _ => None,
+        }
     }
 }
 
@@ -375,7 +511,54 @@ pub trait AsValue: Debug {
     fn to_value(&self) -> Value;
 }
 
-pub trait BooleanValue: AsValue {
+#[derive(Debug, Clone)]
+pub enum StaticValue<'a> {
+    Array(&'a (dyn ArrayValue + 'static)),
+    Boolean(&'a (dyn BooleanValue + 'static)),
+    DateTime(&'a (dyn DateTimeValue + 'static)),
+    Double(&'a (dyn DoubleValue + 'static)),
+    Integer(&'a (dyn IntegerValue + 'static)),
+    Map(&'a (dyn MapValue + 'static)),
+    Null,
+    Regex(&'a (dyn RegexValue + 'static)),
+    String(&'a (dyn StringValue + 'static)),
+}
+
+pub trait AsStaticValue: AsValue {
+    fn to_static_value(&self) -> StaticValue;
+}
+
+impl<T: AsStaticValue> AsValue for T {
+    fn get_value_type(&self) -> ValueType {
+        match self.to_static_value() {
+            StaticValue::Array(_) => ValueType::Array,
+            StaticValue::Boolean(_) => ValueType::Boolean,
+            StaticValue::DateTime(_) => ValueType::DateTime,
+            StaticValue::Double(_) => ValueType::Double,
+            StaticValue::Integer(_) => ValueType::Integer,
+            StaticValue::Map(_) => ValueType::Map,
+            StaticValue::Null => ValueType::Null,
+            StaticValue::Regex(_) => ValueType::Regex,
+            StaticValue::String(_) => ValueType::String,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        match self.to_static_value() {
+            StaticValue::Array(a) => Value::Array(a),
+            StaticValue::Boolean(b) => Value::Boolean(b),
+            StaticValue::DateTime(d) => Value::DateTime(d),
+            StaticValue::Double(d) => Value::Double(d),
+            StaticValue::Integer(i) => Value::Integer(i),
+            StaticValue::Map(m) => Value::Map(m),
+            StaticValue::Null => Value::Null,
+            StaticValue::Regex(r) => Value::Regex(r),
+            StaticValue::String(s) => Value::String(s),
+        }
+    }
+}
+
+pub trait BooleanValue: Debug {
     fn get_value(&self) -> bool;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -383,7 +566,7 @@ pub trait BooleanValue: AsValue {
     }
 }
 
-pub trait IntegerValue: AsValue {
+pub trait IntegerValue: Debug {
     fn get_value(&self) -> i64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -391,7 +574,7 @@ pub trait IntegerValue: AsValue {
     }
 }
 
-pub trait DateTimeValue: AsValue {
+pub trait DateTimeValue: Debug {
     fn get_value(&self) -> DateTime<FixedOffset>;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -403,7 +586,7 @@ pub trait DateTimeValue: AsValue {
     }
 }
 
-pub trait DoubleValue: AsValue {
+pub trait DoubleValue: Debug {
     fn get_value(&self) -> f64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -411,7 +594,7 @@ pub trait DoubleValue: AsValue {
     }
 }
 
-pub trait RegexValue: AsValue {
+pub trait RegexValue: Debug {
     fn get_value(&self) -> &Regex;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
@@ -419,7 +602,7 @@ pub trait RegexValue: AsValue {
     }
 }
 
-pub trait StringValue: AsValue {
+pub trait StringValue: Debug {
     fn get_value(&self) -> &str;
 }
 
@@ -1589,6 +1772,157 @@ mod tests {
                 Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
             )),
             "Double value '1.1' on left side of comparison operation could not be converted to DateTime",
+        );
+    }
+
+    #[test]
+    pub fn test_contains() {
+        let run_test_success =
+            |haystack: Value, needle: Value, case_insensitive: bool, expected: bool| {
+                let actual = Value::contains(
+                    &QueryLocation::new_fake(),
+                    &haystack,
+                    &needle,
+                    case_insensitive,
+                )
+                .unwrap();
+                assert_eq!(expected, actual);
+            };
+
+        let run_test_failure =
+            |haystack: Value, needle: Value, case_insensitive: bool, expected: &str| {
+                let actual = Value::contains(
+                    &QueryLocation::new_fake(),
+                    &haystack,
+                    &needle,
+                    case_insensitive,
+                )
+                .unwrap_err();
+
+                #[allow(irrefutable_let_patterns)]
+                if let ExpressionError::TypeMismatch(_, msg) = actual {
+                    assert_eq!(expected, msg);
+                } else {
+                    panic!("Expected TypeMismatch")
+                }
+            };
+
+        // Test Array contains
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "world",
+                    )),
+                ],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "world",
+                    )),
+                ],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "HELLO",
+            )),
+            true,
+            true,
+        );
+
+        run_test_success(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello",
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "world",
+                    )),
+                ],
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "foo",
+            )),
+            false,
+            false,
+        );
+
+        // Test String contains
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "world",
+            )),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "WORLD",
+            )),
+            true,
+            true,
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "foo",
+            )),
+            false,
+            false,
+        );
+
+        // Test error cases
+        run_test_failure(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "world",
+            )),
+            false,
+            "Integer haystack value '42' is not supported for contains operation. Only Array and String values are supported.",
         );
     }
 }
