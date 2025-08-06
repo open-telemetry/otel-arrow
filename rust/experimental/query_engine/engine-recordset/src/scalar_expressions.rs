@@ -449,11 +449,33 @@ where
             let inner_value =
                 execute_scalar_expression(execution_context, p.get_inner_expression())?;
 
-            let v = ResolvedValue::Computed(match inner_value.to_value() {
-                Value::String(s) => {
-                    OwnedValue::from_json(s.get_value()).unwrap_or(OwnedValue::Null)
+            let value = inner_value.to_value();
+
+            let v = ResolvedValue::Computed(match value {
+                Value::String(s) => match OwnedValue::from_json(s.get_value()) {
+                    Some(v) => v,
+                    None => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || "String input could not be parsed as JSON".into(),
+                        );
+                        OwnedValue::Null
+                    }
+                },
+                _ => {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        scalar_expression,
+                        || {
+                            format!(
+                                "Input of '{:?}' type could not be parsed as JSON",
+                                inner_value.get_value_type()
+                            )
+                        },
+                    );
+                    OwnedValue::Null
                 }
-                _ => OwnedValue::Null,
             });
 
             execution_context.add_diagnostic_if_enabled(
