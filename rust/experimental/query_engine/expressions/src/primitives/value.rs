@@ -386,7 +386,9 @@ impl Value<'_> {
                 if let Some(r) = result {
                     Ok(r)
                 } else {
-                    panic!("Encountered a Value type which does not correctly implement convert_to_string")
+                    panic!(
+                        "Encountered a Value type which does not correctly implement convert_to_string"
+                    )
                 }
             }
             _ => Err(ExpressionError::TypeMismatch(
