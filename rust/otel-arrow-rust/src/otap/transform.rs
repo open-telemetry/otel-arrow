@@ -522,31 +522,68 @@ pub fn replace_str_naive(array: &StringArray, target: &str, replacement: &str) -
 }
 
 pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> StringArray {
-    let eq_mask = eq(array, &StringArray::new_scalar(target)).unwrap();
-
     let values = array.values();
     let offsets = array.offsets();
+    // let eq_mask = eq(array, &StringArray::new_scalar(target)).unwrap();
+
+    let mut eq_ranges = Vec::new();
+    let mut start = None;
+
+    let len = array.len();
+    let offset_ptr = offsets.as_ptr();
+    let value_ptr = values.as_ptr();
+    let target_bytes = target.as_bytes();
+    let mut replacement_count = 0;
+
+    for i in 0..len {
+        #[allow(unsafe_code)]
+        let slice = unsafe {
+            let start =*offset_ptr.add(i) as usize;
+            let end = *offset_ptr.add(i + 1) as usize;
+            if end - start != target_bytes.len() {
+                continue
+            }
+            std::slice::from_raw_parts(value_ptr.add(start), end - start)
+        };
+
+        if slice == target_bytes {
+            replacement_count += 1;
+            if start.is_none() {
+                start = Some(i);
+            }
+        } else if let Some(s) = start.take() {
+            // Close current range
+            eq_ranges.push((s, i));
+        }
+    }
+
+    // Final trailing range
+    if let Some(s) = start {
+        eq_ranges.push((s, array.len()));
+    }
+
 
     // 1. Create a new values buffer ... (TODO finish comment)
 
-    // byte buffer for new values
-    let mut new_values = MutableBuffer::new(0);
+    // create byte buffer for new values, and try to preallocate with expected length
+    let replacement_byte_len_diff = target.as_bytes().len() as i32 - target_bytes.len() as i32;
+    let expected_new_values_len = (values.len() as i32 + replacement_byte_len_diff * replacement_count) as usize;
+    let mut new_values = MutableBuffer::new(expected_new_values_len);
 
     // as we're filling in the new values, we're iterating ranges of equal values and we use this
     // pointer to the previous offset in the values buffer that was equal
-    // TODO naming -- should this be "neq" ?
     let mut prev_eq_offset_end = 0;
 
     // fill new values buffer
-    for (eq_start_idx, eq_end_idx) in SlicesIterator::new(&eq_mask) {
+    // for (eq_start_idx, eq_end_idx) in SlicesIterator::new(&eq_mask) {
+    for (eq_start_idx, eq_end_idx) in eq_ranges.iter().copied() {
         // copy all the values that were not replaced
         let eq_start_offset = offsets[eq_start_idx] as usize;
         new_values.extend_from_slice(&values.slice_with_length(prev_eq_offset_end, eq_start_offset - prev_eq_offset_end));
 
         // append `replacement` for each index where value == `target`
         for _ in eq_start_idx..eq_end_idx {
-            // TODO, will it help to avoid calling as_bytes each iteration here?
-            new_values.extend_from_slice(replacement.as_bytes());
+            new_values.extend_from_slice(target_bytes);
         }
         
         prev_eq_offset_end = offsets[eq_end_idx] as usize;
@@ -567,18 +604,11 @@ pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> S
     // pointer to the end of the previous range where the value were equal to target
     let mut prev_eq_index_end = 0;
 
-    for (eq_start_idx, eq_end_idx) in SlicesIterator::new(&eq_mask) {
+    for (eq_start_idx, eq_end_idx) in eq_ranges.iter().copied() {
+    // for (eq_start_idx, eq_end_idx) in SlicesIterator::new(&eq_mask) {
         // copy offsets for values that were not replaced, but add the offset adjustment
         let scalar_buffer = offsets.inner().slice(prev_eq_index_end, eq_start_idx - prev_eq_index_end);
         scalar_buffer.into_iter().for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
-        // let offsets_arr: PrimitiveArray<Int32Type> = PrimitiveArray::new(scalar_buffer, None);
-        // let add_result = add(&offsets_arr, &Int32Array::new_scalar(curr_total_offset_adjustment))
-        //     .unwrap();
-        // let new_slice_offsets: &PrimitiveArray<Int32Type> = add_result
-        //     .as_any()
-        //     .downcast_ref()
-        //     .unwrap();
-        // new_offsets.extend_from_slice(new_slice_offsets.values());
 
         // append offsets for values that were replaced
         for i in eq_start_idx..eq_end_idx {
@@ -604,8 +634,6 @@ pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> S
     #[allow(unsafe_code)]
     unsafe { StringArray::new_unchecked(new_offsets, new_values.into(), None) }
 }
-
-
 
 #[cfg(test)]
 mod test {
