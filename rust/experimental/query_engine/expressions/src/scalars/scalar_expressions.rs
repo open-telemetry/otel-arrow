@@ -59,6 +59,10 @@ pub enum ScalarExpression {
     /// Returns a slice of characters from an inner string value, a slice of
     /// items from an inner array value, or null for invalid input.
     Slice(SliceScalarExpression),
+
+    /// Parses an inner string scalar value as JSON and returns a Map, Array,
+    /// Integer, Double, or Null value.
+    ParseJson(ParseJsonScalarExpression),
 }
 
 impl ScalarExpression {
@@ -81,6 +85,7 @@ impl ScalarExpression {
             ScalarExpression::Length(l) => l.try_resolve_value_type(pipeline),
             ScalarExpression::ReplaceString(r) => r.try_resolve_value_type(pipeline),
             ScalarExpression::Slice(s) => s.try_resolve_value_type(pipeline),
+            ScalarExpression::ParseJson(p) => p.try_resolve_value_type(pipeline),
         }
     }
 
@@ -107,6 +112,7 @@ impl ScalarExpression {
             ScalarExpression::Length(l) => l.try_resolve_static(pipeline),
             ScalarExpression::ReplaceString(r) => r.try_resolve_static(pipeline),
             ScalarExpression::Slice(s) => s.try_resolve_static(pipeline),
+            ScalarExpression::ParseJson(p) => p.try_resolve_static(pipeline),
         }
     }
 }
@@ -128,6 +134,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Length(l) => l.get_query_location(),
             ScalarExpression::ReplaceString(r) => r.get_query_location(),
             ScalarExpression::Slice(s) => s.get_query_location(),
+            ScalarExpression::ParseJson(p) => p.get_query_location(),
         }
     }
 
@@ -147,6 +154,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Length(_) => "ScalarExpression(Length)",
             ScalarExpression::ReplaceString(_) => "ScalarExpression(ReplaceString)",
             ScalarExpression::Slice(_) => "ScalarExpression(Slice)",
+            ScalarExpression::ParseJson(_) => "ScalarExpression(ParseJson)",
         }
     }
 }
@@ -1218,6 +1226,70 @@ impl Expression for SliceScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "SliceScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParseJsonScalarExpression {
+    query_location: QueryLocation,
+    inner_expression: Box<ScalarExpression>,
+}
+
+impl ParseJsonScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        inner_expression: ScalarExpression,
+    ) -> ParseJsonScalarExpression {
+        Self {
+            query_location,
+            inner_expression: inner_expression.into(),
+        }
+    }
+
+    pub fn get_inner_expression(&self) -> &ScalarExpression {
+        &self.inner_expression
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        Ok(self
+            .try_resolve_static(pipeline)?
+            .map(|v| v.get_value_type()))
+    }
+
+    pub(crate) fn try_resolve_static(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression>, ExpressionError> {
+        match self.inner_expression.try_resolve_static(pipeline)? {
+            Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
+                if let Value::String(s) = v.to_value() {
+                    StaticScalarExpression::from_json(self.query_location.clone(), s.get_value())
+                        .unwrap_or_else(|| {
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                self.query_location.clone(),
+                            ))
+                        })
+                } else {
+                    StaticScalarExpression::Null(NullScalarExpression::new(
+                        self.query_location.clone(),
+                    ))
+                },
+            ))),
+            None => Ok(None),
+        }
+    }
+}
+
+impl Expression for ParseJsonScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ParseJsonScalarExpression"
     }
 }
 
@@ -2469,5 +2541,34 @@ mod tests {
             ),
             "Array slice index ends at '6' which is beyond the length of '5'",
         );
+    }
+
+    #[test]
+    pub fn test_parse_json_scalar_expression_try_resolve() {
+        fn run_test_success(input: &str, expected_value: Value) {
+            let pipeline = Default::default();
+
+            let expression = ParseJsonScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), input),
+                )),
+            );
+
+            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            assert_eq!(Some(expected_value.get_value_type()), actual_type);
+
+            let actual_value = expression.try_resolve_static(&pipeline).unwrap();
+            assert_eq!(
+                Some(expected_value),
+                actual_value.as_ref().map(|v| v.to_value())
+            );
+        }
+
+        run_test_success(
+            "18",
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+        );
+        run_test_success("hello world", Value::Null);
     }
 }

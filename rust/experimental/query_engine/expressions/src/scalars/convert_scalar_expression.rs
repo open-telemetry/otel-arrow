@@ -5,6 +5,9 @@ pub enum ConvertScalarExpression {
     /// Converts the value returned by the inner scalar expression into a bool or returns null for invalid input.
     Boolean(ConversionScalarExpression),
 
+    /// Converts the value returned by the inner scalar expression into a DateTime or returns null for invalid input.
+    DateTime(ConversionScalarExpression),
+
     /// Converts the value returned by the inner scalar expression into a double or returns null for invalid input.
     Double(ConversionScalarExpression),
 
@@ -23,25 +26,45 @@ impl ConvertScalarExpression {
         match self {
             ConvertScalarExpression::Boolean(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(ValueType::Boolean | ValueType::Integer | ValueType::Double) => {
-                        Ok(Some(ValueType::Boolean))
-                    }
+                    Some(
+                        ValueType::DateTime
+                        | ValueType::Boolean
+                        | ValueType::Integer
+                        | ValueType::Double,
+                    ) => Ok(Some(ValueType::Boolean)),
+                    _ => Ok(None),
+                }
+            }
+            ConvertScalarExpression::DateTime(c) => {
+                match c.get_inner_expression().try_resolve_value_type(pipeline)? {
+                    Some(
+                        ValueType::DateTime
+                        | ValueType::Boolean
+                        | ValueType::Integer
+                        | ValueType::Double,
+                    ) => Ok(Some(ValueType::DateTime)),
                     _ => Ok(None),
                 }
             }
             ConvertScalarExpression::Double(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(ValueType::Boolean | ValueType::Integer | ValueType::Double) => {
-                        Ok(Some(ValueType::Double))
-                    }
+                    Some(
+                        ValueType::DateTime
+                        | ValueType::Boolean
+                        | ValueType::Integer
+                        | ValueType::Double,
+                    ) => Ok(Some(ValueType::Double)),
                     _ => Ok(None),
                 }
             }
             ConvertScalarExpression::Integer(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(ValueType::Boolean | ValueType::Integer | ValueType::Double) => {
-                        Ok(Some(ValueType::Integer))
-                    }
+                    Some(
+                        ValueType::DateTime
+                        | ValueType::Boolean
+                        | ValueType::Integer
+                        | ValueType::Double,
+                    ) => Ok(Some(ValueType::Integer)),
                     _ => Ok(None),
                 }
             }
@@ -66,6 +89,20 @@ impl ConvertScalarExpression {
                         StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                             c.query_location.clone(),
                             b,
+                        )),
+                    )))
+                } else {
+                    Ok(None)
+                }
+            }
+            ConvertScalarExpression::DateTime(c) => {
+                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)?
+                    && let Some(d) = v.to_value().convert_to_datetime()
+                {
+                    Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                            c.query_location.clone(),
+                            d,
                         )),
                     )))
                 } else {
@@ -135,6 +172,7 @@ impl Expression for ConvertScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
             ConvertScalarExpression::Boolean(c) => c.get_query_location(),
+            ConvertScalarExpression::DateTime(d) => d.get_query_location(),
             ConvertScalarExpression::Double(c) => c.get_query_location(),
             ConvertScalarExpression::Integer(c) => c.get_query_location(),
             ConvertScalarExpression::String(c) => c.get_query_location(),
@@ -144,6 +182,7 @@ impl Expression for ConvertScalarExpression {
     fn get_name(&self) -> &'static str {
         match self {
             ConvertScalarExpression::Boolean(_) => "ConvertScalar(Boolean)",
+            ConvertScalarExpression::DateTime(_) => "ConvertScalar(DateTime)",
             ConvertScalarExpression::Double(_) => "ConvertScalar(Double)",
             ConvertScalarExpression::Integer(_) => "ConvertScalar(Integer)",
             ConvertScalarExpression::String(_) => "ConvertScalar(String)",
