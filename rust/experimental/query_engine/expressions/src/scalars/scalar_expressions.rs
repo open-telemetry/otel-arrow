@@ -52,7 +52,8 @@ pub enum ScalarExpression {
     /// items in an inner array/map values, or null for invalid input.
     Length(LengthScalarExpression),
 
-    /// Replaces all occurrences of a lookup string with a replacement string.
+    /// Returns a string with all occurrences of a lookup value replaced with a
+    /// replacement value or null for invalid input.
     ReplaceString(ReplaceStringScalarExpression),
 
     /// Returns a slice of characters from an inner string value, a slice of
