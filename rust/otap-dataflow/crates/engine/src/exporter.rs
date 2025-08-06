@@ -7,7 +7,7 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
-use crate::control::{NodeControlMsg, Controllable, PipelineCtrlMsgSender};
+use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -117,7 +117,10 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error<PData>> {
+    pub async fn start(
+        self,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+    ) -> Result<(), Error<PData>> {
         match self {
             ExporterWrapper::Local {
                 mut effect_handler,
@@ -134,7 +137,9 @@ impl<PData> ExporterWrapper<PData> {
                     exporter: effect_handler.exporter_id(),
                     error: "PData receiver not initialized".to_owned(),
                 })?;
-                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 let message_channel =
                     message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
@@ -154,7 +159,9 @@ impl<PData> ExporterWrapper<PData> {
                     exporter: effect_handler.exporter_id(),
                     error: "PData receiver not initialized".to_owned(),
                 })?;
-                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
@@ -432,7 +439,10 @@ mod tests {
 
         // Control message should be received first due to bias
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(msg, Message::Control(NodeControlMsg::Ack { id: 1 })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Ack { id: 1 })
+        ));
 
         // Then pdata message
         let msg = channel.recv().await.unwrap();
@@ -586,7 +596,10 @@ mod tests {
             .unwrap();
 
         let msg = chan.recv().await.unwrap();
-        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
 
         // Send a control message that should fail as the channel has been closed
         // following the shutdown.

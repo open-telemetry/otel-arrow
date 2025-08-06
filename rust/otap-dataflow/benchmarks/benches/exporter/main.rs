@@ -57,7 +57,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::control::{NodeControlMsg, Controllable, pipeline_ctrl_msg_channel};
+use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_otlp::otlp_exporter::OTLP_EXPORTER_URN;

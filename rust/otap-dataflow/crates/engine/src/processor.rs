@@ -7,7 +7,7 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
-use crate::control::{NodeControlMsg, Controllable, PipelineCtrlMsgSender};
+use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -204,7 +204,10 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
-    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error<PData>> {
+    pub async fn start(
+        self,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+    ) -> Result<(), Error<PData>> {
         let runtime = self.prepare_runtime().await?;
 
         match runtime {
@@ -213,7 +216,9 @@ impl<PData> ProcessorWrapper<PData> {
                 mut message_channel,
                 mut effect_handler,
             } => {
-                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
@@ -223,7 +228,9 @@ impl<PData> ProcessorWrapper<PData> {
                 mut message_channel,
                 mut effect_handler,
             } => {
-                effect_handler.core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }

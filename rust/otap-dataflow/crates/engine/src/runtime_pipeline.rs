@@ -2,13 +2,11 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use crate::control::{
-    NodeControlMsg, Controllable, pipeline_ctrl_msg_channel,
-};
+use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
 use crate::node::Node;
-use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
+use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::{NodeId, pipeline::PipelineConfig};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -107,18 +105,23 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
         for (node_id, exporter) in self.exporters {
             _ = control_senders.insert(node_id, exporter.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }));
+            futures.push(
+                local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }),
+            );
         }
         for (node_id, processor) in self.processors {
             _ = control_senders.insert(node_id, processor.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures
-                .push(local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }));
+            futures.push(
+                local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
+            );
         }
         for (node_id, receiver) in self.receivers {
             _ = control_senders.insert(node_id, receiver.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
-            futures.push(local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }));
+            futures.push(
+                local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),
+            );
         }
 
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to

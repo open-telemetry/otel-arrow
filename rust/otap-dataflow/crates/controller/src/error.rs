@@ -20,7 +20,7 @@ pub enum Error {
     PipelineRuntimeError {
         /// The underlying engine error.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,   // ToDo : Use a more specific error type if possible
+        source: Box<dyn std::error::Error + Send + Sync>, // ToDo : Use a more specific error type if possible
     },
 
     /// Internal controller error (not recoverable).

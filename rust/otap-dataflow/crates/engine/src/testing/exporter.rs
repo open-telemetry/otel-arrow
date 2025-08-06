@@ -6,7 +6,9 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
-use crate::control::{NodeControlMsg, Controllable, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
+};
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -79,7 +81,9 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_config(&self, config: Value) -> Result<(), SendError<NodeControlMsg>> {
-        self.control_tx.send(NodeControlMsg::Config { config }).await
+        self.control_tx
+            .send(NodeControlMsg::Config { config })
+            .await
     }
 
     /// Sends a shutdown control message.
@@ -164,7 +168,10 @@ pub struct ValidationPhase<PData> {
     /// Join handle for the running the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
 
-    _pd: PhantomData<PData>,
+    // ToDo implement support for pipeline control messages in a future PR.
+    #[allow(unused_variables)]
+    #[allow(dead_code)]
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -259,7 +266,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             local_tasks: self.local_tasks,
             context,
             run_exporter_handle: self.run_exporter_handle,
-            _pd: PhantomData,
+            pipeline_ctrl_msg_receiver: self.pipeline_ctrl_msg_receiver,
         }
     }
 

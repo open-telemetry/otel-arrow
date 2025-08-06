@@ -2,7 +2,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::control::{PipelineCtrlMsgSender, PipelineControlMsg};
+use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
@@ -30,7 +30,10 @@ impl EffectHandlerCore {
         }
     }
 
-    pub(crate) fn set_pipeline_ctrl_msg_sender(&mut self, pipeline_ctrl_msg_sender: PipelineCtrlMsgSender) {
+    pub(crate) fn set_pipeline_ctrl_msg_sender(
+        &mut self,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+    ) {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
     }
 
@@ -149,7 +152,7 @@ impl EffectHandlerCore {
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
-    /// 
+    ///
     /// Current limitation: The timer can only be started once per node.
     pub async fn start_periodic_timer<PData>(
         &self,

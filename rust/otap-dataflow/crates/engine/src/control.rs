@@ -47,7 +47,9 @@ pub enum NodeControlMsg {
     /// (e.g., batch emissions).
     ///
     /// This variant currently carries no additional data.
-    TimerTick,
+    TimerTick {
+        // For future usage
+    },
 
     /// Requests a graceful shutdown, requiring the node to finish processing messages and
     /// release resources by the specified deadline.
@@ -128,7 +130,9 @@ pub type PipelineCtrlMsgReceiver = SharedReceiver<PipelineControlMsg>;
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel(capacity: usize) -> (PipelineCtrlMsgSender, PipelineCtrlMsgReceiver) {
+pub fn pipeline_ctrl_msg_channel(
+    capacity: usize,
+) -> (PipelineCtrlMsgSender, PipelineCtrlMsgReceiver) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
         SharedSender::MpscSender(tx),

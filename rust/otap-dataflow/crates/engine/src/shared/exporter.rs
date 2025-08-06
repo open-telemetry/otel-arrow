@@ -76,7 +76,10 @@ pub struct MessageChannel<PData> {
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(control_rx: SharedReceiver<NodeControlMsg>, pdata_rx: SharedReceiver<PData>) -> Self {
+    pub fn new(
+        control_rx: SharedReceiver<NodeControlMsg>,
+        pdata_rx: SharedReceiver<PData>,
+    ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
@@ -232,7 +235,7 @@ impl<PData> EffectHandler<PData> {
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
-    /// 
+    ///
     /// Current limitation: Only one timer can be started by an exporter at a time.
     pub async fn start_periodic_timer(
         &self,

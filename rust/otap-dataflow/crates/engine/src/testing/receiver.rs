@@ -6,7 +6,9 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
-use crate::control::{NodeControlMsg, Controllable, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
+};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
@@ -167,6 +169,9 @@ pub struct ValidationPhase<PData> {
     /// Join handle for the running the test task
     run_test_handle: tokio::task::JoinHandle<()>,
 
+    // ToDo implement support for pipeline control messages in a future PR.
+    #[allow(unused_variables)]
+    #[allow(dead_code)]
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 

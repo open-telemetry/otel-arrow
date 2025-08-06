@@ -147,6 +147,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                                      total_received_arrow_records_count: u128,
                                      total_received_otlp_signal_count: u128,
                                      total_received_pdata_batch_count: u64,
+                                     invalid_pdata_count: u64,
                                      average_pipeline_latency: f64,
                                      last_perf_time: Instant,
                                      system: &mut System,
@@ -168,6 +169,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 total_received_arrow_records_count,
                 total_received_otlp_signal_count,
                 total_received_pdata_batch_count,
+                invalid_pdata_count,
                 average_pipeline_latency,
                 duration,
                 writer,
@@ -226,6 +228,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         total_received_arrow_records_count,
                         total_received_otlp_signal_count,
                         total_received_pdata_batch_count,
+                        invalid_pdata_count,
                         average_pipeline_latency,
                         last_perf_time,
                         &mut system,
@@ -252,6 +255,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         total_received_arrow_records_count,
                         total_received_otlp_signal_count,
                         total_received_pdata_batch_count,
+                        invalid_pdata_count,
                         average_pipeline_latency,
                         last_perf_time,
                         &mut system,
@@ -602,6 +606,7 @@ async fn display_report_pipeline(
     total_received_arrow_records_count: u128,
     total_received_otlp_signal_count: u128,
     total_received_pdata_batch_count: u64,
+    invalid_pdata_count: u64,
     average_pipeline_latency: f64,
     duration: Duration,
     writer: &mut OutputWriter,
@@ -647,6 +652,13 @@ async fn display_report_pipeline(
             "\t- total pdata batch received        : {total_received_pdata_batch_count}\n"
         ))
         .await?;
+
+    writer
+        .write(&format!(
+            "\t- invalid pdata batches received    : {invalid_pdata_count}\n"
+        ))
+        .await?;
+
     Ok(())
 }
 
@@ -821,34 +833,34 @@ mod tests {
                 assert!(total_pdata_line.contains("- total pdata batch received"),);
 
                 //memory report contains memory rss
-                let memory_rss_line = &lines[9];
+                let memory_rss_line = &lines[10];
                 assert!(memory_rss_line.contains("- memory rss"),);
 
                 //memory report contains memory virtual
-                let memory_virtual_line = &lines[10];
+                let memory_virtual_line = &lines[11];
                 assert!(memory_virtual_line.contains("- memory virtual"),);
 
                 // cpu report contains cpu usage
-                let process_cpu_usage = &lines[12];
+                let process_cpu_usage = &lines[13];
                 assert!(process_cpu_usage.contains("- global cpu usage"),);
 
-                let global_cpu_usage = &lines[13];
+                let global_cpu_usage = &lines[14];
                 assert!(global_cpu_usage.contains("- process cpu usage"),);
 
                 // disk report contains read bytes
-                let read_bytes_line = &lines[15];
+                let read_bytes_line = &lines[16];
                 assert!(read_bytes_line.contains("- read bytes"),);
 
                 // disk report contains total read bytes
-                let total_read_bytes_line = &lines[16];
+                let total_read_bytes_line = &lines[17];
                 assert!(total_read_bytes_line.contains("- total read bytes"),);
 
                 // disk report contains written bytes
-                let written_bytes_line = &lines[17];
+                let written_bytes_line = &lines[18];
                 assert!(written_bytes_line.contains("- written bytes"),);
 
                 // disk report contains total written bytes
-                let total_written_bytes_line = &lines[18];
+                let total_written_bytes_line = &lines[19];
                 assert!(total_written_bytes_line.contains("- total written bytes"));
             })
         }
