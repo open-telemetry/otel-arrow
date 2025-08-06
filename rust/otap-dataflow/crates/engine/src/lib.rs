@@ -29,6 +29,7 @@ pub mod control;
 mod effect_handler;
 pub mod local;
 pub mod node;
+pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
