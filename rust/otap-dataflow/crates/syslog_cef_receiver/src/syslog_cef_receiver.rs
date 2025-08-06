@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::{error::Error, local::receiver as local};
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -66,7 +66,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(ControlMsg::Shutdown {..}) => {
+                                Ok(NodeControlMsg::Shutdown {..}) => {
                                 // ToDo: Add proper deadline function
                                 break;
                                 },
@@ -141,7 +141,7 @@ impl local::Receiver<Vec<u8>> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(ControlMsg::Shutdown {..}) => {
+                                Ok(NodeControlMsg::Shutdown {..}) => {
                                 // ToDo: Add proper deadline function
                                 break;
                                 },
@@ -182,7 +182,7 @@ mod tests {
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
@@ -438,7 +438,7 @@ mod tests {
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         // create our UDP receiver
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(listening_addr),
             node_config,
@@ -464,7 +464,7 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
 
         // run the test
@@ -486,7 +486,7 @@ mod tests {
         let mut receiver = SyslogCefReceiver::new(listening_addr);
         receiver.protocol = Protocol::Tcp;
 
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
 
         // run the test

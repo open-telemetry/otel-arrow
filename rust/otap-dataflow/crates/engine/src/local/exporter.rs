@@ -32,12 +32,13 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
 use async_trait::async_trait;
 use otap_df_config::NodeId;
 use std::marker::PhantomData;
+use std::time::Duration;
 
 /// A trait for egress exporters (!Send definition).
 #[async_trait( ? Send)]
@@ -86,20 +87,16 @@ pub trait Exporter<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
-
-    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
-    /// will consume.
+    pub(crate) core: EffectHandlerCore,
     _pd: PhantomData<PData>,
 }
 
-/// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
     #[must_use]
     pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_id },
+            core: EffectHandlerCore::new(node_id),
             _pd: PhantomData,
         }
     }
@@ -116,6 +113,17 @@ impl<PData> EffectHandler<PData> {
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by an exporter at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.
