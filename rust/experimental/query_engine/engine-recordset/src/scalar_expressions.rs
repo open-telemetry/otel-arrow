@@ -441,6 +441,25 @@ where
 
             Ok(v)
         }
+        ScalarExpression::ParseJson(p) => {
+            let inner_value =
+                execute_scalar_expression(execution_context, p.get_inner_expression())?;
+
+            let v = ResolvedValue::Computed(match inner_value.to_value() {
+                Value::String(s) => {
+                    OwnedValue::from_json(s.get_value()).unwrap_or(OwnedValue::Null)
+                }
+                _ => OwnedValue::Null,
+            });
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {v}"),
+            );
+
+            Ok(v)
+        }
     }
 }
 
