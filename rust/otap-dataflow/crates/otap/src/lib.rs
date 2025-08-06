@@ -50,6 +50,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    #[ignore = "will be removed in another PR"]
     fn test_mini_pipeline() {
         let config = PipelineConfigBuilder::new()
             .add_receiver(

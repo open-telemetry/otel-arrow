@@ -61,6 +61,7 @@ linkme = "0.3.33"
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.16.1" }
 
 [workspace.lints.rust]
 # General compatibility lints
