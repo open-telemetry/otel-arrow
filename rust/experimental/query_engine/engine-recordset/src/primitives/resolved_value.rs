@@ -99,7 +99,7 @@ impl<'a> ResolvedValue<'a> {
             }
             ResolvedValue::Slice(b, s) => match s {
                 Slice::Array(_) => panic!(),
-                Slice::String(s) => Ok(ResolvedStringValue::Slice(b, s)),
+                Slice::String(s) => Ok(ResolvedStringValue::Slice(b, s.into())),
             },
         }
     }
@@ -229,7 +229,7 @@ impl Display for ResolvedValue<'_> {
 #[derive(Debug)]
 pub enum Slice<'a> {
     Array(ArraySlice<'a>),
-    String(StringSlice),
+    String(StringSlice<'a>),
 }
 
 #[derive(Debug)]
@@ -294,29 +294,56 @@ impl ArrayValue for ArraySlice<'_> {
 }
 
 #[derive(Debug)]
-pub struct StringSlice {
-    value: String,
+pub struct StringSlice<'a> {
+    inner_value: ResolvedStringValue<'a>,
+    range_start_inclusive: usize,
+    range_end_exclusive: usize,
 }
 
-impl StringSlice {
-    pub fn new<'a>(
+impl<'a> StringSlice<'a> {
+    pub fn new(
         inner_value: ResolvedStringValue<'a>,
         range_start_inclusive: usize,
         range_end_exclusive: usize,
-    ) -> StringSlice {
+    ) -> StringSlice<'a> {
         Self {
-            value: SliceScalarExpression::slice_string(
-                inner_value.get_value(),
-                range_start_inclusive,
-                range_end_exclusive,
-            ),
+            inner_value,
+            range_start_inclusive,
+            range_end_exclusive,
         }
     }
 }
 
-impl StringValue for StringSlice {
+impl StringValue for StringSlice<'_> {
     fn get_value(&self) -> &str {
-        &self.value
+        // Note: Slice of a str returns raw utf8 bytes. Chars can take 1 to 4
+        // bytes. In order to correctly slice the str as chars we have to find
+        // the correct byte indices to do the slicing
+        let count = self.range_end_exclusive - self.range_start_inclusive;
+        let mut chars = self
+            .inner_value
+            .get_value()
+            .char_indices()
+            .skip(self.range_start_inclusive)
+            .take(count);
+
+        let value = self.inner_value.get_value();
+
+        if let Some(first) = chars.next() {
+            if let Some(last) = chars.last() {
+                let mut buf = [0; 4];
+                let encoded = last.1.encode_utf8(&mut buf);
+
+                &value[first.0..(last.0 + encoded.len())]
+            } else {
+                let mut buf = [0; 4];
+                let encoded = first.1.encode_utf8(&mut buf);
+
+                &value[first.0..(first.0 + encoded.len())]
+            }
+        } else {
+            &value[0..0]
+        }
     }
 }
 
@@ -332,7 +359,7 @@ pub enum ResolvedStringValue<'a> {
     Computed(StringValueStorage),
 
     /// A slice of characters from a string
-    Slice(Option<BorrowSource>, StringSlice),
+    Slice(Option<BorrowSource>, Box<StringSlice<'a>>),
 }
 
 impl ResolvedStringValue<'_> {
@@ -366,7 +393,7 @@ impl AsValue for ResolvedStringValue<'_> {
             ResolvedStringValue::Value(v) => Value::String(*v),
             ResolvedStringValue::Borrowed(_, b) => Value::String(&**b),
             ResolvedStringValue::Computed(c) => Value::String(c),
-            ResolvedStringValue::Slice(_, s) => Value::String(s),
+            ResolvedStringValue::Slice(_, s) => Value::String(&**s),
         }
     }
 }

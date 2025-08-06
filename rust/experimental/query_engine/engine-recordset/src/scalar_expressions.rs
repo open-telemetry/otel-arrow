@@ -1952,7 +1952,7 @@ mod tests {
 
             let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
 
-            assert_eq!(expected, actual.to_value());
+            assert_eq!(expected.to_string(), actual.to_value().to_string());
         }
 
         fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
