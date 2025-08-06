@@ -271,38 +271,91 @@ where
         ScalarExpression::Convert(c) => {
             let value = match c {
                 ConvertScalarExpression::Boolean(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
-                    if let Some(b) = v.to_value().convert_to_bool() {
+                    let value = inner_value.to_value();
+
+                    if let Some(b) = value.convert_to_bool() {
                         ResolvedValue::Computed(OwnedValue::Boolean(BooleanValueStorage::new(b)))
                     } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into a bool",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
+
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
                 ConvertScalarExpression::DateTime(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
-                    if let Some(d) = v.to_value().convert_to_datetime() {
+                    let value = inner_value.to_value();
+
+                    if let Some(d) = value.convert_to_datetime() {
                         ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
                     } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into a DateTime",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
                 ConvertScalarExpression::Double(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
-                    if let Some(d) = v.to_value().convert_to_double() {
+                    let value = inner_value.to_value();
+
+                    if let Some(d) = value.convert_to_double() {
                         ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
                     } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into a double",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
                 ConvertScalarExpression::Integer(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
-                    if let Some(i) = v.to_value().convert_to_integer() {
+                    let value = inner_value.to_value();
+
+                    if let Some(i) = value.convert_to_integer() {
                         ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
                     } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into an integer",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
