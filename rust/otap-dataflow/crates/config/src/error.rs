@@ -3,14 +3,25 @@
 //! Errors for the config crate.
 
 use crate::node::DispatchStrategy;
-use crate::{NodeId, PipelineId, PortName, TenantId};
+use crate::{NodeId, PipelineGroupId, PipelineId, PortName};
 use miette::Diagnostic;
 use std::fmt::Display;
 
-/// Errors that can occur while processing the configuration of a data plane, a tenant, a pipeline,
-/// or a node.
+/// Details about an invalid hyper-edge specification.
+#[derive(Debug)]
+pub struct HyperEdgeSpecDetails {
+    /// The target nodes of the hyper-edge.
+    pub target_nodes: Vec<NodeId>,
+    /// The dispatch strategy for the hyper-edge.
+    pub dispatch_strategy: DispatchStrategy,
+    /// The target nodes that are missing in the pipeline.
+    pub missing_targets: Vec<NodeId>,
+}
+
+/// Errors that can occur while processing the configuration of a data plane, a pipeline group, a
+/// pipeline, or a node.
 ///
-/// Note: All errors are contextualized with the tenant and pipeline ids, if applicable.
+/// Note: All errors are contextualized with the pipeline group and pipeline ids, if applicable.
 #[derive(thiserror::Error, Debug, Diagnostic)]
 pub enum Error {
     /// A collection of errors that occurred during parsing or validating the configuration.
@@ -79,9 +90,7 @@ pub enum Error {
     },
 
     /// An edge was specified with a source node or target nodes that do not exist in the pipeline.
-    #[error(
-        "Invalid hyper-edge specification: {source_node} -> {target_nodes:?}\nContext: {context}"
-    )]
+    #[error("Invalid hyper-edge specification: {source_node} -> {details:?}\nContext: {context}")]
     #[diagnostic(code(data_plane::invalid_hyper_edge_spec), url(docsrs))]
     InvalidHyperEdgeSpec {
         /// The context in which the error occurred.
@@ -89,14 +98,24 @@ pub enum Error {
 
         /// The source node of the hyper-edge.
         source_node: NodeId,
-        /// The target nodes of the hyper-edge.
-        target_nodes: Vec<NodeId>,
-        /// The dispatch strategy for the hyper-edge.
-        dispatch_strategy: DispatchStrategy,
         /// Whether the source node is missing.
         missing_source: bool,
-        /// The target nodes that are missing in the pipeline.
-        missing_targets: Vec<NodeId>,
+        /// Details about the hyper-edge specification.
+        details: Box<HyperEdgeSpecDetails>,
+    },
+
+    /// An invalid user configuration occurred.
+    #[error("An invalid user configuration occurred: {error}")]
+    InvalidUserConfig {
+        /// An error message.
+        error: String,
+    },
+
+    /// A pipeline with the same id already exists in the pipeline group.
+    #[error("Pipeline with id `{pipeline_id}` already exists in the pipeline group")]
+    DuplicatePipeline {
+        /// The id of the pipeline that was duplicated.
+        pipeline_id: PipelineId,
     },
 }
 
@@ -104,18 +123,18 @@ pub enum Error {
 /// the context in which they occurred.
 #[derive(Debug, Default)]
 pub struct Context {
-    /// The tenant id, if applicable.
-    pub tenant_id: Option<TenantId>,
+    /// The pipeline group id, if applicable.
+    pub pipeline_group_id: Option<PipelineGroupId>,
     /// The pipeline id, if applicable.
     pub pipeline_id: Option<PipelineId>,
 }
 
 impl Context {
-    /// Creates a new context with the given tenant and pipeline ids.
+    /// Creates a new context with the given pipeline group and pipeline ids.
     #[must_use]
-    pub fn new(tenant_id: TenantId, pipeline_id: PipelineId) -> Self {
+    pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
         Self {
-            tenant_id: Some(tenant_id),
+            pipeline_group_id: Some(pipeline_group_id),
             pipeline_id: Some(pipeline_id),
         }
     }
@@ -123,8 +142,8 @@ impl Context {
 
 impl Display for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(tenant_id) = &self.tenant_id {
-            write!(f, "Tenant: '{tenant_id}'")?;
+        if let Some(pipeline_group_id) = &self.pipeline_group_id {
+            write!(f, "Pipeline group: '{pipeline_group_id}'")?;
         }
         if let Some(pipeline_id) = &self.pipeline_id {
             write!(f, " Pipeline: '{pipeline_id}'")?;

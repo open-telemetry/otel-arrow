@@ -20,7 +20,7 @@ package update
 import (
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
 )
 
 // SchemaUpdateRequest is a counter that keeps track of the number of schema

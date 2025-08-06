@@ -30,10 +30,10 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/dataset"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/profileable/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/profileable/otlp"
 )
 
 var help = flag.Bool("help", false, "Show help")

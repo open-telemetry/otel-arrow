@@ -3,7 +3,7 @@ use intermediate_language::{
     grammar_objects::*,
     query_processor::{QueryError, QueryProcessor, QueryResult},
 };
-use pest::{iterators::Pair, Parser};
+use pest::{Parser, iterators::Pair};
 
 /// `KqlPlugin`` implements the `QueryProcessor` trait for KQL (Kusto Query Language)
 pub struct KqlPlugin;
@@ -31,7 +31,7 @@ impl QueryProcessor for KqlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'query'",
                         query_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -58,7 +58,7 @@ impl KqlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'statement'",
                         statement_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -85,9 +85,9 @@ impl KqlPlugin {
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'filter_statement'",
-                    filter_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'filter_statement'",
+                        filter_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -108,9 +108,9 @@ impl KqlPlugin {
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'extend_statement'",
-                    extend_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'extend_statement'",
+                        extend_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -140,7 +140,7 @@ impl KqlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'predicate'",
                         predicate_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -167,7 +167,7 @@ impl KqlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'assignment'",
                         assignment_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -199,10 +199,12 @@ impl KqlPlugin {
                             }
                             Rule::and_token => boolean_operator = BooleanOperator::And,
                             Rule::or_token => boolean_operator = BooleanOperator::Or,
-                            _ => return Err(QueryError::ProcessingError(format!(
-                                "Unexpected rule: '{:?}' found processing parent object: 'logical_expression'",
-                                logical_piece.as_rule()
-                            ))),
+                            _ => {
+                                return Err(QueryError::ProcessingError(format!(
+                                    "Unexpected rule: '{:?}' found processing parent object: 'logical_expression'",
+                                    logical_piece.as_rule()
+                                )));
+                            }
                         }
                     }
                     return Ok(BinaryLogicalExpression {
@@ -211,10 +213,12 @@ impl KqlPlugin {
                         right: Box::new(right),
                     });
                 }
-                _ => return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'binary_logical_expression'",
-                    expression_piece.as_rule()
-                ))),
+                _ => {
+                    return Err(QueryError::ProcessingError(format!(
+                        "Unexpected rule: '{:?}' found processing parent object: 'binary_logical_expression'",
+                        expression_piece.as_rule()
+                    )));
+                }
             }
         }
         Err(QueryError::ProcessingError(
@@ -252,17 +256,21 @@ impl KqlPlugin {
                             Rule::greater_than_token => {
                                 comparison_operator = ComparisonOperator::GreaterThan
                             }
-                            Rule::less_than_token => comparison_operator = ComparisonOperator::LessThan,
+                            Rule::less_than_token => {
+                                comparison_operator = ComparisonOperator::LessThan
+                            }
                             Rule::greater_than_or_equal_to_token => {
                                 comparison_operator = ComparisonOperator::GreaterThanOrEqual
                             }
                             Rule::less_than_or_equal_to_token => {
                                 comparison_operator = ComparisonOperator::LessThanOrEqual
                             }
-                            _ => return Err(QueryError::ProcessingError(format!(
-                                "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
-                                comparison_piece.as_rule()
-                            ))),
+                            _ => {
+                                return Err(QueryError::ProcessingError(format!(
+                                    "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
+                                    comparison_piece.as_rule()
+                                )));
+                            }
                         }
                     }
                     return Ok(ComparisonExpression {
@@ -271,10 +279,12 @@ impl KqlPlugin {
                         right: Box::new(right),
                     });
                 }
-                _ => return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
-                    expression_piece.as_rule()
-                ))),
+                _ => {
+                    return Err(QueryError::ProcessingError(format!(
+                        "Unexpected rule: '{:?}' found processing parent object: 'comparison_expression'",
+                        expression_piece.as_rule()
+                    )));
+                }
             }
         }
         Err(QueryError::ProcessingError(
@@ -287,13 +297,13 @@ impl KqlPlugin {
             match negated_piece.as_rule() {
                 Rule::not_token => continue,
                 Rule::enclosed_expression => {
-                    return Self::process_enclosed_expression(negated_piece)
+                    return Self::process_enclosed_expression(negated_piece);
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'negated_expression'",
-                    negated_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'negated_expression'",
+                        negated_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -311,9 +321,9 @@ impl KqlPlugin {
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
-                    "Unexpected rule: '{:?}' found processing parent object: 'enclosed_expression'",
-                    enclosed_piece.as_rule()
-                )))
+                        "Unexpected rule: '{:?}' found processing parent object: 'enclosed_expression'",
+                        enclosed_piece.as_rule()
+                    )));
                 }
             }
         }
@@ -347,7 +357,7 @@ impl KqlPlugin {
                     return Err(QueryError::ProcessingError(format!(
                         "Unexpected rule: '{:?}' found processing parent object: 'expression'",
                         expression_piece.as_rule()
-                    )))
+                    )));
                 }
             }
         }
@@ -1049,7 +1059,7 @@ mod tests {
 
         for input in invalid_inputs {
             let result = KqlPlugin::process_query(input);
-            assert!(result.is_err(), "Expected error for input: {}", input);
+            assert!(result.is_err(), "Expected error for input: {input}");
             assert!(matches!(result, Err(QueryError::ParseError(_))));
         }
     }

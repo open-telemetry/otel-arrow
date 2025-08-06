@@ -24,15 +24,15 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	carrow "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/transform"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	builder "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/events"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/transform"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/update"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // RecordBuilderExt is a wrapper/decorator around array.RecordBuilder that

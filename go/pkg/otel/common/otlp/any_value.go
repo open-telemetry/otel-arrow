@@ -18,10 +18,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	commonarrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	arrowutils "github.com/open-telemetry/otel-arrow/go/pkg/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	commonarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 func UpdateValueFrom(v pcommon.Value, vArr *array.SparseUnion, row int) error {

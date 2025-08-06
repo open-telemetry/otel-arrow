@@ -11,7 +11,7 @@ use arrow::datatypes::SchemaRef;
 use futures::TryStreamExt;
 use futures::stream::FuturesUnordered;
 use object_store::ObjectStore;
-use otel_arrow_rust::otap::{OtapBatch, child_payload_types};
+use otel_arrow_rust::otap::{OtapArrowRecords, child_payload_types};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_writer::ParquetObjectWriter;
@@ -23,14 +23,14 @@ use super::partition::PartitionAttribute;
 
 pub struct WriteBatch<'a> {
     pub batch_id: i64,
-    pub otap_batch: &'a OtapBatch,
+    pub otap_batch: &'a OtapArrowRecords,
     pub partition_attributes: Option<&'a [PartitionAttribute]>,
 }
 
 impl<'a> WriteBatch<'a> {
     pub fn new(
         batch_id: i64,
-        otap_batch: &'a OtapBatch,
+        otap_batch: &'a OtapArrowRecords,
         partition_attributes: Option<&'a [PartitionAttribute]>,
     ) -> Self {
         Self {
@@ -378,21 +378,22 @@ mod test {
     use super::*;
 
     use arrow::compute::concat_batches;
+    use futures::StreamExt;
     use object_store::local::LocalFileSystem;
     use otel_arrow_rust::otap::from_record_messages;
     use otel_arrow_rust::{Consumer, proto::opentelemetry::arrow::v1::BatchArrowRecords};
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-    use std::fs::File;
+    use parquet::arrow::ParquetRecordBatchStreamBuilder;
+    use tokio::fs::File;
 
     use crate::parquet_exporter::{
         partition::PartitionAttributeValue,
-        test::datagen::{SimpleLogDataGenOptions, create_single_arrow_record_batch},
+        test::datagen::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches},
     };
 
-    fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapBatch {
+    fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapArrowRecords {
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut bar).unwrap();
-        OtapBatch::Logs(from_record_messages(record_messages))
+        OtapArrowRecords::Logs(from_record_messages(record_messages))
     }
 
     #[tokio::test]
@@ -403,8 +404,8 @@ mod test {
         let mut writer = WriterManager::new(object_store, None);
 
         // write some batch:
-        let otap_batch = to_logs_record_batch(create_single_arrow_record_batch(
-            SimpleLogDataGenOptions::default(),
+        let otap_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions::default(),
         ));
         writer
             .write(&[WriteBatch::new(0, &otap_batch, None)])
@@ -412,10 +413,12 @@ mod test {
             .unwrap();
 
         // check that the files aren't flushed
-        let files = std::fs::read_dir(path)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            .collect::<Vec<_>>();
+        let mut files = Vec::new();
+        let mut read_dir_stream = tokio::fs::read_dir(path).await.unwrap();
+        while let Some(entry) = read_dir_stream.next_entry().await.unwrap() {
+            files.push(entry)
+        }
+
         assert!(files.is_empty());
 
         // flush the files
@@ -429,24 +432,28 @@ mod test {
             ArrowPayloadType::ScopeAttrs,
         ] {
             let table_name = payload_type.as_str_name().to_lowercase();
-            let files = std::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
-                .unwrap()
-                .map(|entry| entry.unwrap().path().to_string_lossy().to_string())
-                .collect::<Vec<_>>();
+            let mut files = Vec::new();
+            let mut read_dir_stream =
+                tokio::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
+                    .await
+                    .unwrap();
+            while let Some(entry) = read_dir_stream.next_entry().await.unwrap() {
+                files.push(entry.path().to_string_lossy().to_string())
+            }
 
             // we should have written one file
             assert_eq!(files.len(), 1);
 
             // read the file and ensure it's the equivalent data from the original batch
             let original_record_batch = otap_batch.get(payload_type).unwrap();
-            let file = File::open(files[0].clone()).unwrap();
-            let reader_builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+            let file = File::open(files[0].clone()).await.unwrap();
+            let reader_builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
             let mut reader = reader_builder.build().unwrap();
-            let read_batch = reader.next().unwrap().unwrap();
+            let read_batch = reader.next().await.unwrap().unwrap();
             assert_eq!(&read_batch, original_record_batch);
 
             // assert there's no extra data there
-            assert!(reader.next().is_none())
+            assert!(reader.next().await.is_none())
         }
     }
 
@@ -457,17 +464,19 @@ mod test {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
         let mut writer = WriterManager::new(object_store, None);
 
-        let batch1 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
-        let batch2 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
-            }));
+            },
+        ));
 
         writer
             .write(&[
@@ -486,10 +495,14 @@ mod test {
             ArrowPayloadType::ScopeAttrs,
         ] {
             let table_name = payload_type.as_str_name().to_lowercase();
-            let files = std::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
-                .unwrap()
-                .map(|entry| entry.unwrap().path().to_string_lossy().to_string())
-                .collect::<Vec<_>>();
+            let mut files = Vec::new();
+            let mut read_dir_stream =
+                tokio::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
+                    .await
+                    .unwrap();
+            while let Some(entry) = read_dir_stream.next_entry().await.unwrap() {
+                files.push(entry.path().to_string_lossy().to_string())
+            }
 
             // we should have written one file
             assert_eq!(files.len(), 1);
@@ -502,14 +515,14 @@ mod test {
                 vec![original_batch1, original_batch2],
             )
             .unwrap();
-            let file = File::open(files[0].clone()).unwrap();
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+            let file = File::open(files[0].clone()).await.unwrap();
+            let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
             let mut reader = builder.build().unwrap();
-            let read_batch = reader.next().unwrap().unwrap();
+            let read_batch = reader.next().await.unwrap().unwrap();
             assert_eq!(&read_batch, &expected_batch);
 
             // assert there's no extra data there
-            assert!(reader.next().is_none())
+            assert!(reader.next().await.is_none())
         }
     }
 
@@ -520,11 +533,12 @@ mod test {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
         let mut writer = WriterManager::new(object_store, None);
 
-        let partition1_batch =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let partition1_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
         let partition1_attrs = vec![
             PartitionAttribute {
@@ -537,11 +551,12 @@ mod test {
             },
         ];
 
-        let partition2_batch =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let partition2_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
-            }));
+            },
+        ));
 
         let partition2_attrs = vec![
             PartitionAttribute {
@@ -589,24 +604,25 @@ mod test {
                     table_name,
                     partition_prefix,
                 );
-                let files = std::fs::read_dir(dir)
-                    .unwrap()
-                    .map(|entry| entry.unwrap().path().to_string_lossy().to_string())
-                    .collect::<Vec<_>>();
+                let mut files = Vec::new();
+                let mut read_dir_stream = tokio::fs::read_dir(dir).await.unwrap();
+                while let Some(entry) = read_dir_stream.next_entry().await.unwrap() {
+                    files.push(entry.path().to_string_lossy().to_string());
+                }
 
                 // we should have written one file
                 assert_eq!(files.len(), 1);
 
                 // read the file and ensure it's the equivalent data from the original batch
                 let original_record_batch = otap_batch.get(payload_type).unwrap();
-                let file = File::open(files[0].clone()).unwrap();
-                let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+                let file = File::open(files[0].clone()).await.unwrap();
+                let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
                 let mut reader = builder.build().unwrap();
-                let read_batch = reader.next().unwrap().unwrap();
+                let read_batch = reader.next().await.unwrap().unwrap();
                 assert_eq!(&read_batch, original_record_batch);
 
                 // assert there's no extra data there
-                assert!(reader.next().is_none())
+                assert!(reader.next().await.is_none())
             }
         }
     }
@@ -623,17 +639,19 @@ mod test {
             }),
         );
 
-        let batch1 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
-        let batch2 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
-            }));
+            },
+        ));
 
         writer
             .write(&[
@@ -650,10 +668,14 @@ mod test {
             ArrowPayloadType::ScopeAttrs,
         ] {
             let table_name = payload_type.as_str_name().to_lowercase();
-            let files = std::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
-                .unwrap()
-                .map(|entry| entry.unwrap().path().to_string_lossy().to_string())
-                .collect::<Vec<_>>();
+            let mut files = Vec::new();
+            let mut read_dir_stream =
+                tokio::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
+                    .await
+                    .unwrap();
+            while let Some(entry) = read_dir_stream.next_entry().await.unwrap() {
+                files.push(entry.path().to_string_lossy().to_string())
+            }
 
             // we should have written one file
             assert_eq!(files.len(), 1);
@@ -666,14 +688,14 @@ mod test {
                 vec![original_batch1, original_batch2],
             )
             .unwrap();
-            let file = File::open(files[0].clone()).unwrap();
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+            let file = File::open(files[0].clone()).await.unwrap();
+            let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
             let mut reader = builder.build().unwrap();
-            let read_batch = reader.next().unwrap().unwrap();
+            let read_batch = reader.next().await.unwrap().unwrap();
             assert_eq!(&read_batch, &expected_batch);
 
             // assert there's no extra data there
-            assert!(reader.next().is_none())
+            assert!(reader.next().await.is_none())
         }
     }
 
@@ -689,18 +711,20 @@ mod test {
             }),
         );
 
-        let batch1 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
-        let batch2 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
-                with_log_attrs: false,
+                with_main_record_attrs: false,
                 ..Default::default()
-            }));
+            },
+        ));
         writer
             .write(&[
                 WriteBatch::new(0, &batch1, None),
@@ -717,7 +741,9 @@ mod test {
         for payload_type in [ArrowPayloadType::Logs, ArrowPayloadType::LogAttrs] {
             let table_name = payload_type.as_str_name().to_lowercase();
             let table_exists =
-                std::fs::exists(format!("{}/{}", path.to_string_lossy(), table_name)).unwrap();
+                tokio::fs::try_exists(format!("{}/{}", path.to_string_lossy(), table_name))
+                    .await
+                    .unwrap();
             assert!(!table_exists);
         }
 
@@ -726,10 +752,14 @@ mod test {
             ArrowPayloadType::ScopeAttrs,
         ] {
             let table_name = payload_type.as_str_name().to_lowercase();
-            let files = std::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
-                .unwrap()
-                .map(|entry| entry.unwrap().path().to_string_lossy().to_string())
-                .collect::<Vec<_>>();
+            let mut files = Vec::new();
+            let mut read_dir_stream =
+                tokio::fs::read_dir(format!("{}/{}", path.to_string_lossy(), table_name))
+                    .await
+                    .unwrap();
+            while let Some(entry) = read_dir_stream.next_entry().await.unwrap() {
+                files.push(entry.path().to_string_lossy().to_string())
+            }
 
             // we should have written one file
             assert_eq!(files.len(), 1);
@@ -742,14 +772,14 @@ mod test {
                 vec![original_batch1, original_batch2],
             )
             .unwrap();
-            let file = File::open(files[0].clone()).unwrap();
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+            let file = File::open(files[0].clone()).await.unwrap();
+            let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
             let mut reader = builder.build().unwrap();
-            let read_batch = reader.next().unwrap().unwrap();
+            let read_batch = reader.next().await.unwrap().unwrap();
             assert_eq!(&read_batch, &expected_batch);
 
             // assert there's no extra data there
-            assert!(reader.next().is_none())
+            assert!(reader.next().await.is_none())
         }
     }
 }

@@ -22,8 +22,8 @@ package arrow
 // parent IDs.
 
 import (
-	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
 )
 
 type (

@@ -25,7 +25,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
 )
 
 func ResourceID(r pcommon.Resource, schemaUrl string) string {

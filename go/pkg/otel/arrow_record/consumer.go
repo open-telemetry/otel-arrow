@@ -30,15 +30,15 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 
-	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
-	"github.com/open-telemetry/otel-arrow/pkg/internal/debug"
-	common "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	logsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/logs/otlp"
-	metricsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
-	tracesotlp "github.com/open-telemetry/otel-arrow/pkg/otel/traces/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	colarspb "github.com/open-telemetry/otel-arrow/go/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/go/pkg/internal/debug"
+	common "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
+	logsotlp "github.com/open-telemetry/otel-arrow/go/pkg/otel/logs/otlp"
+	metricsotlp "github.com/open-telemetry/otel-arrow/go/pkg/otel/metrics/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/traces/arrow"
+	tracesotlp "github.com/open-telemetry/otel-arrow/go/pkg/otel/traces/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 const defaultMemoryLimit = 70 << 20

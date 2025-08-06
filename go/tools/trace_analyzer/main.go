@@ -19,12 +19,12 @@ import (
 	"fmt"
 	"os"
 
-	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	arrowpb "github.com/open-telemetry/otel-arrow/go/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/dataset"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/arrow_record"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
 )
 
 var help = flag.Bool("help", false, "Show help")

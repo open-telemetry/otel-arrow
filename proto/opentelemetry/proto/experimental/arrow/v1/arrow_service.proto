@@ -29,7 +29,7 @@ option java_package = "io.opentelemetry.proto.experimental.arrow.v1";
 option java_outer_classname = "ArrowServiceProto";
 
 // Note the following is temporary
-option go_package = "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1";
+option go_package = "github.com/open-telemetry/otel-arrow/go/api/experimental/arrow/v1";
 
 // Each signal-specific service can be utilized to transmit `BatchArrowRecords`
 // either from an application instrumented with OpenTelemetry to a collector,
@@ -101,6 +101,7 @@ enum ArrowPayloadType {
   HISTOGRAM_DP_EXEMPLAR_ATTRS = 23;
   EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS = 24;
   MULTIVARIATE_METRICS = 25;                // Multivariate metric payload
+  METRIC_ATTRS = 26;
 
   // A set of payloads representing a collection of logs.
   LOGS = 30;
