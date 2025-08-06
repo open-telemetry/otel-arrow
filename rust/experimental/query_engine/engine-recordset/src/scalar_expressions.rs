@@ -470,7 +470,7 @@ where
                         || {
                             format!(
                                 "Input of '{:?}' type could not be parsed as JSON",
-                                inner_value.get_value_type()
+                                value.get_value_type()
                             )
                         },
                     );
