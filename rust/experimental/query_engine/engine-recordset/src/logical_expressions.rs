@@ -23,7 +23,7 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
                 Err(ExpressionError::TypeMismatch(
                     s.get_query_location().clone(),
                     format!(
-                        "{:?} value '{value}' returned by scalar expression could not be converted to bool",
+                        "Value of '{:?}' type returned by scalar expression could not be converted to bool",
                         value.get_value_type()
                     ),
                 ))
