@@ -54,15 +54,15 @@ impl Config {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ScenarioStep {
     /// delay in ms
-    #[serde(default = "default_delay_between_batches_ms")]
-    delay_between_batches_ms: u64,
+    #[serde(default = "default_messages_per_second")]
+    messages_per_second: u64,
     #[serde(default = "default_batches_to_generate")]
     batches_to_generate: u64,
     signal_type: SignalType,
 }
 
-fn default_delay_between_batches_ms() -> u64 {
-    0
+fn default_messages_per_second() -> u64 {
+    10
 }
 
 fn default_batches_to_generate() -> u64 {
@@ -75,12 +75,12 @@ impl ScenarioStep {
     pub fn new(
         signal_type: SignalType,
         batches_to_generate: u64,
-        delay_between_batches_ms: u64,
+        messages_per_second: u64,
     ) -> Self {
         Self {
             signal_type,
             batches_to_generate,
-            delay_between_batches_ms,
+            messages_per_second,
         }
     }
     /// return the signal type stored inside the scenario step
@@ -95,10 +95,10 @@ impl ScenarioStep {
         self.batches_to_generate
     }
 
-    /// return the delay in ms
+    /// return the messages per second
     #[must_use]
-    pub fn get_delay_between_batches_ms(&self) -> u64 {
-        self.delay_between_batches_ms
+    pub fn get_messages_per_second(&self) -> u64 {
+        self.messages_per_second
     }
 }
 

@@ -101,9 +101,18 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
     // loop through each step
     let steps = config.get_steps();
     let registry = config.get_registry();
+    // calculate how many messages to create
+
     for step in steps {
         // create batches if specified
+
+        // need to calculate the next time to send batches to take into account time it takes to generate batches
         let batches = step.get_batches_to_generate() as usize;
+        let batch_interval = steps.get_batches_to_generate() / step.get_messages_per_second();
+        // get time before creating signals to account
+        let current_time = std::time::SystemTime::now();
+        // using the batch_interval get the time when the next batch should be generated
+        let next_send_time = current_time + Duration::from_secs(batch_interval);
         for _ in 0..batches {
             let signal = match step.get_signal_type() {
                 SignalType::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(
@@ -123,8 +132,11 @@ async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLP
                 )),
             };
             _ = effect_handler.send_message(signal).await;
-            // if there is a delay set between batches sleep for that amount before created the next signal in the batch
-            sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
+        }
+        // check if need to sleep before interval
+        let remaining_time = next_send_time - std::time::SystemTime::now();
+        if remaining_time > 0 {
+            sleep(remaining_time).await;
         }
     }
 }
@@ -834,6 +846,40 @@ mod tests {
         ));
         steps.push(ScenarioStep::new(
             SignalType::Logs(load.clone()),
+            BATCH_COUNT,
+            DELAY,
+        ));
+        let config = Config::new(steps, registry);
+
+        let node_config = Rc::new(NodeUserConfig::new_receiver_config(
+            FAKE_SIGNAL_RECEIVER_URN,
+        ));
+        // create our receiver
+        let receiver = ReceiverWrapper::local(
+            FakeSignalReceiver::new(config),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // run the test
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario())
+            .run_validation(validation_procedure());
+    }
+
+    #[test]
+    fn test_fake_signal_receiver_message_rate() {
+        let test_runtime = TestRuntime::new();
+
+        let registry: ResolvedRegistry = serde_json::from_str(RESOLVED_REGISTRY_JSON).unwrap();
+
+        let mut steps = vec![];
+
+        let load = Load::new(RESOURCE_COUNT, SCOPE_COUNT);
+
+        steps.push(ScenarioStep::new(
+            SignalType::Metrics(load.clone()),
             BATCH_COUNT,
             DELAY,
         ));
