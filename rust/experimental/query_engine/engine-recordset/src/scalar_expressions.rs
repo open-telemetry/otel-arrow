@@ -279,6 +279,15 @@ where
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
+                ConvertScalarExpression::DateTime(c) => {
+                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+
+                    if let Some(d) = v.to_value().convert_to_datetime() {
+                        ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
+                    } else {
+                        ResolvedValue::Computed(OwnedValue::Null)
+                    }
+                }
                 ConvertScalarExpression::Double(c) => {
                     let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
@@ -590,6 +599,8 @@ fn select_from_value<'a, 'b, TRecord: Record>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use chrono::{TimeZone, Utc};
 
     use super::*;
 
@@ -1140,6 +1151,18 @@ mod tests {
                     )),
                 ),
                 (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::Boolean(&BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                ),
+                (
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "value"),
                     )),
@@ -1185,6 +1208,15 @@ mod tests {
                     )),
                 ),
                 (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
+                ),
+                (
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "value"),
                     )),
@@ -1219,6 +1251,15 @@ mod tests {
                         StringScalarExpression::new(QueryLocation::new_fake(), "18"),
                     )),
                     Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
                 ),
                 (
                     ScalarExpression::Static(StaticScalarExpression::String(
@@ -1257,6 +1298,18 @@ mod tests {
                     Value::String(&StringScalarExpression::new(
                         QueryLocation::new_fake(),
                         "18",
+                    )),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::String(&StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "1970-01-01T00:00:00.000000001Z",
                     )),
                 ),
                 (
