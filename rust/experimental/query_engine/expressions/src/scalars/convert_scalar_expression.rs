@@ -139,16 +139,27 @@ impl ConvertScalarExpression {
             }
             ConvertScalarExpression::String(c) => {
                 if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
-                    let mut value = None;
-                    v.to_value().convert_to_string(&mut |s| {
-                        value = Some(StringScalarExpression::new(c.query_location.clone(), s));
-                    });
+                    let v = v.to_value();
+                    if let Value::Null = v {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                c.query_location.clone(),
+                                "",
+                            )),
+                        )))
+                    } else {
+                        let mut value = None;
 
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::String(
-                            value.expect("Inner value did not return a string"),
-                        ),
-                    )))
+                        v.convert_to_string(&mut |s| {
+                            value = Some(StringScalarExpression::new(c.query_location.clone(), s));
+                        });
+
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::String(
+                                value.expect("Inner value did not return a string"),
+                            ),
+                        )))
+                    }
                 } else {
                     Ok(None)
                 }
@@ -402,23 +413,33 @@ mod tests {
 
     #[test]
     pub fn test_string_try_resolve_static() {
-        let expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
-            QueryLocation::new_fake(),
-            ScalarExpression::Static(StaticScalarExpression::Integer(
-                IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
-            )),
-        ));
-
-        assert_eq!(
-            Some(Value::String(&StringScalarExpression::new(
+        let run_test = |input: StaticScalarExpression, expected: Value| {
+            let expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
                 QueryLocation::new_fake(),
-                "18"
-            ))),
-            expression
-                .try_resolve_static(&Default::default())
-                .unwrap()
-                .as_ref()
-                .map(|v| v.to_value())
+                ScalarExpression::Static(input),
+            ));
+
+            let pipeline = Default::default();
+
+            let actual = expression.try_resolve_static(&pipeline).unwrap();
+
+            assert_eq!(Some(expected), actual.as_ref().map(|v| v.to_value()));
+        };
+
+        run_test(
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                18,
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+        );
+
+        run_test(
+            StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "")),
         );
     }
 }
