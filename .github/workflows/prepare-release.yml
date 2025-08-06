@@ -97,7 +97,7 @@ jobs:
 
           # Use script to create branch and commit
           ./.github/workflows/scripts/create-release-branch.sh "${{ inputs.version }}" --push
-          
+
           # Output the commit SHA for reference
           COMMIT_SHA=$(git rev-parse HEAD)
           echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT

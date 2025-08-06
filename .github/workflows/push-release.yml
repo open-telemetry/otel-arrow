@@ -46,7 +46,7 @@ jobs:
             echo "Error: Commit SHA ${{ inputs.commit_sha }} does not exist"
             exit 1
           fi
-          
+
           echo "Using specified commit SHA: ${{ inputs.commit_sha }}"
           CURRENT_SHA=$(git rev-parse HEAD)
           if [ "$CURRENT_SHA" != "${{ inputs.commit_sha }}" ]; then
