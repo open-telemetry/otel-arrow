@@ -42,10 +42,10 @@ impl PipelineGroupConfig {
         pipeline_id: PipelineId,
         pipeline: PipelineConfig,
     ) -> Result<(), Error> {
-        let prev_pipeline_grp = self.pipelines.insert(pipeline_id.clone(), pipeline);
-        if prev_pipeline_grp.is_some() {
+        if self.pipelines.contains_key(&pipeline_id) {
             return Err(Error::DuplicatePipeline { pipeline_id });
         }
+        _ = self.pipelines.insert(pipeline_id.clone(), pipeline);
         Ok(())
     }
 
