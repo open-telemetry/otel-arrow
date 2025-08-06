@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -25,25 +25,25 @@ use std::rc::Rc;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
+    ///
+    /// Note: Even though technically our engine can support several types of pdata, we
+    /// are focusing our efforts on the OTAP pipeline (hence the default value).
+    #[serde(default = "default_pipeline_type")]
     r#type: PipelineType,
-
-    /// Optional description of the pipeline’s purpose.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<Description>,
 
     /// Settings for this pipeline.
     #[serde(default)]
     settings: PipelineSettings,
 
     /// All nodes in this pipeline, keyed by node ID.
-    nodes: HashMap<NodeId, Rc<NodeUserConfig>>,
+    ///
+    /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
+    /// across multiple cores/threads without cloning the entire configuration.
+    nodes: HashMap<NodeId, Arc<NodeUserConfig>>,
 }
 
-fn default_control_channel_size() -> usize {
-    100
-}
-fn default_pdata_channel_size() -> usize {
-    100
+fn default_pipeline_type() -> PipelineType {
+    PipelineType::Otap
 }
 
 /// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
@@ -60,19 +60,36 @@ pub enum PipelineType {
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineSettings {
-    /// The default size of the control channels.
-    #[serde(default = "default_control_channel_size")]
-    pub default_control_channel_size: usize,
+    /// The default size of the node control message channels.
+    /// These channels are used for sending control messages by the pipeline engine to nodes.
+    #[serde(default = "default_node_ctrl_msg_channel_size")]
+    pub default_node_ctrl_msg_channel_size: usize,
+
+    /// The default size of the pipeline control message channels.
+    /// This MPSC channel is used for sending control messages from nodes to the pipeline engine.
+    #[serde(default = "default_pipeline_ctrl_msg_channel_size")]
+    pub default_pipeline_ctrl_msg_channel_size: usize,
 
     /// The default size of the pdata channels.
     #[serde(default = "default_pdata_channel_size")]
     pub default_pdata_channel_size: usize,
 }
 
+fn default_node_ctrl_msg_channel_size() -> usize {
+    100
+}
+fn default_pipeline_ctrl_msg_channel_size() -> usize {
+    100
+}
+fn default_pdata_channel_size() -> usize {
+    100
+}
+
 impl Default for PipelineSettings {
     fn default() -> Self {
         Self {
-            default_control_channel_size: default_control_channel_size(),
+            default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
+            default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
         }
     }
@@ -109,13 +126,21 @@ impl PipelineConfig {
         Self::from_json(pipeline_group_id, pipeline_id, &contents)
     }
 
+    // ToDo : Add support for YAML format.
+
+    /// Returns the general settings for this pipeline.
+    #[must_use]
+    pub fn pipeline_settings(&self) -> &PipelineSettings {
+        &self.settings
+    }
+
     /// Returns an iterator visiting all nodes in the pipeline.
-    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Rc<NodeUserConfig>)> {
+    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.nodes.iter()
     }
 
     /// Creates a consuming iterator over the nodes in the pipeline.
-    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Rc<NodeUserConfig>)> {
+    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
         self.nodes.into_iter()
     }
 
@@ -180,7 +205,7 @@ impl PipelineConfig {
     fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
         fn visit(
             node: &NodeId,
-            nodes: &HashMap<NodeId, Rc<NodeUserConfig>>,
+            nodes: &HashMap<NodeId, Arc<NodeUserConfig>>,
             visiting: &mut HashSet<NodeId>,
             visited: &mut HashSet<NodeId>,
             current_path: &mut Vec<NodeId>,
@@ -491,11 +516,10 @@ impl PipelineConfigBuilder {
         } else {
             // Build the spec and validate it
             let spec = PipelineConfig {
-                description: self.description,
                 nodes: self
                     .nodes
                     .into_iter()
-                    .map(|(id, node)| (id, Rc::new(node)))
+                    .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
                 settings: PipelineSettings::default(),
                 r#type: pipeline_type,

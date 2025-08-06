@@ -31,14 +31,15 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::control::ControlMsg;
-use crate::effect_handler::EffectHandlerCore;
+use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_config::NodeId;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 /// A trait for ingress receivers (Send definition).
@@ -57,16 +58,16 @@ pub trait Receiver<PData> {
 
 /// A channel for receiving control messages (in a Send environment).
 ///
-/// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
+/// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel {
-    rx: SharedReceiver<ControlMsg>,
+    rx: SharedReceiver<NodeControlMsg>,
 }
 
 impl ControlChannel {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
-    pub fn new(rx: SharedReceiver<ControlMsg>) -> Self {
+    pub fn new(rx: SharedReceiver<NodeControlMsg>) -> Self {
         Self { rx }
     }
 
@@ -75,7 +76,7 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
+    pub async fn recv(&mut self) -> Result<NodeControlMsg, RecvError> {
         self.rx.recv().await
     }
 }
@@ -96,11 +97,14 @@ impl<PData> EffectHandler<PData> {
     /// Use this constructor when your receiver do need to be sent across threads or
     /// when it uses components that are `Send`.
     #[must_use]
-    pub fn new(node_id: NodeId, msg_sender: SharedSender<PData>) -> Self {
-        EffectHandler {
-            core: EffectHandlerCore { node_id },
-            msg_sender,
-        }
+    pub fn new(
+        node_id: NodeId,
+        msg_sender: SharedSender<PData>,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+    ) -> Self {
+        let mut core = EffectHandlerCore::new(node_id);
+        core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
+        EffectHandler { core, msg_sender }
     }
 
     /// Returns the name of the receiver associated with this handler.
@@ -135,6 +139,17 @@ impl<PData> EffectHandler<PData> {
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a processor at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.

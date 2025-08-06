@@ -16,7 +16,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
@@ -29,7 +29,7 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::sync::Arc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -56,7 +56,7 @@ pub struct OTAPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
-    create: |node_config: Rc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTAPReceiver::from_config(&node_config.config)?,
             node_config,
@@ -141,7 +141,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {..}) => {
+                        Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
                         },
@@ -189,7 +189,7 @@ mod tests {
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::time::{Duration, timeout};
 
     /// Test closure that simulates a typical receiver scenario.
@@ -329,7 +329,7 @@ mod tests {
         let message_size = 100;
 
         // create our receiver
-        let node_config = Rc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
         let receiver = ReceiverWrapper::shared(
             OTAPReceiver::new(addr, None, message_size),
             node_config,

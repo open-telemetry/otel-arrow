@@ -12,8 +12,9 @@ use crate::{
     runtime_pipeline::RuntimePipeline,
 };
 use serde_json::Value;
+use std::fmt::Debug;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::{collections::HashMap, sync::OnceLock};
 
 pub mod error;
@@ -28,6 +29,7 @@ pub mod control;
 mod effect_handler;
 pub mod local;
 pub mod node;
+pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
@@ -56,7 +58,7 @@ pub struct ReceiverFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new receiver instance.
     pub create: fn(
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
 }
@@ -110,7 +112,7 @@ pub struct ExporterFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new exporter instance.
     pub create: fn(
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
 }
@@ -180,7 +182,7 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static + Clone> PipelineFactory<PData> {
+impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(
@@ -427,7 +429,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         &self,
         receivers: &mut HashMap<NodeId, ReceiverWrapper<PData>>,
         receiver_id: NodeId,
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self
             .get_receiver_factory_map()
@@ -455,7 +457,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         &self,
         nodes: &mut HashMap<NodeId, ProcessorWrapper<PData>>,
         processor_id: NodeId,
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self
             .get_processor_factory_map()
@@ -483,7 +485,7 @@ impl<PData: 'static + Clone> PipelineFactory<PData> {
         &self,
         nodes: &mut HashMap<NodeId, ExporterWrapper<PData>>,
         exporter_id: NodeId,
-        node_config: Rc<NodeUserConfig>,
+        node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self
             .get_exporter_factory_map()

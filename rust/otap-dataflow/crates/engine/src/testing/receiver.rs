@@ -6,7 +6,9 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
-use crate::control::{ControlMsg, Controllable};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
+};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
@@ -25,7 +27,7 @@ use tokio::time::sleep;
 /// Context used during the test phase of a test.
 pub struct TestContext {
     /// Sender for control messages
-    control_sender: Sender<ControlMsg>,
+    control_sender: Sender<NodeControlMsg>,
 }
 
 /// Context used during the validation phase of a test (!Send context).
@@ -46,9 +48,9 @@ impl TestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_timer_tick(&self) -> Result<(), Error<ControlMsg>> {
+    pub async fn send_timer_tick(&self) -> Result<(), Error<NodeControlMsg>> {
         self.control_sender
-            .send(ControlMsg::TimerTick {})
+            .send(NodeControlMsg::TimerTick {})
             .await
             .map_err(Error::ChannelSendError)
     }
@@ -58,9 +60,9 @@ impl TestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_config(&self, config: Value) -> Result<(), Error<ControlMsg>> {
+    pub async fn send_config(&self, config: Value) -> Result<(), Error<NodeControlMsg>> {
         self.control_sender
-            .send(ControlMsg::Config { config })
+            .send(NodeControlMsg::Config { config })
             .await
             .map_err(Error::ChannelSendError)
     }
@@ -74,9 +76,9 @@ impl TestContext {
         &self,
         deadline: Duration,
         reason: &str,
-    ) -> Result<(), Error<ControlMsg>> {
+    ) -> Result<(), Error<NodeControlMsg>> {
         self.control_sender
-            .send(ControlMsg::Shutdown {
+            .send(NodeControlMsg::Shutdown {
                 deadline,
                 reason: reason.to_owned(),
             })
@@ -145,7 +147,7 @@ pub struct TestPhase<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    control_sender: Sender<ControlMsg>,
+    control_sender: Sender<NodeControlMsg>,
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
 }
@@ -166,6 +168,11 @@ pub struct ValidationPhase<PData> {
 
     /// Join handle for the running the test task
     run_test_handle: tokio::task::JoinHandle<()>,
+
+    // ToDo implement support for pipeline control messages in a future PR.
+    #[allow(unused_variables)]
+    #[allow(dead_code)]
+    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -241,13 +248,15 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 )
             }
         };
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+
         self.receiver
             .set_pdata_sender(node_id, "".into(), pdata_sender)
             .expect("Failed to set pdata sender");
 
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
-                .start()
+                .start(pipeline_ctrl_msg_tx)
                 .await
                 .expect("Receiver event loop failed");
         });
@@ -265,6 +274,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
+            pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
         }
     }
 }

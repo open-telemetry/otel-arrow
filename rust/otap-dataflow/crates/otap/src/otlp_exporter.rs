@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
 
-use std::rc::Rc;
-
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
@@ -11,13 +9,14 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
 use serde::Deserialize;
+use std::sync::Arc;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -41,7 +40,7 @@ pub struct OTLPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |node_config: Rc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTLPExporter::from_config(&node_config.config)?,
             node_config,
@@ -113,7 +112,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         loop {
             match msg_chan.recv().await? {
-                Message::Control(ControlMsg::Shutdown { .. }) => break,
+                Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
                     let service_req: OtlpProtoBytes = data.try_into()?;
                     _ = match service_req {
@@ -171,7 +170,6 @@ mod tests {
     };
     use prost::Message;
     use std::net::SocketAddr;
-    use std::rc::Rc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
@@ -291,7 +289,7 @@ mod tests {
             .block_on(ready_receiver)
             .expect("Server failed to start");
 
-        let node_config = Rc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
