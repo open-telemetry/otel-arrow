@@ -570,14 +570,15 @@ pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> S
     for (eq_start_idx, eq_end_idx) in SlicesIterator::new(&eq_mask) {
         // copy offsets for values that were not replaced, but add the offset adjustment
         let scalar_buffer = offsets.inner().slice(prev_eq_index_end, eq_start_idx - prev_eq_index_end);
-        let offsets_arr: PrimitiveArray<Int32Type> = PrimitiveArray::new(scalar_buffer, None);
-        let add_result = add(&offsets_arr, &Int32Array::new_scalar(curr_total_offset_adjustment))
-            .unwrap();
-        let new_slice_offsets: &PrimitiveArray<Int32Type> = add_result
-            .as_any()
-            .downcast_ref()
-            .unwrap();
-        new_offsets.extend_from_slice(new_slice_offsets.values());
+        scalar_buffer.into_iter().for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+        // let offsets_arr: PrimitiveArray<Int32Type> = PrimitiveArray::new(scalar_buffer, None);
+        // let add_result = add(&offsets_arr, &Int32Array::new_scalar(curr_total_offset_adjustment))
+        //     .unwrap();
+        // let new_slice_offsets: &PrimitiveArray<Int32Type> = add_result
+        //     .as_any()
+        //     .downcast_ref()
+        //     .unwrap();
+        // new_offsets.extend_from_slice(new_slice_offsets.values());
 
         // append offsets for values that were replaced
         for i in eq_start_idx..eq_end_idx {
@@ -591,40 +592,7 @@ pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> S
     // add the final offset
     new_offsets.push(new_values.len() as i32);
 
-
-    // for eq_indices_range in SlicesIterator::new(&eq_mask) {
-    //     // copy offsets, but add adjustment
-    //     let scalar_buffer = old_offsets.inner().slice(last_eq_range_end, eq_indices_range.0 - last_eq_range_end);
-    //     let offsets_arr: PrimitiveArray<Int32Type> = PrimitiveArray::new(scalar_buffer, None);
-    //     let add_result = add(&offsets_arr, &Int32Array::new_scalar(curr_total_offset_adjustment))
-    //         .unwrap();
-    //     let new_slice_offsets: &PrimitiveArray<Int32Type> = add_result
-    //         .as_any()
-    //         .downcast_ref()
-    //         .unwrap();
-    //     new_offsets.extend_from_slice(new_slice_offsets.values());
-
-    //     // copy values
-    //     let eq_start_offset = old_offsets[eq_indices_range.0] as usize;
-    //     let last_end_offset = old_offsets[last_eq_range_end] as usize;
-
-    //     new_values.extend_from_slice(&old_values.slice_with_length(
-    //         last_end_offset,
-    //         eq_start_offset - last_end_offset,
-    //     ));
-    //     for i in eq_indices_range.0..eq_indices_range.1 {
-    //         new_values.extend_from_slice(replacement.as_bytes());
-    //         curr_total_offset_adjustment += offset_adjustment;
-    //         new_offsets.push(curr_total_offset_adjustment + old_offsets[i])
-    //     }
-        
-    //     // update pointer to last end range
-    //     last_eq_range_end = eq_indices_range.1;
-    // }
-
-
-    // new_offsets.push(offsets[array.len()]);
-
+    // TODO, can we upgrade arrow to make this faster ..
     #[allow(unsafe_code)]
     let new_offsets = unsafe {
         let len = new_offsets.len() / 4;
@@ -632,7 +600,9 @@ pub fn replace_str_v2(array: &StringArray, target: &str, replacement: &str) -> S
         OffsetBuffer::new_unchecked(scalar_buffer)
     };
 
-    StringArray::new(new_offsets, new_values.into(), None)
+    // TODO comment safety
+    #[allow(unsafe_code)]
+    unsafe { StringArray::new_unchecked(new_offsets, new_values.into(), None) }
 }
 
 
