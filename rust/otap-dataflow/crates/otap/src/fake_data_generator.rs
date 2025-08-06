@@ -95,7 +95,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     }
                 }
                 // run scenario based on provided configuration
-                _ = run_scenario(&self.config.get_steps(), effect_handler.clone()) => {
+                _ = run_scenario(self.config.get_steps(), effect_handler.clone()) => {
                     // do nothing
                 }
 
