@@ -1118,9 +1118,8 @@ impl SliceScalarExpression {
 
                     // Note: We only return statically small string slices. The
                     // idea here is to prevent expansion of the expression tree
-                    // for large values. This could potentially be improved by
-                    // promoting common slices to constants automatically and
-                    // then referencing them when a slice is requested.
+                    // for large values. At runtime a slice of a string is just
+                    // a pointer to some data.
                     if range_end_exclusive - range_start_inclusive > 32 {
                         Ok(None)
                     } else {
