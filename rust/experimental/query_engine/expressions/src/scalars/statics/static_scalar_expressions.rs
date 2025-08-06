@@ -383,20 +383,11 @@ mod tests {
             assert_eq!(Some(input.into()), value.map(|v| v.to_value().to_string()));
         };
 
-        let run_test_with_expected = |input: &str, expected: &str| {
-            let value = StaticScalarExpression::from_json(QueryLocation::new_fake(), input);
-
-            assert_eq!(
-                Some(expected.into()),
-                value.map(|v| v.to_value().to_string())
-            );
-        };
-
         run_test("true");
         run_test("false");
         run_test("18");
         run_test("18.18");
-        run_test_with_expected("null", "");
+        run_test("null");
         run_test("[]");
         run_test("[1,\"two\",null]");
         run_test("{}");
