@@ -76,7 +76,7 @@ jobs:
             exit 1
           fi
 
-          echo "✓ Release preparation verification passed"
+          echo ":heavy_check_mark: Release preparation verification passed"
 
       - name: Get last released version
         id: last_version
