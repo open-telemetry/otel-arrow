@@ -187,4 +187,11 @@ pub enum Error<T> {
         /// The error that occurred.
         error: String,
     },
+
+    /// An internal error that occurred in the pipeline engine.
+    #[error("Internal error: {message}")]
+    InternalError {
+        /// An internal error message.
+        message: String,
+    },
 }

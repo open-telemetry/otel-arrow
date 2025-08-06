@@ -11,6 +11,7 @@
 //! are supported.
 
 use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::error::Error;
 use crate::message::Sender;
 use otap_df_config::NodeId;
 use std::cmp::Reverse;
@@ -65,7 +66,7 @@ impl PipelineCtrlMsgManager {
     /// - On StartTimer: schedules a timer for the node, updating all relevant maps.
     /// - On CancelTimer: marks the timer as canceled and removes from maps.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
-    pub async fn run(mut self) {
+    pub async fn run<PData>(mut self) -> Result<(), Error<PData>> {
         loop {
             // Get the next timer expiration, if any.
             let next_expiry = self.timers.peek().map(|Reverse((instant, _))| *instant);
@@ -113,7 +114,7 @@ impl PipelineCtrlMsgManager {
                                     if let Some(sender) = self.control_senders.get(&node_id) {
                                         let _ = sender.send(NodeControlMsg::TimerTick {}).await;
                                     } else {
-                                        eprintln!("No control sender for node: {node_id}");
+                                        return Err(Error::InternalError {message: format!("No control sender for node: {node_id}")});
                                     }
 
                                     // Schedule next recurrence if still not canceled
@@ -133,6 +134,7 @@ impl PipelineCtrlMsgManager {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -194,9 +196,8 @@ mod tests {
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background using spawn_local (not Send)
-                let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run().await;
-                });
+                let manager_handle =
+                    tokio::task::spawn_local(async move { manager.run::<()>().await });
 
                 // Send StartTimer message to schedule a recurring timer
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -218,8 +219,8 @@ mod tests {
                     Ok(NodeControlMsg::TimerTick {}) => {
                         // Success - received expected TimerTick
                     }
-                    Ok(other) => panic!("Expected TimerTick, got {:?}", other),
-                    Err(e) => panic!("Failed to receive message: {:?}", e),
+                    Ok(other) => panic!("Expected TimerTick, got {other:?}"),
+                    Err(e) => panic!("Failed to receive message: {e:?}"),
                 }
 
                 // Verify automatic recurrence - should get another tick
@@ -255,9 +256,8 @@ mod tests {
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run().await;
-                });
+                let manager_handle =
+                    tokio::task::spawn_local(async move { manager.run::<()>().await });
 
                 // Schedule a timer
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -307,7 +307,7 @@ mod tests {
 
             // Start the manager in the background
             let manager_handle = tokio::task::spawn_local(async move {
-                manager.run().await;
+                manager.run::<()>().await
             });
 
             // Schedule timers for both nodes
@@ -343,10 +343,10 @@ mod tests {
                                 // Verify node1 fired within expected timeframe (should be ~80ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(60) && elapsed <= Duration::from_millis(140),
-                                       "Node1 timer should fire around 80ms, but fired after {:?}", elapsed);
+                                       "Node1 timer should fire around 80ms, but fired after {elapsed:?}");
                             }
-                            Ok(other) => panic!("Expected TimerTick for node1, got {:?}", other),
-                            Err(e) => panic!("Failed to receive message for node1: {:?}", e),
+                            Ok(other) => panic!("Expected TimerTick for node1, got {other:?}"),
+                            Err(e) => panic!("Failed to receive message for node1: {e:?}"),
                         }
                     }
 
@@ -358,10 +358,10 @@ mod tests {
                                 // Verify node2 fired within expected timeframe (should be ~120ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
-                                       "Node2 timer should fire around 120ms, but fired after {:?}", elapsed);
+                                       "Node2 timer should fire around 120ms, but fired after {elapsed:?}");
                             }
-                            Ok(other) => panic!("Expected TimerTick for node2, got {:?}", other),
-                            Err(e) => panic!("Failed to receive message for node2: {:?}", e),
+                            Ok(other) => panic!("Expected TimerTick for node2, got {other:?}"),
+                            Err(e) => panic!("Failed to receive message for node2: {e:?}"),
                         }
                     }
 
@@ -402,7 +402,7 @@ mod tests {
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run().await;
+                    manager.run::<()>().await
                 });
 
                 // Schedule initial timer
@@ -434,8 +434,7 @@ mod tests {
                 // Allow some tolerance for timing variations in test environment
                 assert!(
                     elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                    "Timer should fire based on second duration (~80ms), but fired after {:?}",
-                    elapsed
+                    "Timer should fire based on second duration (~80ms), but fired after {elapsed:?}"
                 );
 
                 // Clean shutdown
@@ -458,9 +457,8 @@ mod tests {
                 let (manager, pipeline_tx, _control_receivers) = setup_test_manager();
 
                 // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run().await;
-                });
+                let manager_handle =
+                    tokio::task::spawn_local(async move { manager.run::<()>().await });
 
                 // Send shutdown message
                 pipeline_tx
@@ -495,9 +493,8 @@ mod tests {
                 let duration = Duration::from_millis(50);
 
                 // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run().await;
-                });
+                let manager_handle =
+                    tokio::task::spawn_local(async move { manager.run::<()>().await });
 
                 // Send StartTimer for node with no control sender
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -541,7 +538,7 @@ mod tests {
 
             // Start the manager in the background
             let manager_handle = tokio::task::spawn_local(async move {
-                manager.run().await;
+                manager.run::<()>().await
             });
 
             // Send timers in non-chronological order to test priority queue
@@ -585,10 +582,10 @@ mod tests {
                                 // Verify node1 fired within expected timeframe (should be ~120ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
-                                       "Node1 timer should fire around 120ms, but fired after {:?}", elapsed);
+                                       "Node1 timer should fire around 120ms, but fired after {elapsed:?}");
                             }
-                            Ok(other) => panic!("Expected TimerTick for node1, got {:?}", other),
-                            Err(e) => panic!("Failed to receive message for node1: {:?}", e),
+                            Ok(other) => panic!("Expected TimerTick for node1, got {other:?}"),
+                            Err(e) => panic!("Failed to receive message for node1: {e:?}"),
                         }
                     }
 
@@ -601,10 +598,10 @@ mod tests {
                                 // Verify node2 fired within expected timeframe (should be ~60ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(40) && elapsed <= Duration::from_millis(100),
-                                       "Node2 timer should fire around 60ms, but fired after {:?}", elapsed);
+                                       "Node2 timer should fire around 60ms, but fired after {elapsed:?}");
                             }
-                            Ok(other) => panic!("Expected TimerTick for node2, got {:?}", other),
-                            Err(e) => panic!("Failed to receive message for node2: {:?}", e),
+                            Ok(other) => panic!("Expected TimerTick for node2, got {other:?}"),
+                            Err(e) => panic!("Failed to receive message for node2: {e:?}"),
                         }
                     }
 
@@ -617,10 +614,10 @@ mod tests {
                                 // Verify node3 fired within expected timeframe (should be ~90ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                                       "Node3 timer should fire around 90ms, but fired after {:?}", elapsed);
+                                       "Node3 timer should fire around 90ms, but fired after {elapsed:?}");
                             }
-                            Ok(other) => panic!("Expected TimerTick for node3, got {:?}", other),
-                            Err(e) => panic!("Failed to receive message for node3: {:?}", e),
+                            Ok(other) => panic!("Expected TimerTick for node3, got {other:?}"),
+                            Err(e) => panic!("Failed to receive message for node3: {e:?}"),
                         }
                     }
 

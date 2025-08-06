@@ -128,8 +128,7 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders);
-            manager.run().await;
-            Ok(())
+            manager.run().await
         }));
 
         rt.block_on(async {
