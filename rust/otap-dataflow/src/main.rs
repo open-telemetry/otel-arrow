@@ -20,7 +20,7 @@ static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
     after_help = system_info()
 )]
 struct Args {
-    /// Path to the JSON pipeline configuration file
+    /// Path to the pipeline configuration file (.json, .yaml, or .yml)
     #[arg(short, long)]
     pipeline: PathBuf,
 
