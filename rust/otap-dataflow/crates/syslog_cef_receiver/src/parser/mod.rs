@@ -24,8 +24,9 @@ pub(super) struct Priority {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum ParseError {
     /// Error parsing priority value
+    /// RFC5424 and RFC3164 messages are expected to start with "<Priority>"
     InvalidPriority,
-    /// Error parsing version number
+    /// Error parsing version number for RFC5424 messages
     InvalidVersion,
     /// Error parsing CEF message
     InvalidCef,

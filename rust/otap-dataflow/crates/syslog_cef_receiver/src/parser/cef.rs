@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
 
-
 /// CEF message structure
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CefMessage<'a> {
@@ -170,21 +169,12 @@ mod tests {
         assert_eq!(result.signature_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
-        
+
         let extensions: Vec<_> = result.parse_extensions().collect();
         assert_eq!(extensions.len(), 3);
-        assert_eq!(
-            extensions[0],
-            (b"src".as_slice(), b"10.0.0.1".as_slice())
-        );
-        assert_eq!(
-            extensions[1],
-            (b"dst".as_slice(), b"2.1.2.2".as_slice())
-        );
-        assert_eq!(
-            extensions[2],
-            (b"spt".as_slice(), b"1232".as_slice())
-        );
+        assert_eq!(extensions[0], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+        assert_eq!(extensions[1], (b"dst".as_slice(), b"2.1.2.2".as_slice()));
+        assert_eq!(extensions[2], (b"spt".as_slice(), b"1232".as_slice()));
     }
 
     #[test]
@@ -199,7 +189,7 @@ mod tests {
         assert_eq!(result.signature_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
-        
+
         let extensions: Vec<_> = result.parse_extensions().collect();
         assert_eq!(extensions.len(), 0);
     }
