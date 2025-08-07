@@ -34,24 +34,31 @@ jobs:
             echo "id=$ID" >> "$GITHUB_OUTPUT"
             echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
 
-        - name: Install Python 3.11 on Oracle Linux 8 (self-hosted only)
+        - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
           if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
           shell: bash
           run: |
             set -euxo pipefail
-            # Enable repos that sometimes are disabled on OL8 images
+
+            # Enable repos (no-op if already enabled)
             sudo dnf -y install oracle-epel-release-el8 || true
             sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
             sudo dnf -y makecache
-            # Install Python 3.11 (and venv/pip)
-            sudo dnf -y install python3.11 python3.11-venv python3.11-devel || {
-              echo "python3.11 not available via repos"; exit 1;
-            }
-            # Ensure pip exists and is up to date
-            /usr/bin/python3.11 -m ensurepip --upgrade || true
-            /usr/bin/python3.11 -m pip install --upgrade pip
-            /usr/bin/python3.11 --version
 
+            # Install core packages (ignore subpackages that don't exist on OL8)
+            sudo dnf -y install python3.11 python3.11-devel || true
+            # pip may be packaged as part of python3.11 or available via ensurepip;
+            # fall back to ensurepip if needed.
+            if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
+              /usr/bin/python3.11 -m ensurepip --upgrade || true
+            fi
+            /usr/bin/python3.11 -m pip install --upgrade pip setuptools wheel || true
+
+            # Smoke test
+            /usr/bin/python3.11 --version
+            /usr/bin/python3.11 -m pip --version
+
+        # Now setup-python will pick the locally installed 3.11
         - name: Set up Python
           uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
           with:
