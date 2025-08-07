@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
 
-use core::str;
 
 /// CEF message structure
 #[derive(Debug, Clone, PartialEq)]
@@ -81,10 +80,11 @@ pub(super) fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseErro
         return Err(super::ParseError::InvalidCef);
     };
 
-    let version_str = str::from_utf8(version_bytes).map_err(|_| super::ParseError::InvalidUtf8)?;
-    let version: u8 = version_str
-        .parse()
-        .map_err(|_| super::ParseError::InvalidCef)?;
+    let version: u8 = match version_bytes {
+        b"0" => 0,
+        b"1" => 1,
+        _ => return Err(super::ParseError::InvalidCef),
+    };
 
     // Parse extensions if present
     let extensions = if parts_count > 7 && parts[7].is_some() {
