@@ -128,6 +128,7 @@ pub trait ArrayAppendSlice {
     fn append_slice(&mut self, val: &[Self::Native]);
 
     /// append the slice to the builder `n` times
+    #[allow(dead_code)]
     fn append_slice_n(&mut self, val: &[Self::Native], n: usize);
 }
 
