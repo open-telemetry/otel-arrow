@@ -7,6 +7,7 @@ use data_engine_expressions::*;
 
 use crate::{
     execution_context::ExecutionContext, logical_expressions::execute_logical_expression,
+    summary::summary_data_expression::execute_summary_data_expression,
     transform::transform_expressions::execute_transform_expression, *,
 };
 
@@ -166,6 +167,21 @@ where
                     );
 
                     return RecordSetEngineResult::Drop(execution_context.into());
+                }
+                DataExpression::Summary(s) => {
+                    match execute_summary_data_expression(&execution_context, s) {
+                        Ok(_) => {
+                            return RecordSetEngineResult::Drop(execution_context.into());
+                        }
+                        Err(e) => {
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Error,
+                                s,
+                                || e.to_string(),
+                            );
+                            break;
+                        }
+                    }
                 }
                 DataExpression::Transform(t) => {
                     match execute_transform_expression(&execution_context, t) {

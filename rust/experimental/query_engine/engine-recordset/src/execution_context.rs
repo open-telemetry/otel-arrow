@@ -4,7 +4,7 @@ use data_engine_expressions::{Expression, MapValue, PipelineExpression};
 
 use crate::{
     AttachedRecords, MapValueStorage, OwnedValue, Record, RecordSetEngineDiagnostic,
-    RecordSetEngineDiagnosticLevel, RecordSetEngineRecord,
+    RecordSetEngineDiagnosticLevel, RecordSetEngineRecord, summary::summary::Summaries,
 };
 
 pub(crate) struct ExecutionContext<'a, 'b, 'c, TRecord>
@@ -18,6 +18,7 @@ where
     attached_records: Option<&'b dyn AttachedRecords>,
     record: RefCell<TRecord>,
     variables: RefCell<MapValueStorage<OwnedValue>>,
+    summaries: Summaries,
 }
 
 impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord> {
@@ -34,6 +35,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
             attached_records,
             record: RefCell::new(record),
             variables: RefCell::new(MapValueStorage::new(HashMap::new())),
+            summaries: Summaries::new(),
         }
     }
 
@@ -81,6 +83,10 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
 
     pub fn get_variables(&self) -> &RefCell<MapValueStorage<OwnedValue>> {
         &self.variables
+    }
+
+    pub fn get_summaries(&self) -> &Summaries {
+        &self.summaries
     }
 
     pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, 'c, TRecord> {
