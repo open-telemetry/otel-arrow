@@ -62,12 +62,15 @@ pub enum Error {
     PatternNotFound { pattern: String, input: String },
 
     #[snafu(display("Arrow error {:?}", source))]
+    #[allow(dead_code)]
     Arrow { source: arrow::error::ArrowError },
 
     #[snafu(display("Empty batch"))]
+    #[allow(dead_code)]
     EmptyBatch {},
 
     #[snafu(display("Invalid payload type {:?}", source))]
+    #[allow(dead_code)]
     InvalidPayload { source: prost::UnknownEnumValue },
 
     #[snafu(display("OTel-Arrow error {:?}", source))]
