@@ -59,7 +59,7 @@ impl ArrowRecordsBuilder {
     pub(crate) fn build(mut self) -> Result<OtapArrowRecords> {
         let log_record_count = self.curr_log_id.into();
 
-        // All the logs are belong the same resource and scope
+        // All the logs belong to the same resource and scope
         self.logs.resource.append_id_n(0, log_record_count);
         self.logs
             .resource
