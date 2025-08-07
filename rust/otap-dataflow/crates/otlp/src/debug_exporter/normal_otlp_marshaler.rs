@@ -351,13 +351,12 @@ fn write_summary_datapoints_normal(
         _ = write!(&mut values, "sum={sum} ", sum = datapoint.sum);
 
         for quantile in datapoint.quantile_values.iter() {
-            write!(
+            _ = write!(
                 &mut values,
                 "q{quantile}={value} ",
                 quantile = quantile.quantile,
                 value = quantile.value
-            )
-            .unwrap();
+            );
         }
 
         _ = writeln!(
