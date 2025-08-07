@@ -481,8 +481,6 @@ pub fn rename_attributes(
                 .as_any()
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
-            // replace_str(arr, old_key, new_key)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
-            // replace_multi_str(arr, &[(old_key, new_key)])?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
             replace_strings(arr, replacements)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
         }
         DataType::Dictionary(k, _) => match *k.clone() {
@@ -492,7 +490,6 @@ pub fn rename_attributes(
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt8Type>>()
                     .expect("can downcast dictionary column to dictionary array");
-                // replace_str_in_dict_values(dict_arr, old_key, new_key)?
                 replace_str_in_dict_values(dict_arr, replacements)?
                     .map(|new_dict| Arc::new(new_dict) as ArrayRef)
             }
@@ -503,7 +500,6 @@ pub fn rename_attributes(
                     .downcast_ref::<DictionaryArray<UInt16Type>>()
                     .expect("can downcast dictionary replacements to dictionary array");
                 replace_str_in_dict_values(dict_arr, replacements)?
-                    // replace_str_in_dict_values(dict_arr, old_key, new_key)?
                     .map(|new_dict| Arc::new(new_dict) as ArrayRef)
             }
             data_type => {
@@ -567,8 +563,6 @@ where
                 .as_any()
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
-            // replace_str(arr, target, replacement)?
-            // replace_multi_str(arr, &[(target, replacement)])?
             replace_strings(arr, replacements)?
         }
         data_type => {
