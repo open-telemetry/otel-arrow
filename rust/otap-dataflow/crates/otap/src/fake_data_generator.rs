@@ -4,7 +4,6 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
-use std::rc::Rc;
 use std::time::Duration;
 
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
@@ -16,15 +15,15 @@ use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::{ReceiverFactory, control::ControlMsg};
+use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
 use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, SignalType};
 use otap_df_otlp::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
 use prost::{EncodeError, Message};
 use serde_json::Value;
-use tokio::time::sleep;
 use std::sync::Arc;
+use tokio::time::sleep;
 
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
@@ -85,7 +84,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {..}) => {
+                        Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
                         },
@@ -190,7 +189,6 @@ mod tests {
     use otel_arrow_rust::proto::opentelemetry::trace::v1::TracesData;
     use std::future::Future;
     use std::pin::Pin;
-    use std::rc::Rc;
     use tokio::time::{Duration, sleep, timeout};
     use weaver_forge::registry::ResolvedRegistry;
 
@@ -908,7 +906,7 @@ mod tests {
         ));
         let config = Config::new(steps, registry);
 
-        let node_config = Rc::new(NodeUserConfig::new_receiver_config(
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
         // create our receiver
