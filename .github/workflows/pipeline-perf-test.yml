@@ -22,7 +22,6 @@ jobs:
           image: python:3.13-slim
           options: >-
             --user root
-            # (Optional) bind cache dirs between host and container
             -v /home/runner/.cache/pip:/home/runner/.cache/pip
 
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
