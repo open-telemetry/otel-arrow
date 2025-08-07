@@ -5,13 +5,13 @@ use std::ops::AddAssign;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, 
-   PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
+    PrimitiveBuilder, RecordBatch, StringArray,
 };
 use arrow::buffer::{MutableBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::kernels::cmp::eq;
 use arrow::compute::and;
-use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt16Type, UInt8Type};
+use arrow::compute::kernels::cmp::eq;
+use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
 use snafu::{OptionExt, ResultExt};
 
 use crate::arrays::{NullableArrayAccessor, get_u8_array};
@@ -481,41 +481,43 @@ pub fn rename_attr(
                 .expect("can downcast Utf8 Column to string array");
             replace_str(arr, old_key, new_key)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
         }
-        DataType::Dictionary(k, _) => {
-            match *k.clone() {
-                DataType::UInt8 => {
-                    let dict_arr = attrs_record_batch.column(key_column_idx)
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt8Type>>()
-                        .expect("can downcast dictionary column to dictionary array");
-                    replace_str_in_dict_values(dict_arr, old_key, new_key)?
-                        .map(|new_dict| Arc::new(new_dict) as ArrayRef)
-                },
-                DataType::UInt16 => {
-                    let dict_arr = attrs_record_batch.column(key_column_idx)
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt16Type>>()
-                        .expect("can downcast dictionary column to dictionary array");
-                    replace_str_in_dict_values(dict_arr, old_key, new_key)?
-                        .map(|new_dict| Arc::new(new_dict) as ArrayRef)
-                }
-                data_type => {
-                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
-                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                        actual: data_type.clone()
-                    }.build())
-                }
+        DataType::Dictionary(k, _) => match *k.clone() {
+            DataType::UInt8 => {
+                let dict_arr = attrs_record_batch
+                    .column(key_column_idx)
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .expect("can downcast dictionary column to dictionary array");
+                replace_str_in_dict_values(dict_arr, old_key, new_key)?
+                    .map(|new_dict| Arc::new(new_dict) as ArrayRef)
             }
-        }
+            DataType::UInt16 => {
+                let dict_arr = attrs_record_batch
+                    .column(key_column_idx)
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .expect("can downcast dictionary column to dictionary array");
+                replace_str_in_dict_values(dict_arr, old_key, new_key)?
+                    .map(|new_dict| Arc::new(new_dict) as ArrayRef)
+            }
+            data_type => {
+                return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                    expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                    actual: data_type.clone(),
+                }
+                .build());
+            }
+        },
         data_type => {
             return Err(error::InvalidListArraySnafu {
                 expect_oneof: vec![DataType::Utf8],
-                actual: data_type.clone()
-            }.build())
+                actual: data_type.clone(),
+            }
+            .build());
         }
     };
 
-    let new_attrs_record_batch = match new_keys {   
+    let new_attrs_record_batch = match new_keys {
         Some(new_keys) => {
             let new_keys = Arc::new(new_keys);
             let columns = attrs_record_batch
@@ -535,21 +537,23 @@ pub fn rename_attr(
             // but based on how we've constructed the batch, this shouldn't happen
             RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns")
-        },
-        
+        }
+
         // if this is None, it means the old_key did not exist in the key column and we can
         // just return the existing record batch
-        None => {
-            attrs_record_batch.clone()
-        }
+        None => attrs_record_batch.clone(),
     };
 
     Ok(new_attrs_record_batch)
 }
 
-fn replace_str_in_dict_values<K>(array: &DictionaryArray<K>, target: &str, replacement: &str) -> Result<Option<DictionaryArray<K>>> 
+fn replace_str_in_dict_values<K>(
+    array: &DictionaryArray<K>,
+    target: &str,
+    replacement: &str,
+) -> Result<Option<DictionaryArray<K>>>
 where
-    K: ArrowDictionaryKeyType
+    K: ArrowDictionaryKeyType,
 {
     let values = array.values();
     let new_values = match values.data_type() {
@@ -559,26 +563,32 @@ where
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
             replace_str(arr, target, replacement)?
-        },
+        }
         data_type => {
             return Err(error::UnsupportedDictionaryValueTypeSnafu {
                 expect_oneof: vec![DataType::Utf8],
-                actual: data_type.clone()
-            }.build())
+                actual: data_type.clone(),
+            }
+            .build());
         }
     };
 
-    let new_dict = new_values.map(|new_values| DictionaryArray::new(array.keys().clone(), Arc::new(new_values)));
+    let new_dict = new_values
+        .map(|new_values| DictionaryArray::new(array.keys().clone(), Arc::new(new_values)));
 
     Ok(new_dict)
 }
 
 /// Returns a new [`StringArray`] with any instances of `target` replaced by `replacement`.
-/// 
+///
 /// This will return `None` if there are no values to replace (e.g. `target` is not in the array).
 /// This is mostly done to be a signal to the caller that it can reuse the and treat it as if the
 /// value had been replaced.
-fn replace_str(array: &StringArray, target: &str, replacement: &str) -> Result<Option<StringArray>> {
+fn replace_str(
+    array: &StringArray,
+    target: &str,
+    replacement: &str,
+) -> Result<Option<StringArray>> {
     let values = array.values();
     let offsets = array.offsets();
 
@@ -595,8 +605,9 @@ fn replace_str(array: &StringArray, target: &str, replacement: &str) -> Result<O
     let len = array.len();
     if offsets.len() < len + 1 {
         return Err(error::UnexpectedRecordBatchStateSnafu {
-            reason: "StringArray offsets has unexpected length"
-        }.build())
+            reason: "StringArray offsets has unexpected length",
+        }
+        .build());
     }
 
     // // also keep track of the number of replacements we'll need to make. this lets us do some
@@ -622,7 +633,7 @@ fn replace_str(array: &StringArray, target: &str, replacement: &str) -> Result<O
                 if eq_range_start.is_none() {
                     eq_range_start = Some(i);
                 }
-                continue
+                continue;
             }
         }
 
@@ -687,7 +698,7 @@ fn replace_str(array: &StringArray, target: &str, replacement: &str) -> Result<O
         // byte buffer for new offsets
         let mut new_offsets = MutableBuffer::new(size_of::<i32>() * array.len());
 
-        // for each offset that was not replaced, keep track of how much to adjust it based on how 
+        // for each offset that was not replaced, keep track of how much to adjust it based on how
         // many values were replaced and the size difference between target and replacement
         let mut curr_total_offset_adjustment = 0;
 
@@ -709,12 +720,15 @@ fn replace_str(array: &StringArray, target: &str, replacement: &str) -> Result<O
                 offset += replacement_bytes.len() as i32;
             }
 
-            curr_total_offset_adjustment += replacement_byte_len_diff * (eq_end_idx - eq_start_idx) as i32;
+            curr_total_offset_adjustment +=
+                replacement_byte_len_diff * (eq_end_idx - eq_start_idx) as i32;
             prev_eq_index_end = eq_end_idx;
         }
 
         // copy any remaining offsets between the last replaced range and the end of the array
-        offsets.inner().slice(prev_eq_index_end, len - prev_eq_index_end)
+        offsets
+            .inner()
+            .slice(prev_eq_index_end, len - prev_eq_index_end)
             .into_iter()
             .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
 
@@ -723,12 +737,12 @@ fn replace_str(array: &StringArray, target: &str, replacement: &str) -> Result<O
 
         let len = new_offsets.len() / size_of::<i32>();
         let scalar_buffer = ScalarBuffer::<i32>::new(new_offsets.into(), 0, len);
-        
+
         // Calling `new_unchecked` here skips iterating the buffer to ensure that all the values
         // are monotonically increasing, which saves a lot of time on large batch sizes
         //
         // Safety: we've computed the buffer values from the existing offsets, which should already
-        // be monotonically increasing if the passed StringArray was valid (and if not, we've 
+        // be monotonically increasing if the passed StringArray was valid (and if not, we've
         // created a new StringArray no less valid than what was passed)
         #[allow(unsafe_code)]
         unsafe {
@@ -743,9 +757,7 @@ fn replace_str(array: &StringArray, target: &str, replacement: &str) -> Result<O
     // on the new values buffer. This should be OK because we've copied bytes from the existing
     // array and `replacement` variable, which presumably have also already passed utf8 validation.
     #[allow(unsafe_code)]
-    let new_array = unsafe {
-        StringArray::new_unchecked(new_offsets, new_values, nulls)
-    };
+    let new_array = unsafe { StringArray::new_unchecked(new_offsets, new_values, nulls) };
 
     Ok(Some(new_array))
 }
@@ -1466,23 +1478,22 @@ mod test {
                 vec!["12345678901234567890"],
                 vec!["0"],
                 "12345678901234567890",
-                "0"
+                "0",
             ),
             // check can replace contiguous blocks of the same value
             (
-                vec!["a", "a", "foo", "foo", "foo", "c", "c" ],
+                vec!["a", "a", "foo", "foo", "foo", "c", "c"],
                 vec!["a", "a", "b", "b", "b", "c", "c"],
                 "foo",
-                "b"
+                "b",
             ),
             // check can replace multiple non contiguous instances
             (
-                vec!["a", "a", "foo", "a", "foo", "c", "c" ],
+                vec!["a", "a", "foo", "a", "foo", "c", "c"],
                 vec!["a", "a", "b", "a", "b", "c", "c"],
                 "foo",
-                "b"
+                "b",
             ),
-
         ];
 
         for (input, expected, target, replacement) in test_cases {
@@ -1578,9 +1589,13 @@ mod test {
 
     #[test]
     fn test_rename_attr_with_dictionary_keys() {
-
-        fn run_dict_test<K>(dict_keys: Vec<K::Native>, dict_values: Vec<&str>, target: &str, replacement: &str, expected: Vec<&str>)
-        where
+        fn run_dict_test<K>(
+            dict_keys: Vec<K::Native>,
+            dict_values: Vec<&str>,
+            target: &str,
+            replacement: &str,
+            expected: Vec<&str>,
+        ) where
             K: ArrowDictionaryKeyType,
             K::Native: Copy + std::fmt::Debug,
         {
@@ -1588,11 +1603,14 @@ mod test {
             let values_array = StringArray::from_iter_values(dict_values);
             let dict_array = DictionaryArray::<K>::new(keys_array, Arc::new(values_array));
 
-            let schema = Arc::new(Schema::new(vec![
-                Field::new(consts::ATTRIBUTE_KEY, dict_array.data_type().clone(), false),
-            ]));
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_KEY,
+                dict_array.data_type().clone(),
+                false,
+            )]));
 
-            let record_batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(dict_array)]).unwrap();
+            let record_batch =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(dict_array)]).unwrap();
 
             let renamed_batch = rename_attr(&record_batch, target, replacement).unwrap();
             let renamed_column = renamed_batch

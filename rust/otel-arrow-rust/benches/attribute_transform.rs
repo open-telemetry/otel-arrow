@@ -44,7 +44,8 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(input, "attr100", "attr_100").expect("expect no error");
+                        let result =
+                            rename_attr(input, "attr100", "attr_100").expect("expect no error");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -62,7 +63,8 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(input, "attr3", "attr_3").expect("expect no error");
+                        let result =
+                            rename_attr(input, "attr3", "attr_3").expect("expect no error");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -82,7 +84,8 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(input, "attr3", "attr_3").expect("expect no error");
+                        let result =
+                            rename_attr(input, "attr3", "attr_3").expect("expect no error");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
