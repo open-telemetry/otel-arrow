@@ -22,10 +22,10 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	events "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	events "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/events"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/update"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
 )
 
 const DictIdKey = "dictId"

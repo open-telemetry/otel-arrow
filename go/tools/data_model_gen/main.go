@@ -25,12 +25,12 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	logsarrow "github.com/open-telemetry/otel-arrow/pkg/otel/logs/arrow"
-	metrics "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	traces "github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	logsarrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/logs/arrow"
+	metrics "github.com/open-telemetry/otel-arrow/go/pkg/otel/metrics/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	traces "github.com/open-telemetry/otel-arrow/go/pkg/otel/traces/arrow"
 )
 
 const (

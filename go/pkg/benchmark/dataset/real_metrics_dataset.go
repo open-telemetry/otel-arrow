@@ -26,8 +26,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark/stats"
 )
 
 // RealMetricsDataset represents a dataset of real metrics read from a Metrics serialized to a binary file.

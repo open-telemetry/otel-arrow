@@ -18,7 +18,9 @@
 #[allow(dead_code)]
 pub(crate) mod arrays;
 mod decode;
-mod error;
+
+pub mod encode;
+pub mod error;
 pub mod otap;
 pub mod otlp;
 #[allow(dead_code)]
@@ -32,3 +34,7 @@ pub mod pdata;
 pub mod proto;
 
 pub use decode::decoder::Consumer;
+pub use encode::producer::Producer;
+
+// Debug tests for EncodedLen visitor functionality
+//pub mod debug_test;

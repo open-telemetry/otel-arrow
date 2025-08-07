@@ -28,9 +28,9 @@ import (
 	"github.com/axiomhq/hyperloglog"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	arrow2 "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
+	arrow2 "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/observer"
 )
 
 type (

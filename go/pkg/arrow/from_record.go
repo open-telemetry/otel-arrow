@@ -26,8 +26,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"golang.org/x/exp/constraints"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	"github.com/open-telemetry/otel-arrow/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
 
 // UnsignedFromRecord returns the unsigned value for a specific row and column in an

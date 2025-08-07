@@ -1,0 +1,19 @@
+[package]
+name = "data_engine_kql_parser"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pest = "2.8"
+pest_derive = "2.8"
+regex = "1.11.1"
+
+data_engine_expressions = { path = "../expressions" }
+data_engine_parser_abstractions = { path = "../parser-abstractions" }
+
+chrono = { workspace = true }
