@@ -53,11 +53,18 @@ gateway's operation and reliability.
 
 ## Control Messages
 
-Each node in a pipeline can receive control messages, which must be handled with
-priority. These control messages are issued by a control entity (e.g. a pipeline
-engine) and are used to orchestrate the behavior of pipeline nodes. For example,
-configuring or reconfiguring nodes, coordinating acknowledgment mechanisms,
-stopping a pipeline, and more.
+The pipeline engine supports two types of control messages:
+
+1. **Node Control Messages**: These messages are emitted by the engine to
+   control the behavior of individual nodes in the pipeline, such as
+   reconfiguration, stopping a specific node, a timer tick, or even an
+   acknowledgment message emitted by a downstream node.
+2. **Pipeline Control Messages**: These messages are emitted by individual
+   nodes to control certain subsystems of the pipeline engine, such as
+   starting or stopping.
+
+Note: Each node in a pipeline can receive node control messages, which must be
+handled with priority.
 
 ## Effect Handlers
 

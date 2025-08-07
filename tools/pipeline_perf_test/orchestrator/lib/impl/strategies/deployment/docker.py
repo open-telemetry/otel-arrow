@@ -39,6 +39,7 @@ from ....core.strategies.deployment_strategy import (
 from ....runner.registry import deployment_registry, PluginMeta
 
 from ..common.docker import (
+    get_container_logs,
     stop_and_remove_container,
     sanitize_docker_name,
     get_component_docker_runtime,
@@ -268,6 +269,7 @@ components:
             raise RuntimeError(
                 f"No container ID found for component '{component.name}' - cannot stop container, it may not have started correctly."
             )
+        get_container_logs(ctx, client, runtime)
         stop_and_remove_container(ctx, client, container_id)
 
 

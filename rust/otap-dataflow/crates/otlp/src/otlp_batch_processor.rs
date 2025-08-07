@@ -1,36 +1,48 @@
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+pub use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use async_trait::async_trait;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::{ControlMsg, Message};
+use otap_df_engine::message::Message;
 use prost::Message as ProstMessage;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
+const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
+
 /// Trait for a batch type (e.g., ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServiceRequest)
 pub trait Batch: Sized {
+    /// The resource group type for this batch
     type Resource: ResourceGroup;
+    /// Returns a mutable reference to the vector of resources in this batch
     fn resources_mut(&mut self) -> &mut Vec<Self::Resource>;
+    /// Creates a new empty batch of this type
     fn new_empty() -> Self;
 }
 
 /// Trait for a resource group (e.g., ResourceSpans, ResourceMetrics, ResourceLogs)
 pub trait ResourceGroup: Sized {
+    /// The scope group type for this resource group
     type Scope: ScopeGroup;
+    /// Returns a mutable reference to the vector of scopes in this resource group
     fn scopes_mut(&mut self) -> &mut Vec<Self::Scope>;
+    /// Creates a new instance with only the resource fields, clearing scopes
     fn take_resource_fields(&mut self) -> Self;
 }
 
 /// Trait for a scope group (e.g., ScopeSpans, ScopeMetrics, ScopeLogs)
 pub trait ScopeGroup: Sized {
+    /// The leaf item type for this scope group (spans, metrics, or log records)
     type Leaf;
+    /// Returns a mutable reference to the vector of leaf items in this scope group
     fn leaves_mut(&mut self) -> &mut Vec<Self::Leaf>;
+    /// Creates a new instance with only the scope fields, clearing leaf items
     fn take_scope_fields(&mut self) -> Self;
 }
 
@@ -125,6 +137,16 @@ pub fn split_into_batches<B: Batch>(mut batch: B, max_batch_size: usize) -> Vec<
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
+    /// Splits a batch into a vector of smaller batches, each with at most `max_batch_size` leaf items,
+    /// preserving all resource/scope/leaf (span/metric/logrecord) structure.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_batch_size` - The maximum number of leaf items (spans, metrics, or log records) per batch.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of batches, or an error if the batch size is zero.
     fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
 }
 
@@ -365,6 +387,7 @@ impl GenericBatcher {
 impl GenericBatcher {
     /// Creates a new `GenericBatcher` with the given configuration.
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
         Self {
@@ -641,10 +664,10 @@ impl Processor<OTLPData> for GenericBatcher {
             }
             Message::Control(ctrl_msg) => {
                 match ctrl_msg {
-                    ControlMsg::TimerTick { .. } => {
+                    NodeControlMsg::TimerTick { .. } => {
                         self.flush_on_timeout(effect_handler).await?;
                     }
-                    ControlMsg::Shutdown { .. } => {
+                    NodeControlMsg::Shutdown { .. } => {
                         self.flush_all(effect_handler).await?;
                     }
                     _ => {}
@@ -665,17 +688,23 @@ mod tests {
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::Span;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
+    use std::sync::Arc;
 
     /// Wraps a processor in a local test wrapper.
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
+        let node_config = Arc::new(NodeUserConfig::new_processor_config(
+            _OTLP_BATCH_PROCESSOR_URN,
+        ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, &config)
+        ProcessorWrapper::local(processor, node_config, &config)
     }
 
     #[test]
@@ -759,7 +788,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Logs(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -857,7 +886,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Traces(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".into(),
                 }))
@@ -914,7 +943,7 @@ mod tests {
                     .await
                     .unwrap();
                 // Trigger shutdown
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -974,7 +1003,7 @@ mod tests {
                     .unwrap();
                 // Simulate timer tick after timeout
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                ctx.process(Message::Control(ControlMsg::TimerTick {}))
+                ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
                     .await
                     .unwrap();
                 let emitted = ctx.drain_pdata().await;
@@ -1040,7 +1069,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Traces(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1148,7 +1177,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Traces(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1258,7 +1287,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Metrics(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1365,7 +1394,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Logs(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1418,7 +1447,7 @@ mod tests {
                 )))
                 .await
                 .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".into(),
                 }))
@@ -1463,7 +1492,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Traces(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".into(),
                 }))
@@ -1519,7 +1548,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Traces(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1575,7 +1604,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Metrics(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1630,7 +1659,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Logs(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1671,7 +1700,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Traces(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1712,7 +1741,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Metrics(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1753,7 +1782,7 @@ mod tests {
                 ctx.process(Message::PData(OTLPData::Logs(req)))
                     .await
                     .unwrap();
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".to_string(),
                 }))
@@ -1775,29 +1804,40 @@ mod integration_tests {
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::trace::v1::Span;
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::local::processor::Processor;
     use otap_df_engine::processor::ProcessorWrapper;
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::sync::Arc;
     use std::time::Duration;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
+        let node_config = Arc::new(NodeUserConfig::new_processor_config(
+            _OTLP_BATCH_PROCESSOR_URN,
+        ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, &config)
+        ProcessorWrapper::local(processor, node_config, &config)
     }
 
-    // Helper: Write string to a file
-    fn log_to_file(s: &str) {
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/generic_batch_proc_test.json")
-            .expect("could not open /tmp file for writing");
-        writeln!(f, "{s}\n").expect("Write failed");
+    // Helper: Write string to a file (async version)
+    async fn log_to_file(s: &str) {
+        let s = s.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/generic_batch_proc_test.json")
+                .expect("could not open /tmp file for writing");
+            writeln!(f, "{s}\n").expect("Write failed");
+        })
+        .await
+        .expect("Blocking task failed");
     }
 
     fn sample_trace() -> ExportTraceServiceRequest {
@@ -1898,27 +1938,27 @@ mod integration_tests {
             .run_test(|mut ctx| async move {
                 // TRACE INPUT
                 let trace_req = sample_trace();
-                log_to_file(&format!("INPUT TRACE:\n{trace_req:#?}"));
+                log_to_file(&format!("INPUT TRACE:\n{trace_req:#?}")).await;
                 ctx.process(Message::PData(OTLPData::Traces(trace_req)))
                     .await
                     .unwrap();
 
                 // METRICS INPUT
                 let metrics_req = sample_metrics();
-                log_to_file(&format!("INPUT METRIC:\n{metrics_req:#?}"));
+                log_to_file(&format!("INPUT METRIC:\n{metrics_req:#?}")).await;
                 ctx.process(Message::PData(OTLPData::Metrics(metrics_req)))
                     .await
                     .unwrap();
 
                 // LOGS INPUT
                 let logs_req = sample_logs();
-                log_to_file(&format!("INPUT LOGS:\n{logs_req:#?}"));
+                log_to_file(&format!("INPUT LOGS:\n{logs_req:#?}")).await;
                 ctx.process(Message::PData(OTLPData::Logs(logs_req)))
                     .await
                     .unwrap();
 
                 // flush everything
-                ctx.process(Message::Control(ControlMsg::Shutdown {
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
                     reason: "test".into(),
                 }))
@@ -1930,17 +1970,17 @@ mod integration_tests {
                 for (i, out) in outputs.iter().enumerate() {
                     match out {
                         OTLPData::Traces(req) => {
-                            log_to_file(&format!("OUTPUT[{i}] TRACE:\n{req:#?}"));
+                            log_to_file(&format!("OUTPUT[{i}] TRACE:\n{req:#?}")).await;
                         }
                         OTLPData::Metrics(req) => {
-                            log_to_file(&format!("OUTPUT[{i}] METRICS:\n{req:#?}"));
+                            log_to_file(&format!("OUTPUT[{i}] METRICS:\n{req:#?}")).await;
                         }
                         OTLPData::Logs(req) => {
-                            log_to_file(&format!("OUTPUT[{i}] LOGS:\n{req:#?}"));
+                            log_to_file(&format!("OUTPUT[{i}] LOGS:\n{req:#?}")).await;
                         }
                         #[allow(unreachable_patterns)]
                         _ => {
-                            log_to_file(&format!("OUTPUT[{i}] UNKNOWN:\n<unhandled type>"));
+                            log_to_file(&format!("OUTPUT[{i}] UNKNOWN:\n<unhandled type>")).await;
                         }
                     }
                 }

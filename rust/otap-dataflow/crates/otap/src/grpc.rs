@@ -10,27 +10,31 @@
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 //!
 
-use crate::proto::opentelemetry::experimental::arrow::v1::{
+use otap_df_engine::shared::receiver as shared;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     BatchArrowRecords, BatchStatus, StatusCode, arrow_logs_service_server::ArrowLogsService,
     arrow_metrics_service_server::ArrowMetricsService,
     arrow_traces_service_server::ArrowTracesService,
 };
-use otap_df_engine::shared::receiver as shared;
 use std::pin::Pin;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+use crate::pdata::OtapPdata;
+
+pub mod otlp;
+
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
-    effect_handler: shared::EffectHandler<OTAPData>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     channel_size: usize,
 }
 
 impl ArrowLogsServiceImpl {
     /// create a new ArrowLogsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>, channel_size: usize) -> Self {
         Self {
             effect_handler,
             channel_size,
@@ -39,14 +43,14 @@ impl ArrowLogsServiceImpl {
 }
 /// struct that implements the ArrowMetricsService trait
 pub struct ArrowMetricsServiceImpl {
-    effect_handler: shared::EffectHandler<OTAPData>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     channel_size: usize,
 }
 
 impl ArrowMetricsServiceImpl {
     /// create a new ArrowMetricsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>, channel_size: usize) -> Self {
         Self {
             effect_handler,
             channel_size,
@@ -56,14 +60,14 @@ impl ArrowMetricsServiceImpl {
 
 /// struct that implements the ArrowTracesService trait
 pub struct ArrowTracesServiceImpl {
-    effect_handler: shared::EffectHandler<OTAPData>,
+    effect_handler: shared::EffectHandler<OtapPdata>,
     channel_size: usize,
 }
 
 impl ArrowTracesServiceImpl {
     /// create a new ArrowTracesServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OtapPdata>, channel_size: usize) -> Self {
         Self {
             effect_handler,
             channel_size,
@@ -93,7 +97,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OTAPData::ArrowLogs, batch, &effect_handler_clone, &tx)
+                if accept_data(OtapArrowBytes::ArrowLogs, batch, &effect_handler_clone, &tx)
                     .await
                     .is_err()
                 {
@@ -127,9 +131,14 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OTAPData::ArrowMetrics, batch, &effect_handler_clone, &tx)
-                    .await
-                    .is_err()
+                if accept_data(
+                    OtapArrowBytes::ArrowMetrics,
+                    batch,
+                    &effect_handler_clone,
+                    &tx,
+                )
+                .await
+                .is_err()
                 {
                     // end loop if error occurs
                     break;
@@ -161,9 +170,14 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // accept the batch data and handle output response
-                if accept_data(OTAPData::ArrowTraces, batch, &effect_handler_clone, &tx)
-                    .await
-                    .is_err()
+                if accept_data(
+                    OtapArrowBytes::ArrowTraces,
+                    batch,
+                    &effect_handler_clone,
+                    &tx,
+                )
+                .await
+                .is_err()
                 {
                     // end loop if error occurs
                     break;
@@ -179,14 +193,14 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 async fn accept_data<OTAPDataType>(
     otap_data: OTAPDataType,
     batch: BatchArrowRecords,
-    effect_handler: &shared::EffectHandler<OTAPData>,
+    effect_handler: &shared::EffectHandler<OtapPdata>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<(), ()>
 where
-    OTAPDataType: Fn(BatchArrowRecords) -> OTAPData,
+    OTAPDataType: Fn(BatchArrowRecords) -> OtapArrowBytes,
 {
     let batch_id = batch.batch_id;
-    let status_result = match effect_handler.send_message(otap_data(batch)).await {
+    let status_result = match effect_handler.send_message(otap_data(batch).into()).await {
         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
         Err(error) => (StatusCode::Canceled, error.to_string()),
     };
@@ -200,9 +214,12 @@ where
     .map_err(|_| ())
 }
 
-/// Enum to describe the Arrow data
+/// Enum to describe the Arrow data.
+///
+/// Within this type, the Arrow batches are serialized as Arrow IPC inside the
+/// `arrow_payloads` field on `[BatchArrowRecords]`
 #[derive(Debug, Clone)]
-pub enum OTAPData {
+pub enum OtapArrowBytes {
     /// Metrics object
     ArrowMetrics(BatchArrowRecords),
     /// Logs object

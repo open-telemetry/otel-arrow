@@ -12,3 +12,32 @@ COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 // Literals
 true_literal = @{ "true" }
 false_literal = @{ "false" }
+null_literal = @{ "nil" }
+integer_literal = @{
+    ("+" | "-")?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+    ~ !("." ~ ASCII_DIGIT)
+}
+float_literal = @{
+    ("+" | "-")?
+    ~ ((ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+) | ("." ~ ASCII_DIGIT+))
+}
+double_quote_string_char = _{
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+}
+string_literal = @{
+    "\"" ~ double_quote_string_char* ~ "\""
+}
+
+// Expressions
+boolean_expression = _{ true_literal | false_literal }
+
+scalar_expression = {
+    boolean_expression
+    | float_literal
+    | integer_literal
+    | string_literal
+    | null_literal
+    | ("(" ~ scalar_expression ~ ")")
+}

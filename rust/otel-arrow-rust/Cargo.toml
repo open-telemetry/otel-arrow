@@ -22,8 +22,8 @@ trace = []
 derive = []
 
 [dependencies]
-arrow = "55"
-arrow-ipc = { version = "55", features = ["zstd"] }
+arrow = "55.2"
+arrow-ipc = { version = "55.2", features = ["zstd"] }
 ciborium = "0.2.2"
 lazy_static = "1.5"
 num_enum = "0.7"
@@ -52,7 +52,7 @@ harness = false
 rand = "0.9"
 nix = { version = "0.30.0", features = ["process", "signal"] }
 tokio-stream = "0.1.17"
-criterion = { version = "0.6" }
+criterion = { version = "0.7" }
 
 [build-dependencies]
 tonic-build = "0.13"

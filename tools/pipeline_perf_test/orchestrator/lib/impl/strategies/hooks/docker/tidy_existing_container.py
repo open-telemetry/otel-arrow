@@ -67,7 +67,6 @@ components:
 
     def execute(self, ctx: BaseContext):
         logger = ctx.get_logger(__name__)
-        client = get_or_create_docker_client(ctx)
 
         component = self.config.component
         if not component:
@@ -77,6 +76,7 @@ components:
                 ctx.status = ExecutionStatus.FAILURE
                 return None
         try:
+            client = get_or_create_docker_client(ctx)
             container = client.containers.get(component.name)
             if container:
                 stop_and_remove_container(ctx, client, container.id)

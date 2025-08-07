@@ -1,6 +1,6 @@
 use crate::{
-    Expression, ExpressionError, PipelineExpression, QueryLocation, ResolvedStaticScalarExpression,
-    ScalarExpression,
+    Expression, ExpressionError, PipelineExpression, QueryLocation, ScalarExpression,
+    resolved_static_scalar_expression::ResolvedStaticScalarExpression,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,10 +31,13 @@ pub enum LogicalExpression {
     /// Returns the result of a sequence of logical expressions chained using
     /// logical `AND(&&)` and/or `OR(||)` operations.
     Chain(ChainLogicalExpression),
+
+    /// Returns true if the haystack contains the needle.
+    Contains(ContainsLogicalExpression),
 }
 
 impl LogicalExpression {
-    pub fn try_resolve_static<'a, 'b, 'c>(
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
         &'a self,
         pipeline: &'b PipelineExpression,
     ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
@@ -50,6 +53,7 @@ impl LogicalExpression {
             LogicalExpression::GreaterThanOrEqualTo(_) => Ok(None),
             LogicalExpression::Not(_) => Ok(None),
             LogicalExpression::Chain(_) => Ok(None),
+            LogicalExpression::Contains(_) => Ok(None),
         }
     }
 }
@@ -63,6 +67,19 @@ impl Expression for LogicalExpression {
             LogicalExpression::GreaterThanOrEqualTo(g) => g.get_query_location(),
             LogicalExpression::Not(n) => n.get_query_location(),
             LogicalExpression::Chain(c) => c.get_query_location(),
+            LogicalExpression::Contains(c) => c.get_query_location(),
+        }
+    }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            LogicalExpression::Scalar(_) => "LogicalExpression(Scalar)",
+            LogicalExpression::EqualTo(_) => "LogicalExpression(EqualTo)",
+            LogicalExpression::GreaterThan(_) => "LogicalExpression(GreaterThan)",
+            LogicalExpression::GreaterThanOrEqualTo(_) => "LogicalExpression(GreaterThanOrEqualTo)",
+            LogicalExpression::Not(_) => "LogicalExpression(Not)",
+            LogicalExpression::Chain(_) => "LogicalExpression(Chain)",
+            LogicalExpression::Contains(_) => "LogicalExpression(Contains)",
         }
     }
 }
@@ -105,6 +122,10 @@ impl Expression for ChainLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "ChainLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +139,7 @@ pub struct EqualToLogicalExpression {
     query_location: QueryLocation,
     left: ScalarExpression,
     right: ScalarExpression,
+    case_insensitive: bool,
 }
 
 impl EqualToLogicalExpression {
@@ -125,12 +147,18 @@ impl EqualToLogicalExpression {
         query_location: QueryLocation,
         left: ScalarExpression,
         right: ScalarExpression,
+        case_insensitive: bool,
     ) -> EqualToLogicalExpression {
         Self {
             query_location,
             left,
             right,
+            case_insensitive,
         }
+    }
+
+    pub fn get_case_insensitive(&self) -> bool {
+        self.case_insensitive
     }
 
     pub fn get_left(&self) -> &ScalarExpression {
@@ -145,6 +173,10 @@ impl EqualToLogicalExpression {
 impl Expression for EqualToLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "EqualToLogicalExpression"
     }
 }
 
@@ -181,6 +213,10 @@ impl Expression for GreaterThanLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "GreaterThanLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +252,10 @@ impl Expression for GreaterThanOrEqualToLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "GreaterThanOrEqualToLogicalExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,5 +283,55 @@ impl NotLogicalExpression {
 impl Expression for NotLogicalExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "NotLogicalExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainsLogicalExpression {
+    query_location: QueryLocation,
+    haystack: ScalarExpression,
+    needle: ScalarExpression,
+    case_insensitive: bool,
+}
+
+impl ContainsLogicalExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        haystack: ScalarExpression,
+        needle: ScalarExpression,
+        case_insensitive: bool,
+    ) -> ContainsLogicalExpression {
+        Self {
+            query_location,
+            haystack,
+            needle,
+            case_insensitive,
+        }
+    }
+
+    pub fn get_case_insensitive(&self) -> bool {
+        self.case_insensitive
+    }
+
+    pub fn get_haystack(&self) -> &ScalarExpression {
+        &self.haystack
+    }
+
+    pub fn get_needle(&self) -> &ScalarExpression {
+        &self.needle
+    }
+}
+
+impl Expression for ContainsLogicalExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ContainsLogicalExpression"
     }
 }

@@ -31,13 +31,15 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::{ControlMsg, Sender};
+use crate::local::message::LocalSender;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use std::borrow::Cow;
+use otap_df_config::NodeId;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 
 /// A trait for ingress receivers (!Send definition).
@@ -88,16 +90,16 @@ pub trait Receiver<PData> {
 
 /// A channel for receiving control messages (in a !Send environment).
 ///
-/// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
+/// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel {
-    rx: crate::message::Receiver<ControlMsg>,
+    rx: crate::message::Receiver<NodeControlMsg>,
 }
 
 impl ControlChannel {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
-    pub fn new(rx: crate::message::Receiver<ControlMsg>) -> Self {
+    pub fn new(rx: crate::message::Receiver<NodeControlMsg>) -> Self {
         Self { rx }
     }
 
@@ -106,7 +108,7 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
+    pub async fn recv(&mut self) -> Result<NodeControlMsg, RecvError> {
         self.rx.recv().await
     }
 }
@@ -117,26 +119,27 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: Sender<PData>,
+    msg_sender: LocalSender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
+    /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
     #[must_use]
-    pub fn new(receiver_name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
-        EffectHandler {
-            core: EffectHandlerCore {
-                node_name: receiver_name,
-            },
-            msg_sender,
-        }
+    pub fn new(
+        node_id: NodeId,
+        msg_sender: LocalSender<PData>,
+        node_request_sender: PipelineCtrlMsgSender,
+    ) -> Self {
+        let mut core = EffectHandlerCore::new(node_id);
+        core.set_pipeline_ctrl_msg_sender(node_request_sender);
+        EffectHandler { core, msg_sender }
     }
 
-    /// Returns the name of the receiver associated with this handler.
+    /// Returns the id of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn receiver_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -157,7 +160,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
-        self.core.tcp_listener(addr, self.receiver_name())
+        self.core.tcp_listener(addr, self.receiver_id())
     }
 
     /// Creates a non-blocking UDP socket on the given address with socket options defined by the
@@ -168,7 +171,26 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     pub fn udp_socket(&self, addr: SocketAddr) -> Result<UdpSocket, Error<PData>> {
-        self.core.udp_socket(addr, self.receiver_name())
+        self.core.udp_socket(addr, self.receiver_id())
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for receivers to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a receiver at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.

@@ -31,13 +31,15 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::ControlMsg;
+use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
-use std::borrow::Cow;
+use otap_df_config::NodeId;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 /// A trait for ingress receivers (Send definition).
@@ -56,16 +58,16 @@ pub trait Receiver<PData> {
 
 /// A channel for receiving control messages (in a Send environment).
 ///
-/// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
+/// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel {
-    rx: tokio::sync::mpsc::Receiver<ControlMsg>,
+    rx: SharedReceiver<NodeControlMsg>,
 }
 
 impl ControlChannel {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
-    pub fn new(rx: tokio::sync::mpsc::Receiver<ControlMsg>) -> Self {
+    pub fn new(rx: SharedReceiver<NodeControlMsg>) -> Self {
         Self { rx }
     }
 
@@ -74,8 +76,8 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
-        self.rx.recv().await.ok_or(RecvError::Closed)
+    pub async fn recv(&mut self) -> Result<NodeControlMsg, RecvError> {
+        self.rx.recv().await
     }
 }
 
@@ -85,7 +87,7 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
+    msg_sender: SharedSender<PData>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -96,21 +98,19 @@ impl<PData> EffectHandler<PData> {
     /// when it uses components that are `Send`.
     #[must_use]
     pub fn new(
-        receiver_name: Cow<'static, str>,
-        msg_sender: tokio::sync::mpsc::Sender<PData>,
+        node_id: NodeId,
+        msg_sender: SharedSender<PData>,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
     ) -> Self {
-        EffectHandler {
-            core: EffectHandlerCore {
-                node_name: receiver_name,
-            },
-            msg_sender,
-        }
+        let mut core = EffectHandlerCore::new(node_id);
+        core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
+        EffectHandler { core, msg_sender }
     }
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn receiver_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -118,13 +118,8 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
-            .map_err(|tokio::sync::mpsc::error::SendError(pdata)| {
-                Error::ChannelSendError(SendError::Full(pdata))
-            })
+    pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
+        self.msg_sender.send(data).await
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
@@ -135,7 +130,26 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
-        self.core.tcp_listener(addr, self.receiver_name())
+        self.core.tcp_listener(addr, self.receiver_id())
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for receivers to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a processor at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.

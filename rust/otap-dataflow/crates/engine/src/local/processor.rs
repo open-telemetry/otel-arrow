@@ -31,11 +31,13 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::effect_handler::EffectHandlerCore;
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::{Message, Sender};
+use crate::local::message::LocalSender;
+use crate::message::Message;
 use async_trait::async_trait;
-use std::borrow::Cow;
+use otap_df_config::NodeId;
+use std::time::Duration;
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -81,27 +83,25 @@ pub trait Processor<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: Sender<PData>,
+    msg_sender: LocalSender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
-        EffectHandler {
-            core: EffectHandlerCore { node_name: name },
-            msg_sender,
-        }
+    pub fn new(node_id: NodeId, msg_sender: LocalSender<PData>) -> Self {
+        let core = EffectHandlerCore::new(node_id);
+        EffectHandler { core, msg_sender }
     }
 
-    /// Returns the name of the processor associated with this handler.
+    /// Returns the id of the processor associated with this handler.
     #[must_use]
-    pub fn processor_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn processor_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -112,6 +112,25 @@ impl<PData> EffectHandler<PData> {
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         self.msg_sender.send(data).await?;
         Ok(())
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for processors to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by an exporter at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.

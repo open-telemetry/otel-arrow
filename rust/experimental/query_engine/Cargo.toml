@@ -6,6 +6,7 @@ members = [
     "ottl-parser",
     "engine-columnar",
     "engine-recordset",
+    "engine-recordset-otlp-bridge",
 ]
 resolver = "2"
 
@@ -21,4 +22,5 @@ rust-version = "1.86.0"
 [workspace.dependencies]
 chrono = "0.4.40"
 regex = "1.11.1"
+serde_json = "1.0.140"
 thiserror = "2.0.12"

@@ -78,8 +78,6 @@ components:
 
     def execute(self, ctx: BaseContext):
         logger = ctx.get_logger(__name__)
-        client = get_or_create_docker_client(ctx)
-
         network_name = self.config.network
 
         if not network_name:
@@ -99,6 +97,8 @@ components:
             return
 
         try:
+            client = get_or_create_docker_client(ctx)
+
             # Check if the network already exists
             existing_networks = client.networks.list(names=[network_name])
             if existing_networks:

@@ -1,7 +1,4 @@
-use crate::{
-    Expression, ImmutableValueExpression, MutableValueExpression, QueryLocation, ScalarExpression,
-    ValueAccessor, ValueType,
-};
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransformExpression {
@@ -28,6 +25,15 @@ impl Expression for TransformExpression {
             TransformExpression::Remove(r) => r.get_query_location(),
             TransformExpression::ReduceMap(r) => r.get_query_location(),
             TransformExpression::RemoveMapKeys(r) => r.get_query_location(),
+        }
+    }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            TransformExpression::Set(_) => "Transform(Set)",
+            TransformExpression::Remove(_) => "Transform(Set)",
+            TransformExpression::ReduceMap(r) => r.get_name(),
+            TransformExpression::RemoveMapKeys(r) => r.get_name(),
         }
     }
 }
@@ -65,6 +71,10 @@ impl Expression for SetTransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "SetTransformExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +103,10 @@ impl Expression for RemoveTransformExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "RemoveTransformExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +123,13 @@ impl Expression for RemoveMapKeysTransformExpression {
         match self {
             RemoveMapKeysTransformExpression::Remove(m) => m.get_query_location(),
             RemoveMapKeysTransformExpression::Retain(m) => m.get_query_location(),
+        }
+    }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            RemoveMapKeysTransformExpression::Remove(_) => "RemoveMapKeysTransform(Remove)",
+            RemoveMapKeysTransformExpression::Retain(_) => "RemoveMapKeysTransform(Retain)",
         }
     }
 }
@@ -146,6 +167,10 @@ impl Expression for MapKeyListExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
+
+    fn get_name(&self) -> &'static str {
+        "MapKeyListExpression"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,6 +187,13 @@ impl Expression for ReduceMapTransformExpression {
         match self {
             ReduceMapTransformExpression::Remove(m) => m.get_query_location(),
             ReduceMapTransformExpression::Retain(m) => m.get_query_location(),
+        }
+    }
+
+    fn get_name(&self) -> &'static str {
+        match self {
+            ReduceMapTransformExpression::Remove(_) => "ReduceMapTransform(Remove)",
+            ReduceMapTransformExpression::Retain(_) => "ReduceMapTransform(Retain)",
         }
     }
 }
@@ -250,5 +282,9 @@ impl MapSelectionExpression {
 impl Expression for MapSelectionExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "MapSelectionExpression"
     }
 }

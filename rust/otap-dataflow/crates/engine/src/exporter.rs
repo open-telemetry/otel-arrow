@@ -7,12 +7,20 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
+use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::exporter as local;
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
-use crate::message::ControlMsg;
-use crate::message::Receiver;
+use crate::message::{Receiver, Sender};
+use crate::node::{Node, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
+use crate::shared::message::{SharedReceiver, SharedSender};
+use otap_df_channel::error::SendError;
+use otap_df_channel::mpsc;
+use otap_df_config::NodeId;
+use otap_df_config::node::NodeUserConfig;
+use std::sync::Arc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -21,85 +29,208 @@ use crate::shared::exporter as shared;
 pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
         /// The effect handler instance for the exporter.
         effect_handler: local::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: LocalSender<NodeControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Option<LocalReceiver<NodeControlMsg>>,
+        /// Receiver for PData messages.
+        pdata_receiver: Option<Receiver<PData>>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
         /// The effect handler instance for the exporter.
         effect_handler: shared::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: SharedSender<NodeControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Option<SharedReceiver<NodeControlMsg>>,
+        /// Receiver for PData messages.
+        pdata_receiver: Option<SharedReceiver<PData>>,
     },
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ExporterWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+        self.control_sender().send(msg).await
+    }
+
+    /// Returns the control message sender for the exporter.
+    fn control_sender(&self) -> Sender<NodeControlMsg> {
+        match self {
+            ExporterWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ExporterWrapper::Shared { control_sender, .. } => {
+                Sender::Shared(control_sender.clone())
+            }
+        }
+    }
 }
 
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new local `ExporterWrapper` with the given exporter and configuration (!Send
     /// implementation).
-    pub fn local<E>(exporter: E, config: &ExporterConfig) -> Self
+    pub fn local<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
     where
         E: local::Exporter<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            mpsc::Channel::new(config.control_channel.capacity);
+
         ExporterWrapper::Local {
+            user_config,
             effect_handler: local::EffectHandler::new(config.name.clone()),
             exporter: Box::new(exporter),
+            control_sender: LocalSender::MpscSender(control_sender),
+            control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
+            pdata_receiver: None, // This will be set later
         }
     }
 
     /// Creates a new shared `ExporterWrapper` with the given exporter and configuration (Send
     /// implementation).
-    pub fn shared<E>(exporter: E, config: &ExporterConfig) -> Self
+    pub fn shared<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
     where
         E: shared::Exporter<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            tokio::sync::mpsc::channel(config.control_channel.capacity);
+
         ExporterWrapper::Shared {
+            user_config,
             effect_handler: shared::EffectHandler::new(config.name.clone()),
             exporter: Box::new(exporter),
+            control_sender: SharedSender::MpscSender(control_sender),
+            control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
+            pdata_receiver: None, // This will be set later
         }
     }
 
     /// Starts the exporter and begins exporting incoming data.
     pub async fn start(
         self,
-        control_rx: Receiver<ControlMsg>,
-        pdata_rx: Receiver<PData>,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
     ) -> Result<(), Error<PData>> {
         match self {
             ExporterWrapper::Local {
-                effect_handler,
+                mut effect_handler,
                 exporter,
+                control_receiver,
+                pdata_receiver,
+                ..
             } => {
-                let message_channel = message::MessageChannel::new(control_rx, pdata_rx);
+                let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "Control receiver not initialized".to_owned(),
+                })?;
+                let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "PData receiver not initialized".to_owned(),
+                })?;
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                let message_channel =
+                    message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             ExporterWrapper::Shared {
-                effect_handler,
+                mut effect_handler,
                 exporter,
+                control_receiver,
+                pdata_receiver,
+                ..
             } => {
-                if let (Receiver::Shared(control_rx), Receiver::Shared(pdata_rx)) =
-                    (control_rx, pdata_rx)
-                {
-                    let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
-                    exporter.start(message_channel, effect_handler).await
-                } else {
-                    Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name(),
-                        error: "Shared ExporterWrapper requires shared channels".to_owned(),
-                    })
-                }
+                let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "Control receiver not initialized".to_owned(),
+                })?;
+                let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: "PData receiver not initialized".to_owned(),
+                })?;
+                effect_handler
+                    .core
+                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
+                exporter.start(message_channel, effect_handler).await
             }
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Node for ExporterWrapper<PData> {
+    fn is_shared(&self) -> bool {
+        match self {
+            ExporterWrapper::Local { .. } => false,
+            ExporterWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn user_config(&self) -> Arc<NodeUserConfig> {
+        match self {
+            ExporterWrapper::Local {
+                user_config: config,
+                ..
+            } => config.clone(),
+            ExporterWrapper::Shared {
+                user_config: config,
+                ..
+            } => config.clone(),
+        }
+    }
+
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+        match self {
+            ExporterWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
+            ExporterWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
+        }
+    }
+}
+
+impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
+    fn set_pdata_receiver(
+        &mut self,
+        node_id: NodeId,
+        receiver: Receiver<PData>,
+    ) -> Result<(), Error<PData>> {
+        match (self, receiver) {
+            (ExporterWrapper::Local { pdata_receiver, .. }, receiver) => {
+                *pdata_receiver = Some(receiver);
+                Ok(())
+            }
+            (ExporterWrapper::Shared { pdata_receiver, .. }, Receiver::Shared(receiver)) => {
+                *pdata_receiver = Some(receiver);
+                Ok(())
+            }
+            (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
+                exporter: node_id,
+                error: "Expected a shared sender for PData".to_owned(),
+            }),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::control::NodeControlMsg;
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
+    use crate::local::message::LocalReceiver;
     use crate::message;
-    use crate::message::{ControlMsg, Message};
+    use crate::message::Message;
     use crate::shared::exporter as shared;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
@@ -107,8 +238,10 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
+    use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::sleep;
 
@@ -136,13 +269,13 @@ mod tests {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
-                    Message::Control(ControlMsg::TimerTick { .. }) => {
+                    Message::Control(NodeControlMsg::TimerTick { .. }) => {
                         self.counter.increment_timer_tick();
                     }
-                    Message::Control(ControlMsg::Config { .. }) => {
+                    Message::Control(NodeControlMsg::Config { .. }) => {
                         self.counter.increment_config();
                     }
-                    Message::Control(ControlMsg::Shutdown { .. }) => {
+                    Message::Control(NodeControlMsg::Shutdown { .. }) => {
                         self.counter.increment_shutdown();
                         break;
                     }
@@ -151,7 +284,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: "Unknown control message".to_owned(),
                         });
                     }
@@ -171,13 +304,13 @@ mod tests {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
-                    Message::Control(ControlMsg::TimerTick { .. }) => {
+                    Message::Control(NodeControlMsg::TimerTick { .. }) => {
                         self.counter.increment_timer_tick();
                     }
-                    Message::Control(ControlMsg::Config { .. }) => {
+                    Message::Control(NodeControlMsg::Config { .. }) => {
                         self.counter.increment_config();
                     }
-                    Message::Control(ControlMsg::Shutdown { .. }) => {
+                    Message::Control(NodeControlMsg::Shutdown { .. }) => {
                         self.counter.increment_shutdown();
                         break;
                     }
@@ -186,7 +319,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_id(),
                             error: "Unknown control message".to_owned(),
                         });
                     }
@@ -229,9 +362,11 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure()
-    -> impl FnOnce(TestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |ctx| {
+    fn validation_procedure<T>() -> impl FnOnce(
+        TestContext<TestMsg>,
+        Result<(), Error<T>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |ctx, _| {
             Box::pin(async move {
                 ctx.counters().assert(
                     3, // timer tick
@@ -246,8 +381,10 @@ mod tests {
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::local(
             TestExporter::new(test_runtime.counters()),
+            user_config,
             test_runtime.config(),
         );
 
@@ -260,8 +397,10 @@ mod tests {
     #[test]
     fn test_exporter_shared() {
         let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::shared(
             TestExporter::new(test_runtime.counters()),
+            user_config,
             test_runtime.config(),
         );
 
@@ -272,18 +411,18 @@ mod tests {
     }
 
     fn make_chan() -> (
-        mpsc::Sender<ControlMsg>,
+        mpsc::Sender<NodeControlMsg>,
         mpsc::Sender<String>,
         message::MessageChannel<String>,
     ) {
-        let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg>::new(10);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
         (
             control_tx,
             pdata_tx,
             message::MessageChannel::new(
-                message::Receiver::Local(control_rx),
-                message::Receiver::Local(pdata_rx),
+                message::Receiver::Local(LocalReceiver::MpscReceiver(control_rx)),
+                message::Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx)),
             ),
         )
     }
@@ -294,13 +433,16 @@ mod tests {
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         control_tx
-            .send_async(ControlMsg::Ack { id: 1 })
+            .send_async(NodeControlMsg::Ack { id: 1 })
             .await
             .unwrap();
 
         // Control message should be received first due to bias
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(msg, Message::Control(ControlMsg::Ack { id: 1 })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Ack { id: 1 })
+        ));
 
         // Then pdata message
         let msg = channel.recv().await.unwrap();
@@ -317,14 +459,14 @@ mod tests {
 
         // Send shutdown with a deadline
         control_tx
-            .send_async(ControlMsg::Shutdown {
+            .send_async(NodeControlMsg::Shutdown {
                 deadline: Duration::from_millis(100), // 100ms deadline
                 reason: "Test Shutdown".to_string(),
             })
             .await
             .unwrap();
 
-        // Send more pdata after shutdown is sent, but before receiver likely gets it
+        // Send more pdata after shutdown is sent, but before the receiver likely gets it
         pdata_tx.send_async("pdata3".to_string()).await.unwrap();
         pdata_tx
             .send_async("pdata4_during_drain".to_string())
@@ -360,9 +502,10 @@ mod tests {
 
         // 5. Now, should receive the Shutdown message itself
         let msg5 = channel.recv().await.unwrap();
+        // println!("msg5 = {:?}", msg5);
         assert!(matches!(
             msg5,
-            Message::Control(ControlMsg::Shutdown { .. })
+            Message::Control(NodeControlMsg::Shutdown { .. })
         ));
 
         drop(control_tx);
@@ -382,14 +525,14 @@ mod tests {
 
         // Send shutdown with a long deadline
         control_tx
-            .send_async(ControlMsg::Shutdown {
+            .send_async(NodeControlMsg::Shutdown {
                 deadline: Duration::from_secs(5), // Long deadline
                 reason: "Test Shutdown PData Closes".to_string(),
             })
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(10)).await; // Give receiver a chance
+        sleep(Duration::from_millis(10)).await; // Give the receiver a chance
 
         // --- Start Receiving ---
 
@@ -404,7 +547,7 @@ mod tests {
         let msg2 = channel.recv().await.unwrap();
         assert!(matches!(
             msg2,
-            Message::Control(ControlMsg::Shutdown { .. })
+            Message::Control(NodeControlMsg::Shutdown { .. })
         ));
 
         drop(control_tx);
@@ -420,7 +563,7 @@ mod tests {
 
         pdata_tx.send_async("pdata1".to_string()).await.unwrap();
         control_tx
-            .send_async(ControlMsg::Shutdown {
+            .send_async(NodeControlMsg::Shutdown {
                 deadline: Duration::from_secs(0), // Immediate deadline
                 reason: "Immediate Shutdown".to_string(),
             })
@@ -431,7 +574,7 @@ mod tests {
         let msg1 = channel.recv().await.unwrap();
         assert!(matches!(
             msg1,
-            Message::Control(ControlMsg::Shutdown { .. })
+            Message::Control(NodeControlMsg::Shutdown { .. })
         ));
 
         // Pdata should be ignored and the recv method should return Closed
@@ -445,7 +588,7 @@ mod tests {
         let (control_tx, pdata_tx, mut chan) = make_chan();
 
         control_tx
-            .send_async(ControlMsg::Shutdown {
+            .send_async(NodeControlMsg::Shutdown {
                 deadline: Duration::from_secs(0),
                 reason: "ignore_followups".into(),
             })
@@ -453,13 +596,16 @@ mod tests {
             .unwrap();
 
         let msg = chan.recv().await.unwrap();
-        assert!(matches!(msg, Message::Control(ControlMsg::Shutdown { .. })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
 
         // Send a control message that should fail as the channel has been closed
         // following the shutdown.
         assert!(
             control_tx
-                .send_async(ControlMsg::Ack { id: 99 })
+                .send_async(NodeControlMsg::Ack { id: 99 })
                 .await
                 .is_err()
         );
@@ -478,7 +624,7 @@ mod tests {
         let (control_tx, _pdata_tx, mut chan) = make_chan();
 
         control_tx
-            .send_async(ControlMsg::Shutdown {
+            .send_async(NodeControlMsg::Shutdown {
                 deadline: Duration::from_secs(0),
                 reason: "now".into(),
             })
@@ -489,7 +635,7 @@ mod tests {
         let first = chan.recv().await.unwrap();
         assert!(matches!(
             first,
-            Message::Control(ControlMsg::Shutdown { .. })
+            Message::Control(NodeControlMsg::Shutdown { .. })
         ));
 
         // Second recv -> channel considered closed

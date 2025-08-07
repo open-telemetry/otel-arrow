@@ -39,6 +39,10 @@ tokio-stream = "0.1.17"
 workspace = true
 
 [[bench]]
+name = "otlp"
+harness = false
+
+[[bench]]
 name = "config"
 harness = false
 
@@ -56,6 +60,10 @@ harness = false
 
 [[bench]]
 name = "pdata_views"
+harness = false
+
+[[bench]]
+name = "retry_processor"
 harness = false
 
 [profile.bench]

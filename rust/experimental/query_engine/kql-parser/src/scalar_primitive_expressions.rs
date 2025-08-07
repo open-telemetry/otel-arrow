@@ -1,9 +1,8 @@
-use chrono::{FixedOffset, NaiveDate};
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
-use crate::{Rule, date_utils, scalar_expression::parse_scalar_expression};
+use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 /// The goal of this code is to unescape string literal values as they come in
 /// when parsed from pest:
@@ -55,51 +54,6 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
     StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
 
-pub(crate) fn parse_double_literal(
-    double_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
-    let query_location = to_query_location(&double_literal_rule);
-
-    let raw_value = double_literal_rule.as_str();
-    let parsed_value = raw_value.parse::<f64>();
-    if parsed_value.is_err() {
-        return Err(ParserError::SyntaxError(
-            to_query_location(&double_literal_rule),
-            format!(
-                "'{}' could not be parsed as a literal of type 'double'",
-                raw_value.trim()
-            ),
-        ));
-    }
-
-    Ok(StaticScalarExpression::Double(DoubleScalarExpression::new(
-        query_location,
-        parsed_value.unwrap(),
-    )))
-}
-
-pub(crate) fn parse_integer_literal(
-    integer_literal_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
-    let query_location = to_query_location(&integer_literal_rule);
-
-    let raw_value = integer_literal_rule.as_str();
-    let parsed_value = raw_value.parse::<i64>();
-    if parsed_value.is_err() {
-        return Err(ParserError::SyntaxError(
-            to_query_location(&integer_literal_rule),
-            format!(
-                "'{}' could not be parsed as a literal of type 'integer'",
-                raw_value.trim()
-            ),
-        ));
-    }
-
-    Ok(StaticScalarExpression::Integer(
-        IntegerScalarExpression::new(query_location, parsed_value.unwrap()),
-    ))
-}
-
 pub(crate) fn parse_datetime_expression(
     datetime_expression_rule: Pair<Rule>,
 ) -> Result<StaticScalarExpression, ParserError> {
@@ -107,95 +61,28 @@ pub(crate) fn parse_datetime_expression(
 
     let datetime_rule = datetime_expression_rule.into_inner().next().unwrap();
 
-    match datetime_rule.as_rule() {
-        Rule::datetime_literal => {
-            let original_value = datetime_rule.as_str();
-            let mut raw_value: String = original_value.into();
-
-            let date = date_utils::parse_date(&raw_value);
-            if date.is_err() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let (month, day, year, range) = date.unwrap();
-
-            raw_value.replace_range(range, "");
-
-            let time = date_utils::parse_time(&raw_value);
-            if time.is_err() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let (hour, min, sec, micro, range) = time.unwrap();
-
-            raw_value.replace_range(range, "");
-
-            let offset = date_utils::parse_offset(&raw_value);
-
-            let nd = NaiveDate::from_ymd_opt(year as i32, month, day);
-            if nd.is_none() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let ndt = nd.unwrap().and_hms_micro_opt(hour, min, sec, micro);
-
-            if ndt.is_none() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let tz = FixedOffset::east_opt(offset);
-            if tz.is_none() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let l = ndt.unwrap().and_local_timezone(tz.unwrap());
-
-            match l {
-                chrono::offset::LocalResult::Single(date_time) => {
-                    Ok(StaticScalarExpression::DateTime(
-                        DateTimeScalarExpression::new(query_location, date_time),
-                    ))
-                }
-                _ => Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                )),
-            }
-        }
+    let original_value: String = match datetime_rule.as_rule() {
+        Rule::string_literal => match parse_string_literal(datetime_rule) {
+            StaticScalarExpression::String(v) => v.get_value().into(),
+            _ => panic!("Unexpected type returned from parse_string_literal"),
+        },
+        Rule::datetime_literal => datetime_rule.as_str().into(),
         _ => panic!("Unexpected rule in datetime_expression: {datetime_rule}"),
+    };
+
+    let s = StringScalarExpression::new(query_location.clone(), &original_value);
+
+    match Value::String(&s).convert_to_datetime() {
+        Some(d) => Ok(StaticScalarExpression::DateTime(
+            DateTimeScalarExpression::new(query_location, d),
+        )),
+        _ => Err(ParserError::SyntaxError(
+            query_location,
+            format!(
+                "'{}' could not be parsed as a literal of type 'datetime'",
+                original_value.trim()
+            ),
+        )),
     }
 }
 
@@ -213,12 +100,12 @@ pub(crate) fn parse_real_expression(
         Rule::negative_infinity_token => Ok(StaticScalarExpression::Double(
             DoubleScalarExpression::new(query_location, f64::NEG_INFINITY),
         )),
-        Rule::double_literal => parse_double_literal(real_rule),
-        Rule::integer_literal => match parse_integer_literal(real_rule)? {
+        Rule::double_literal => parse_standard_double_literal(real_rule, None),
+        Rule::integer_literal => match parse_standard_integer_literal(real_rule)? {
             StaticScalarExpression::Integer(v) => Ok(StaticScalarExpression::Double(
                 DoubleScalarExpression::new(query_location, v.get_value() as f64),
             )),
-            _ => panic!("Unexpected type returned from parse_integer_literal"),
+            _ => panic!("Unexpected type returned from parse_standard_integer_literal"),
         },
         _ => panic!("Unexpected rule in real_expression: {real_rule}"),
     }
@@ -239,8 +126,8 @@ pub(crate) fn parse_real_expression(
 ///
 /// * If the root identifier is not `source` or something contained in either
 ///   attached names nor variables names we assume the user wants some default
-///   behavior. This is controlled by `default_source_map_key` on
-///   [`ParserState`].
+///   behavior. This is controlled by `source_keys` and `default_source_map_key`
+///   on [`ParserState`].
 ///
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
 pub(crate) fn parse_accessor_expression(
@@ -254,12 +141,26 @@ pub(crate) fn parse_accessor_expression(
 
     let root_accessor_identity_rule = accessor_rules.next().unwrap();
 
-    let root_accessor_identity: Box<str> = match root_accessor_identity_rule.as_rule() {
+    let mut root_full_identifier_literal_complete = false;
+    let mut root_full_identifier_literal_depth = 0;
+    let mut root_full_identifier_literal = String::new();
+
+    let root_accessor_identity = match root_accessor_identity_rule.as_rule() {
         Rule::string_literal => match parse_string_literal(root_accessor_identity_rule) {
-            StaticScalarExpression::String(v) => v.get_value().into(),
+            StaticScalarExpression::String(v) => {
+                root_full_identifier_literal_complete = true;
+                v
+            }
             _ => panic!("Unexpected type returned from parse_string_literal"),
         },
-        Rule::identifier_literal => root_accessor_identity_rule.as_str().into(),
+        Rule::identifier_literal => {
+            root_full_identifier_literal.push_str(root_accessor_identity_rule.as_str());
+
+            StringScalarExpression::new(
+                to_query_location(&root_accessor_identity_rule),
+                root_accessor_identity_rule.as_str(),
+            )
+        }
         _ => panic!("Unexpected rule in accessor_expression: {root_accessor_identity_rule}"),
     };
 
@@ -274,31 +175,40 @@ pub(crate) fn parse_accessor_expression(
         }
 
         let pair = accessor.unwrap();
-        match pair.as_rule() {
-            Rule::integer_literal => match parse_integer_literal(pair)? {
-                StaticScalarExpression::Integer(v) => {
-                    let i = v.get_value();
+        let pair_value = pair.as_str();
+        let add_to_root_literal = match pair.as_rule() {
+            Rule::integer_literal => {
+                match parse_standard_integer_literal(pair)? {
+                    StaticScalarExpression::Integer(v) => {
+                        let i = v.get_value();
 
-                    if i < i32::MIN as i64 || i > i32::MAX as i64 {
-                        return Err(ParserError::SyntaxError(
-                            v.get_query_location().clone(),
-                            format!(
-                                "'{i}' value for array index is too large to fit into a 32bit value"
-                            ),
+                        if i < i32::MIN as i64 || i > i32::MAX as i64 {
+                            return Err(ParserError::SyntaxError(
+                                v.get_query_location().clone(),
+                                format!(
+                                    "'{i}' value for array index is too large to fit into a 32bit value"
+                                ),
+                            ));
+                        }
+
+                        value_accessor.push_selector(ScalarExpression::Static(
+                            StaticScalarExpression::Integer(v),
                         ));
                     }
-
-                    value_accessor.push_selector(ScalarExpression::Static(
-                        StaticScalarExpression::Integer(v),
-                    ));
+                    _ => panic!("Unexpected type returned from parse_standard_integer_literal"),
                 }
-                _ => panic!("Unexpected type returned from parse_integer_literal"),
-            },
-            Rule::string_literal => match parse_string_literal(pair) {
-                StaticScalarExpression::String(v) => value_accessor
-                    .push_selector(ScalarExpression::Static(StaticScalarExpression::String(v))),
-                _ => panic!("Unexpected type returned from parse_string_literal"),
-            },
+
+                false
+            }
+            Rule::string_literal => {
+                match parse_string_literal(pair) {
+                    StaticScalarExpression::String(v) => value_accessor
+                        .push_selector(ScalarExpression::Static(StaticScalarExpression::String(v))),
+                    _ => panic!("Unexpected type returned from parse_string_literal"),
+                }
+
+                false
+            }
             Rule::identifier_literal => {
                 value_accessor.push_selector(ScalarExpression::Static(
                     StaticScalarExpression::String(StringScalarExpression::new(
@@ -306,6 +216,8 @@ pub(crate) fn parse_accessor_expression(
                         pair.as_str(),
                     )),
                 ));
+
+                true
             }
             Rule::scalar_expression => {
                 let scalar = parse_scalar_expression(pair, state)?;
@@ -347,31 +259,43 @@ pub(crate) fn parse_accessor_expression(
 
                     value_accessor.push_selector(scalar);
                 }
+
+                false
             }
             Rule::minus_token => {
                 negate_location = Some(to_query_location(&pair));
+                false
             }
             _ => panic!("Unexpected rule in accessor_expression: {pair}"),
+        };
+
+        if !root_full_identifier_literal_complete && add_to_root_literal {
+            root_full_identifier_literal_depth += 1;
+            root_full_identifier_literal.push('.');
+            root_full_identifier_literal.push_str(pair_value);
+        } else {
+            root_full_identifier_literal_complete = true;
         }
     }
 
-    if root_accessor_identity.as_ref() == "source" {
-        Ok(ScalarExpression::Source(SourceScalarExpression::new(
+    if root_accessor_identity.get_value() == "source" {
+        let value_type = get_value_type(state, &value_accessor);
+
+        Ok(ScalarExpression::Source(
+            SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
+        ))
+    } else if state.is_attached_data_defined(root_accessor_identity.get_value()) {
+        Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
             query_location,
+            root_accessor_identity,
             value_accessor,
         )))
-    } else if state.is_attached_data_defined(&root_accessor_identity) {
-        return Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
+    } else if state.is_variable_defined(root_accessor_identity.get_value()) {
+        Ok(ScalarExpression::Variable(VariableScalarExpression::new(
             query_location,
-            &root_accessor_identity,
+            root_accessor_identity,
             value_accessor,
-        )));
-    } else if state.is_variable_defined(&root_accessor_identity) {
-        return Ok(ScalarExpression::Variable(VariableScalarExpression::new(
-            query_location,
-            &root_accessor_identity,
-            value_accessor,
-        )));
+        )))
     } else {
         // Note: If the accessor_expression is being used as a scalar it is
         // perfectly valid to return a static constant value. However accessors
@@ -383,7 +307,9 @@ pub(crate) fn parse_accessor_expression(
         // * extend const_str = 1: This expression needs to execute as
         //   source['const_str'] = 1 so the const_str is not evaluated.
         if allow_root_scalar {
-            if let Some((constant_id, value_type)) = state.get_constant(&root_accessor_identity) {
+            if let Some((constant_id, value_type)) =
+                state.get_constant(root_accessor_identity.get_value())
+            {
                 if value_accessor.has_selectors() {
                     // Note: It is not currently supported to access into a constant.
                     // This is because statics are currently simple things like string,
@@ -402,30 +328,138 @@ pub(crate) fn parse_accessor_expression(
             }
         }
 
-        value_accessor.insert_selector(
-            0,
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                query_location.clone(),
-                &root_accessor_identity,
-            ))),
-        );
+        if let Some(schema) = state.get_source_schema() {
+            match schema.get_schema_for_key(root_accessor_identity.get_value()) {
+                Some(key) => {
+                    if value_accessor.has_selectors() {
+                        // Note: If we are selecting a well-defined key on the
+                        // source we can do some validation. If there are child
+                        // selectors they are only valid for maps and arrays.
+                        // This logic could be improved further to inspect the
+                        // next selector and see if it is a string (parent must
+                        // be a map) or an int (parent must be an array).
+                        if !matches!(
+                            key.get_value_type(),
+                            Some(ValueType::Map) | Some(ValueType::Array) | None
+                        ) {
+                            return Err(ParserError::SyntaxError(
+                                root_accessor_identity.get_query_location().clone(),
+                                format!(
+                                    "Cannot access into key '{}' which is defined as a '{:?}' type",
+                                    root_accessor_identity.get_value(),
+                                    key.get_value_type()
+                                ),
+                            ));
+                        }
+                    }
 
-        return Ok(ScalarExpression::Source(SourceScalarExpression::new(
-            query_location,
-            value_accessor,
-        )));
+                    value_accessor.insert_selector(
+                        0,
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            root_accessor_identity,
+                        )),
+                    );
+                }
+                None => {
+                    if let Some(default_map_key) = schema.get_default_map_key() {
+                        // Note: If the root is not found and we have a default
+                        // map we insert it into the expression. Let's say
+                        // default_source_map_key=attributes. And we have keys
+                        // source_keys[timestamp, body, attributes] defined. If
+                        // we see a selector "key1" we rewrite that as
+                        // "attributes.key1" so the search for "key1" looks into
+                        // the default map ("attributes" in this case).
+
+                        let root_location = root_accessor_identity.get_query_location().clone();
+
+                        if root_full_identifier_literal_depth > 0 {
+                            // Note: If we have a selector like "some.thing" it
+                            // will parse as [some][thing] by default. We know
+                            // we didn't find "some" as a defined key on source.
+                            // What this code does is for the lookup to the
+                            // default map (say attributes) we do
+                            // attributes["some.thing"] instead of
+                            // attributes["some"]["thing"].
+
+                            while root_full_identifier_literal_depth > 0 {
+                                value_accessor.remove_selector(0);
+                                root_full_identifier_literal_depth -= 1;
+                            }
+
+                            value_accessor.insert_selector(
+                                0,
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        root_location.clone(),
+                                        root_full_identifier_literal.as_str(),
+                                    ),
+                                )),
+                            );
+                        } else {
+                            value_accessor.insert_selector(
+                                0,
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    root_accessor_identity,
+                                )),
+                            );
+                        }
+
+                        value_accessor.insert_selector(
+                            0,
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(root_location, default_map_key),
+                            )),
+                        );
+                    } else {
+                        return Err(ParserError::QueryLanguageDiagnostic {
+                            location: root_accessor_identity.get_query_location().clone(),
+                            diagnostic_id: "KS109",
+                            message: format!(
+                                "The name '{}' does not refer to any known column, table, variable or function",
+                                root_accessor_identity.get_value()
+                            ),
+                        });
+                    }
+                }
+            }
+        } else {
+            value_accessor.insert_selector(
+                0,
+                ScalarExpression::Static(StaticScalarExpression::String(root_accessor_identity)),
+            );
+        }
+
+        let value_type = get_value_type(state, &value_accessor);
+
+        Ok(ScalarExpression::Source(
+            SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
+        ))
     }
+}
+
+fn get_value_type(state: &ParserState, value_accessor: &ValueAccessor) -> Option<ValueType> {
+    let selectors = value_accessor.get_selectors();
+    let mut value_type = None;
+    if selectors.is_empty() {
+        value_type = Some(ValueType::Map);
+    } else if selectors.len() == 1
+        && let Some(schema) = state.get_source_schema()
+        && let ScalarExpression::Static(StaticScalarExpression::String(key)) =
+            selectors.first().unwrap()
+        && let Some(key_schema) = schema.get_schema_for_key(key.get_value())
+    {
+        value_type = key_schema.get_value_type();
+    }
+
+    value_type
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Datelike, Utc};
+    use chrono::{DateTime, Datelike, FixedOffset, Utc};
     use pest::Parser;
 
-    use crate::{
-        KqlPestParser,
-        date_utils::{create_fixed, create_utc},
-    };
+    use crate::{KqlPestParser, date_utils::*};
 
     use super::*;
 
@@ -497,13 +531,13 @@ mod tests {
         let run_test = |input: &str, expected: f64| {
             let mut result = KqlPestParser::parse(Rule::double_literal, input).unwrap();
 
-            let f = parse_double_literal(result.next().unwrap());
+            let f = parse_standard_double_literal(result.next().unwrap(), None);
 
             assert!(f.is_ok());
 
             match f.unwrap() {
                 StaticScalarExpression::Double(v) => assert_eq!(expected, v.get_value()),
-                _ => panic!("Unexpected type retured from parse_double_literal"),
+                _ => panic!("Unexpected type retured from parse_standard_float_literal"),
             }
         };
 
@@ -533,13 +567,13 @@ mod tests {
         let run_test = |input: &str, expected: i64| {
             let mut result = KqlPestParser::parse(Rule::integer_literal, input).unwrap();
 
-            let i = parse_integer_literal(result.next().unwrap());
+            let i = parse_standard_integer_literal(result.next().unwrap());
 
             assert!(i.is_ok());
 
             match i.unwrap() {
                 StaticScalarExpression::Integer(v) => assert_eq!(expected, v.get_value()),
-                _ => panic!("Unexpected type retured from parse_integer_literal"),
+                _ => panic!("Unexpected type retured from parse_standard_integer_literal"),
             }
         };
 
@@ -555,7 +589,7 @@ mod tests {
         assert!(result.is_ok());
 
         let mut pairs = result.unwrap();
-        let i = parse_integer_literal(pairs.next().unwrap());
+        let i = parse_standard_integer_literal(pairs.next().unwrap());
 
         assert!(i.is_err());
 
@@ -613,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_parse_datetime_expression() {
-        let run_test = |input: &str, expected: DateTime<FixedOffset>| {
+        let run_test_success = |input: &str, expected: DateTime<FixedOffset>| {
             let mut result = KqlPestParser::parse(Rule::datetime_expression, input).unwrap();
 
             let d = parse_datetime_expression(result.next().unwrap());
@@ -626,155 +660,170 @@ mod tests {
             }
         };
 
+        let run_test_failure = |input: &str| {
+            let mut result = KqlPestParser::parse(Rule::datetime_expression, input).unwrap();
+
+            let d = parse_datetime_expression(result.next().unwrap());
+
+            assert!(d.is_err());
+        };
+
+        run_test_failure("datetime('hello world')");
+        run_test_failure("datetime('hello world 8/5/2025')");
+
         let now = Utc::now();
 
-        run_test("datetime(12/31/2025)", create_utc(2025, 12, 31, 0, 0, 0, 0));
-        run_test("datetime(12/31/50)", create_utc(1950, 12, 31, 0, 0, 0, 0));
-        run_test("datetime(12/31/49)", create_utc(2049, 12, 31, 0, 0, 0, 0));
-        run_test("datetime(2025/12/31)", create_utc(2025, 12, 31, 0, 0, 0, 0));
-        run_test(
+        run_test_success(
+            "datetime('12/31/2025')",
+            create_utc(2025, 12, 31, 0, 0, 0, 0),
+        );
+        run_test_success("datetime(12/31/2025)", create_utc(2025, 12, 31, 0, 0, 0, 0));
+        run_test_success("datetime(12/31/50)", create_utc(1950, 12, 31, 0, 0, 0, 0));
+        run_test_success("datetime(12/31/49)", create_utc(2049, 12, 31, 0, 0, 0, 0));
+        run_test_success("datetime(2025/12/31)", create_utc(2025, 12, 31, 0, 0, 0, 0));
+        run_test_success(
             "datetime(2025/12/31 22:30:10.1)",
             create_utc(2025, 12, 31, 22, 30, 10, 1),
         );
-        run_test(
+        run_test_success(
             "datetime(12-31-2025 10AM)",
             create_utc(2025, 12, 31, 10, 0, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2025-12-31 10:30 PM)",
             create_utc(2025, 12, 31, 22, 30, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(10PM)",
             create_utc(now.year(), now.month(), now.day(), 22, 0, 0, 0),
         );
 
         // ISO 8601
-        run_test(
+        run_test_success(
             "datetime(2014-05-25T08:20:03.123456Z)",
             create_utc(2014, 5, 25, 8, 20, 3, 123456),
         );
-        run_test(
+        run_test_success(
             "datetime(2009-06-15T13:45:30.0000000-07:00)",
             create_fixed(2009, 6, 15, 13, 45, 30, 0, -7 * 60 * 60),
         );
-        run_test(
+        run_test_success(
             "datetime(2009-06-15T13:45:30.0000000+07:30)",
             create_fixed(2009, 6, 15, 13, 45, 30, 0, (7 * 60 * 60) + (30 * 60)),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-05-25T08:20:03.123456)",
             create_utc(2014, 5, 25, 8, 20, 3, 123456),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-05-25T08:20)",
             create_utc(2014, 5, 25, 8, 20, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:55:55.123456Z)",
             create_utc(2014, 11, 8, 15, 55, 55, 123456),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:55:55)",
             create_utc(2014, 11, 8, 15, 55, 55, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:55)",
             create_utc(2014, 11, 8, 15, 55, 0, 0),
         );
-        run_test("datetime(2014-11-08)", create_utc(2014, 11, 8, 0, 0, 0, 0));
+        run_test_success("datetime(2014-11-08)", create_utc(2014, 11, 8, 0, 0, 0, 0));
 
         // RFC 822
-        run_test(
+        run_test_success(
             "datetime(Sat, 8 Nov 14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Sat, 8 Nov 14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test("datetime(8 Nov 14)", create_utc(2014, 11, 8, 0, 0, 0, 0));
+        run_test_success("datetime(8 Nov 14)", create_utc(2014, 11, 8, 0, 0, 0, 0));
 
         // RFC 850
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
 
         // Sortable
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05:25)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05:25 GMT)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05:25)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05:25 GMT)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
@@ -1005,7 +1054,7 @@ mod tests {
                     )),
                     ScalarExpression::Variable(VariableScalarExpression::new(
                         QueryLocation::new_fake(),
-                        "var",
+                        StringScalarExpression::new(QueryLocation::new_fake(), "var"),
                         ValueAccessor::new()
                     )),
                     ScalarExpression::Negate(NegateScalarExpression::new(
@@ -1031,29 +1080,157 @@ mod tests {
 
     #[test]
     fn test_parse_accessor_expression_implicit_source_and_default_map() {
-        let mut result = KqlPestParser::parse(Rule::accessor_expression, "subkey").unwrap();
+        let run_test = |query: &str, expected: &Vec<ScalarExpression>| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
 
-        let expression = parse_accessor_expression(
-            result.next().unwrap(),
-            &ParserState::new_with_options(
-                "subkey",
-                ParserOptions::new().with_default_source_map_key_name("attributes"),
+            let expression = parse_accessor_expression(
+                result.next().unwrap(),
+                &ParserState::new_with_options(
+                    query,
+                    ParserOptions::new().with_source_map_schema(
+                        ParserMapSchema::new().set_default_map_key("attributes"),
+                    ),
+                ),
+                true,
+            )
+            .unwrap();
+
+            if let ScalarExpression::Source(s) = expression {
+                assert_eq!(expected, s.get_value_accessor().get_selectors());
+            } else {
+                panic!("Expected SourceScalarExpression");
+            }
+        };
+
+        run_test(
+            "subkey",
+            &vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "subkey"),
+                )),
+            ],
+        );
+
+        run_test(
+            "sub.key",
+            &vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "sub.key"),
+                )),
+            ],
+        );
+
+        run_test(
+            "sub.a.b['key1']",
+            &vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "sub.a.b"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                )),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_implicit_source_and_souce_keys() {
+        let run_test_success = |query: &str, expected: SourceScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
+
+            let expression = parse_accessor_expression(
+                result.next().unwrap(),
+                &ParserState::new_with_options(
+                    query,
+                    ParserOptions::new().with_source_map_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("int_key", ParserMapKeySchema::Integer)
+                            .with_key_definition("key_without_type", ParserMapKeySchema::Any),
+                    ),
+                ),
+                true,
+            )
+            .unwrap();
+
+            if let ScalarExpression::Source(s) = expression {
+                assert_eq!(expected, s);
+            } else {
+                panic!("Expected SourceScalarExpression");
+            }
+        };
+
+        let run_test_failure = |query: &str, expected_id: &str, expected_msg: &str| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
+
+            let error = parse_accessor_expression(
+                result.next().unwrap(),
+                &ParserState::new_with_options(
+                    query,
+                    ParserOptions::new().with_source_map_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("int_key", ParserMapKeySchema::Integer)
+                            .with_key_definition("key_without_type", ParserMapKeySchema::Any),
+                    ),
+                ),
+                true,
+            )
+            .unwrap_err();
+
+            if let ParserError::QueryLanguageDiagnostic {
+                location: _,
+                diagnostic_id: id,
+                message: msg,
+            } = error
+            {
+                assert_eq!(expected_id, id);
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected QueryLanguageDiagnostic");
+            }
+        };
+
+        run_test_success(
+            "int_key",
+            SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "int_key",
+                    )),
+                )]),
+                Some(ValueType::Integer),
             ),
-            true,
-        )
-        .unwrap();
+        );
 
-        if let ScalarExpression::Source(s) = expression {
-            assert_eq!(
-                &[ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "subkey")
-                ))]
-                .to_vec(),
-                s.get_value_accessor().get_selectors()
-            );
-        } else {
-            panic!("Expected SourceScalarExpression");
-        }
+        run_test_success(
+            "key_without_type",
+            SourceScalarExpression::new_with_value_type(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key_without_type",
+                    )),
+                )]),
+                None,
+            ),
+        );
+
+        run_test_failure(
+            "unknown_key",
+            "KS109",
+            "The name 'unknown_key' does not refer to any known column, table, variable or function",
+        );
     }
 
     #[test]
@@ -1072,7 +1249,7 @@ mod tests {
         .unwrap();
 
         if let ScalarExpression::Attached(a) = expression {
-            assert_eq!("resource", a.get_name());
+            assert_eq!("resource", a.get_name().get_value());
             assert_eq!(
                 &[ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "~at'tr~")
@@ -1096,7 +1273,7 @@ mod tests {
         let expression = parse_accessor_expression(result.next().unwrap(), &state, true).unwrap();
 
         if let ScalarExpression::Variable(v) = expression {
-            assert_eq!("a", v.get_name());
+            assert_eq!("a", v.get_name().get_value());
             assert_eq!(
                 &[ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), -1)

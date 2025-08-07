@@ -2,9 +2,13 @@
 
 //! Common foundation of all effect handlers.
 
+use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
+use otap_df_channel::error::SendError;
+use otap_df_config::NodeId;
 use std::borrow::Cow;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 
 /// Common implementation of all effect handlers.
@@ -12,14 +16,44 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
-    pub(crate) node_name: Cow<'static, str>,
+    pub(crate) node_id: NodeId,
+    // ToDo refactor the code to avoid using Option here.
+    pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender>,
 }
 
 impl EffectHandlerCore {
-    /// Returns the name of the node associated with this effect handler.
+    /// Creates a new EffectHandlerCore with node_id.
+    pub(crate) fn new(node_id: NodeId) -> Self {
+        Self {
+            node_id,
+            pipeline_ctrl_msg_sender: None,
+        }
+    }
+
+    pub(crate) fn set_pipeline_ctrl_msg_sender(
+        &mut self,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+    ) {
+        self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
+    }
+
+    /// Returns the id of the node associated with this effect handler.
     #[must_use]
-    pub(crate) fn node_name(&self) -> Cow<'static, str> {
-        self.node_name.clone()
+    pub(crate) fn node_id(&self) -> NodeId {
+        self.node_id.clone()
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for all nodes in the pipeline
+    /// to output informational messages without blocking the async runtime.
+    pub(crate) async fn info(&self, message: &str) {
+        use tokio::io::{AsyncWriteExt, stdout};
+        let mut out = stdout();
+        let formatted_message = format!("{message}\n");
+        // Ignore write errors as they're typically not recoverable for stdout
+        let _ = out.write_all(formatted_message.as_bytes()).await;
+        let _ = out.flush().await;
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
@@ -114,5 +148,46 @@ impl EffectHandlerCore {
         sock.bind(&addr.into()).map_err(into_engine_error)?;
 
         UdpSocket::from_std(sock.into()).map_err(into_engine_error)
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: The timer can only be started once per node.
+    pub async fn start_periodic_timer<PData>(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
+            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
+        pipeline_ctrl_msg_sender
+            .send(PipelineControlMsg::StartTimer {
+                node_id: self.node_id.clone(),
+                duration,
+            })
+            .await
+            .map_err(Error::PipelineControlMsgError)?;
+
+        Ok(TimerCancelHandle {
+            node_id: self.node_id.clone(),
+            pipeline_ctrl_msg_sender,
+        })
+    }
+}
+
+/// Handle to cancel a running timer.
+pub struct TimerCancelHandle {
+    node_id: NodeId,
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+}
+
+impl TimerCancelHandle {
+    /// Cancels the timer.
+    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg>> {
+        self.pipeline_ctrl_msg_sender
+            .send(PipelineControlMsg::CancelTimer {
+                node_id: self.node_id,
+            })
+            .await
     }
 }

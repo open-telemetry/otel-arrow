@@ -10,88 +10,34 @@ use otel_arrow_rust::proto::opentelemetry::logs::v1::{
 
 use crate::otlp::proto::common::{KeyValueIter, ObjAny, ObjInstrumentationScope, ObjKeyValue};
 use crate::otlp::proto::resource::ObjResource;
+use crate::otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps};
 use crate::views::common::Str;
 use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 
 /// Lightweight wrapper around `ResourceLogs` that implements `ResourceLogsView`
-#[derive(Clone, Copy)]
-pub struct ObjResourceLogs<'a> {
-    inner: &'a ResourceLogs,
-}
+pub type ObjResourceLogs<'a> = GenericObj<'a, ResourceLogs>;
 
 /// Lightweight wrapper around `ScopeLogs` that implements `ScopeLogsView`
-#[derive(Clone, Copy)]
-pub struct ObjScope<'a> {
-    inner: &'a ScopeLogs,
-}
+pub type ObjScope<'a> = GenericObj<'a, ScopeLogs>;
 
 /// Lightweight wrapper around `LogRecord` that implements `LogRecordView`
-#[derive(Clone, Copy)]
-pub struct ObjLogRecord<'a> {
-    inner: &'a LogRecord,
-}
+pub type ObjLogRecord<'a> = GenericObj<'a, LogRecord>;
 
 /* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
 
 /// Iterator of `ObjResourceLogs`. Used in the implementation of `LogsDataView` to get an iterator
 /// of the resources contained in the log data.
-#[derive(Clone)]
-pub struct ResourceIter<'a> {
-    it: std::slice::Iter<'a, ResourceLogs>,
-}
-
-impl<'a> Iterator for ResourceIter<'a> {
-    type Item = ObjResourceLogs<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|r| ObjResourceLogs { inner: r })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
+pub type ResourceIter<'a> = GenericIterator<'a, ResourceLogs, ObjResourceLogs<'a>>;
 
 /// Iterator of `ObjScope`. Used in the implementation of `ResourceLogsView` ot get an iterator
 /// of the instrumentation scopes for some resource.
-#[derive(Clone)]
-pub struct ScopeIter<'a> {
-    it: std::slice::Iter<'a, ScopeLogs>,
-}
-
-impl<'a> Iterator for ScopeIter<'a> {
-    type Item = ObjScope<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|s| ObjScope { inner: s })
-    }
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
+pub type ScopeIter<'a> = GenericIterator<'a, ScopeLogs, ObjScope<'a>>;
 
 /// Iterator of `ObjLogRecord`. Used in the implementation of `ScopeLogsView` to get an iterator
 /// of the logs for some scope.
-#[derive(Clone)]
-pub struct LogRecordIter<'a> {
-    it: std::slice::Iter<'a, LogRecord>,
-}
-
-impl<'a> Iterator for LogRecordIter<'a> {
-    type Item = ObjLogRecord<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|r| ObjLogRecord { inner: r })
-    }
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
+pub type LogRecordIter<'a> = GenericIterator<'a, LogRecord, ObjLogRecord<'a>>;
 
 /* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
 
@@ -107,9 +53,7 @@ impl LogsDataView for LogsData {
         Self: 'a;
 
     fn resources(&self) -> Self::ResourcesIter<'_> {
-        ResourceIter {
-            it: self.resource_logs.iter(),
-        }
+        ResourceIter::new(self.resource_logs.iter())
     }
 }
 
@@ -134,9 +78,7 @@ impl ResourceLogsView for ObjResourceLogs<'_> {
 
     #[inline]
     fn scopes(&self) -> Self::ScopesIter<'_> {
-        ScopeIter {
-            it: self.inner.scope_logs.iter(),
-        }
+        ScopeIter::new(self.inner.scope_logs.iter())
     }
 
     #[inline]
@@ -173,9 +115,7 @@ impl ScopeLogsView for ObjScope<'_> {
 
     #[inline]
     fn log_records(&self) -> Self::LogRecordsIter<'_> {
-        LogRecordIter {
-            it: self.inner.log_records.iter(),
-        }
+        LogRecordIter::new(self.inner.log_records.iter())
     }
 
     #[inline]
@@ -243,7 +183,7 @@ impl LogRecordView for ObjLogRecord<'_> {
 
     #[inline]
     fn body(&self) -> Option<Self::Body<'_>> {
-        self.inner.body.as_ref().map(ObjAny)
+        self.inner.body.as_ref().map(ObjAny::new)
     }
 
     #[inline]
@@ -285,17 +225,9 @@ impl LogRecordView for ObjLogRecord<'_> {
 }
 
 fn is_valid_trace_id(buf: &[u8]) -> bool {
-    if buf.len() != 16 {
-        return false;
-    }
-
-    buf != [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    buf.len() == 16 && buf != [0; 16]
 }
 
 fn is_valid_span_id(buf: &[u8]) -> bool {
-    if buf.len() != 8 {
-        return false;
-    }
-
-    buf != [0, 0, 0, 0, 0, 0, 0, 0]
+    buf.len() == 8 && buf != [0; 8]
 }
