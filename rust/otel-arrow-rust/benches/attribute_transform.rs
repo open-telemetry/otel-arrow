@@ -28,7 +28,7 @@ fn generate_attribute_batch(num_rows: usize, key_gen: impl Fn(usize) -> String) 
         )])),
         vec![Arc::new(keys_arr.finish())],
     )
-    .unwrap()
+    .expect("expect no error")
 }
 
 fn bench_attribute_rename(c: &mut Criterion) {
@@ -36,7 +36,7 @@ fn bench_attribute_rename(c: &mut Criterion) {
     for size in [128, 1536, 8092] {
         // this will generate a batch that replaces a single row, to simulate if the keys array
         // was dictionary encoded
-        let single_replace_input = generate_attribute_batch(size, |i| format!("attr{}", i));
+        let single_replace_input = generate_attribute_batch(size, |i| format!("attr{i}"));
         let _ = group.bench_with_input(
             BenchmarkId::new("single_replace", size),
             &single_replace_input,
@@ -44,7 +44,7 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(input, "attr100", "ATTR100").unwrap();
+                        let result = rename_attr(input, "attr100", "attr_100").expect("expect no error");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -62,7 +62,7 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(input, "attr3", "ATTR3").unwrap();
+                        let result = rename_attr(input, "attr3", "attr_3").expect("expect no error");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -71,7 +71,8 @@ fn bench_attribute_rename(c: &mut Criterion) {
         );
 
         // this will generate a batch that replaces many non-contiguous rows, to simulate if the
-        // attrs key was not dictionary encoded and the batch was not sorted by key
+        // attrs key was not dictionary encoded and the batch was not sorted by key. This could
+        // happen when we encode OTAP from OTLP, where the attributes end up sorted by parent ID
         let multi_non_contiguous_input =
             generate_attribute_batch(size, |i| format!("attr{}", i % 20));
         let _ = group.bench_with_input(
@@ -81,7 +82,7 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(input, "attr3", "ATTR3").unwrap();
+                        let result = rename_attr(input, "attr3", "attr_3").expect("expect no error");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,

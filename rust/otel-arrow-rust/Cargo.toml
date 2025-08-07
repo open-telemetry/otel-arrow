@@ -114,3 +114,7 @@ too_many_arguments = "allow"
 type_complexity = "allow"
 wrong_self_convention = "allow"
 module_name_repetitions = "allow"
+
+# [profile.bench]
+# debug=true
+# strip="none"
