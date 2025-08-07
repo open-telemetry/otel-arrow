@@ -79,7 +79,7 @@ impl SchemaIdBuilder {
             Binary => self.out.push_str("Bin"),
             FixedSizeBinary(n) => {
                 use std::fmt::Write;
-                write!(&mut self.out, "FSB<{n}>").unwrap();
+                write!(&mut self.out, "FSB<{n}>").expect("writing to String should never fail");
             }
             Timestamp(_, _) => self.out.push_str("Tns"),
             Duration(_) => self.out.push_str("Dur"),
