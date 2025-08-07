@@ -6,6 +6,7 @@
 use arrow::array::{RecordBatch, StringBuilder};
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -44,13 +45,14 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        // let result =
-                        //     rename_attr(input, "attr100", "attr_100").expect("expect no error");
-                        // let result = rename_attr(&result, "attr101", "attr_101").expect("expect no error");
-                        let result = rename_attr(input, &[
-                            ("attr100", "attr_100"),
-                            ("attr101", "attr_101"),
-                        ]).expect("expect no errors");
+                        let result = rename_attr(
+                            input,
+                            &BTreeMap::from_iter([
+                                ("attr100", "attr_100"),
+                                ("attr101", "attr_101"),
+                            ]),
+                        )
+                        .expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -68,13 +70,11 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        // let result =
-                        //     rename_attr(input, "attr3", "attr_3").expect("expect no error");
-                        // let result = rename_attr(&result, "attr4", "attr_3").expect("expect no error");
-                        let result = rename_attr(input, &[
-                            ("attr3", "attr_3"),
-                            ("attr5", "attr_3"),
-                        ]).expect("expect no errors");
+                        let result = rename_attr(
+                            input,
+                            &BTreeMap::from_iter([("attr3", "attr_3"), ("attr5", "attr_3")]),
+                        )
+                        .expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -94,13 +94,11 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        // let result =
-                        //     rename_attr(input, "attr3", "attr_3").expect("expect no error");
-                        // let result = rename_attr(&result, "attr4", "attr_3").expect("expect no error");
-                        let result = rename_attr(input, &[
-                            ("attr3", "attr_3"),
-                            ("attr5", "attr_3"),
-                        ]).expect("expect no errors");
+                        let result = rename_attr(
+                            input,
+                            &BTreeMap::from_iter([("attr3", "attr_3"), ("attr5", "attr_3")]),
+                        )
+                        .expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,

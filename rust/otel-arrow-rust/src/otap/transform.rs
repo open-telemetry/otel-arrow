@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::{BTreeMap, BinaryHeap};
 use std::ops::AddAssign;
 use std::sync::Arc;
 
@@ -460,9 +461,7 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
 /// replaces the attribute key 'old_key' with 'new_key'
 pub fn rename_attr(
     attrs_record_batch: &RecordBatch,
-    // old_key: &str,
-    // new_key: &str,
-    renames: &[(&str, &str)],
+    replacements: &BTreeMap<&str, &str>,
 ) -> Result<RecordBatch> {
     let schema = attrs_record_batch.schema();
     let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
@@ -482,7 +481,7 @@ pub fn rename_attr(
                 .expect("can downcast Utf8 Column to string array");
             // replace_str(arr, old_key, new_key)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
             // replace_multi_str(arr, &[(old_key, new_key)])?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
-            replace_multi_str(arr, renames)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
+            replace_strings(arr, replacements)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
         }
         DataType::Dictionary(k, _) => match *k.clone() {
             DataType::UInt8 => {
@@ -492,7 +491,7 @@ pub fn rename_attr(
                     .downcast_ref::<DictionaryArray<UInt8Type>>()
                     .expect("can downcast dictionary column to dictionary array");
                 // replace_str_in_dict_values(dict_arr, old_key, new_key)?
-                replace_str_in_dict_values(dict_arr, renames)?
+                replace_str_in_dict_values(dict_arr, replacements)?
                     .map(|new_dict| Arc::new(new_dict) as ArrayRef)
             }
             DataType::UInt16 => {
@@ -500,9 +499,9 @@ pub fn rename_attr(
                     .column(key_column_idx)
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt16Type>>()
-                    .expect("can downcast dictionary column to dictionary array");
-                replace_str_in_dict_values(dict_arr, renames)?
-                // replace_str_in_dict_values(dict_arr, old_key, new_key)?
+                    .expect("can downcast dictionary replacements to dictionary array");
+                replace_str_in_dict_values(dict_arr, replacements)?
+                    // replace_str_in_dict_values(dict_arr, old_key, new_key)?
                     .map(|new_dict| Arc::new(new_dict) as ArrayRef)
             }
             data_type => {
@@ -556,7 +555,7 @@ fn replace_str_in_dict_values<K>(
     array: &DictionaryArray<K>,
     // target: &str,
     // replacement: &str,
-    replacements: &[(&str, &str)]
+    replacements: &BTreeMap<&str, &str>,
 ) -> Result<Option<DictionaryArray<K>>>
 where
     K: ArrowDictionaryKeyType,
@@ -570,7 +569,7 @@ where
                 .expect("can downcast Utf8 Column to string array");
             // replace_str(arr, target, replacement)?
             // replace_multi_str(arr, &[(target, replacement)])?
-            replace_multi_str(arr, replacements)?
+            replace_strings(arr, replacements)?
         }
         data_type => {
             return Err(error::UnsupportedDictionaryValueTypeSnafu {
@@ -587,29 +586,40 @@ where
     Ok(new_dict)
 }
 
+/// Accepts an array in which to replace some of the values and a map of `target` to `replacement`.
 /// Returns a new [`StringArray`] with any instances of `target` replaced by `replacement`.
 ///
-/// This will return `None` if there are no values to replace (e.g. `target` is not in the array).
-/// This is mostly done to be a signal to the caller that it can reuse the and treat it as if the
-/// value had been replaced.
-fn replace_str(
+/// This will return `None` if there are no values to replace (e.g. no `target`s are present in the
+/// array). This is mostly done to be a signal to the caller that it can reuse the and treat it as
+/// if the value had been replaced.
+fn replace_strings(
     array: &StringArray,
-    target: &str,
-    replacement: &str,
+    replacements: &BTreeMap<&str, &str>,
 ) -> Result<Option<StringArray>> {
     let values = array.values();
     let offsets = array.offsets();
 
-    let target_bytes = target.as_bytes();
-    let replacement_bytes = replacement.as_bytes();
+    let target_bytes = replacements
+        .keys()
+        .map(|target| target.as_bytes())
+        .collect::<Vec<_>>();
 
-    // first find all the contiguous ranges where the value == `target`. We'll use these ranges
-    // to know which segments of the values can't be copied directly, and similarly which ranges
-    // in the offset buffer can be handled with minimal modification
-    let mut eq_ranges = Vec::new();
+    let replacement_bytes = replacements
+        .values()
+        .map(|replacement| replacement.as_bytes())
+        .collect::<Vec<_>>();
+
+    // first find all the contiguous ranges where the value will be replaced. We'll use these range
+    // to know which segments of the values can't be copied directly, and also to determine how to
+    // handle each segment of the offsets buffer.
+    //
+    // the values in this range are the (start_index, end_index, replacement_index) where start/end
+    // are the index into the original array, and replacement_index in the index into collection of
+    // replacements.
+    let mut replace_ranges = BinaryHeap::<(usize, usize, usize)>::new();
 
     // we're going to access the raw offsets pointer directly while doing this range computation
-    // for better performance, so this check is for safety
+    // (see comments below for reasoning), so this check is for safety
     let len = array.len();
     if offsets.len() < len + 1 {
         return Err(error::UnexpectedRecordBatchStateSnafu {
@@ -618,48 +628,63 @@ fn replace_str(
         .build());
     }
 
-    // // also keep track of the number of replacements we'll need to make. this lets us do some
-    // // optimizations later on
-    let mut replacement_count = 0;
+    // keep track of the number of replacements we'll need to make. this lets us do some
+    // optimizations later on
+    let mut total_replacement_counts = 0;
+    let mut replacement_counts = [0, replacements.len()];
 
+    let len = array.len();
     let offset_ptr = offsets.as_ptr();
-    let mut eq_range_start = None;
-    for i in 0..len {
-        // accessing the offsets using the pointer here is much faster than indexing the offsets
-        // buffer as offsets[i], because we skip doing the bounds check on each iteration.
-        // Safety: we've already checked that offsets.len() >= len + 1
-        #[allow(unsafe_code)]
-        let val_start = unsafe { *offset_ptr.add(i) } as usize;
-        #[allow(unsafe_code)]
-        let val_end = unsafe { *offset_ptr.add(i + 1) } as usize;
 
-        // don't access the value bytes unless we know it could be the correct length
-        if val_end - val_start == target_bytes.len() {
-            let value = &values[val_start..val_end];
-            if value == target_bytes {
-                replacement_count += 1;
-                if eq_range_start.is_none() {
-                    eq_range_start = Some(i);
+    for replacement_idx in 0..replacements.len() {
+        let target_bytes = target_bytes[replacement_idx];
+        let replacement_count = replacement_counts
+            .get_mut(replacement_idx)
+            .expect("replacement should have been initialized here");
+        let mut eq_range_start = None;
+
+        // iterate through the array to find matches
+        for i in 0..len {
+            // accessing the offsets using the pointer here is much faster than indexing the offsets
+            // buffer as offsets[i], because we skip doing the bounds check on each iteration.
+            // Safety: we've already checked that offsets.len() >= len + 1
+            #[allow(unsafe_code)]
+            let val_start = unsafe { *offset_ptr.add(i) } as usize;
+            #[allow(unsafe_code)]
+            let val_end = unsafe { *offset_ptr.add(i + 1) } as usize;
+
+            // don't access the value bytes unless we know it could be the correct length
+            if val_end - val_start == target_bytes.len() {
+                let value = &values[val_start..val_end];
+                if value == target_bytes {
+                    total_replacement_counts += 1;
+                    *replacement_count += 1;
+                    if eq_range_start.is_none() {
+                        eq_range_start = Some(i);
+                    }
+                    continue;
                 }
-                continue;
+            }
+
+            // if we're here, we've found a non matching value
+            if let Some(s) = eq_range_start.take() {
+                // close current range
+                replace_ranges.push((s, i, replacement_idx))
             }
         }
 
-        // if we're here, we've found a non matching value
-        if let Some(s) = eq_range_start.take() {
-            // Close current range
-            eq_ranges.push((s, i));
+        // add the final trailing range
+        if let Some(s) = eq_range_start {
+            replace_ranges.push((s, array.len(), replacement_idx))
         }
     }
 
-    // if there were no matches, short circuit replacing the values and just clone the array
-    if replacement_count == 0 {
-        return Ok(None);
-    }
+    // convert the heap of ranges into an array of ranges to replace, sorted by the start index
+    let replace_ranges = replace_ranges.into_sorted_vec();
 
-    // add final trailing range
-    if let Some(s) = eq_range_start {
-        eq_ranges.push((s, array.len()));
+    // if there were no matches, short circuit replacing the values
+    if total_replacement_counts == 0 {
+        return Ok(None);
     }
 
     // next, we'll create the new values buffer with all the instances of `target` replaced. To do
@@ -667,36 +692,46 @@ fn replace_str(
     // the matches with `replacement`
 
     // create byte buffer for new values with preallocated capacity
-    let replacement_byte_len_diff = replacement_bytes.len() as i32 - target_bytes.len() as i32;
-    let expected_new_values_len =
-        (values.len() as i32 + replacement_byte_len_diff * replacement_count) as usize;
-    let mut new_values = MutableBuffer::new(expected_new_values_len);
+    let replacement_byte_len_diffs = (0..replacements.len())
+        .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
+        .collect::<Vec<_>>();
+    let all_replacements_same_len = replacement_byte_len_diffs.iter().all(|val| *val == 0);
+    let new_values_expected_len = if all_replacements_same_len {
+        values.len()
+    } else {
+        let len_delta: i32 = (0..replacements.len())
+            .map(|i| replacement_counts[i] as i32 * replacement_byte_len_diffs[i])
+            .sum();
+        (values.len() as i32 + len_delta) as usize
+    };
 
-    // loop variable: pointer to the previous offset in the values buffer equal to `target`
-    let mut last_eq_val_end_offset = 0;
+    let mut new_values = MutableBuffer::new(new_values_expected_len);
+
+    // keep track pointer to the previous offset that had values replaced
+    let mut last_end_offset = 0;
 
     // fill new values buffer
-    for (eq_start_idx, eq_end_idx) in eq_ranges.iter().copied() {
-        // directly copy all the bytes of values values that were not replaced
-        let eq_start_offset = offsets[eq_start_idx] as usize;
-        new_values.extend_from_slice(&values.slice_with_length(
-            last_eq_val_end_offset,
-            eq_start_offset - last_eq_val_end_offset,
-        ));
+    for (start_idx, end_idx, replacement_idx) in replace_ranges.iter().copied() {
+        // directly copy all the bytes of the values that were not replaced
+        let eq_start_offset = offsets[start_idx] as usize;
+        new_values.extend_from_slice(
+            &values.slice_with_length(last_end_offset, eq_start_offset - last_end_offset),
+        );
 
         // append `replacement` for each index where value == `target`
-        for _ in eq_start_idx..eq_end_idx {
+        let replacement_bytes = replacement_bytes[replacement_idx];
+        for _ in start_idx..end_idx {
             new_values.extend_from_slice(replacement_bytes);
         }
 
-        last_eq_val_end_offset = offsets[eq_end_idx] as usize;
+        last_end_offset = offsets[end_idx] as usize;
     }
 
     // copy any non replaced bytes at the tail of the previous values buffer
-    new_values.extend_from_slice(&values.slice(last_eq_val_end_offset));
+    new_values.extend_from_slice(&values.slice(last_end_offset));
 
     // next we'll create the new offsets buffer
-    let new_offsets = if replacement_byte_len_diff == 0 {
+    let new_offsets = if all_replacements_same_len {
         // if the target and replacement happen to be the same length, we can just reuse the previous offsets
         offsets.clone()
     } else {
@@ -704,39 +739,40 @@ fn replace_str(
         // we iterate through ranges create a new offsets buffer.
 
         // byte buffer for new offsets
-        let mut new_offsets = MutableBuffer::new(size_of::<i32>() * array.len());
+        let mut new_offsets = MutableBuffer::new(size_of::<i32>() * len);
 
         // for each offset that was not replaced, keep track of how much to adjust it based on how
         // many values were replaced and the size difference between target and replacement
         let mut curr_total_offset_adjustment = 0;
 
         // pointer to the end of the previous range where the values were replaced
-        let mut prev_eq_index_end = 0;
+        let mut prev_replaced_index_end = 0;
 
-        for (eq_start_idx, eq_end_idx) in eq_ranges.iter().copied() {
+        for (start_idx, end_idx, replacement_idx) in replace_ranges {
             // copy offsets for values that were not replaced, but add the offset adjustment
             offsets
                 .inner()
-                .slice(prev_eq_index_end, eq_start_idx - prev_eq_index_end)
+                .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
                 .into_iter()
                 .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
 
             // append offsets for values that were replaced
-            let mut offset = offsets[eq_start_idx] + curr_total_offset_adjustment;
-            for _ in eq_start_idx..eq_end_idx {
+            let replacement_bytes = replacement_bytes[replacement_idx];
+            let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
+            for _ in start_idx..end_idx {
                 new_offsets.push(offset);
                 offset += replacement_bytes.len() as i32;
             }
 
             curr_total_offset_adjustment +=
-                replacement_byte_len_diff * (eq_end_idx - eq_start_idx) as i32;
-            prev_eq_index_end = eq_end_idx;
+                replacement_byte_len_diffs[replacement_idx] * (end_idx - start_idx) as i32;
+            prev_replaced_index_end = end_idx;
         }
 
         // copy any remaining offsets between the last replaced range and the end of the array
         offsets
             .inner()
-            .slice(prev_eq_index_end, len - prev_eq_index_end)
+            .slice(prev_replaced_index_end, len - prev_replaced_index_end)
             .into_iter()
             .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
 
@@ -758,158 +794,6 @@ fn replace_str(
         }
     };
 
-    let new_values = new_values.into();
-    let nulls = array.nulls().cloned();
-
-    // Safety: we use unchecked here for better performance because we avoid doing utf8 validation
-    // on the new values buffer. This should be OK because we've copied bytes from the existing
-    // array and `replacement` variable, which presumably have also already passed utf8 validation.
-    #[allow(unsafe_code)]
-    let new_array = unsafe { StringArray::new_unchecked(new_offsets, new_values, nulls) };
-
-    Ok(Some(new_array))
-}
-
-fn replace_multi_str(
-    array: &StringArray,
-    // TODO could use a better ds here
-    replacements: &[(&str, &str)]
-) -> Result<Option<StringArray>> {
-    let values = array.values();
-    let offsets = array.offsets();
-
-    let target_bytes = replacements.iter().map(|(target, _)| target.as_bytes()).collect::<Vec<_>>();
-    let replacement_bytes = replacements.iter().map(|(_, replacement)| replacement.as_bytes()).collect::<Vec<_>>();
-
-    let mut eq_ranges: Vec<(usize, usize, usize)> = vec![];
-
-    // TODO offsets len check
-
-    let mut total_replacement_counts = 0;
-    let mut replacement_counts = vec![0, replacements.len()];
-
-    let len = array.len();
-    let offset_ptr = offsets.as_ptr();
-
-    for replacement_idx in 0..replacements.len() {
-        let target_bytes = target_bytes[replacement_idx];
-        let replacement_count = replacement_counts.get_mut(replacement_idx).unwrap();
-        let mut eq_range_start = None;
-        for i in 0..len {
-            #[allow(unsafe_code)]
-            let val_start = unsafe { *offset_ptr.add(i) } as usize;
-            #[allow(unsafe_code)]
-            let val_end = unsafe { *offset_ptr.add(i + 1) } as usize;
-
-            if val_end - val_start == target_bytes.len() {
-                let value = &values[val_start..val_end];
-                if value == target_bytes {
-                    total_replacement_counts += 1;
-                    *replacement_count += 1;
-                    if eq_range_start.is_none() {
-                        eq_range_start = Some(i);
-                    }
-                    continue;
-                }
-            }
-
-            if let Some(s) = eq_range_start.take() {
-                eq_ranges.push((replacement_idx, s, i))
-            }
-
-        }
-
-        // add the final trailing range
-        if let Some(s) = eq_range_start {
-            eq_ranges.push((replacement_idx, s, array.len()))            
-        }
-    }
-
-    // if there were no matches, short circuit replacing the values
-    if total_replacement_counts == 0 {
-        return Ok(None);
-    }
-
-    let replacement_byte_len_diffs = (0..replacements.len())
-        .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
-        .collect::<Vec<_>>();
-
-    // TODO initialize with correct length
-    let mut new_values = MutableBuffer::new(0);
-
-    let mut last_eq_val_end_offset = 0;
-
-    for (replacement_idx, eq_start_idx, eq_end_idx) in eq_ranges.iter().copied() {
-        // directly copy all the bytes of the values that were not replaced
-        let eq_start_offset = offsets[eq_start_idx] as usize;
-        new_values.extend_from_slice(&values.slice_with_length(
-            last_eq_val_end_offset,
-            eq_start_offset - last_eq_val_end_offset
-        ));
-
-        let replacement_bytes = replacement_bytes[replacement_idx];
-        for _ in eq_start_idx..eq_end_idx {
-            new_values.extend_from_slice(replacement_bytes);
-        }
-
-        last_eq_val_end_offset = offsets[eq_end_idx] as usize;
-    }
-
-    new_values.extend_from_slice(&values.slice(last_eq_val_end_offset));
-
-    let max_replacement_byte_len_diffs = replacement_byte_len_diffs.iter().max().unwrap();
-    let new_offsets = if *max_replacement_byte_len_diffs == 0 {
-        offsets.clone()
-    } else {
-        let mut new_offsets = MutableBuffer::new(size_of::<i32>() * len);
-
-        let mut curr_total_offset_adjustment = 0;
-        let mut prev_eq_index_end = 0;
-
-        for (replacement_idx, eq_start_idx, eq_end_idx) in eq_ranges {
-            // copy offsets for values that were not replaced, but add the offset adjustment
-            offsets
-                .inner()
-                .slice(prev_eq_index_end, eq_start_idx - prev_eq_index_end)
-                .into_iter()
-                .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
-
-            let replacement_bytes = replacement_bytes[replacement_idx];
-            let mut offset = offsets[eq_start_idx] + curr_total_offset_adjustment;
-            for _ in eq_start_idx..eq_end_idx {
-                new_offsets.push(offset);
-                offset += replacement_bytes.len() as i32;
-            }
-
-            curr_total_offset_adjustment += replacement_byte_len_diffs[replacement_idx] * (eq_end_idx - eq_start_idx) as i32;
-            prev_eq_index_end = eq_end_idx;
-        }
-        
-
-        // copy any remaining offsets between the last replaced range and the end of the array
-        offsets
-            .inner()
-            .slice(prev_eq_index_end, len - prev_eq_index_end)
-            .into_iter()
-            .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
-                // add the final offset
-        new_offsets.push(new_values.len() as i32);
-
-        let len = new_offsets.len() / size_of::<i32>();
-        let scalar_buffer = ScalarBuffer::<i32>::new(new_offsets.into(), 0, len);
-
-        // Calling `new_unchecked` here skips iterating the buffer to ensure that all the values
-        // are monotonically increasing, which saves a lot of time on large batch sizes
-        //
-        // Safety: we've computed the buffer values from the existing offsets, which should already
-        // be monotonically increasing if the passed StringArray was valid (and if not, we've
-        // created a new StringArray no less valid than what was passed)
-        #[allow(unsafe_code)]
-        unsafe {
-            OffsetBuffer::new_unchecked(scalar_buffer)
-        }
-    };
-    
     let new_values = new_values.into();
     let nulls = array.nulls().cloned();
 
@@ -1586,7 +1470,6 @@ mod test {
         assert_eq!(transformed_column, &expected);
     }
 
-    /*
     #[test]
     fn test_rename_attr_basic() {
         let test_cases = vec![
@@ -1668,7 +1551,8 @@ mod test {
             let record_batch =
                 RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
-            let renamed_batch = rename_attr(&record_batch, target, replacement).unwrap();
+            let renamed_batch =
+                rename_attr(&record_batch, &BTreeMap::from_iter([(target, replacement)])).unwrap();
             let renamed_keys = renamed_batch
                 .column_by_name(consts::ATTRIBUTE_KEY)
                 .unwrap()
@@ -1680,23 +1564,23 @@ mod test {
             assert_eq!(renamed_keys, &expected);
         }
     }
-    */
 
     #[test]
-    fn test_rename_attr_with_nulls() {
-        let keys = StringArray::from_iter_values(vec![
-            "a", "a", "b", "c", "d", "d", "e"
-        ]);
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
-        ]));
-        let record_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(keys.clone())],
+    fn test_rename_attr_multi_replacements() {
+        let keys = StringArray::from_iter_values(vec!["a", "a", "b", "c", "d", "d", "e"]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::ATTRIBUTE_KEY,
+            DataType::Utf8,
+            true,
+        )]));
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
+
+        let renamed_batch = rename_attr(
+            &record_batch,
+            &BTreeMap::from_iter([("b", "foo"), ("d", "D")]),
         )
         .unwrap();
-
-        let renamed_batch = rename_attr(&record_batch, &[("b", "foo"), ("d", "D")]).unwrap();
         let renamed_keys = renamed_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
             .unwrap()
@@ -1708,22 +1592,47 @@ mod test {
         assert_eq!(renamed_keys, &expected);
     }
 
-    /*
+    #[test]
+    fn test_rename_attr_multi_replacements_interleaved() {
+        let keys = StringArray::from_iter_values(vec!["a", "a", "b", "c", "d", "b", "e", "d", "e"]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::ATTRIBUTE_KEY,
+            DataType::Utf8,
+            true,
+        )]));
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
+
+        let renamed_batch = rename_attr(
+            &record_batch,
+            &BTreeMap::from_iter([("b", "foo"), ("d", "D")]),
+        )
+        .unwrap();
+        let renamed_keys = renamed_batch
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        let expected =
+            StringArray::from_iter_values(vec!["a", "a", "foo", "c", "D", "foo", "e", "D", "e"]);
+        assert_eq!(renamed_keys, &expected);
+    }
+
     #[test]
     fn test_rename_attr_with_nulls() {
         let keys = StringArray::from(vec![Some("foo"), None, Some("bar"), Some("foo")]);
-        let values = UInt8Array::from(vec![Some(1), Some(2), Some(3), Some(4)]);
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
-            Field::new("value", DataType::UInt8, true),
-        ]));
-        let record_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(keys.clone()), Arc::new(values.clone())],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::ATTRIBUTE_KEY,
+            DataType::Utf8,
+            true,
+        )]));
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
-        let renamed_batch = rename_attr(&record_batch, "foo", "qux").unwrap();
+        let renamed_batch =
+            rename_attr(&record_batch, &BTreeMap::from_iter([("foo", "qux")])).unwrap();
         let renamed_keys = renamed_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
             .unwrap()
@@ -1738,18 +1647,16 @@ mod test {
     #[test]
     fn test_rename_attr_no_match() {
         let keys = StringArray::from_iter_values(vec!["foo", "bar", "baz"]);
-        let values = UInt8Array::from_iter_values(vec![1, 2, 3]);
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-            Field::new("value", DataType::UInt8, false),
-        ]));
-        let record_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(keys.clone()), Arc::new(values.clone())],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::ATTRIBUTE_KEY,
+            DataType::Utf8,
+            false,
+        )]));
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
-        let renamed_batch = rename_attr(&record_batch, "notfound", "qux").unwrap();
+        let renamed_batch =
+            rename_attr(&record_batch, &BTreeMap::from_iter([("notfound", "qux")])).unwrap();
         let renamed_keys = renamed_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
             .unwrap()
@@ -1772,7 +1679,7 @@ mod test {
         let record_batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
-        let result = rename_attr(&record_batch, "foo", "qux");
+        let result = rename_attr(&record_batch, &BTreeMap::from_iter([("foo", "qux")]));
         assert!(matches!(result, Err(Error::ColumnNotFound { .. })));
     }
 
@@ -1801,7 +1708,8 @@ mod test {
             let record_batch =
                 RecordBatch::try_new(schema.clone(), vec![Arc::new(dict_array)]).unwrap();
 
-            let renamed_batch = rename_attr(&record_batch, target, replacement).unwrap();
+            let renamed_batch =
+                rename_attr(&record_batch, &BTreeMap::from_iter([(target, replacement)])).unwrap();
             let renamed_column = renamed_batch
                 .column_by_name(consts::ATTRIBUTE_KEY)
                 .unwrap()
@@ -1837,5 +1745,4 @@ mod test {
             vec!["baz", "xyz", "bar"],
         );
     }
-    */
 }
