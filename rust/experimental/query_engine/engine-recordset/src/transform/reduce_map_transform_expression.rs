@@ -8,8 +8,7 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::ExecutionContext, resolved_value_mut::*,
-    scalar_expressions::execute_scalar_expression,
+    execution_context::*, resolved_value_mut::*, scalar_expressions::execute_scalar_expression,
     value_expressions::execute_mutable_value_expression, *,
 };
 
@@ -714,19 +713,20 @@ mod tests {
             );
 
         let run_test = |transform_expression| {
-            let pipeline = PipelineExpressionBuilder::new("set")
-                .with_expressions(vec![DataExpression::Transform(transform_expression)])
-                .build()
-                .unwrap();
+            let mut test = TestExecutionContext::new()
+                .with_pipeline(
+                    PipelineExpressionBuilder::new("set")
+                        .with_expressions(vec![DataExpression::Transform(transform_expression)])
+                        .build()
+                        .unwrap(),
+                )
+                .with_record(record.clone());
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
-            if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
+            if let DataExpression::Transform(t) =
+                &execution_context.get_pipeline().get_expressions()[0]
+            {
                 execute_transform_expression(&execution_context, t).unwrap();
             } else {
                 panic!("Unexpected expression");
@@ -1009,19 +1009,20 @@ mod tests {
             );
 
         let run_test = |transform_expression| {
-            let pipeline = PipelineExpressionBuilder::new("set")
-                .with_expressions(vec![DataExpression::Transform(transform_expression)])
-                .build()
-                .unwrap();
+            let mut test = TestExecutionContext::new()
+                .with_pipeline(
+                    PipelineExpressionBuilder::new("set")
+                        .with_expressions(vec![DataExpression::Transform(transform_expression)])
+                        .build()
+                        .unwrap(),
+                )
+                .with_record(record.clone());
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
-            if let DataExpression::Transform(t) = &pipeline.get_expressions()[0] {
+            if let DataExpression::Transform(t) =
+                &execution_context.get_pipeline().get_expressions()[0]
+            {
                 execute_transform_expression(&execution_context, t).unwrap();
             } else {
                 panic!("Unexpected expression");

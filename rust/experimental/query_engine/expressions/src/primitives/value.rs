@@ -243,6 +243,11 @@ impl Value<'_> {
         }
     }
 
+    /// Compare two values and return:
+    ///
+    /// * -1 if left is less than right
+    /// * 0 if left is equal to right
+    /// * 1 if left is greater than right
     pub fn compare_values(
         query_location: &QueryLocation,
         left: &Value,
@@ -980,8 +985,6 @@ mod tests {
                 )
                 .unwrap_err();
 
-                // todo: Remove this when another ExpressionError is defined
-                #[allow(irrefutable_let_patterns)]
                 if let ExpressionError::TypeMismatch(_, msg) = actual {
                     assert_eq!(expected, msg);
                 } else {
@@ -1672,8 +1675,6 @@ mod tests {
             let actual =
                 Value::compare_values(&QueryLocation::new_fake(), &left, &right).unwrap_err();
 
-            // todo: Remove this when another ExpressionError is defined
-            #[allow(irrefutable_let_patterns)]
             if let ExpressionError::TypeMismatch(_, msg) = actual {
                 assert_eq!(expected, msg);
             } else {

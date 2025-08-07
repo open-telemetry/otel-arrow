@@ -2,9 +2,7 @@ use std::{cell::Ref, slice::Iter};
 
 use data_engine_expressions::*;
 
-use crate::{
-    execution_context::ExecutionContext, logical_expressions::execute_logical_expression, *,
-};
+use crate::{execution_context::*, logical_expressions::execute_logical_expression, *};
 
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
@@ -680,14 +678,9 @@ mod tests {
             );
 
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new().with_record(record.clone());
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -795,14 +788,11 @@ mod tests {
         );
 
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new()
+                .with_attached_records(attached_records.clone())
+                .with_record(record.clone());
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                Some(&attached_records),
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -837,17 +827,10 @@ mod tests {
 
     #[test]
     fn test_execute_variable_scalar_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             execution_context.get_variables().borrow_mut().set(
                 "var1",
@@ -906,8 +889,6 @@ mod tests {
 
     #[test]
     fn test_execute_constant_scalar_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, expected_value: Value| {
             let pipeline = PipelineExpressionBuilder::new("")
                 .with_constants(vec![StaticScalarExpression::Integer(
@@ -916,12 +897,9 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let mut test = TestExecutionContext::new().with_pipeline(pipeline);
+
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -956,17 +934,10 @@ mod tests {
 
     #[test]
     fn test_execute_negate_scalar_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -996,17 +967,10 @@ mod tests {
 
     #[test]
     fn test_execute_logical_scalar_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -1033,17 +997,10 @@ mod tests {
 
     #[test]
     fn test_execute_coalesce_scalar_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -1086,17 +1043,10 @@ mod tests {
 
     #[test]
     fn test_execute_conditional_scalar_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -1154,16 +1104,9 @@ mod tests {
                     inner,
                 )));
 
-                let pipeline = Default::default();
+                let mut test = TestExecutionContext::new();
 
-                let record = TestRecord::new();
-
-                let execution_context = ExecutionContext::new(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    &pipeline,
-                    None,
-                    record,
-                );
+                let execution_context = test.create_execution_context();
 
                 let actual = execute_scalar_expression(&execution_context, &e).unwrap();
                 assert_eq!(expected, actual.to_value());
@@ -1348,16 +1291,9 @@ mod tests {
                     inner,
                 ));
 
-                let pipeline = Default::default();
+                let mut test = TestExecutionContext::new();
 
-                let record = TestRecord::new();
-
-                let execution_context = ExecutionContext::new(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    &pipeline,
-                    None,
-                    record,
-                );
+                let execution_context = test.create_execution_context();
 
                 let actual = execute_scalar_expression(&execution_context, &e).unwrap();
                 assert_eq!(expected, actual.to_value());
@@ -1436,16 +1372,9 @@ mod tests {
                 false, // case_insensitive
             ));
 
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let actual = execute_scalar_expression(&execution_context, &e).unwrap();
             assert_eq!(expected, actual.to_value());
@@ -1546,16 +1475,9 @@ mod tests {
                 false, // case_insensitive
             ));
 
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let actual = execute_scalar_expression(&execution_context, &e).unwrap();
             assert_eq!(expected, actual.to_value());
@@ -1659,16 +1581,9 @@ mod tests {
                 case_insensitive,
             ));
 
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let actual = execute_scalar_expression(&execution_context, &e).unwrap();
             assert_eq!(expected, actual.to_value());
@@ -1740,17 +1655,10 @@ mod tests {
 
     #[test]
     fn test_execute_case_scalar_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -1840,16 +1748,9 @@ mod tests {
     #[test]
     fn test_execute_slice_scalar_expression() {
         fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let expression = ScalarExpression::Slice(input);
 
@@ -1941,16 +1842,9 @@ mod tests {
     #[test]
     fn test_execute_string_slice_scalar_expression() {
         fn run_test_success(input: SliceScalarExpression, expected: Value) {
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let expression = ScalarExpression::Slice(input);
 
@@ -1960,16 +1854,9 @@ mod tests {
         }
 
         fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let expression = ScalarExpression::Slice(input);
 
@@ -2109,16 +1996,9 @@ mod tests {
     #[test]
     fn test_execute_array_slice_scalar_expression() {
         fn run_test_success(input: SliceScalarExpression, expected: Value) {
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let expression = ScalarExpression::Slice(input);
 
@@ -2128,16 +2008,9 @@ mod tests {
         }
 
         fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
-            let pipeline = Default::default();
+            let mut test = TestExecutionContext::new();
 
-            let record = TestRecord::new();
-
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let expression = ScalarExpression::Slice(input);
 

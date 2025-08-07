@@ -12,5 +12,6 @@ pub(crate) mod value_expressions;
 pub use engine::*;
 pub use engine_diagnostic::*;
 pub use primitives::*;
+pub use summary::*;
 #[cfg(test)]
 pub use test_helpers::*;

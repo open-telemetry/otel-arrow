@@ -150,7 +150,7 @@ fn test_replace_string_function() {
     );
 
     let query = r#"source
- | extend 
+ | extend
      modified_name = replace_string(EventName, "cat", "hamster"),
      modified_text = replace_string(text, "hello", "hi")"#;
 
