@@ -26,19 +26,31 @@ jobs:
 
         - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-        - name: Print OS details
+        - id: detect_os
+          name: Detect OS (self-hosted)
+          shell: bash
           run: |
-            echo "### OS details" >> "$GITHUB_STEP_SUMMARY"
-            cat /etc/os-release || true
-            test -f /etc/oracle-release && cat /etc/oracle-release || true
-            cat /etc/redhat-release || true
-            echo
-            echo "### Host info" >> "$GITHUB_STEP_SUMMARY"
-            hostnamectl || true
-            uname -a
-            echo
-            echo "### RPM base (RHEL compat level)" >> "$GITHUB_STEP_SUMMARY"
-            rpm -E %rhel || true
+            . /etc/os-release
+            echo "id=$ID" >> "$GITHUB_OUTPUT"
+            echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+
+        - name: Install Python 3.11 on Oracle Linux 8 (self-hosted only)
+          if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
+          shell: bash
+          run: |
+            set -euxo pipefail
+            # Enable repos that sometimes are disabled on OL8 images
+            sudo dnf -y install oracle-epel-release-el8 || true
+            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+            sudo dnf -y makecache
+            # Install Python 3.11 (and venv/pip)
+            sudo dnf -y install python3.11 python3.11-venv python3.11-devel || {
+              echo "python3.11 not available via repos"; exit 1;
+            }
+            # Ensure pip exists and is up to date
+            /usr/bin/python3.11 -m ensurepip --upgrade || true
+            /usr/bin/python3.11 -m pip install --upgrade pip
+            /usr/bin/python3.11 --version
 
         - name: Set up Python
           uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
