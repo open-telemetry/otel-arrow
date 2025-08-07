@@ -13,7 +13,7 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
-use crate::control::ControlMsg;
+use crate::control::NodeControlMsg;
 use otap_df_channel::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -57,11 +57,11 @@ impl CtrlMsgCounters {
     }
 
     /// Handles incoming control messages and increments the appropriate counter.
-    pub fn update_with(&self, msg: &ControlMsg) {
+    pub fn update_with(&self, msg: &NodeControlMsg) {
         match msg {
-            ControlMsg::TimerTick { .. } => self.increment_timer_tick(),
-            ControlMsg::Config { .. } => self.increment_config(),
-            ControlMsg::Shutdown { .. } => self.increment_shutdown(),
+            NodeControlMsg::TimerTick { .. } => self.increment_timer_tick(),
+            NodeControlMsg::Config { .. } => self.increment_config(),
+            NodeControlMsg::Shutdown { .. } => self.increment_shutdown(),
             _ => {}
         }
     }

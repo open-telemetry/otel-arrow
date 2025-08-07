@@ -36,7 +36,7 @@ use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
 use otap_df_engine::retry_processor::{RetryConfig, RetryProcessor};
 use otap_df_engine::{
-    control::ControlMsg,
+    control::NodeControlMsg,
     local::message::LocalSender,
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -121,7 +121,7 @@ fn bench_individual_operations(c: &mut Criterion) {
             // Now benchmark the ACK operation
             processor
                 .process(
-                    Message::Control(ControlMsg::Ack { id: 1 }),
+                    Message::Control(NodeControlMsg::Ack { id: 1 }),
                     &mut effect_handler,
                 )
                 .await
@@ -145,7 +145,7 @@ fn bench_individual_operations(c: &mut Criterion) {
             // Now benchmark the NACK operation
             processor
                 .process(
-                    Message::Control(ControlMsg::Nack {
+                    Message::Control(NodeControlMsg::Nack {
                         id: 1,
                         reason: "Benchmark failure".to_string(),
                     }),
@@ -188,7 +188,7 @@ fn bench_timer_tick_scaling(c: &mut Criterion) {
                         // NACK to keep in pending state
                         processor
                             .process(
-                                Message::Control(ControlMsg::Nack {
+                                Message::Control(NodeControlMsg::Nack {
                                     id: i as u64 + 1,
                                     reason: "Keep pending".to_string(),
                                 }),
@@ -201,7 +201,7 @@ fn bench_timer_tick_scaling(c: &mut Criterion) {
                     // Benchmark: Timer tick that needs to check all pending messages
                     processor
                         .process(
-                            Message::Control(ControlMsg::TimerTick {}),
+                            Message::Control(NodeControlMsg::TimerTick {}),
                             &mut effect_handler,
                         )
                         .await

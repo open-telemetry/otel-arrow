@@ -55,7 +55,7 @@
 //! let processor = RetryProcessor::<MyData>::with_config(config);
 //! ```
 
-use crate::control::ControlMsg;
+use crate::control::NodeControlMsg;
 use crate::error::Error;
 use crate::local::processor::{EffectHandler, Processor};
 use crate::message::Message;
@@ -277,25 +277,25 @@ impl<PData: Clone + Send + 'static> Processor<PData> for RetryProcessor<PData> {
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
-                ControlMsg::Ack { id } => {
+                NodeControlMsg::Ack { id } => {
                     self.acknowledge(id);
                     Ok(())
                 }
-                ControlMsg::Nack { id, reason } => {
+                NodeControlMsg::Nack { id, reason } => {
                     self.handle_nack(id, reason, effect_handler).await
                 }
-                ControlMsg::TimerTick { .. } => {
+                NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
                     self.cleanup_expired_messages();
                     Ok(())
                 }
-                ControlMsg::Config { config } => {
+                NodeControlMsg::Config { config } => {
                     if let Ok(new_config) = serde_json::from_value::<RetryConfig>(config) {
                         self.config = new_config;
                     }
                     Ok(())
                 }
-                ControlMsg::Shutdown { .. } => {
+                NodeControlMsg::Shutdown { .. } => {
                     let pending_ids: Vec<u64> = self.pending_messages.keys().cloned().collect();
                     for id in pending_ids {
                         if let Some(pending) = self.pending_messages.remove(&id) {
@@ -393,7 +393,7 @@ mod tests {
         // ACK the message
         processor
             .process(
-                Message::Control(ControlMsg::Ack { id: 1 }),
+                Message::Control(NodeControlMsg::Ack { id: 1 }),
                 &mut effect_handler,
             )
             .await
@@ -420,7 +420,7 @@ mod tests {
         // NACK the message
         processor
             .process(
-                Message::Control(ControlMsg::Nack {
+                Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
                 }),
@@ -454,7 +454,7 @@ mod tests {
         for i in 1..=4 {
             processor
                 .process(
-                    Message::Control(ControlMsg::Nack {
+                    Message::Control(NodeControlMsg::Nack {
                         id: 1,
                         reason: format!("Test failure {i}"),
                     }),
@@ -484,7 +484,7 @@ mod tests {
 
         processor
             .process(
-                Message::Control(ControlMsg::Nack {
+                Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
                 }),
@@ -499,7 +499,7 @@ mod tests {
         // Process timer tick
         processor
             .process(
-                Message::Control(ControlMsg::TimerTick {}),
+                Message::Control(NodeControlMsg::TimerTick {}),
                 &mut effect_handler,
             )
             .await
@@ -561,7 +561,7 @@ mod tests {
         // NACK it to get first retry count
         processor
             .process(
-                Message::Control(ControlMsg::Nack {
+                Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "First failure".to_string(),
                 }),
@@ -576,7 +576,7 @@ mod tests {
         // NACK it again to get second retry count
         processor
             .process(
-                Message::Control(ControlMsg::Nack {
+                Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Second failure".to_string(),
                 }),
@@ -610,7 +610,7 @@ mod tests {
 
             processor
                 .process(
-                    Message::Control(ControlMsg::Nack {
+                    Message::Control(NodeControlMsg::Nack {
                         id: i,
                         reason: "Test failure".to_string(),
                     }),
@@ -625,7 +625,7 @@ mod tests {
         // Shutdown should flush all pending messages
         processor
             .process(
-                Message::Control(ControlMsg::Shutdown {
+                Message::Control(NodeControlMsg::Shutdown {
                     deadline: Duration::from_secs(5),
                     reason: "Test shutdown".to_string(),
                 }),
@@ -661,7 +661,7 @@ mod tests {
         let config_json = serde_json::to_value(new_config.clone()).unwrap();
         processor
             .process(
-                Message::Control(ControlMsg::Config {
+                Message::Control(NodeControlMsg::Config {
                     config: config_json,
                 }),
                 &mut effect_handler,

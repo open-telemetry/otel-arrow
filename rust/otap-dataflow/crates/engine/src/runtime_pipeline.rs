@@ -2,18 +2,22 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use crate::control::ControlMsg;
+use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
-use crate::error::Error::EngineErrors;
 use crate::node::Node;
+use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::{NodeId, pipeline::PipelineConfig};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
-pub struct RuntimePipeline<PData> {
+///
+/// Note: Having a Debug bound on `PData` allows us to use it in logging and debugging contexts,
+/// which is useful for tracing the pipeline's execution and state.
+pub struct RuntimePipeline<PData: Debug> {
     /// The pipeline configuration that defines the structure and behavior of the pipeline.
     config: PipelineConfig,
     /// A map node id to receiver runtime node.
@@ -37,7 +41,7 @@ pub enum NodeType {
     Exporter,
 }
 
-impl<PData: 'static> RuntimePipeline<PData> {
+impl<PData: 'static + Debug> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
     #[must_use]
     pub fn new(
@@ -77,49 +81,86 @@ impl<PData: 'static> RuntimePipeline<PData> {
         &self.config
     }
 
-    /// Starts the pipeline by
-    pub fn start(self) -> Result<(), Error<PData>> {
+    /// Runs the pipeline forever, starting all nodes and handling their tasks.
+    /// Returns an error if any node fails to start or if any task encounters an error.
+    pub fn run_forever(self) -> Result<Vec<()>, Error<PData>> {
+        use futures::stream::{FuturesUnordered, StreamExt};
+
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
-        let mut handlers = Vec::with_capacity(self.node_count());
+        // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
+        let mut futures = FuturesUnordered::new();
+        let mut control_senders = HashMap::new();
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
+            self.config
+                .pipeline_settings()
+                .default_pipeline_ctrl_msg_channel_size,
+        );
 
-        for (_node_id, exporter) in self.exporters {
-            handlers.push(local_tasks.spawn_local(async move { exporter.start().await }));
+        // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
+        // they can communicate with the runtime pipeline.
+        for (node_id, exporter) in self.exporters {
+            _ = control_senders.insert(node_id, exporter.control_sender());
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            futures.push(
+                local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }),
+            );
         }
-        for (_node_id, processor) in self.processors {
-            handlers.push(local_tasks.spawn_local(async move { processor.start().await }));
+        for (node_id, processor) in self.processors {
+            _ = control_senders.insert(node_id, processor.control_sender());
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            futures.push(
+                local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
+            );
         }
-        for (_node_id, receiver) in self.receivers {
-            handlers.push(local_tasks.spawn_local(async move { receiver.start().await }));
+        for (node_id, receiver) in self.receivers {
+            _ = control_senders.insert(node_id, receiver.control_sender());
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            futures.push(
+                local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),
+            );
         }
 
-        // Wait for all tasks to complete, gathering any errors
-        let results = rt.block_on(async {
+        // Create a task to process pipeline control messages, i.e. messages sent from nodes to
+        // the pipeline engine.
+        futures.push(local_tasks.spawn_local(async move {
+            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders);
+            manager.run().await
+        }));
+
+        rt.block_on(async {
             local_tasks
-                .run_until(async { futures::future::join_all(handlers).await })
-                .await
-        });
+                .run_until(async {
+                    let mut task_results = Vec::new();
 
-        let mut errors = Vec::new();
-        for result in results {
-            match result {
-                Ok(Ok(())) => continue,       // Task completed successfully
-                Ok(Err(e)) => errors.push(e), // Task completed with an error
-                Err(e) => errors.push(Error::TaskError {
-                    // Task panicked
-                    is_cancelled: e.is_cancelled(),
-                    is_panic: e.is_panic(),
-                    error: e.to_string(),
-                }),
-            }
-        }
-        if !errors.is_empty() {
-            return Err(EngineErrors { errors });
-        }
-        Ok(())
+                    // Process each future as they complete and handle errors
+                    while let Some(result) = futures.next().await {
+                        match result {
+                            Ok(Ok(res)) => {
+                                // Task completed successfully, collect its result
+                                task_results.push(res);
+                            }
+                            Ok(Err(e)) => {
+                                // A task returned an error
+                                return Err(e);
+                            }
+                            Err(e) => {
+                                // JoinError (panic or cancellation)
+                                return Err(Error::JoinTaskError {
+                                    is_canceled: e.is_cancelled(),
+                                    is_panic: e.is_panic(),
+                                    error: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(task_results)
+                })
+                .await
+        })
     }
 
     /// Gets a reference to any node by its ID as a Node trait object
@@ -132,16 +173,16 @@ impl<PData: 'static> RuntimePipeline<PData> {
         }
     }
 
-    /// Sends a control message to the specified node.
-    pub async fn send_control_message(
+    /// Sends a node control message to the specified node.
+    pub async fn send_node_control_message(
         &self,
         node_id: NodeId,
-        ctrl_msg: ControlMsg,
+        ctrl_msg: NodeControlMsg,
     ) -> Result<(), Error<PData>> {
         if let Some(node) = self.get_node(&node_id) {
             node.send_control_msg(ctrl_msg)
                 .await
-                .map_err(|e| Error::ControlMsgSendError {
+                .map_err(|e| Error::NodeControlMsgSendError {
                     node: node_id.clone(),
                     error: e,
                 })

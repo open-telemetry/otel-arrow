@@ -51,6 +51,18 @@ pub enum ScalarExpression {
     /// Returns the number of characters in an inner string value, the number of
     /// items in an inner array/map values, or null for invalid input.
     Length(LengthScalarExpression),
+
+    /// Returns a string with all occurrences of a lookup value replaced with a
+    /// replacement value or null for invalid input.
+    ReplaceString(ReplaceStringScalarExpression),
+
+    /// Returns a slice of characters from an inner string value, a slice of
+    /// items from an inner array value, or null for invalid input.
+    Slice(SliceScalarExpression),
+
+    /// Parses an inner string scalar value as JSON and returns a Map, Array,
+    /// Integer, Double, or Null value.
+    ParseJson(ParseJsonScalarExpression),
 }
 
 impl ScalarExpression {
@@ -71,6 +83,9 @@ impl ScalarExpression {
             ScalarExpression::Case(c) => c.try_resolve_value_type(pipeline),
             ScalarExpression::Convert(c) => c.try_resolve_value_type(pipeline),
             ScalarExpression::Length(l) => l.try_resolve_value_type(pipeline),
+            ScalarExpression::ReplaceString(r) => r.try_resolve_value_type(pipeline),
+            ScalarExpression::Slice(s) => s.try_resolve_value_type(pipeline),
+            ScalarExpression::ParseJson(p) => p.try_resolve_value_type(pipeline),
         }
     }
 
@@ -95,6 +110,9 @@ impl ScalarExpression {
             ScalarExpression::Case(c) => c.try_resolve_static(pipeline),
             ScalarExpression::Convert(c) => c.try_resolve_static(pipeline),
             ScalarExpression::Length(l) => l.try_resolve_static(pipeline),
+            ScalarExpression::ReplaceString(r) => r.try_resolve_static(pipeline),
+            ScalarExpression::Slice(s) => s.try_resolve_static(pipeline),
+            ScalarExpression::ParseJson(p) => p.try_resolve_static(pipeline),
         }
     }
 }
@@ -114,6 +132,9 @@ impl Expression for ScalarExpression {
             ScalarExpression::Case(c) => c.get_query_location(),
             ScalarExpression::Convert(c) => c.get_query_location(),
             ScalarExpression::Length(l) => l.get_query_location(),
+            ScalarExpression::ReplaceString(r) => r.get_query_location(),
+            ScalarExpression::Slice(s) => s.get_query_location(),
+            ScalarExpression::ParseJson(p) => p.get_query_location(),
         }
     }
 
@@ -131,6 +152,9 @@ impl Expression for ScalarExpression {
             ScalarExpression::Constant(c) => c.get_name(),
             ScalarExpression::Convert(c) => c.get_name(),
             ScalarExpression::Length(_) => "ScalarExpression(Length)",
+            ScalarExpression::ReplaceString(_) => "ScalarExpression(ReplaceString)",
+            ScalarExpression::Slice(_) => "ScalarExpression(Slice)",
+            ScalarExpression::ParseJson(_) => "ScalarExpression(ParseJson)",
         }
     }
 }
@@ -878,6 +902,394 @@ impl Expression for LengthScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "LengthScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReplaceStringScalarExpression {
+    query_location: QueryLocation,
+    haystack_expression: Box<ScalarExpression>,
+    needle_expression: Box<ScalarExpression>,
+    replacement_expression: Box<ScalarExpression>,
+    case_insensitive: bool,
+}
+
+impl ReplaceStringScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        haystack_expression: ScalarExpression,
+        needle_expression: ScalarExpression,
+        replacement_expression: ScalarExpression,
+        case_insensitive: bool,
+    ) -> ReplaceStringScalarExpression {
+        Self {
+            query_location,
+            haystack_expression: haystack_expression.into(),
+            needle_expression: needle_expression.into(),
+            replacement_expression: replacement_expression.into(),
+            case_insensitive,
+        }
+    }
+
+    pub fn get_haystack_expression(&self) -> &ScalarExpression {
+        &self.haystack_expression
+    }
+
+    pub fn get_needle_expression(&self) -> &ScalarExpression {
+        &self.needle_expression
+    }
+
+    pub fn get_replacement_expression(&self) -> &ScalarExpression {
+        &self.replacement_expression
+    }
+
+    pub fn get_case_insensitive(&self) -> bool {
+        self.case_insensitive
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        if let Some(v) = self
+            .get_haystack_expression()
+            .try_resolve_value_type(pipeline)?
+        {
+            Ok(Some(match v {
+                ValueType::String => ValueType::String,
+                _ => ValueType::Null,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        let haystack_static = self
+            .get_haystack_expression()
+            .try_resolve_static(pipeline)?;
+        let needle_static = self.get_needle_expression().try_resolve_static(pipeline)?;
+        let replacement_static = self
+            .get_replacement_expression()
+            .try_resolve_static(pipeline)?;
+
+        if let (Some(haystack), Some(needle), Some(replacement)) =
+            (haystack_static, needle_static, replacement_static)
+        {
+            let haystack_value = haystack.to_value();
+            let needle_value = needle.to_value();
+            let replacement_value = replacement.to_value();
+
+            if let Some(result) = Value::replace_matches(
+                &self.query_location,
+                &haystack_value,
+                &needle_value,
+                &replacement_value,
+                self.case_insensitive,
+            ) {
+                Ok(Some(ResolvedStaticScalarExpression::Value(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        self.query_location.clone(),
+                        &result,
+                    )),
+                )))
+            } else {
+                Ok(Some(ResolvedStaticScalarExpression::Value(
+                    StaticScalarExpression::Null(NullScalarExpression::new(
+                        self.query_location.clone(),
+                    )),
+                )))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Expression for ReplaceStringScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ReplaceStringScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliceScalarExpression {
+    query_location: QueryLocation,
+    source: Box<ScalarExpression>,
+    range_start_inclusive: Option<Box<ScalarExpression>>,
+    range_end_exclusive: Option<Box<ScalarExpression>>,
+}
+
+impl SliceScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        source: ScalarExpression,
+        range_start_inclusive: Option<ScalarExpression>,
+        range_end_exclusive: Option<ScalarExpression>,
+    ) -> SliceScalarExpression {
+        Self {
+            query_location,
+            source: source.into(),
+            range_start_inclusive: range_start_inclusive.map(|v| v.into()),
+            range_end_exclusive: range_end_exclusive.map(|v| v.into()),
+        }
+    }
+
+    pub fn get_source(&self) -> &ScalarExpression {
+        &self.source
+    }
+
+    pub fn get_range_start_inclusive(&self) -> Option<&ScalarExpression> {
+        self.range_start_inclusive.as_deref()
+    }
+
+    pub fn get_range_end_exclusive(&self) -> Option<&ScalarExpression> {
+        self.range_end_exclusive.as_deref()
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        if let Some(s) = self.try_resolve_static(pipeline)? {
+            return Ok(Some(s.get_value_type()));
+        }
+
+        if let Some(t) = self.get_source().try_resolve_value_type(pipeline)? {
+            match t {
+                ValueType::Array => Ok(Some(ValueType::Array)),
+                ValueType::String => Ok(Some(ValueType::String)),
+                _ => Ok(Some(ValueType::Null)),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
+        &'a self,
+        pipeline: &'b PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        let range_start_inclusive = match self.get_range_start_inclusive() {
+            Some(s) => match s.try_resolve_static(pipeline)? {
+                Some(v) => self.validate_resolved_range_value("start", v.to_value())?,
+                None => return Ok(None),
+            },
+            None => 0,
+        };
+
+        let range_end_exclusive = match self.get_range_end_exclusive() {
+            Some(s) => match s.try_resolve_static(pipeline)? {
+                Some(v) => Some(self.validate_resolved_range_value("end", v.to_value())?),
+                None => return Ok(None),
+            },
+            None => None,
+        };
+
+        match self.get_source().try_resolve_static(pipeline)? {
+            Some(s) => match s.to_value() {
+                Value::Array(a) => {
+                    self.validate_slice_range(
+                        "Array",
+                        a.len(),
+                        range_start_inclusive,
+                        range_end_exclusive,
+                    )?;
+
+                    // Note: We don't return an array slice statically. This
+                    // would cause potentially a lot of expansion inside the
+                    // expression tree. At runtime a slice of an array is just a
+                    // pointer to some data.
+                    Ok(None)
+                }
+                Value::String(s) => {
+                    let range_end_exclusive = self.validate_slice_range(
+                        "String",
+                        s.get_value().chars().count(),
+                        range_start_inclusive,
+                        range_end_exclusive,
+                    )?;
+
+                    // Note: We only return statically small string slices. The
+                    // idea here is to prevent expansion of the expression tree
+                    // for large values. At runtime a slice of a string is just
+                    // a pointer to some data.
+                    if range_end_exclusive - range_start_inclusive > 32 {
+                        Ok(None)
+                    } else {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                self.query_location.clone(),
+                                &Self::slice_string(
+                                    s.get_value(),
+                                    range_start_inclusive,
+                                    range_end_exclusive,
+                                ),
+                            )),
+                        )))
+                    }
+                }
+                _ => Ok(Some(ResolvedStaticScalarExpression::Value(
+                    StaticScalarExpression::Null(NullScalarExpression::new(
+                        self.query_location.clone(),
+                    )),
+                ))),
+            },
+            None => Ok(None),
+        }
+    }
+
+    pub fn validate_resolved_range_value(
+        &self,
+        name: &str,
+        value: Value,
+    ) -> Result<usize, ExpressionError> {
+        if let Value::Integer(i) = value {
+            let v = i.get_value();
+            if v < 0 {
+                return Err(ExpressionError::ValidationFailure(
+                    self.get_query_location().clone(),
+                    format!("Range {name} for a slice expression cannot be a negative value"),
+                ));
+            }
+            Ok(v as usize)
+        } else {
+            Err(ExpressionError::TypeMismatch(
+                self.get_query_location().clone(),
+                format!("Range {name} for a slice expression should be an integer type"),
+            ))
+        }
+    }
+
+    pub fn validate_slice_range(
+        &self,
+        name: &str,
+        target_length: usize,
+        range_start_inclusive: usize,
+        range_end_exclusive: Option<usize>,
+    ) -> Result<usize, ExpressionError> {
+        let end = range_end_exclusive.unwrap_or(target_length);
+
+        if range_start_inclusive > end {
+            return Err(ExpressionError::ValidationFailure(
+                self.query_location.clone(),
+                format!(
+                    "{name} slice index starts at '{range_start_inclusive}' but ends at '{end}'"
+                ),
+            ));
+        }
+        if end > target_length {
+            return Err(ExpressionError::ValidationFailure(
+                self.query_location.clone(),
+                format!(
+                    "{name} slice index ends at '{end}' which is beyond the length of '{target_length}'"
+                ),
+            ));
+        }
+
+        Ok(end)
+    }
+
+    pub fn slice_string(
+        value: &str,
+        range_start_inclusive: usize,
+        range_end_exclusive: usize,
+    ) -> String {
+        String::from_iter(
+            value
+                .chars()
+                .skip(range_start_inclusive)
+                .take(range_end_exclusive - range_start_inclusive),
+        )
+    }
+}
+
+impl Expression for SliceScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "SliceScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParseJsonScalarExpression {
+    query_location: QueryLocation,
+    inner_expression: Box<ScalarExpression>,
+}
+
+impl ParseJsonScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        inner_expression: ScalarExpression,
+    ) -> ParseJsonScalarExpression {
+        Self {
+            query_location,
+            inner_expression: inner_expression.into(),
+        }
+    }
+
+    pub fn get_inner_expression(&self) -> &ScalarExpression {
+        &self.inner_expression
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        Ok(self
+            .try_resolve_static(pipeline)?
+            .map(|v| v.get_value_type()))
+    }
+
+    pub(crate) fn try_resolve_static(
+        &self,
+        pipeline: &PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression>, ExpressionError> {
+        match self.inner_expression.try_resolve_static(pipeline)? {
+            Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
+                if let Value::String(s) = v.to_value() {
+                    StaticScalarExpression::from_json(self.query_location.clone(), s.get_value())
+                        .unwrap_or_else(|| {
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                self.query_location.clone(),
+                            ))
+                        })
+                } else {
+                    StaticScalarExpression::Null(NullScalarExpression::new(
+                        self.query_location.clone(),
+                    ))
+                },
+            ))),
+            None => Ok(None),
+        }
+    }
+}
+
+impl Expression for ParseJsonScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ParseJsonScalarExpression"
     }
 }
 
@@ -1636,5 +2048,527 @@ mod tests {
                 Some(Value::Null),
             ),
         ]);
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    pub fn test_replace_string_scalar_expression_try_resolve() {
+        fn run_test(
+            input: Vec<(
+                ScalarExpression,
+                ScalarExpression,
+                ScalarExpression,
+                Option<ValueType>,
+                Option<Value>,
+            )>,
+        ) {
+            for (text, lookup, replacement, expected_type, expected_value) in input {
+                let e = ReplaceStringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    text,
+                    lookup,
+                    replacement,
+                    false, // case_insensitive
+                );
+
+                let pipeline = Default::default();
+
+                let actual_type = e.try_resolve_value_type(&pipeline).unwrap();
+                assert_eq!(expected_type, actual_type);
+
+                let actual_value = e.try_resolve_static(&pipeline).unwrap();
+                assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
+            }
+        }
+
+        run_test(vec![
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "A magic trick can turn a cat into a dog",
+                    ),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
+                )),
+                Some(ValueType::String),
+                Some(Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "A magic trick can turn a hamster into a dog",
+                ))),
+            ),
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world hello"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hi"),
+                )),
+                Some(ValueType::String),
+                Some(Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hi world hi",
+                ))),
+            ),
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "no matches here"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "xyz"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "abc"),
+                )),
+                Some(ValueType::String),
+                Some(Value::String(&StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "no matches here",
+                ))),
+            ),
+            (
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key1",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "search"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "replace"),
+                )),
+                None,
+                None,
+            ),
+            (
+                ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "search"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "replace"),
+                )),
+                Some(ValueType::Null),
+                Some(Value::Null),
+            ),
+        ]);
+    }
+
+    #[test]
+    pub fn test_slice_scalar_expression_try_resolve() {
+        fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
+            let pipeline = Default::default();
+
+            let actual_type = input.try_resolve_value_type(&pipeline).unwrap_err();
+            validate_error(&expected, actual_type);
+
+            let actual_value = input.try_resolve_static(&pipeline).unwrap_err();
+            validate_error(&expected, actual_value);
+
+            fn validate_error(expected: &ExpressionError, actual: ExpressionError) {
+                match expected {
+                    ExpressionError::TypeMismatch(_, msg) => {
+                        if let ExpressionError::TypeMismatch(_, actual_msg) = actual {
+                            assert_eq!(msg, &actual_msg)
+                        } else {
+                            panic!("Unexpected ExpressionError")
+                        }
+                    }
+                    ExpressionError::ValidationFailure(_, msg) => {
+                        if let ExpressionError::ValidationFailure(_, actual_msg) = actual {
+                            assert_eq!(msg, &actual_msg)
+                        } else {
+                            panic!("Unexpected ExpressionError")
+                        }
+                    }
+                }
+            }
+        }
+
+        let string_source = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "Hello world!"),
+        ));
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+                ))),
+                None,
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "Range start for a slice expression cannot be a negative value".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                ))),
+                None,
+            ),
+            ExpressionError::TypeMismatch(
+                QueryLocation::new_fake(),
+                "Range start for a slice expression should be an integer type".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+                ))),
+            ),
+            ExpressionError::ValidationFailure(
+                QueryLocation::new_fake(),
+                "Range end for a slice expression cannot be a negative value".into(),
+            ),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                ))),
+            ),
+            ExpressionError::TypeMismatch(
+                QueryLocation::new_fake(),
+                "Range end for a slice expression should be an integer type".into(),
+            ),
+        );
+    }
+
+    #[test]
+    pub fn test_string_slice_scalar_expression_try_resolve() {
+        fn run_test_success(
+            input: SliceScalarExpression,
+            expected_value_type: Option<ValueType>,
+            expected_value: Option<Value>,
+        ) {
+            let pipeline = Default::default();
+
+            let actual_type = input.try_resolve_value_type(&pipeline).unwrap();
+            assert_eq!(expected_value_type, actual_type);
+
+            let actual_value = input.try_resolve_static(&pipeline).unwrap();
+            assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
+        }
+
+        fn run_test_failure(input: SliceScalarExpression, expected_msg: &str) {
+            let pipeline = Default::default();
+
+            let actual_type = input.try_resolve_value_type(&pipeline).unwrap_err();
+            if let ExpressionError::ValidationFailure(_, a) = actual_type {
+                assert_eq!(expected_msg, a);
+            } else {
+                panic!("Unexpected ExpressionError")
+            }
+
+            let actual_value = input.try_resolve_static(&pipeline).unwrap_err();
+            if let ExpressionError::ValidationFailure(_, a) = actual_value {
+                assert_eq!(expected_msg, a);
+            } else {
+                panic!("Unexpected ExpressionError")
+            }
+        }
+
+        let small_string_source = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "こんにちは"),
+        ));
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                None,
+                None,
+            ),
+            Some(ValueType::String),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "こんにちは",
+            ))),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                None,
+            ),
+            Some(ValueType::String),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "んにちは",
+            ))),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+            ),
+            Some(ValueType::String),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "",
+            ))),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+            ),
+            Some(ValueType::String),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "ん",
+            ))),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+            ),
+            Some(ValueType::String),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "こん",
+            ))),
+        );
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                None,
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
+                ))),
+            ),
+            Some(ValueType::String),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "こんにちは",
+            ))),
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+            ),
+            "String slice index starts at '2' but ends at '1'",
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                small_string_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
+                ))),
+            ),
+            "String slice index ends at '6' which is beyond the length of '5'",
+        );
+
+        let large_string_source = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Aenean non lectus eget orci aliquam maximus fringilla sed sapien proin",
+            ),
+        ));
+
+        run_test_success(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                large_string_source.clone(),
+                None,
+                None,
+            ),
+            Some(ValueType::String),
+            None,
+        );
+    }
+
+    #[test]
+    pub fn test_array_slice_scalar_expression_try_resolve() {
+        fn run_test_success(
+            input: SliceScalarExpression,
+            expected_value_type: Option<ValueType>,
+            expected_value: Option<Value>,
+        ) {
+            let pipeline = Default::default();
+
+            let actual_type = input.try_resolve_value_type(&pipeline).unwrap();
+            assert_eq!(expected_value_type, actual_type);
+
+            let actual_value = input.try_resolve_static(&pipeline).unwrap();
+            assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
+        }
+
+        fn run_test_failure(input: SliceScalarExpression, expected_msg: &str) {
+            let pipeline = Default::default();
+
+            let actual_type = input.try_resolve_value_type(&pipeline).unwrap_err();
+            if let ExpressionError::ValidationFailure(_, a) = actual_type {
+                assert_eq!(expected_msg, a);
+            } else {
+                panic!("Unexpected ExpressionError")
+            }
+
+            let actual_value = input.try_resolve_static(&pipeline).unwrap_err();
+            if let ExpressionError::ValidationFailure(_, a) = actual_value {
+                assert_eq!(expected_msg, a);
+            } else {
+                panic!("Unexpected ExpressionError")
+            }
+        }
+
+        let array_values = vec![
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                0,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                1,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                2,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                3,
+            )),
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                4,
+            )),
+        ];
+
+        let array_source = ScalarExpression::Static(StaticScalarExpression::Array(
+            ArrayScalarExpression::new(QueryLocation::new_fake(), array_values.clone()),
+        ));
+
+        run_test_success(
+            SliceScalarExpression::new(QueryLocation::new_fake(), array_source.clone(), None, None),
+            Some(ValueType::Array),
+            None,
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+            ),
+            "Array slice index starts at '2' but ends at '1'",
+        );
+
+        run_test_failure(
+            SliceScalarExpression::new(
+                QueryLocation::new_fake(),
+                array_source.clone(),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                ))),
+                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
+                ))),
+            ),
+            "Array slice index ends at '6' which is beyond the length of '5'",
+        );
+    }
+
+    #[test]
+    pub fn test_parse_json_scalar_expression_try_resolve() {
+        fn run_test_success(input: &str, expected_value: Value) {
+            let pipeline = Default::default();
+
+            let expression = ParseJsonScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), input),
+                )),
+            );
+
+            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            assert_eq!(Some(expected_value.get_value_type()), actual_type);
+
+            let actual_value = expression.try_resolve_static(&pipeline).unwrap();
+            assert_eq!(
+                Some(expected_value),
+                actual_value.as_ref().map(|v| v.to_value())
+            );
+        }
+
+        run_test_success(
+            "18",
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+        );
+        run_test_success("hello world", Value::Null);
     }
 }
