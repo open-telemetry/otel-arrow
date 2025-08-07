@@ -12,9 +12,9 @@ pub(crate) struct Summaries {
 }
 
 impl Summaries {
-    pub fn new() -> Summaries {
+    pub fn new(cardinality_limit: usize) -> Summaries {
         Self {
-            cardinality_limit: 8192,
+            cardinality_limit,
             values: RefCell::new(HashMap::new()),
         }
     }
@@ -22,9 +22,9 @@ impl Summaries {
     pub fn create_or_update_summary<'a, T: Record>(
         &self,
         execution_context: &ExecutionContext<'a, '_, '_, T>,
-        summary_expression: &'a SummaryExpression,
-        mut group_by_values: HashMap<String, ResolvedValue>,
-        mut aggregation_values: HashMap<String, SummaryAggregationUpdate>,
+        summary_data_expression: &'a SummaryDataExpression,
+        mut group_by_values: HashMap<Box<str>, ResolvedValue>,
+        mut aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
     ) {
         let summary_id = Summary::generate_id(&group_by_values);
 
@@ -37,11 +37,15 @@ impl Summaries {
         if summary_data.is_some() {
             let summary = summary_data.expect("Summary could not be found");
 
-            summary.update(execution_context, summary_expression, aggregation_values);
+            summary.update(
+                execution_context,
+                summary_data_expression,
+                aggregation_values,
+            );
 
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
-                summary_expression,
+                summary_data_expression,
                 || "Summary updated".into(),
             );
 
@@ -51,7 +55,7 @@ impl Summaries {
         if number_of_summaries >= self.cardinality_limit {
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Error,
-                summary_expression,
+                summary_data_expression,
                 || "Summary cardinality limit reached".into(),
             );
             return;
@@ -68,7 +72,7 @@ impl Summaries {
 
         execution_context.add_diagnostic_if_enabled(
             RecordSetEngineDiagnosticLevel::Verbose,
-            summary_expression,
+            summary_data_expression,
             || "Summary created".into(),
         );
     }
@@ -76,14 +80,14 @@ impl Summaries {
 
 #[derive(Debug)]
 pub(crate) struct Summary {
-    pub group_by_values: HashMap<String, OwnedValue>,
-    pub aggregation_values: HashMap<String, SummaryAggregation>,
+    pub group_by_values: HashMap<Box<str>, OwnedValue>,
+    pub aggregation_values: HashMap<Box<str>, SummaryAggregation>,
 }
 
 impl Summary {
     pub fn new(
-        group_by_values: HashMap<String, OwnedValue>,
-        aggregation_values: HashMap<String, SummaryAggregation>,
+        group_by_values: HashMap<Box<str>, OwnedValue>,
+        aggregation_values: HashMap<Box<str>, SummaryAggregation>,
     ) -> Summary {
         Self {
             group_by_values,
@@ -94,8 +98,8 @@ impl Summary {
     pub(crate) fn update<'a, T: Record>(
         &mut self,
         execution_context: &ExecutionContext<'a, '_, '_, T>,
-        summary_expression: &'a SummaryExpression,
-        aggregation_values: HashMap<String, SummaryAggregationUpdate>,
+        summary_data_expression: &'a SummaryDataExpression,
+        aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
     ) {
         for (key, aggregation) in aggregation_values {
             let existing = self.aggregation_values.get_mut(&key);
@@ -127,7 +131,7 @@ impl Summary {
                     if let SummaryAggregationUpdate::Maximum(v) = aggregation {
                         let right_value = v.to_value();
                         match Value::compare_values(
-                            summary_expression.get_query_location(),
+                            summary_data_expression.get_query_location(),
                             &max.to_value(),
                             &right_value,
                         ) {
@@ -139,7 +143,7 @@ impl Summary {
                             Err(_) => {
                                 execution_context.add_diagnostic_if_enabled(
                                     RecordSetEngineDiagnosticLevel::Warn,
-                                    summary_expression,
+                                    summary_data_expression,
                                     || format!("Max aggregation cannot compare values of '{:?}' and '{:?}' types", max.get_value_type(), right_value.get_value_type()));
                             }
                         }
@@ -151,7 +155,7 @@ impl Summary {
                     if let SummaryAggregationUpdate::Minimum(v) = aggregation {
                         let right_value = v.to_value();
                         match Value::compare_values(
-                            summary_expression.get_query_location(),
+                            summary_data_expression.get_query_location(),
                             &min.to_value(),
                             &right_value,
                         ) {
@@ -163,7 +167,7 @@ impl Summary {
                             Err(_) => {
                                 execution_context.add_diagnostic_if_enabled(
                                     RecordSetEngineDiagnosticLevel::Warn,
-                                    summary_expression,
+                                    summary_data_expression,
                                     || format!("Min aggregation cannot compare values of '{:?}' and '{:?}' types", min.get_value_type(), right_value.get_value_type()));
                             }
                         }
@@ -185,7 +189,7 @@ impl Summary {
         }
     }
 
-    pub(crate) fn generate_id(group_by_values: &HashMap<String, ResolvedValue>) -> String {
+    pub(crate) fn generate_id(group_by_values: &HashMap<Box<str>, ResolvedValue>) -> String {
         let mut hasher = Sha256::new();
 
         for (key, value) in group_by_values {
@@ -261,14 +265,14 @@ pub enum SummaryValue {
 }
 
 impl SummaryValue {
-    pub(crate) fn to_double(&self) -> f64 {
+    pub fn to_double(&self) -> f64 {
         match self {
             SummaryValue::Double(d) => *d,
             SummaryValue::Integer(i) => *i as f64,
         }
     }
 
-    pub(crate) fn to_integer(&self) -> i64 {
+    pub fn to_integer(&self) -> i64 {
         match self {
             SummaryValue::Double(d) => *d as i64,
             SummaryValue::Integer(i) => *i,

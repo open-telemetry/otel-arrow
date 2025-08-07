@@ -111,7 +111,7 @@ impl TestExecutionContext {
     pub fn new() -> TestExecutionContext {
         Self {
             pipeline: Default::default(),
-            summaries: Summaries::new(),
+            summaries: Summaries::new(8192),
             attached_records: None,
             record: Some(Default::default()),
         }

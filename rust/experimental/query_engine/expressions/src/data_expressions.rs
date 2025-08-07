@@ -26,7 +26,7 @@ impl Expression for DataExpression {
     fn get_name(&self) -> &'static str {
         match self {
             DataExpression::Discard(_) => "DataExpression(Discard)",
-            DataExpression::Summary(s) => s.get_name(),
+            DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
         }
     }

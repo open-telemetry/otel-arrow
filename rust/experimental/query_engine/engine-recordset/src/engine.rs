@@ -16,6 +16,7 @@ use crate::{
 
 pub struct RecordSetEngineOptions {
     pub(crate) diagnostic_level: RecordSetEngineDiagnosticLevel,
+    pub(crate) summary_cardinality_limit: usize,
 }
 
 impl Default for RecordSetEngineOptions {
@@ -28,6 +29,7 @@ impl RecordSetEngineOptions {
     pub fn new() -> RecordSetEngineOptions {
         Self {
             diagnostic_level: RecordSetEngineDiagnosticLevel::Warn,
+            summary_cardinality_limit: 8192,
         }
     }
 
@@ -38,10 +40,19 @@ impl RecordSetEngineOptions {
         self.diagnostic_level = diagnostic_level;
         self
     }
+
+    pub fn with_summary_cardinality_limit(
+        mut self,
+        summary_cardinality_limit: usize,
+    ) -> RecordSetEngineOptions {
+        self.summary_cardinality_limit = summary_cardinality_limit;
+        self
+    }
 }
 
 pub struct RecordSetEngine {
     diagnostic_level: RecordSetEngineDiagnosticLevel,
+    summary_cardinality_limit: usize,
 }
 
 impl Default for RecordSetEngine {
@@ -58,6 +69,7 @@ impl RecordSetEngine {
     pub fn new_with_options(options: RecordSetEngineOptions) -> RecordSetEngine {
         Self {
             diagnostic_level: options.diagnostic_level,
+            summary_cardinality_limit: options.summary_cardinality_limit,
         }
     }
 
@@ -92,7 +104,7 @@ where
         Self {
             engine,
             pipeline,
-            summaries: Summaries::new(),
+            summaries: Summaries::new(engine.summary_cardinality_limit),
             included_records: Vec::new(),
         }
     }
@@ -377,34 +389,22 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
 
 #[derive(Debug)]
 pub struct RecordSetEngineSummary {
-    summary_id: String,
-    group_by_values: HashMap<String, OwnedValue>,
-    aggregation_values: HashMap<String, SummaryAggregation>,
+    pub summary_id: String,
+    pub group_by_values: HashMap<Box<str>, OwnedValue>,
+    pub aggregation_values: HashMap<Box<str>, SummaryAggregation>,
 }
 
 impl RecordSetEngineSummary {
     pub fn new(
         summary_id: String,
-        group_by_values: HashMap<String, OwnedValue>,
-        aggregation_values: HashMap<String, SummaryAggregation>,
+        group_by_values: HashMap<Box<str>, OwnedValue>,
+        aggregation_values: HashMap<Box<str>, SummaryAggregation>,
     ) -> RecordSetEngineSummary {
         Self {
             summary_id,
             group_by_values,
             aggregation_values,
         }
-    }
-
-    pub fn get_summary_id(&self) -> &str {
-        &self.summary_id
-    }
-
-    pub fn get_group_by_values(&self) -> &HashMap<String, OwnedValue> {
-        &self.group_by_values
-    }
-
-    pub fn get_aggregation_values(&self) -> &HashMap<String, SummaryAggregation> {
-        &self.aggregation_values
     }
 }
 
