@@ -44,8 +44,13 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result =
-                            rename_attr(input, "attr100", "attr_100").expect("expect no error");
+                        // let result =
+                        //     rename_attr(input, "attr100", "attr_100").expect("expect no error");
+                        // let result = rename_attr(&result, "attr101", "attr_101").expect("expect no error");
+                        let result = rename_attr(input, &[
+                            ("attr100", "attr_100"),
+                            ("attr101", "attr_101"),
+                        ]).expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -63,8 +68,13 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result =
-                            rename_attr(input, "attr3", "attr_3").expect("expect no error");
+                        // let result =
+                        //     rename_attr(input, "attr3", "attr_3").expect("expect no error");
+                        // let result = rename_attr(&result, "attr4", "attr_3").expect("expect no error");
+                        let result = rename_attr(input, &[
+                            ("attr3", "attr_3"),
+                            ("attr5", "attr_3"),
+                        ]).expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -84,8 +94,13 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result =
-                            rename_attr(input, "attr3", "attr_3").expect("expect no error");
+                        // let result =
+                        //     rename_attr(input, "attr3", "attr_3").expect("expect no error");
+                        // let result = rename_attr(&result, "attr4", "attr_3").expect("expect no error");
+                        let result = rename_attr(input, &[
+                            ("attr3", "attr_3"),
+                            ("attr5", "attr_3"),
+                        ]).expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
