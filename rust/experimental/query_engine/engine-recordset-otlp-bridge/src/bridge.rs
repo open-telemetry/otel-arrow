@@ -182,7 +182,7 @@ pub fn process_export_logs_service_request_using_pipeline(
 
             for summary in final_results.summaries {
                 let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
-                    summary.aggregation_values.len() + summary.group_by_values.len() + 1,
+                    summary.aggregation_values.len() + summary.group_by_values.len(),
                 );
 
                 for (key, value) in summary.group_by_values {

@@ -235,7 +235,7 @@ pub(crate) enum SummaryAggregationUpdate<'a> {
     Sum(SummaryValue),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SummaryAggregation {
     Average { count: usize, sum: SummaryValue },
     Count(usize),
@@ -258,7 +258,7 @@ impl From<SummaryAggregationUpdate<'_>> for SummaryAggregation {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SummaryValue {
     Double(f64),
     Integer(i64),

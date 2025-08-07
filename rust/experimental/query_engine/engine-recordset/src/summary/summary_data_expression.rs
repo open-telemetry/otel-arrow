@@ -138,7 +138,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_execute_summary_data_expression() {
+    fn test_execute_summary_data_expression_group_by() {
         fn run_test(
             summary_data_expression: SummaryDataExpression,
             assert: impl FnOnce(&Vec<RecordSetEngineSummary>),
@@ -148,10 +148,15 @@ mod tests {
                 OwnedValue::String(StringValueStorage::new("value1".into())),
             );
 
-            let record2 = TestRecord::new().with_key_value(
-                "key1".into(),
-                OwnedValue::String(StringValueStorage::new("value2".into())),
-            );
+            let record2 = TestRecord::new()
+                .with_key_value(
+                    "key1".into(),
+                    OwnedValue::String(StringValueStorage::new("value2".into())),
+                )
+                .with_key_value(
+                    "key3".into(),
+                    OwnedValue::String(StringValueStorage::new("value3".into())),
+                );
 
             let pipeline = PipelineExpressionBuilder::new(" ")
                 .with_expressions(vec![DataExpression::Summary(summary_data_expression)])
@@ -211,6 +216,16 @@ mod tests {
                 StaticScalarExpression::String(StringScalarExpression::new(
                     QueryLocation::new_fake(),
                     "key2",
+                )),
+            )]),
+        ));
+
+        let key3_selector = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key3",
                 )),
             )]),
         ));
@@ -293,6 +308,328 @@ mod tests {
                     summary2.group_by_values[0].1.to_value().to_string()
                 );
                 assert_eq!("null", summary2.group_by_values[1].1.to_value().to_string());
+            },
+        );
+
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    ("key1".into(), key1_selector.clone()),
+                    ("key3".into(), key3_selector.clone()),
+                ]),
+                HashMap::new(),
+            ),
+            |s| {
+                assert_eq!(2, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "3409c11163154a373c62f96335ba2acff5adea33f5eb26fe13c3e7755bde9d5a",
+                    summary1.summary_id
+                );
+                assert_eq!(0, summary1.aggregation_values.len());
+                assert_eq!(2, summary1.group_by_values.len());
+                assert_eq!(
+                    "value2",
+                    summary1.group_by_values[0].1.to_value().to_string()
+                );
+                assert_eq!(
+                    "value3",
+                    summary1.group_by_values[1].1.to_value().to_string()
+                );
+
+                let summary2 = &s[1];
+
+                assert_eq!(
+                    "7dc0a32fde14f9ea69e3899daaaaacb3df4da1c1a61d0451b7734765eb3fed62",
+                    summary2.summary_id
+                );
+                assert_eq!(0, summary2.aggregation_values.len());
+                assert_eq!(2, summary2.group_by_values.len());
+                assert_eq!(
+                    "value1",
+                    summary2.group_by_values[0].1.to_value().to_string()
+                );
+                assert_eq!("null", summary2.group_by_values[1].1.to_value().to_string());
+            },
+        );
+    }
+
+    #[test]
+    fn test_execute_summary_data_expression_aggregation() {
+        fn run_test(
+            summary_data_expression: SummaryDataExpression,
+            assert: impl FnOnce(&Vec<RecordSetEngineSummary>),
+        ) {
+            let record1 = TestRecord::new().with_key_value(
+                "key1".into(),
+                OwnedValue::Integer(IntegerValueStorage::new(-18)),
+            );
+
+            let record2 = TestRecord::new().with_key_value(
+                "key1".into(),
+                OwnedValue::Integer(IntegerValueStorage::new(18)),
+            );
+
+            let pipeline = PipelineExpressionBuilder::new(" ")
+                .with_expressions(vec![DataExpression::Summary(summary_data_expression)])
+                .build()
+                .unwrap();
+
+            let engine = RecordSetEngine::new();
+
+            let mut batch = engine.begin_batch(&pipeline);
+
+            batch.push_records(&mut TestRecordSet::new(vec![record1, record2]));
+
+            let results = batch.flush();
+
+            let mut summaries = results.summaries;
+
+            summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
+
+            println!("{summaries:?}");
+
+            (assert)(&summaries)
+        }
+
+        let key1_selector = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key1",
+                )),
+            )]),
+        ));
+
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "Count".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            ),
+            |s| {
+                assert_eq!(1, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    summary1.summary_id
+                );
+                assert_eq!(1, summary1.aggregation_values.len());
+                assert!(matches!(
+                    summary1.aggregation_values["Count"],
+                    SummaryAggregation::Count(2)
+                ));
+
+                assert_eq!(0, summary1.group_by_values.len());
+            },
+        );
+
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "Min".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Minimum,
+                        Some(key1_selector.clone()),
+                    ),
+                )]),
+            ),
+            |s| {
+                assert_eq!(1, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    summary1.summary_id
+                );
+                assert_eq!(1, summary1.aggregation_values.len());
+                if let SummaryAggregation::Minimum(OwnedValue::Integer(i)) =
+                    &summary1.aggregation_values["Min"]
+                {
+                    assert_eq!(-18, i.get_value());
+                } else {
+                    panic!()
+                }
+
+                assert_eq!(0, summary1.group_by_values.len());
+            },
+        );
+
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "Max".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Maximum,
+                        Some(key1_selector.clone()),
+                    ),
+                )]),
+            ),
+            |s| {
+                assert_eq!(1, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    summary1.summary_id
+                );
+                assert_eq!(1, summary1.aggregation_values.len());
+                if let SummaryAggregation::Maximum(OwnedValue::Integer(i)) =
+                    &summary1.aggregation_values["Max"]
+                {
+                    assert_eq!(18, i.get_value());
+                } else {
+                    panic!()
+                }
+
+                assert_eq!(0, summary1.group_by_values.len());
+            },
+        );
+
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "Sum".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Sum,
+                        Some(key1_selector.clone()),
+                    ),
+                )]),
+            ),
+            |s| {
+                assert_eq!(1, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    summary1.summary_id
+                );
+                assert_eq!(1, summary1.aggregation_values.len());
+                if let SummaryAggregation::Sum(SummaryValue::Integer(i)) =
+                    &summary1.aggregation_values["Sum"]
+                {
+                    assert_eq!(0, *i);
+                } else {
+                    panic!()
+                }
+
+                assert_eq!(0, summary1.group_by_values.len());
+            },
+        );
+
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "Avg".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Average,
+                        Some(key1_selector.clone()),
+                    ),
+                )]),
+            ),
+            |s| {
+                assert_eq!(1, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    summary1.summary_id
+                );
+                assert_eq!(1, summary1.aggregation_values.len());
+                if let SummaryAggregation::Average {
+                    count,
+                    sum: SummaryValue::Integer(i),
+                } = &summary1.aggregation_values["Avg"]
+                {
+                    assert_eq!(2, *count);
+                    assert_eq!(0, *i);
+                } else {
+                    panic!()
+                }
+
+                assert_eq!(0, summary1.group_by_values.len());
+            },
+        );
+
+        // Test multiple aggregations in play
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([
+                    (
+                        "Count".into(),
+                        AggregationExpression::new(
+                            QueryLocation::new_fake(),
+                            AggregationFunction::Count,
+                            None,
+                        ),
+                    ),
+                    (
+                        "Sum".into(),
+                        AggregationExpression::new(
+                            QueryLocation::new_fake(),
+                            AggregationFunction::Sum,
+                            Some(key1_selector.clone()),
+                        ),
+                    ),
+                ]),
+            ),
+            |s| {
+                assert_eq!(1, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    summary1.summary_id
+                );
+                assert_eq!(2, summary1.aggregation_values.len());
+
+                if let SummaryAggregation::Count(i) = &summary1.aggregation_values["Count"] {
+                    assert_eq!(2, *i);
+                } else {
+                    panic!()
+                }
+
+                if let SummaryAggregation::Sum(SummaryValue::Integer(i)) =
+                    &summary1.aggregation_values["Sum"]
+                {
+                    assert_eq!(0, *i);
+                } else {
+                    panic!()
+                }
+
+                assert_eq!(0, summary1.group_by_values.len());
             },
         );
     }
