@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::sync::Arc;
 
-use otel_arrow_rust::otap::transform::rename_attr;
+use otel_arrow_rust::otap::transform::rename_attributes;
 use otel_arrow_rust::schema::consts;
 
 fn generate_attribute_batch(num_rows: usize, key_gen: impl Fn(usize) -> String) -> RecordBatch {
@@ -45,12 +45,9 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(
+                        let result = rename_attributes(
                             input,
-                            &BTreeMap::from_iter([
-                                ("attr100", "attr_100"),
-                                ("attr101", "attr_101"),
-                            ]),
+                            &BTreeMap::from_iter([("attr100", "attr_100")]),
                         )
                         .expect("expect no errors");
                         _ = black_box(result)
@@ -70,11 +67,9 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(
-                            input,
-                            &BTreeMap::from_iter([("attr3", "attr_3"), ("attr5", "attr_3")]),
-                        )
-                        .expect("expect no errors");
+                        let result =
+                            rename_attributes(input, &BTreeMap::from_iter([("attr3", "attr_3")]))
+                                .expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,
@@ -94,11 +89,9 @@ fn bench_attribute_rename(c: &mut Criterion) {
                 b.iter_batched(
                     || input,
                     |input| {
-                        let result = rename_attr(
-                            input,
-                            &BTreeMap::from_iter([("attr3", "attr_3"), ("attr5", "attr_3")]),
-                        )
-                        .expect("expect no errors");
+                        let result =
+                            rename_attributes(input, &BTreeMap::from_iter([("attr3", "attr_3")]))
+                                .expect("expect no errors");
                         _ = black_box(result)
                     },
                     BatchSize::SmallInput,

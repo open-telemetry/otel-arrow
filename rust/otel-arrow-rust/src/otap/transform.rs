@@ -458,8 +458,10 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
 }
 
-/// replaces the attribute key 'old_key' with 'new_key'
-pub fn rename_attr(
+/// Replaces the attribute keys.
+///
+/// Accepts the attribute record batch, along with a map of old attribute key to new key.
+pub fn rename_attributes(
     attrs_record_batch: &RecordBatch,
     replacements: &BTreeMap<&str, &str>,
 ) -> Result<RecordBatch> {
@@ -553,8 +555,6 @@ pub fn rename_attr(
 
 fn replace_str_in_dict_values<K>(
     array: &DictionaryArray<K>,
-    // target: &str,
-    // replacement: &str,
     replacements: &BTreeMap<&str, &str>,
 ) -> Result<Option<DictionaryArray<K>>>
 where
@@ -586,7 +586,7 @@ where
     Ok(new_dict)
 }
 
-/// Accepts an array in which to replace some of the values and a map of `target` to `replacement`.
+/// Accepts the array plus a map of `target` to `replacement`.
 /// Returns a new [`StringArray`] with any instances of `target` replaced by `replacement`.
 ///
 /// This will return `None` if there are no values to replace (e.g. no `target`s are present in the
@@ -1552,7 +1552,8 @@ mod test {
                 RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
             let renamed_batch =
-                rename_attr(&record_batch, &BTreeMap::from_iter([(target, replacement)])).unwrap();
+                rename_attributes(&record_batch, &BTreeMap::from_iter([(target, replacement)]))
+                    .unwrap();
             let renamed_keys = renamed_batch
                 .column_by_name(consts::ATTRIBUTE_KEY)
                 .unwrap()
@@ -1576,7 +1577,7 @@ mod test {
         let record_batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
-        let renamed_batch = rename_attr(
+        let renamed_batch = rename_attributes(
             &record_batch,
             &BTreeMap::from_iter([("b", "foo"), ("d", "D")]),
         )
@@ -1603,7 +1604,7 @@ mod test {
         let record_batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
-        let renamed_batch = rename_attr(
+        let renamed_batch = rename_attributes(
             &record_batch,
             &BTreeMap::from_iter([("b", "foo"), ("d", "D")]),
         )
@@ -1632,7 +1633,7 @@ mod test {
             RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
         let renamed_batch =
-            rename_attr(&record_batch, &BTreeMap::from_iter([("foo", "qux")])).unwrap();
+            rename_attributes(&record_batch, &BTreeMap::from_iter([("foo", "qux")])).unwrap();
         let renamed_keys = renamed_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
             .unwrap()
@@ -1656,7 +1657,7 @@ mod test {
             RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
         let renamed_batch =
-            rename_attr(&record_batch, &BTreeMap::from_iter([("notfound", "qux")])).unwrap();
+            rename_attributes(&record_batch, &BTreeMap::from_iter([("notfound", "qux")])).unwrap();
         let renamed_keys = renamed_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
             .unwrap()
@@ -1679,7 +1680,7 @@ mod test {
         let record_batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(keys.clone())]).unwrap();
 
-        let result = rename_attr(&record_batch, &BTreeMap::from_iter([("foo", "qux")]));
+        let result = rename_attributes(&record_batch, &BTreeMap::from_iter([("foo", "qux")]));
         assert!(matches!(result, Err(Error::ColumnNotFound { .. })));
     }
 
@@ -1709,7 +1710,8 @@ mod test {
                 RecordBatch::try_new(schema.clone(), vec![Arc::new(dict_array)]).unwrap();
 
             let renamed_batch =
-                rename_attr(&record_batch, &BTreeMap::from_iter([(target, replacement)])).unwrap();
+                rename_attributes(&record_batch, &BTreeMap::from_iter([(target, replacement)]))
+                    .unwrap();
             let renamed_column = renamed_batch
                 .column_by_name(consts::ATTRIBUTE_KEY)
                 .unwrap()
