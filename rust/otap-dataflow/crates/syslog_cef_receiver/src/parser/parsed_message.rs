@@ -251,7 +251,7 @@ impl ParsedSyslogMessage<'_> {
                 log_attributes_arrow_records
                     .append_str(std::str::from_utf8(msg.severity).unwrap_or_default());
 
-                for (key, value) in &msg.extensions {
+                for (key, value) in msg.parse_extensions() {
                     log_attributes_arrow_records
                         .append_key(std::str::from_utf8(key).unwrap_or_default());
                     log_attributes_arrow_records

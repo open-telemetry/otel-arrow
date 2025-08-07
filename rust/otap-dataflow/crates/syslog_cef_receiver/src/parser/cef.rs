@@ -13,8 +13,15 @@ pub(crate) struct CefMessage<'a> {
     pub(super) signature_id: &'a [u8],
     pub(super) name: &'a [u8],
     pub(super) severity: &'a [u8],
-    pub(super) extensions: Vec<(&'a [u8], &'a [u8])>,
+    pub(super) extensions: &'a [u8],
     pub(super) input: &'a [u8],
+}
+
+impl<'a> CefMessage<'a> {
+    /// Parse and iterate over the extensions as key-value pairs
+    pub(crate) fn parse_extensions(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        parse_cef_extensions(self.extensions).into_iter()
+    }
 }
 
 /// Parse a CEF message
@@ -81,9 +88,9 @@ pub(super) fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseErro
 
     // Parse extensions if present
     let extensions = if parts_count > 7 && parts[7].is_some() {
-        parse_cef_extensions(parts[7].unwrap())
+        parts[7].unwrap()
     } else {
-        Vec::new()
+        &[]
     };
 
     Ok(CefMessage {
@@ -163,17 +170,19 @@ mod tests {
         assert_eq!(result.signature_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
-        assert_eq!(result.extensions.len(), 3);
+        
+        let extensions: Vec<_> = result.parse_extensions().collect();
+        assert_eq!(extensions.len(), 3);
         assert_eq!(
-            result.extensions[0],
+            extensions[0],
             (b"src".as_slice(), b"10.0.0.1".as_slice())
         );
         assert_eq!(
-            result.extensions[1],
+            extensions[1],
             (b"dst".as_slice(), b"2.1.2.2".as_slice())
         );
         assert_eq!(
-            result.extensions[2],
+            extensions[2],
             (b"spt".as_slice(), b"1232".as_slice())
         );
     }
@@ -190,6 +199,8 @@ mod tests {
         assert_eq!(result.signature_id, b"100".as_slice());
         assert_eq!(result.name, b"worm successfully stopped".as_slice());
         assert_eq!(result.severity, b"10".as_slice());
-        assert_eq!(result.extensions.len(), 0);
+        
+        let extensions: Vec<_> = result.parse_extensions().collect();
+        assert_eq!(extensions.len(), 0);
     }
 }
