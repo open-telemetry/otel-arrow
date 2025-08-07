@@ -269,29 +269,91 @@ where
         ScalarExpression::Convert(c) => {
             let value = match c {
                 ConvertScalarExpression::Boolean(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
-                    if let Some(b) = v.to_value().convert_to_bool() {
+                    let value = inner_value.to_value();
+
+                    if let Some(b) = value.convert_to_bool() {
                         ResolvedValue::Computed(OwnedValue::Boolean(BooleanValueStorage::new(b)))
                     } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into a bool",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
+
+                        ResolvedValue::Computed(OwnedValue::Null)
+                    }
+                }
+                ConvertScalarExpression::DateTime(c) => {
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
+
+                    let value = inner_value.to_value();
+
+                    if let Some(d) = value.convert_to_datetime() {
+                        ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
+                    } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into a DateTime",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
                 ConvertScalarExpression::Double(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
-                    if let Some(d) = v.to_value().convert_to_double() {
+                    let value = inner_value.to_value();
+
+                    if let Some(d) = value.convert_to_double() {
                         ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
                     } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into a double",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
                 ConvertScalarExpression::Integer(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                    let inner_value =
+                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
 
-                    if let Some(i) = v.to_value().convert_to_integer() {
+                    let value = inner_value.to_value();
+
+                    if let Some(i) = value.convert_to_integer() {
                         ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
                     } else {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || {
+                                format!(
+                                    "Input of '{:?}' type could not be converted into an integer",
+                                    value.get_value_type()
+                                )
+                            },
+                        );
                         ResolvedValue::Computed(OwnedValue::Null)
                     }
                 }
@@ -439,6 +501,47 @@ where
                 RecordSetEngineDiagnosticLevel::Verbose,
                 scalar_expression,
                 || format!("Evaluated as: '{v}'"),
+            );
+
+            Ok(v)
+        }
+        ScalarExpression::ParseJson(p) => {
+            let inner_value =
+                execute_scalar_expression(execution_context, p.get_inner_expression())?;
+
+            let value = inner_value.to_value();
+
+            let v = ResolvedValue::Computed(match value {
+                Value::String(s) => match OwnedValue::from_json(s.get_value()) {
+                    Some(v) => v,
+                    None => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || "String input could not be parsed as JSON".into(),
+                        );
+                        OwnedValue::Null
+                    }
+                },
+                _ => {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        scalar_expression,
+                        || {
+                            format!(
+                                "Input of '{:?}' type could not be parsed as JSON",
+                                value.get_value_type()
+                            )
+                        },
+                    );
+                    OwnedValue::Null
+                }
+            });
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: {v}"),
             );
 
             Ok(v)
@@ -658,6 +761,8 @@ fn select_from_value<'a, 'b, TRecord: Record>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use chrono::{TimeZone, Utc};
 
     use super::*;
 
@@ -1153,6 +1258,18 @@ mod tests {
                     )),
                 ),
                 (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::Boolean(&BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                ),
+                (
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "value"),
                     )),
@@ -1198,6 +1315,15 @@ mod tests {
                     )),
                 ),
                 (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
+                ),
+                (
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "value"),
                     )),
@@ -1232,6 +1358,15 @@ mod tests {
                         StringScalarExpression::new(QueryLocation::new_fake(), "18"),
                     )),
                     Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
                 ),
                 (
                     ScalarExpression::Static(StaticScalarExpression::String(
@@ -1270,6 +1405,18 @@ mod tests {
                     Value::String(&StringScalarExpression::new(
                         QueryLocation::new_fake(),
                         "18",
+                    )),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Utc.timestamp_nanos(1).into(),
+                        ),
+                    )),
+                    Value::String(&StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "1970-01-01T00:00:00.000000001Z",
                     )),
                 ),
                 (
@@ -2181,5 +2328,37 @@ mod tests {
                 "Array slice index ends at '6' which is beyond the length of '5'".into(),
             ),
         );
+    }
+
+    #[test]
+    pub fn test_execute_parse_json_scalar_expression() {
+        fn run_test_success(input: &str, expected_value: Value) {
+            let pipeline = Default::default();
+
+            let expression = ScalarExpression::ParseJson(ParseJsonScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), input),
+                )),
+            ));
+
+            let record = TestRecord::new();
+
+            let execution_context = ExecutionContext::new(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                &pipeline,
+                None,
+                record,
+            );
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value());
+        }
+
+        run_test_success(
+            "18",
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+        );
+        run_test_success("hello world", Value::Null);
     }
 }

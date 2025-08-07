@@ -2,7 +2,7 @@
 
 //! Message definitions for the pipeline engine.
 
-use crate::control::ControlMsg;
+use crate::control::NodeControlMsg;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::{RecvError, SendError};
@@ -21,7 +21,7 @@ pub enum Message<PData> {
     PData(PData),
 
     /// A control message.
-    Control(ControlMsg),
+    Control(NodeControlMsg),
 }
 
 impl<Data> Message<Data> {
@@ -34,13 +34,13 @@ impl<Data> Message<Data> {
     /// Create a ACK control message with the given ID.
     #[must_use]
     pub fn ack_ctrl_msg(id: u64) -> Self {
-        Message::Control(ControlMsg::Ack { id })
+        Message::Control(NodeControlMsg::Ack { id })
     }
 
     /// Create a NACK control message with the given ID and reason.
     #[must_use]
     pub fn nack_ctrl_msg(id: u64, reason: &str) -> Self {
-        Message::Control(ControlMsg::Nack {
+        Message::Control(NodeControlMsg::Nack {
             id,
             reason: reason.to_owned(),
         })
@@ -49,19 +49,19 @@ impl<Data> Message<Data> {
     /// Creates a config control message with the given configuration.
     #[must_use]
     pub fn config_ctrl_msg(config: serde_json::Value) -> Self {
-        Message::Control(ControlMsg::Config { config })
+        Message::Control(NodeControlMsg::Config { config })
     }
 
     /// Creates a timer tick control message.
     #[must_use]
     pub fn timer_tick_ctrl_msg() -> Self {
-        Message::Control(ControlMsg::TimerTick {})
+        Message::Control(NodeControlMsg::TimerTick {})
     }
 
     /// Creates a shutdown control message with the given reason.
     #[must_use]
     pub fn shutdown_ctrl_msg(deadline: Duration, reason: &str) -> Self {
-        Message::Control(ControlMsg::Shutdown {
+        Message::Control(NodeControlMsg::Shutdown {
             deadline,
             reason: reason.to_owned(),
         })
@@ -82,7 +82,7 @@ impl<Data> Message<Data> {
     /// Checks if this message is a shutdown control message.
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
-        matches!(self, Message::Control(ControlMsg::Shutdown { .. }))
+        matches!(self, Message::Control(NodeControlMsg::Shutdown { .. }))
     }
 }
 
@@ -160,19 +160,19 @@ impl<T> Receiver<T> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<Receiver<ControlMsg>>,
+    control_rx: Option<Receiver<NodeControlMsg>>,
     pdata_rx: Option<Receiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
-    pending_shutdown: Option<ControlMsg>,
+    pending_shutdown: Option<NodeControlMsg>,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(control_rx: Receiver<ControlMsg>, pdata_rx: Receiver<PData>) -> Self {
+    pub fn new(control_rx: Receiver<NodeControlMsg>, pdata_rx: Receiver<PData>) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
@@ -249,16 +249,16 @@ impl<PData> MessageChannel<PData> {
 
                 // A) Control first
                 ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
-                    Ok(ControlMsg::Shutdown { deadline, reason }) => {
+                    Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
                             self.shutdown();
-                            return Ok(Message::Control(ControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
+                            return Ok(Message::Control(NodeControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
                         }
                         // Begin draining mode, but don’t return Shutdown yet
                         let when = Instant::now() + deadline;
                         self.shutting_down_deadline = Some(when);
-                        self.pending_shutdown = Some(ControlMsg::Shutdown { deadline, reason });
+                        self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
                         continue; // re-enter the loop into draining mode
                     }
                     Ok(msg) => return Ok(Message::Control(msg)),
@@ -274,7 +274,7 @@ impl<PData> MessageChannel<PData> {
                         Err(RecvError::Closed) => {
                             // pdata channel closed -> emit Shutdown
                             self.shutdown();
-                            return Ok(Message::Control(ControlMsg::Shutdown {
+                            return Ok(Message::Control(NodeControlMsg::Shutdown {
                                 deadline: Duration::ZERO,
                                 reason: "pdata channel closed".to_owned(),
                             }));

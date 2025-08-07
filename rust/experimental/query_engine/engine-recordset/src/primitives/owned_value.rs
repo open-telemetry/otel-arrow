@@ -17,6 +17,59 @@ pub enum OwnedValue {
     String(StringValueStorage),
 }
 
+impl OwnedValue {
+    pub fn from_json(input: &str) -> Option<OwnedValue> {
+        return match serde_json::from_str::<serde_json::Value>(input) {
+            Ok(v) => from_value(v),
+            Err(_) => None,
+        };
+
+        fn from_value(value: serde_json::Value) -> Option<OwnedValue> {
+            match value {
+                serde_json::Value::Null => Some(OwnedValue::Null),
+                serde_json::Value::Bool(b) => {
+                    Some(OwnedValue::Boolean(BooleanValueStorage::new(b)))
+                }
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        Some(OwnedValue::Integer(IntegerValueStorage::new(i)))
+                    } else {
+                        n.as_f64()
+                            .map(|f| OwnedValue::Double(DoubleValueStorage::new(f)))
+                    }
+                }
+                serde_json::Value::String(s) => {
+                    Some(OwnedValue::String(StringValueStorage::new(s)))
+                }
+                serde_json::Value::Array(v) => {
+                    let mut values = Vec::new();
+                    for value in v {
+                        match from_value(value) {
+                            Some(s) => {
+                                values.push(s);
+                            }
+                            None => return None,
+                        }
+                    }
+                    Some(OwnedValue::Array(ArrayValueStorage::new(values)))
+                }
+                serde_json::Value::Object(m) => {
+                    let mut values = HashMap::new();
+                    for (key, value) in m {
+                        match from_value(value) {
+                            Some(s) => {
+                                values.insert(key.into(), s);
+                            }
+                            None => return None,
+                        }
+                    }
+                    Some(OwnedValue::Map(MapValueStorage::new(values)))
+                }
+            }
+        }
+    }
+}
+
 impl AsStaticValue for OwnedValue {
     fn to_static_value(&self) -> StaticValue {
         match self {
@@ -75,5 +128,29 @@ impl From<Value<'_>> for OwnedValue {
             Value::Regex(r) => OwnedValue::Regex(RegexValueStorage::new(r.get_value().clone())),
             Value::String(s) => OwnedValue::String(StringValueStorage::new(s.get_value().into())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn test_from_json() {
+        let run_test = |input: &str| {
+            let value = OwnedValue::from_json(input);
+
+            assert_eq!(Some(input.into()), value.map(|v| v.to_value().to_string()));
+        };
+
+        run_test("true");
+        run_test("false");
+        run_test("18");
+        run_test("18.18");
+        run_test("null");
+        run_test("[]");
+        run_test("[1,\"two\",null]");
+        run_test("{}");
+        run_test("{\"key1\":1,\"key2\":\"two\",\"key3\":null}");
     }
 }

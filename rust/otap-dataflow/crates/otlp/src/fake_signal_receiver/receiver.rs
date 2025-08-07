@@ -13,7 +13,7 @@ use crate::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
 use async_trait::async_trait;
-use otap_df_engine::control::ControlMsg;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use serde_json::Value;
@@ -72,7 +72,7 @@ impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {..}) => {
+                        Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
                         },
@@ -141,7 +141,7 @@ mod tests {
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
     use std::future::Future;
     use std::pin::Pin;
-    use std::rc::Rc;
+    use std::sync::Arc;
     use tokio::time::{Duration, sleep, timeout};
     use weaver_forge::registry::ResolvedRegistry;
 
@@ -839,7 +839,8 @@ mod tests {
         ));
         let config = Config::new(steps, registry);
 
-        let node_config = Rc::new(NodeUserConfig::new_receiver_config(
+        // create our receiver
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             FAKE_SIGNAL_RECEIVER_URN,
         ));
         // create our receiver

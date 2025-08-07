@@ -1,12 +1,12 @@
 use std::fmt::{Debug, Display};
 
-use chrono::{DateTime, FixedOffset, SecondsFormat};
+use chrono::{DateTime, FixedOffset, SecondsFormat, TimeZone, Utc};
 use regex::Regex;
 use serde_json::json;
 
 use crate::{
     ArrayValue, ExpressionError, IndexValueClosureCallback, KeyValueClosureCallback, MapValue,
-    QueryLocation, ValueType, array_value, map_value,
+    QueryLocation, ValueType, array_value, date_utils, map_value,
 };
 
 #[derive(Debug, Clone)]
@@ -52,6 +52,7 @@ impl Value<'_> {
                     None
                 }
             }
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v != 0),
             _ => None,
         }
     }
@@ -62,6 +63,7 @@ impl Value<'_> {
             Value::Integer(i) => Some(i.get_value()),
             Value::Double(d) => Some(d.get_value() as i64),
             Value::String(s) => s.get_value().parse::<i64>().ok(),
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt(),
             _ => None,
         }
     }
@@ -69,7 +71,23 @@ impl Value<'_> {
     pub fn convert_to_datetime(&self) -> Option<DateTime<FixedOffset>> {
         match self {
             Value::DateTime(d) => Some(d.get_value()),
-            _ => None,
+            _ => {
+                if let Some(i) = self.convert_to_integer() {
+                    Some(Utc.timestamp_nanos(i).into())
+                } else {
+                    let mut result = None;
+                    self.convert_to_string(&mut |v| {
+                        result = Some(date_utils::parse_date_time(v));
+                    });
+
+                    match result {
+                        Some(v) => v.ok(),
+                        None => panic!(
+                            "Encountered a Value which does not correctly implement convert_to_string"
+                        ),
+                    }
+                }
+            }
         }
     }
 
@@ -79,6 +97,7 @@ impl Value<'_> {
             Value::Integer(i) => Some(i.get_value() as f64),
             Value::Double(d) => Some(d.get_value()),
             Value::String(s) => s.get_value().parse::<f64>().ok(),
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v as f64),
             _ => None,
         }
     }
@@ -729,6 +748,22 @@ mod tests {
         );
 
         run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(0).into(),
+            )),
+            Some(false),
+        );
+
+        run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Some(true),
+        );
+
+        run_test_success(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
@@ -780,6 +815,14 @@ mod tests {
         );
 
         run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Some(1),
+        );
+
+        run_test_success(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
@@ -797,6 +840,7 @@ mod tests {
         };
 
         let dt: DateTime<FixedOffset> = Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into();
+        let unix_plus_one = Utc.timestamp_nanos(1).into();
 
         run_test_success(
             Value::DateTime(&DateTimeScalarExpression::new(
@@ -809,7 +853,33 @@ mod tests {
         run_test_success(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
-                "hello world",
+                "6/29/2025",
+            )),
+            Some(dt),
+        );
+
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            Some(unix_plus_one),
+        );
+
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
+            Some(unix_plus_one),
+        );
+
+        run_test_success(
+            Value::Boolean(&BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+            Some(unix_plus_one),
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world 8/25/2025",
             )),
             None,
         );
@@ -858,6 +928,14 @@ mod tests {
                 "1.18",
             )),
             Some(1.18),
+        );
+
+        run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Some(1.0),
         );
 
         run_test_success(
@@ -1718,6 +1796,24 @@ mod tests {
             0,
         );
 
+        run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            0,
+        );
+
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            0,
+        );
+
         run_test_failure(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1752,24 +1848,6 @@ mod tests {
             )),
             Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
             "Value of 'String' type on left side of comparison operation could not be converted to double",
-        );
-
-        run_test_failure(
-            Value::DateTime(&DateTimeScalarExpression::new(
-                QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
-            )),
-            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
-            "Value of 'Integer' type on right side of comparison operation could not be converted to DateTime",
-        );
-
-        run_test_failure(
-            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
-            Value::DateTime(&DateTimeScalarExpression::new(
-                QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
-            )),
-            "Value of 'Double' type on left side of comparison operation could not be converted to DateTime",
         );
     }
 
