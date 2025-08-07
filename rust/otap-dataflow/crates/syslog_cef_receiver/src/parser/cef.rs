@@ -25,20 +25,23 @@ pub(super) fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseErro
 
     let content = &input[4..];
 
-    // Find up to 8 pipe-separated parts
-    let mut parts = Vec::new();
+    // Find up to 8 pipe-separated parts (7 required + 1 optional extensions)
+    let mut parts: [Option<&[u8]>; 8] = [None; 8];
+    let mut parts_count = 0;
     let mut start = 0;
     let mut pipe_count = 0;
 
     for (i, &byte) in content.iter().enumerate() {
         if byte == b'|' {
-            parts.push(&content[start..i]);
+            parts[parts_count] = Some(&content[start..i]);
+            parts_count += 1;
             start = i + 1;
             pipe_count += 1;
             if pipe_count == 7 {
                 // After 7 pipes, the rest is extensions
                 if start < content.len() {
-                    parts.push(&content[start..]);
+                    parts[parts_count] = Some(&content[start..]);
+                    parts_count += 1;
                 }
                 break;
             }
@@ -47,27 +50,38 @@ pub(super) fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseErro
 
     // Add the last part if we didn't reach 7 pipes
     if pipe_count < 7 && start < content.len() {
-        parts.push(&content[start..]);
+        parts[parts_count] = Some(&content[start..]);
+        parts_count += 1;
     }
 
-    if parts.len() < 7 {
+    if parts_count < 7 {
         return Err(super::ParseError::InvalidCef);
     }
 
-    let version_str = str::from_utf8(parts[0]).map_err(|_| super::ParseError::InvalidUtf8)?;
+    // Extract the 7 required fields using pattern matching
+    let (
+        Some(version_bytes),
+        Some(device_vendor),
+        Some(device_product),
+        Some(device_version),
+        Some(signature_id),
+        Some(name),
+        Some(severity),
+    ) = (
+        parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6],
+    )
+    else {
+        return Err(super::ParseError::InvalidCef);
+    };
+
+    let version_str = str::from_utf8(version_bytes).map_err(|_| super::ParseError::InvalidUtf8)?;
     let version: u8 = version_str
         .parse()
         .map_err(|_| super::ParseError::InvalidCef)?;
-    let device_vendor = parts[1];
-    let device_product = parts[2];
-    let device_version = parts[3];
-    let signature_id = parts[4];
-    let name = parts[5];
-    let severity = parts[6];
 
     // Parse extensions if present
-    let extensions = if parts.len() > 7 {
-        parse_cef_extensions(parts[7])
+    let extensions = if parts_count > 7 && parts[7].is_some() {
+        parse_cef_extensions(parts[7].unwrap())
     } else {
         Vec::new()
     };
