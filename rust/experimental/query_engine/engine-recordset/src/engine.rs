@@ -390,14 +390,14 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
 #[derive(Debug)]
 pub struct RecordSetEngineSummary {
     pub summary_id: String,
-    pub group_by_values: HashMap<Box<str>, OwnedValue>,
+    pub group_by_values: Vec<(Box<str>, OwnedValue)>,
     pub aggregation_values: HashMap<Box<str>, SummaryAggregation>,
 }
 
 impl RecordSetEngineSummary {
     pub fn new(
         summary_id: String,
-        group_by_values: HashMap<Box<str>, OwnedValue>,
+        group_by_values: Vec<(Box<str>, OwnedValue)>,
         aggregation_values: HashMap<Box<str>, SummaryAggregation>,
     ) -> RecordSetEngineSummary {
         Self {

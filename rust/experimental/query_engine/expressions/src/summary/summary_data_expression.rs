@@ -5,29 +5,35 @@ use crate::*;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryDataExpression {
     query_location: QueryLocation,
-    aggregation_expressions: HashMap<Box<str>, AggregationExpression>,
-    group_by_expressions: HashMap<Box<str>, ScalarExpression>,
+    group_by_expressions: Vec<(Box<str>, ScalarExpression)>,
+    aggregation_expressions: Vec<(Box<str>, AggregationExpression)>,
 }
 
 impl SummaryDataExpression {
     pub fn new(
         query_location: QueryLocation,
-        aggregation_expressions: HashMap<Box<str>, AggregationExpression>,
-        group_by_expressions: HashMap<Box<str>, ScalarExpression>,
+        mut group_by_expressions: HashMap<Box<str>, ScalarExpression>,
+        mut aggregation_expressions: HashMap<Box<str>, AggregationExpression>,
     ) -> SummaryDataExpression {
+        let mut group_by_expressions = Vec::from_iter(group_by_expressions.drain());
+        group_by_expressions.sort_by(|l, r| l.0.cmp(&r.0));
+
+        let mut aggregation_expressions = Vec::from_iter(aggregation_expressions.drain());
+        aggregation_expressions.sort_by(|l, r| l.0.cmp(&r.0));
+
         Self {
             query_location,
-            aggregation_expressions,
             group_by_expressions,
+            aggregation_expressions,
         }
     }
 
-    pub fn get_aggregation_expressions(&self) -> &HashMap<Box<str>, AggregationExpression> {
-        &self.aggregation_expressions
+    pub fn get_group_by_expressions(&self) -> &Vec<(Box<str>, ScalarExpression)> {
+        &self.group_by_expressions
     }
 
-    pub fn get_group_by_expressions(&self) -> &HashMap<Box<str>, ScalarExpression> {
-        &self.group_by_expressions
+    pub fn get_aggregation_expressions(&self) -> &Vec<(Box<str>, AggregationExpression)> {
+        &self.aggregation_expressions
     }
 }
 

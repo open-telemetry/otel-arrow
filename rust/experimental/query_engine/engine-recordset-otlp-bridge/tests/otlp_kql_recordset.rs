@@ -100,6 +100,7 @@ fn test_summarize_count_only() {
     let pipeline = PipelineExpressionBuilder::new(" ")
         .with_expressions(vec![DataExpression::Summary(SummaryDataExpression::new(
             QueryLocation::new_fake(),
+            HashMap::new(),
             HashMap::from([(
                 "Count".into(),
                 AggregationExpression::new(
@@ -108,7 +109,6 @@ fn test_summarize_count_only() {
                     None,
                 ),
             )]),
-            HashMap::new(),
         ))])
         .build()
         .unwrap();
@@ -171,14 +171,6 @@ fn test_summarize_count_and_group_by() {
         .with_expressions(vec![DataExpression::Summary(SummaryDataExpression::new(
             QueryLocation::new_fake(),
             HashMap::from([(
-                "Count".into(),
-                AggregationExpression::new(
-                    QueryLocation::new_fake(),
-                    AggregationFunction::Count,
-                    None,
-                ),
-            )]),
-            HashMap::from([(
                 "Body".into(),
                 ScalarExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -189,6 +181,14 @@ fn test_summarize_count_and_group_by() {
                         )),
                     )]),
                 )),
+            )]),
+            HashMap::from([(
+                "Count".into(),
+                AggregationExpression::new(
+                    QueryLocation::new_fake(),
+                    AggregationFunction::Count,
+                    None,
+                ),
             )]),
         ))])
         .build()
@@ -227,11 +227,13 @@ fn test_summarize_count_and_group_by() {
 
         assert_eq!(summary.group_by_values.len(), 1);
 
-        let group_by = &summary.group_by_values["Body"];
+        let (key, value) = &summary.group_by_values[0];
+
+        assert_eq!("Body", key.as_ref());
 
         assert_eq!(
             OwnedValue::String(StringValueStorage::new(body.into())).to_value(),
-            group_by.to_value()
+            value.to_value()
         );
 
         assert_eq!(summary.aggregation_values.len(), 1);

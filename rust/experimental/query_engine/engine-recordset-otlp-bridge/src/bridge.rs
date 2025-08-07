@@ -475,6 +475,7 @@ mod tests {
         let pipeline = PipelineExpressionBuilder::new(" ")
             .with_expressions(vec![DataExpression::Summary(SummaryDataExpression::new(
                 QueryLocation::new_fake(),
+                HashMap::new(),
                 HashMap::from([(
                     "Count".into(),
                     AggregationExpression::new(
@@ -483,7 +484,6 @@ mod tests {
                         None,
                     ),
                 )]),
-                HashMap::new(),
             ))])
             .build()
             .unwrap();

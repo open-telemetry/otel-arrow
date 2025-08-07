@@ -2333,8 +2333,6 @@ mod tests {
     #[test]
     pub fn test_execute_parse_json_scalar_expression() {
         fn run_test_success(input: &str, expected_value: Value) {
-            let pipeline = Default::default();
-
             let expression = ScalarExpression::ParseJson(ParseJsonScalarExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -2342,14 +2340,9 @@ mod tests {
                 )),
             ));
 
-            let record = TestRecord::new();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record,
-            );
+            let execution_context = test.create_execution_context();
 
             let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
             assert_eq!(expected_value, actual_value.to_value());

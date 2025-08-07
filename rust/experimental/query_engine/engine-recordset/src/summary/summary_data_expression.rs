@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use crate::{execution_context::*, scalar_expressions::execute_scalar_expression, *};
 use data_engine_expressions::*;
-use indexmap::IndexMap;
 
 pub fn execute_summary_data_expression<'a, TRecord: Record>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
@@ -10,12 +9,12 @@ pub fn execute_summary_data_expression<'a, TRecord: Record>(
 ) -> Result<(), ExpressionError> {
     let group_by_expressions = summary_data_expression.get_group_by_expressions();
 
-    let mut group_by_values = IndexMap::with_capacity(group_by_expressions.len());
+    let mut group_by_values = Vec::with_capacity(group_by_expressions.len());
 
     for (key, expression) in group_by_expressions {
         let value = execute_scalar_expression(execution_context, expression)?;
 
-        group_by_values.insert(key.clone(), value);
+        group_by_values.push((key.clone(), value));
     }
 
     let aggregation_expressions = summary_data_expression.get_aggregation_expressions();
@@ -180,7 +179,6 @@ mod tests {
             (assert)(&summaries)
         }
 
-        /*
         run_test(
             SummaryDataExpression::new(QueryLocation::new_fake(), HashMap::new(), HashMap::new()),
             |s| {
@@ -196,7 +194,7 @@ mod tests {
                 assert_eq!(0, summary.group_by_values.len());
             },
         );
- */
+
         let key1_selector = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -217,12 +215,11 @@ mod tests {
             )]),
         ));
 
-        /*
         run_test(
             SummaryDataExpression::new(
                 QueryLocation::new_fake(),
-                HashMap::new(),
                 HashMap::from([("key1".into(), key1_selector.clone())]),
+                HashMap::new(),
             ),
             |s| {
                 assert_eq!(2, s.len());
@@ -235,9 +232,10 @@ mod tests {
                 );
                 assert_eq!(0, summary1.aggregation_values.len());
                 assert_eq!(1, summary1.group_by_values.len());
+                assert_eq!("key1", summary1.group_by_values[0].0.as_ref());
                 assert_eq!(
                     "value1",
-                    summary1.group_by_values["key1"].to_value().to_string()
+                    summary1.group_by_values[0].1.to_value().to_string()
                 );
 
                 let summary2 = &s[1];
@@ -248,18 +246,22 @@ mod tests {
                 );
                 assert_eq!(0, summary2.aggregation_values.len());
                 assert_eq!(1, summary2.group_by_values.len());
+                assert_eq!("key1", summary2.group_by_values[0].0.as_ref());
                 assert_eq!(
                     "value2",
-                    summary2.group_by_values["key1"].to_value().to_string()
+                    summary2.group_by_values[0].1.to_value().to_string()
                 );
             },
         );
- */
+
         run_test(
             SummaryDataExpression::new(
                 QueryLocation::new_fake(),
+                HashMap::from([
+                    ("key1".into(), key1_selector.clone()),
+                    ("key2".into(), key2_selector.clone()),
+                ]),
                 HashMap::new(),
-                HashMap::from([("key1".into(), key1_selector.clone()), ("key2".into(), key2_selector.clone())]),
             ),
             |s| {
                 assert_eq!(2, s.len());
@@ -267,36 +269,30 @@ mod tests {
                 let summary1 = &s[0];
 
                 assert_eq!(
-                    "83b277b32b0fda55290a01570f9dd4fed18dcad9a0d83a8529ef023b5571f6b9",
+                    "552e13f92eb63dcf95868fb35aa3c0195ef3f0425c0edf1087f329c3dd240bec",
                     summary1.summary_id
                 );
                 assert_eq!(0, summary1.aggregation_values.len());
                 assert_eq!(2, summary1.group_by_values.len());
                 assert_eq!(
-                    "value2",
-                    summary1.group_by_values["key1"].to_value().to_string()
+                    "value1",
+                    summary1.group_by_values[0].1.to_value().to_string()
                 );
-                assert_eq!(
-                    "null",
-                    summary1.group_by_values["key2"].to_value().to_string()
-                );
+                assert_eq!("null", summary1.group_by_values[1].1.to_value().to_string());
 
                 let summary2 = &s[1];
 
                 assert_eq!(
-                    "552e13f92eb63dcf95868fb35aa3c0195ef3f0425c0edf1087f329c3dd240bec",
+                    "e7cac1b570e106c0e2b401e0d3d93365494a906c71cc8fdefb4272804a538603",
                     summary2.summary_id
                 );
                 assert_eq!(0, summary2.aggregation_values.len());
                 assert_eq!(2, summary2.group_by_values.len());
                 assert_eq!(
-                    "value1",
-                    summary2.group_by_values["key1"].to_value().to_string()
+                    "value2",
+                    summary2.group_by_values[0].1.to_value().to_string()
                 );
-                assert_eq!(
-                    "null",
-                    summary2.group_by_values["key2"].to_value().to_string()
-                );
+                assert_eq!("null", summary2.group_by_values[1].1.to_value().to_string());
             },
         );
     }
