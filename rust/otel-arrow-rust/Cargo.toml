@@ -23,7 +23,7 @@ derive = []
 
 [dependencies]
 arrow = "55.2"
-arrow-ipc = { git = "https://github.com/JakeDern/arrow-rs.git", rev = "a0ea922882b4a8fca5eebe47fc0182ca9abf0955", features = ["zstd"] }
+arrow-ipc = { version = "55.2", features = ["zstd"] }
 ciborium = "0.2.2"
 lazy_static = "1.5"
 num_enum = "0.7"
