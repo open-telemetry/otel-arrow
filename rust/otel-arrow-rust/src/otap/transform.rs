@@ -479,7 +479,8 @@ pub fn rename_attr(
                 .as_any()
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
-            replace_str(arr, old_key, new_key)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
+            // replace_str(arr, old_key, new_key)?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
+            replace_multi_str(arr, &[(old_key, new_key)])?.map(|new_keys| Arc::new(new_keys) as ArrayRef)
         }
         DataType::Dictionary(k, _) => match *k.clone() {
             DataType::UInt8 => {
@@ -562,7 +563,8 @@ where
                 .as_any()
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
-            replace_str(arr, target, replacement)?
+            // replace_str(arr, target, replacement)?
+            replace_multi_str(arr, &[(target, replacement)])?
         }
         data_type => {
             return Err(error::UnsupportedDictionaryValueTypeSnafu {
@@ -750,6 +752,158 @@ fn replace_str(
         }
     };
 
+    let new_values = new_values.into();
+    let nulls = array.nulls().cloned();
+
+    // Safety: we use unchecked here for better performance because we avoid doing utf8 validation
+    // on the new values buffer. This should be OK because we've copied bytes from the existing
+    // array and `replacement` variable, which presumably have also already passed utf8 validation.
+    #[allow(unsafe_code)]
+    let new_array = unsafe { StringArray::new_unchecked(new_offsets, new_values, nulls) };
+
+    Ok(Some(new_array))
+}
+
+fn replace_multi_str(
+    array: &StringArray,
+    // TODO could use a better ds here
+    replacements: &[(&str, &str)]
+) -> Result<Option<StringArray>> {
+    let values = array.values();
+    let offsets = array.offsets();
+
+    let target_bytes = replacements.iter().map(|(target, _)| target.as_bytes()).collect::<Vec<_>>();
+    let replacement_bytes = replacements.iter().map(|(_, replacement)| replacement.as_bytes()).collect::<Vec<_>>();
+
+    let mut eq_ranges: Vec<(usize, usize, usize)> = vec![];
+
+    // TODO offsets len check
+
+    let mut total_replacement_counts = 0;
+    let mut replacement_counts = vec![0, replacements.len()];
+
+    let len = array.len();
+    let offset_ptr = offsets.as_ptr();
+
+    for replacement_idx in 0..replacements.len() {
+        let target_bytes = target_bytes[replacement_idx];
+        let replacement_count = replacement_counts.get_mut(replacement_idx).unwrap();
+        let mut eq_range_start = None;
+        for i in 0..len {
+            #[allow(unsafe_code)]
+            let val_start = unsafe { *offset_ptr.add(i) } as usize;
+            #[allow(unsafe_code)]
+            let val_end = unsafe { *offset_ptr.add(i + 1) } as usize;
+
+            if val_end - val_start == target_bytes.len() {
+                let value = &values[val_start..val_end];
+                if value == target_bytes {
+                    total_replacement_counts += 1;
+                    *replacement_count += 1;
+                    if eq_range_start.is_none() {
+                        eq_range_start = Some(i);
+                    }
+                    continue;
+                }
+            }
+
+            if let Some(s) = eq_range_start.take() {
+                eq_ranges.push((replacement_idx, s, i))
+            }
+
+        }
+
+        // add the final trailing range
+        if let Some(s) = eq_range_start {
+            eq_ranges.push((replacement_idx, s, array.len()))            
+        }
+    }
+
+    // if there were no matches, short circuit replacing the values
+    if total_replacement_counts == 0 {
+        return Ok(None);
+    }
+
+    let replacement_byte_len_diffs = (0..replacements.len())
+        .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
+        .collect::<Vec<_>>();
+
+    // TODO initialize with correct length
+    let mut new_values = MutableBuffer::new(0);
+
+    let mut last_eq_val_end_offset = 0;
+
+    for (replacement_idx, eq_start_idx, eq_end_idx) in eq_ranges.iter().copied() {
+        // directly copy all the bytes of the values that were not replaced
+        let eq_start_offset = offsets[eq_start_idx] as usize;
+        new_values.extend_from_slice(&values.slice_with_length(
+            last_eq_val_end_offset,
+            eq_start_offset - last_eq_val_end_offset
+        ));
+
+        let replacement_bytes = replacement_bytes[replacement_idx];
+        for _ in eq_start_idx..eq_end_idx {
+            new_values.extend_from_slice(replacement_bytes);
+        }
+
+        last_eq_val_end_offset = offsets[eq_end_idx] as usize;
+    }
+
+    new_values.extend_from_slice(&values.slice(last_eq_val_end_offset));
+
+    let max_replacement_byte_len_diffs = replacement_byte_len_diffs.iter().max().unwrap();
+    let new_offsets = if *max_replacement_byte_len_diffs == 0 {
+        offsets.clone()
+    } else {
+        let mut new_offsets = MutableBuffer::new(size_of::<i32>() * len);
+
+        let mut curr_total_offset_adjustment = 0;
+        let mut prev_eq_index_end = 0;
+
+        for (replacement_idx, eq_start_idx, eq_end_idx) in eq_ranges {
+            // copy offsets for values that were not replaced, but add the offset adjustment
+            offsets
+                .inner()
+                .slice(prev_eq_index_end, eq_start_idx - prev_eq_index_end)
+                .into_iter()
+                .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+
+            let replacement_bytes = replacement_bytes[replacement_idx];
+            let mut offset = offsets[eq_start_idx] + curr_total_offset_adjustment;
+            for _ in eq_start_idx..eq_end_idx {
+                new_offsets.push(offset);
+                offset += replacement_bytes.len() as i32;
+            }
+
+            curr_total_offset_adjustment += replacement_byte_len_diffs[replacement_idx] * (eq_end_idx - eq_start_idx) as i32;
+            prev_eq_index_end = eq_end_idx;
+        }
+        
+
+        // copy any remaining offsets between the last replaced range and the end of the array
+        offsets
+            .inner()
+            .slice(prev_eq_index_end, len - prev_eq_index_end)
+            .into_iter()
+            .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+                // add the final offset
+        new_offsets.push(new_values.len() as i32);
+
+        let len = new_offsets.len() / size_of::<i32>();
+        let scalar_buffer = ScalarBuffer::<i32>::new(new_offsets.into(), 0, len);
+
+        // Calling `new_unchecked` here skips iterating the buffer to ensure that all the values
+        // are monotonically increasing, which saves a lot of time on large batch sizes
+        //
+        // Safety: we've computed the buffer values from the existing offsets, which should already
+        // be monotonically increasing if the passed StringArray was valid (and if not, we've
+        // created a new StringArray no less valid than what was passed)
+        #[allow(unsafe_code)]
+        unsafe {
+            OffsetBuffer::new_unchecked(scalar_buffer)
+        }
+    };
+    
     let new_values = new_values.into();
     let nulls = array.nulls().cloned();
 
