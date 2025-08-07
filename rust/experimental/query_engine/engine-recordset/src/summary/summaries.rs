@@ -1,6 +1,7 @@
 use std::{cell::RefCell, collections::HashMap};
 
 use data_engine_expressions::*;
+use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
 use crate::{execution_context::ExecutionContext, *};
@@ -23,7 +24,7 @@ impl Summaries {
         &self,
         execution_context: &ExecutionContext<'a, '_, '_, T>,
         summary_data_expression: &'a SummaryDataExpression,
-        mut group_by_values: HashMap<Box<str>, ResolvedValue>,
+        mut group_by_values: IndexMap<Box<str>, ResolvedValue>,
         mut aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
     ) {
         let summary_id = Summary::generate_id(&group_by_values);
@@ -62,7 +63,7 @@ impl Summaries {
         }
 
         let summary = Summary::new(
-            HashMap::from_iter(group_by_values.drain().map(|(k, v)| (k, v.into()))),
+            HashMap::from_iter(group_by_values.drain(..).map(|(k, v)| (k, v.into()))),
             HashMap::from_iter(aggregation_values.drain().map(|(k, v)| (k, v.into()))),
         );
 
@@ -189,8 +190,10 @@ impl Summary {
         }
     }
 
-    pub(crate) fn generate_id(group_by_values: &HashMap<Box<str>, ResolvedValue>) -> String {
+    pub(crate) fn generate_id(group_by_values: &IndexMap<Box<str>, ResolvedValue>) -> String {
         let mut hasher = Sha256::new();
+
+        println!("{:?}", group_by_values);
 
         for (key, value) in group_by_values {
             hasher.update(key.as_bytes());

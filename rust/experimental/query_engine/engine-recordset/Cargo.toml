@@ -10,6 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 hex = "0.4.3"
+indexmap = "2.10.0"
 sha2 = "0.10.8"
 
 chrono = { workspace = true }

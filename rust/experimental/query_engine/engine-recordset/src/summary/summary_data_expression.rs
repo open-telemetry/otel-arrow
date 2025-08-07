@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
-use crate::{
-    execution_context::ExecutionContext, scalar_expressions::execute_scalar_expression, *,
-};
+use crate::{execution_context::*, scalar_expressions::execute_scalar_expression, *};
 use data_engine_expressions::*;
+use indexmap::IndexMap;
 
 pub fn execute_summary_data_expression<'a, TRecord: Record>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
@@ -11,7 +10,7 @@ pub fn execute_summary_data_expression<'a, TRecord: Record>(
 ) -> Result<(), ExpressionError> {
     let group_by_expressions = summary_data_expression.get_group_by_expressions();
 
-    let mut group_by_values = HashMap::with_capacity(group_by_expressions.len());
+    let mut group_by_values = IndexMap::with_capacity(group_by_expressions.len());
 
     for (key, expression) in group_by_expressions {
         let value = execute_scalar_expression(execution_context, expression)?;
@@ -132,5 +131,173 @@ fn get_summary_value(value: &Value) -> Option<SummaryValue> {
         Value::Integer(i) => Some(SummaryValue::Integer(i.get_value())),
         Value::Double(d) => Some(SummaryValue::Double(d.get_value())),
         _ => value.convert_to_double().map(SummaryValue::Double),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_summary_data_expression() {
+        fn run_test(
+            summary_data_expression: SummaryDataExpression,
+            assert: impl FnOnce(&Vec<RecordSetEngineSummary>),
+        ) {
+            let record1 = TestRecord::new().with_key_value(
+                "key1".into(),
+                OwnedValue::String(StringValueStorage::new("value1".into())),
+            );
+
+            let record2 = TestRecord::new().with_key_value(
+                "key1".into(),
+                OwnedValue::String(StringValueStorage::new("value2".into())),
+            );
+
+            let pipeline = PipelineExpressionBuilder::new(" ")
+                .with_expressions(vec![DataExpression::Summary(summary_data_expression)])
+                .build()
+                .unwrap();
+
+            let engine = RecordSetEngine::new();
+
+            let mut batch = engine.begin_batch(&pipeline);
+
+            batch.push_records(&mut TestRecordSet::new(vec![
+                record1.clone(),
+                record1,
+                record2,
+            ]));
+
+            let results = batch.flush();
+
+            let mut summaries = results.summaries;
+
+            summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
+
+            println!("{summaries:?}");
+
+            (assert)(&summaries)
+        }
+
+        /*
+        run_test(
+            SummaryDataExpression::new(QueryLocation::new_fake(), HashMap::new(), HashMap::new()),
+            |s| {
+                assert_eq!(1, s.len());
+
+                let summary = &s[0];
+
+                assert_eq!(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    summary.summary_id
+                );
+                assert_eq!(0, summary.aggregation_values.len());
+                assert_eq!(0, summary.group_by_values.len());
+            },
+        );
+ */
+        let key1_selector = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key1",
+                )),
+            )]),
+        ));
+
+        let key2_selector = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "key2",
+                )),
+            )]),
+        ));
+
+        /*
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([("key1".into(), key1_selector.clone())]),
+            ),
+            |s| {
+                assert_eq!(2, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "28dce9b9d827274fb9eaf24a0aa0745ff5f5504335b1044841ea1dc054552e3c",
+                    summary1.summary_id
+                );
+                assert_eq!(0, summary1.aggregation_values.len());
+                assert_eq!(1, summary1.group_by_values.len());
+                assert_eq!(
+                    "value1",
+                    summary1.group_by_values["key1"].to_value().to_string()
+                );
+
+                let summary2 = &s[1];
+
+                assert_eq!(
+                    "c21e7824f3a91543ce9ec4847830951aa4023c711dc1fa2d3a101811c017f230",
+                    summary2.summary_id
+                );
+                assert_eq!(0, summary2.aggregation_values.len());
+                assert_eq!(1, summary2.group_by_values.len());
+                assert_eq!(
+                    "value2",
+                    summary2.group_by_values["key1"].to_value().to_string()
+                );
+            },
+        );
+ */
+        run_test(
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([("key1".into(), key1_selector.clone()), ("key2".into(), key2_selector.clone())]),
+            ),
+            |s| {
+                assert_eq!(2, s.len());
+
+                let summary1 = &s[0];
+
+                assert_eq!(
+                    "83b277b32b0fda55290a01570f9dd4fed18dcad9a0d83a8529ef023b5571f6b9",
+                    summary1.summary_id
+                );
+                assert_eq!(0, summary1.aggregation_values.len());
+                assert_eq!(2, summary1.group_by_values.len());
+                assert_eq!(
+                    "value2",
+                    summary1.group_by_values["key1"].to_value().to_string()
+                );
+                assert_eq!(
+                    "null",
+                    summary1.group_by_values["key2"].to_value().to_string()
+                );
+
+                let summary2 = &s[1];
+
+                assert_eq!(
+                    "552e13f92eb63dcf95868fb35aa3c0195ef3f0425c0edf1087f329c3dd240bec",
+                    summary2.summary_id
+                );
+                assert_eq!(0, summary2.aggregation_values.len());
+                assert_eq!(2, summary2.group_by_values.len());
+                assert_eq!(
+                    "value1",
+                    summary2.group_by_values["key1"].to_value().to_string()
+                );
+                assert_eq!(
+                    "null",
+                    summary2.group_by_values["key2"].to_value().to_string()
+                );
+            },
+        );
     }
 }
