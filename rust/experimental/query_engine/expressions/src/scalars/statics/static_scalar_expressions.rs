@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, FixedOffset};
 use regex::Regex;
 
@@ -33,6 +35,76 @@ pub enum StaticScalarExpression {
     String(StringScalarExpression),
 }
 
+impl StaticScalarExpression {
+    pub fn from_json(query_location: QueryLocation, input: &str) -> Option<StaticScalarExpression> {
+        return match serde_json::from_str::<serde_json::Value>(input) {
+            Ok(v) => from_value(&query_location, v),
+            Err(_) => None,
+        };
+
+        fn from_value(
+            query_location: &QueryLocation,
+            value: serde_json::Value,
+        ) -> Option<StaticScalarExpression> {
+            match value {
+                serde_json::Value::Null => Some(StaticScalarExpression::Null(
+                    NullScalarExpression::new(query_location.clone()),
+                )),
+                serde_json::Value::Bool(b) => Some(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(query_location.clone(), b),
+                )),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        Some(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(query_location.clone(), i),
+                        ))
+                    } else {
+                        n.as_f64().map(|f| {
+                            StaticScalarExpression::Double(DoubleScalarExpression::new(
+                                query_location.clone(),
+                                f,
+                            ))
+                        })
+                    }
+                }
+                serde_json::Value::String(s) => Some(StaticScalarExpression::String(
+                    StringScalarExpression::new(query_location.clone(), &s),
+                )),
+                serde_json::Value::Array(v) => {
+                    let mut values = Vec::new();
+                    for value in v {
+                        match from_value(query_location, value) {
+                            Some(s) => {
+                                values.push(s);
+                            }
+                            None => return None,
+                        }
+                    }
+                    Some(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                        query_location.clone(),
+                        values,
+                    )))
+                }
+                serde_json::Value::Object(m) => {
+                    let mut values = HashMap::new();
+                    for (key, value) in m {
+                        match from_value(query_location, value) {
+                            Some(s) => {
+                                values.insert(key.into(), s);
+                            }
+                            None => return None,
+                        }
+                    }
+                    Some(StaticScalarExpression::Map(MapScalarExpression::new(
+                        query_location.clone(),
+                        values,
+                    )))
+                }
+            }
+        }
+    }
+}
+
 impl Expression for StaticScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
@@ -64,7 +136,7 @@ impl Expression for StaticScalarExpression {
 }
 
 impl AsStaticValue for StaticScalarExpression {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         match self {
             StaticScalarExpression::Array(a) => StaticValue::Array(a),
             StaticScalarExpression::Boolean(b) => StaticValue::Boolean(b),
@@ -296,5 +368,29 @@ impl Expression for StringScalarExpression {
 impl StringValue for StringScalarExpression {
     fn get_value(&self) -> &str {
         &self.value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn test_from_json() {
+        let run_test = |input: &str| {
+            let value = StaticScalarExpression::from_json(QueryLocation::new_fake(), input);
+
+            assert_eq!(Some(input.into()), value.map(|v| v.to_value().to_string()));
+        };
+
+        run_test("true");
+        run_test("false");
+        run_test("18");
+        run_test("18.18");
+        run_test("null");
+        run_test("[]");
+        run_test("[1,\"two\",null]");
+        run_test("{}");
+        run_test("{\"key1\":1,\"key2\":\"two\",\"key3\":null}");
     }
 }

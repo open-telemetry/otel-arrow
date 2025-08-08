@@ -54,6 +54,12 @@ jobs:
           sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: ${{ inputs.version }}/" collector/otelarrowcol-build.yaml
           echo "Updated collector/otelarrowcol-build.yaml version to ${{ inputs.version }}"
 
+      - name: Update collector main.go version
+        run: |
+          # Update version in collector/cmd/otelarrowcol/main.go
+          sed -i "s/Version:     \"[0-9]\+\.[0-9]\+\.[0-9]\+\"/Version:     \"${{ inputs.version }}\"/" collector/cmd/otelarrowcol/main.go
+          echo "Updated collector/cmd/otelarrowcol/main.go version to ${{ inputs.version }}"
+
       - name: Update CHANGELOG.md
         run: ./.github/workflows/scripts/update-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
 
@@ -115,6 +121,7 @@ jobs:
           ### Changes included:
           - Updated CHANGELOG.md with release notes
           - Updated collector/otelarrowcol-build.yaml version to v${{ inputs.version }}
+          - Updated collector/cmd/otelarrowcol/main.go version to v${{ inputs.version }}
 
           ### Release Notes:
           ${CHANGELOG_CONTENT}
@@ -122,6 +129,7 @@ jobs:
           ### Checklist:
           - [ ] Verify CHANGELOG.md formatting and content
           - [ ] Verify collector version update in collector/otelarrowcol-build.yaml
+          - [ ] Verify collector main.go version update in collector/cmd/otelarrowcol/main.go
           - [ ] Confirm all tests pass
           - [ ] Ready to merge and tag release
 

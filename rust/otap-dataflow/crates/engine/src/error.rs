@@ -5,7 +5,7 @@
 //! Important note: It is important not to use `!Send` data types in errors (e.g. avoid using Rc) to
 //! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
-use crate::control::ControlMsg;
+use crate::control::{NodeControlMsg, PipelineControlMsg};
 use otap_df_channel::error::SendError;
 use otap_df_config::{NodeId, PortName, Urn};
 use std::borrow::Cow;
@@ -25,14 +25,18 @@ pub enum Error<T> {
     #[error("A channel error occurred: {0}")]
     ChannelSendError(#[from] SendError<T>),
 
-    /// A wrapper for the control message send errors.
-    #[error("A control message send error occurred in node {node}: {error}")]
-    ControlMsgSendError {
+    /// A wrapper for the pipeline control message send errors.
+    #[error("A pipeline control channel error occurred: {0}")]
+    PipelineControlMsgError(SendError<PipelineControlMsg>),
+
+    /// A wrapper for the node control message send errors.
+    #[error("A node control message send error occurred in node {node}: {error}")]
+    NodeControlMsgSendError {
         /// The name of the node that encountered the error.
         node: NodeId,
 
         /// The error that occurred.
-        error: SendError<ControlMsg>,
+        error: SendError<NodeControlMsg>,
     },
 
     /// The specified hyper-edge is invalid.
@@ -173,21 +177,21 @@ pub enum Error<T> {
         kind: Cow<'static, str>,
     },
 
-    /// A task error that occurred during the execution of the pipeline.
-    #[error("Task error: {error}, cancelled: {is_cancelled}, panic: {is_panic}")]
-    TaskError {
-        /// Flag indicating whether the task was cancelled.
-        is_cancelled: bool,
+    /// A task error that occurred during the execution of a join task.
+    #[error("Join task error: {error}, cancelled: {is_canceled}, panic: {is_panic}")]
+    JoinTaskError {
+        /// Flag indicating whether the task was canceled.
+        is_canceled: bool,
         /// Flag indicating whether the task panicked.
         is_panic: bool,
         /// The error that occurred.
         error: String,
     },
 
-    /// A list of errors that occurred during the execution of the pipeline.
-    #[error("Errors detected during the execution of the engine: {errors:?}")]
-    EngineErrors {
-        /// A list of errors that occurred during the execution of the pipeline.
-        errors: Vec<Error<T>>,
+    /// An internal error that occurred in the pipeline engine.
+    #[error("Internal error: {message}")]
+    InternalError {
+        /// An internal error message.
+        message: String,
     },
 }

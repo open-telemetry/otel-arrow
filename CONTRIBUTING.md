@@ -46,6 +46,13 @@ functional). (TBD)
 
 -Mention code coverage expectations or reporting tools if applicable. (TBD)
 
+### Micro Benchmarks
+
+With certain code changes in the rust code base, running micro benchmarks to
+see if there are any issues with the performace could be a good idea. In order
+to do this `cargobench` label can be added to the pull request, which will
+trigger the [Rust-Benchmarks](.github/workflows/rust-bench.yml) workflow.
+
 ## Contribution Guidelines
 
 This guide outlines best practices and requirements to ensure a smooth and

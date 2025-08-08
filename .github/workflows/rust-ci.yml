@@ -42,7 +42,7 @@ jobs:
         with:
           toolchain: stable
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@a416ddeedbd372e614cc1386e8b642692f66865e # v2.57.1
+        uses: taiki-e/install-action@6064345e6658255e90e9500fdf9a06ab77e6909c # v2.57.6
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
@@ -156,31 +156,6 @@ jobs:
           command: check sources
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
 
-  bench:
-    strategy:
-      fail-fast: false
-      matrix:
-        folder:
-        - otap-dataflow
-        - otel-arrow-rust
-        - experimental/query_abstraction
-        - experimental/query_engine
-        - experimental/syslog-cef-receivers
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
-        with:
-          toolchain: stable
-      - name: cargo bench ${{ matrix.folder }}
-        run: cargo bench
-        working-directory: ./rust/${{ matrix.folder }}
-
   docs:
     strategy:
       fail-fast: false
@@ -226,3 +201,14 @@ jobs:
       - name: cargo xtask ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
+
+  document-build-options:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Document Build Options
+        run: |
+          echo "## :bulb: Build Options" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Add the label \`cargobench\` to your PR to run micro benchmarks." >> $GITHUB_STEP_SUMMARY
+          echo "- More info: [link to docs](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#micro-benchmarks)" >> $GITHUB_STEP_SUMMARY

@@ -9,9 +9,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.41.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.41.0) - 2025-08-06
+
 - Add proper automation in `prepare-release` workflow for
   `collector/otelarrowcol-build.yaml`.
   [#804](https://github.com/open-telemetry/otel-arrow/pull/804)
+- Upgrade various Go dependencies.
+  [#866](https://github.com/open-telemetry/otel-arrow/pull/866)
+- Upgrade to v0.131.0 / v1.37.0 of collector dependencies.
+  [#866](https://github.com/open-telemetry/otel-arrow/pull/866)
 
 ## [0.40.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.40.0) - 2025-07-28
 

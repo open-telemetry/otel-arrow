@@ -21,70 +21,179 @@ pub(crate) fn parse_comparison_expression(
 
     let operation_rule = comparison_rules.next().unwrap();
 
-    let right_rule = comparison_rules.next().unwrap();
-
-    let right = match right_rule.as_rule() {
-        Rule::scalar_expression => parse_scalar_expression(right_rule, state)?,
-        _ => panic!("Unexpected rule in comparison_expression: {right_rule}"),
-    };
+    // Handle operations that require a single right operand
+    let next_rule = comparison_rules.next().unwrap();
 
     match operation_rule.as_rule() {
-        Rule::equals_token => Ok(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-            query_location,
-            left,
-            right,
-            false,
-        ))),
-        Rule::equals_insensitive_token => Ok(LogicalExpression::EqualTo(
-            EqualToLogicalExpression::new(query_location, left, right, true),
-        )),
+        Rule::in_token
+        | Rule::in_insensitive_token
+        | Rule::not_in_token
+        | Rule::not_in_insensitive_token => {
+            // For "in" operations, we expect parentheses and multiple values
+            // The next_rule should be the first scalar_expression inside the parentheses
+            let mut values = vec![parse_scalar_expression(next_rule, state)?];
 
-        Rule::not_equals_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
-            query_location.clone(),
-            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                query_location,
-                left,
-                right,
-                false,
-            )),
-        ))),
-        Rule::not_equals_insensitive_token => {
-            Ok(LogicalExpression::Not(NotLogicalExpression::new(
+            // Collect additional values if they exist
+            for value_rule in comparison_rules {
+                values.push(parse_scalar_expression(value_rule, state)?);
+            }
+
+            // For "in" operations, the semantics are flipped:
+            // [source] in ([value1], [value2]) means any of the values contains the source
+            // So we create an array from the values and check if it contains the source
+            let array_expr = ScalarExpression::Static(StaticScalarExpression::Array(
+                ArrayScalarExpression::new(
+                    query_location.clone(),
+                    values
+                        .into_iter()
+                        .map(|v| match v {
+                            ScalarExpression::Static(s) => s,
+                            _ => panic!(
+                                "Only static scalar expressions are supported in 'in' operations for now"
+                            ),
+                        })
+                        .collect(),
+                ),
+            ));
+
+            let case_insensitive = matches!(
+                operation_rule.as_rule(),
+                Rule::in_insensitive_token | Rule::not_in_insensitive_token
+            );
+            let contains_expr = LogicalExpression::Contains(ContainsLogicalExpression::new(
                 query_location.clone(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                array_expr,
+                left,
+                case_insensitive,
+            ));
+
+            match operation_rule.as_rule() {
+                Rule::not_in_token | Rule::not_in_insensitive_token => Ok(LogicalExpression::Not(
+                    NotLogicalExpression::new(query_location, contains_expr),
+                )),
+                _ => Ok(contains_expr),
+            }
+        }
+        _ => {
+            // Standard binary operations
+            let right = match next_rule.as_rule() {
+                Rule::scalar_expression => parse_scalar_expression(next_rule, state)?,
+                _ => panic!("Unexpected rule in comparison_expression: {next_rule}"),
+            };
+
+            match operation_rule.as_rule() {
+                Rule::equals_token => Ok(LogicalExpression::EqualTo(
+                    EqualToLogicalExpression::new(query_location, left, right, false),
+                )),
+                Rule::equals_insensitive_token => Ok(LogicalExpression::EqualTo(
+                    EqualToLogicalExpression::new(query_location, left, right, true),
+                )),
+
+                Rule::not_equals_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        query_location,
+                        left,
+                        right,
+                        false,
+                    )),
+                ))),
+                Rule::not_equals_insensitive_token => {
+                    Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                        query_location.clone(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            query_location,
+                            left,
+                            right,
+                            true,
+                        )),
+                    )))
+                }
+
+                Rule::greater_than_token => Ok(LogicalExpression::GreaterThan(
+                    GreaterThanLogicalExpression::new(query_location, left, right),
+                )),
+                Rule::greater_than_or_equal_to_token => {
+                    Ok(LogicalExpression::GreaterThanOrEqualTo(
+                        GreaterThanOrEqualToLogicalExpression::new(query_location, left, right),
+                    ))
+                }
+
+                Rule::less_than_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::GreaterThanOrEqualTo(
+                        GreaterThanOrEqualToLogicalExpression::new(query_location, left, right),
+                    ),
+                ))),
+                Rule::less_than_or_equal_to_token => {
+                    Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                        query_location.clone(),
+                        LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                            query_location,
+                            left,
+                            right,
+                        )),
+                    )))
+                }
+
+                Rule::contains_token => Ok(LogicalExpression::Contains(
+                    ContainsLogicalExpression::new(query_location, left, right, true),
+                )),
+                Rule::contains_cs_token => Ok(LogicalExpression::Contains(
+                    ContainsLogicalExpression::new(query_location, left, right, false),
+                )),
+                Rule::has_token => Ok(LogicalExpression::Contains(ContainsLogicalExpression::new(
                     query_location,
                     left,
                     right,
                     true,
+                ))),
+                Rule::has_cs_token => Ok(LogicalExpression::Contains(
+                    ContainsLogicalExpression::new(query_location, left, right, false),
                 )),
-            )))
+
+                Rule::not_contains_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::Contains(ContainsLogicalExpression::new(
+                        query_location,
+                        left,
+                        right,
+                        true,
+                    )),
+                ))),
+                Rule::not_contains_cs_token => {
+                    Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                        query_location.clone(),
+                        LogicalExpression::Contains(ContainsLogicalExpression::new(
+                            query_location,
+                            left,
+                            right,
+                            false,
+                        )),
+                    )))
+                }
+                Rule::not_has_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::Contains(ContainsLogicalExpression::new(
+                        query_location,
+                        left,
+                        right,
+                        true,
+                    )),
+                ))),
+                Rule::not_has_cs_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::Contains(ContainsLogicalExpression::new(
+                        query_location,
+                        left,
+                        right,
+                        false,
+                    )),
+                ))),
+
+                _ => panic!("Unexpected rule in operation_rule: {operation_rule}"),
+            }
         }
-
-        Rule::greater_than_token => Ok(LogicalExpression::GreaterThan(
-            GreaterThanLogicalExpression::new(query_location, left, right),
-        )),
-        Rule::greater_than_or_equal_to_token => Ok(LogicalExpression::GreaterThanOrEqualTo(
-            GreaterThanOrEqualToLogicalExpression::new(query_location, left, right),
-        )),
-
-        Rule::less_than_token => {
-            Ok(LogicalExpression::Not(NotLogicalExpression::new(
-                query_location.clone(),
-                LogicalExpression::GreaterThanOrEqualTo(
-                    GreaterThanOrEqualToLogicalExpression::new(query_location, left, right),
-                ),
-            )))
-        }
-        Rule::less_than_or_equal_to_token => Ok(LogicalExpression::Not(NotLogicalExpression::new(
-            query_location.clone(),
-            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                query_location,
-                left,
-                right,
-            )),
-        ))),
-
-        _ => panic!("Unexpected rule in operation_rule: {operation_rule}"),
     }
 }
 
@@ -193,6 +302,18 @@ mod tests {
                 "1 >= 1",
                 "1 < 1",
                 "1 <= 1",
+                "field contains 'value'",
+                "field contains_cs 'value'",
+                "field has 'value'",
+                "field has_cs 'value'",
+                "field !contains 'value'",
+                "field !contains_cs 'value'",
+                "field !has 'value'",
+                "field !has_cs 'value'",
+                "field in ('value1', 'value2')",
+                "field in~ ('value1', 'value2')",
+                "field !in ('value1', 'value2')",
+                "field !in~ ('value1', 'value2')",
             ],
             &[],
         );
@@ -596,6 +717,217 @@ mod tests {
             "'hello world'",
             "KS141",
             "The expression must have the type bool",
+        );
+    }
+
+    #[test]
+    fn test_parse_contains_expressions() {
+        let run_test = |input: &str, expected: LogicalExpression| {
+            let mut state = ParserState::new_with_options(
+                input,
+                ParserOptions::new().with_attached_data_names(&["resource"]),
+            );
+
+            state.push_variable_name("variable");
+
+            let mut result = KqlPestParser::parse(Rule::comparison_expression, input).unwrap();
+
+            let expression = parse_comparison_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        // Test contains
+        run_test(
+            "variable contains 'test'",
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "test"),
+                )),
+                true, // case_insensitive
+            )),
+        );
+
+        // Test contains_cs
+        run_test(
+            "variable contains_cs 'test'",
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "test"),
+                )),
+                false, // case_sensitive
+            )),
+        );
+
+        // Test has
+        run_test(
+            "variable has 'test'",
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                    ValueAccessor::new(),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "test"),
+                )),
+                true, // case_insensitive
+            )),
+        );
+
+        // Test !contains
+        run_test(
+            "variable !contains 'test'",
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Contains(ContainsLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "test"),
+                    )),
+                    true,
+                )),
+            )),
+        );
+
+        // Test in operator
+        run_test(
+            "variable in ('test1', 'test2')",
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "test1",
+                            )),
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "test2",
+                            )),
+                        ],
+                    ),
+                )),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                    ValueAccessor::new(),
+                )),
+                false, // in is case_sensitive by default
+            )),
+        );
+
+        // Test in~ operator (case insensitive)
+        run_test(
+            "variable in~ ('test1', 'test2')",
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Array(
+                    ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "test1",
+                            )),
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "test2",
+                            )),
+                        ],
+                    ),
+                )),
+                ScalarExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                    ValueAccessor::new(),
+                )),
+                true, // in~ is case_insensitive
+            )),
+        );
+
+        // Test !in operator
+        run_test(
+            "variable !in ('test1', 'test2')",
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Contains(ContainsLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Array(
+                        ArrayScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "test1",
+                                )),
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "test2",
+                                )),
+                            ],
+                        ),
+                    )),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
+                    )),
+                    false,
+                )),
+            )),
+        );
+
+        // Test !in~ operator (case insensitive)
+        run_test(
+            "variable !in~ ('test1', 'test2')",
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Contains(ContainsLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Array(
+                        ArrayScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "test1",
+                                )),
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "test2",
+                                )),
+                            ],
+                        ),
+                    )),
+                    ScalarExpression::Variable(VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
+                    )),
+                    true, // !in~ is case_insensitive
+                )),
+            )),
         );
     }
 }

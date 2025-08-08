@@ -56,7 +56,7 @@ pub enum AnyValue {
 }
 
 impl AsStaticValueMut for AnyValue {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         match self {
             AnyValue::Native(n) => match n {
                 OtlpAnyValue::StringValue(s) => Some(StaticValueMut::String(s)),
@@ -71,7 +71,7 @@ impl AsStaticValueMut for AnyValue {
 }
 
 impl AsStaticValue for AnyValue {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         match self {
             AnyValue::Null => StaticValue::Null,
             AnyValue::Native(n) => match n {
@@ -193,13 +193,13 @@ impl ByteArrayValueStorage {
 }
 
 impl AsStaticValue for ByteArrayValueStorage {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Array(self)
     }
 }
 
 impl AsStaticValueMut for ByteArrayValueStorage {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         Some(StaticValueMut::Array(self))
     }
 }
@@ -217,8 +217,12 @@ impl ArrayValue for ByteArrayValueStorage {
         self.values.get(index).map(|v| v as &dyn AsStaticValue)
     }
 
-    fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
-        for (index, value) in self.values.iter().enumerate() {
+    fn get_item_range(
+        &self,
+        range: ArrayRange,
+        item_callback: &mut dyn IndexValueCallback,
+    ) -> bool {
+        for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !item_callback.next(index, Value::Integer(value)) {
                 return false;
             }
@@ -229,7 +233,7 @@ impl ArrayValue for ByteArrayValueStorage {
 }
 
 impl ArrayValueMut for ByteArrayValueStorage {
-    fn get_mut(&mut self, _: usize) -> ValueMutGetResult {
+    fn get_mut(&mut self, _: usize) -> ValueMutGetResult<'_> {
         ValueMutGetResult::NotSupported("ByteArray items cannot be mutated individually".into())
     }
 
