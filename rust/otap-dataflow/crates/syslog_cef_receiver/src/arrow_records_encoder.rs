@@ -2215,25 +2215,40 @@ mod tests {
                        "<14>1 2024-01-15T10:32:15.789Z server01.example.com kernel - - - Kernel panic - not syncing: VFS".to_string()
                    ));
 
-        // TODO: There seems to be a bug where the third log record's attributes are not properly
-        // converted back from Arrow format to OTLP. The parser correctly extracts attributes
-        // (6 attributes for message 3), but they don't appear in the final OTLP output.
+        let log3_attrs: std::collections::HashMap<String, String> = log3
+            .attributes
+            .iter()
+            .map(|kv| {
+                (
+                    kv.key.clone(),
+                    match &kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                        Value::StringValue(s) => s.clone(),
+                        Value::IntValue(i) => i.to_string(),
+                        _ => String::new(),
+                    },
+                )
+            })
+            .collect();
 
-        // // Check attributes that SHOULD be present for log3
-        // assert_eq!(log3_attrs.get("syslog.version"), Some(&"1".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.facility"), Some(&"1".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.severity"), Some(&"6".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.host_name"), Some(&"server01.example.com".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.app_name"), Some(&"kernel".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.message"), Some(&"Kernel panic - not syncing: VFS".to_string()));
+        // Check attributes that SHOULD be present for log3
+        assert_eq!(log3_attrs.get("syslog.version"), Some(&"1".to_string()));
+        assert_eq!(log3_attrs.get("syslog.facility"), Some(&"1".to_string()));
+        assert_eq!(log3_attrs.get("syslog.severity"), Some(&"6".to_string()));
+        assert_eq!(
+            log3_attrs.get("syslog.host_name"),
+            Some(&"server01.example.com".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("syslog.app_name"),
+            Some(&"kernel".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("syslog.message"),
+            Some(&"Kernel panic - not syncing: VFS".to_string())
+        );
 
         // // Ensure no unexpected attributes are present (exactly 6 attributes expected)
-        // assert_eq!(log3.attributes.len(), 6);
-
-        // For now, we test the current behavior.
-
-        // Check that the third log record currently has no attributes (due to the bug)
-        assert_eq!(log3.attributes.len(), 0);
+        assert_eq!(log3.attributes.len(), 6);
 
         // Priority = Facility * 8 + Severity
         // Priority 14: 1 (user level) * 8 + 6 (informational)
@@ -2464,26 +2479,36 @@ mod tests {
         assert!(log3.span_id.is_empty());
 
         // Verify third log record attributes
-        // TODO: There seems to be a bug where the third log record's attributes are not properly
-        // converted back from Arrow format to OTLP. The parser correctly extracts attributes,
-        // but they don't appear in the final OTLP output.
 
-        // // Check attributes that SHOULD be present for log3 (RFC3164)
-        // assert_eq!(log3_attrs.get("syslog.facility"), Some(&"1".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.severity"), Some(&"6".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.host_name"), Some(&"server01".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.tag"), Some(&"kernel".to_string()));
-        // assert_eq!(log3_attrs.get("syslog.message"), Some(&"Kernel panic - not syncing: VFS".to_string()));
-        //
-        // // Ensure no unexpected attributes are present (exactly 5 attributes expected)
-        // assert_eq!(log3.attributes.len(), 5);
+        // Check attributes that SHOULD be present for log3 (RFC3164)
+        let log3_attrs: std::collections::HashMap<String, String> = log3
+            .attributes
+            .iter()
+            .map(|kv| {
+                (
+                    kv.key.clone(),
+                    match &kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                        Value::StringValue(s) => s.clone(),
+                        Value::IntValue(i) => i.to_string(),
+                        _ => String::new(),
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(log3_attrs.get("syslog.facility"), Some(&"1".to_string()));
+        assert_eq!(log3_attrs.get("syslog.severity"), Some(&"6".to_string()));
+        assert_eq!(
+            log3_attrs.get("syslog.host_name"),
+            Some(&"server01".to_string())
+        );
+        assert_eq!(log3_attrs.get("syslog.tag"), Some(&"kernel".to_string()));
+        assert_eq!(
+            log3_attrs.get("syslog.message"),
+            Some(&"Kernel panic - not syncing: VFS".to_string())
+        );
 
-        // For now, we test the current behavior and verify the basic log properties work.
-
-        // Check that the third log record currently has no attributes (due to the bug)
-        assert_eq!(log3.attributes.len(), 0);
-
-        // The core functionality (body, severity, timestamps) should still work correctly
+        // Ensure no unexpected attributes are present (exactly 5 attributes expected)
+        assert_eq!(log3.attributes.len(), 5);
     }
 
     #[test]
@@ -2684,40 +2709,68 @@ mod tests {
         assert!(log3.trace_id.is_empty());
         assert!(log3.span_id.is_empty());
 
-        // TODO: There seems to be a bug where the third log record's attributes are not properly
-        // converted back from Arrow format to OTLP. The parser correctly extracts attributes,
-        // but they don't appear in the final OTLP output. This affects both syslog and CEF messages.
+        let log3_attrs: std::collections::HashMap<String, String> = log3
+            .attributes
+            .iter()
+            .map(|kv| {
+                (
+                    kv.key.clone(),
+                    match &kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                        Value::StringValue(s) => s.clone(),
+                        Value::IntValue(i) => i.to_string(),
+                        _ => String::new(),
+                    },
+                )
+            })
+            .collect();
 
-        // // Check CEF core attributes that SHOULD be present for log3
-        // assert_eq!(log3_attrs.get("cef.version"), Some(&"0".to_string()));
-        // assert_eq!(log3_attrs.get("cef.device_vendor"), Some(&"Vendor".to_string()));
-        // assert_eq!(log3_attrs.get("cef.device_product"), Some(&"Product".to_string()));
-        // assert_eq!(log3_attrs.get("cef.device_version"), Some(&"1.2.3".to_string()));
-        // assert_eq!(log3_attrs.get("cef.signature_id"), Some(&"SignatureID".to_string()));
-        // assert_eq!(log3_attrs.get("cef.name"), Some(&"Event Name".to_string()));
-        // assert_eq!(log3_attrs.get("cef.severity"), Some(&"5".to_string()));
-        //
-        // // Check some of the CEF extensions that SHOULD be present for log3
-        // assert_eq!(log3_attrs.get("deviceExternalId"), Some(&"12345".to_string()));
-        // assert_eq!(log3_attrs.get("sourceAddress"), Some(&"192.168.1.100".to_string()));
-        // assert_eq!(log3_attrs.get("destinationAddress"), Some(&"10.0.0.50".to_string()));
-        // assert_eq!(log3_attrs.get("sourcePort"), Some(&"12345".to_string()));
-        // assert_eq!(log3_attrs.get("destinationPort"), Some(&"80".to_string()));
-        // assert_eq!(log3_attrs.get("protocol"), Some(&"TCP".to_string()));
-        // assert_eq!(log3_attrs.get("requestURL"), Some(&"http://example.com/path".to_string()));
-        // assert_eq!(log3_attrs.get("requestMethod"), Some(&"GET".to_string()));
-        // assert_eq!(log3_attrs.get("cs1"), Some(&"value1".to_string()));
-        // assert_eq!(log3_attrs.get("cs2"), Some(&"value2".to_string()));
-        //
-        // // Ensure no unexpected attributes are present (7 core + 10 extensions = 17 attributes expected)
-        // assert_eq!(log3.attributes.len(), 17);
+        // Check CEF core attributes that SHOULD be present for log3
+        assert_eq!(log3_attrs.get("cef.version"), Some(&"0".to_string()));
+        assert_eq!(
+            log3_attrs.get("cef.device_vendor"),
+            Some(&"Vendor".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("cef.device_product"),
+            Some(&"Product".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("cef.device_version"),
+            Some(&"1.2.3".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("cef.signature_id"),
+            Some(&"SignatureID".to_string())
+        );
+        assert_eq!(log3_attrs.get("cef.name"), Some(&"Event Name".to_string()));
+        assert_eq!(log3_attrs.get("cef.severity"), Some(&"5".to_string()));
 
-        // For now, we test the current behavior and verify the basic log properties work.
+        // Check some of the CEF extensions that SHOULD be present for log3
+        assert_eq!(
+            log3_attrs.get("deviceExternalId"),
+            Some(&"12345".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("sourceAddress"),
+            Some(&"192.168.1.100".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("destinationAddress"),
+            Some(&"10.0.0.50".to_string())
+        );
+        assert_eq!(log3_attrs.get("sourcePort"), Some(&"12345".to_string()));
+        assert_eq!(log3_attrs.get("destinationPort"), Some(&"80".to_string()));
+        assert_eq!(log3_attrs.get("protocol"), Some(&"TCP".to_string()));
+        assert_eq!(
+            log3_attrs.get("requestURL"),
+            Some(&"http://example.com/path".to_string())
+        );
+        assert_eq!(log3_attrs.get("requestMethod"), Some(&"GET".to_string()));
+        assert_eq!(log3_attrs.get("cs1"), Some(&"value1".to_string()));
+        assert_eq!(log3_attrs.get("cs2"), Some(&"value2".to_string()));
 
-        // Check that the third log record currently has no attributes (due to the bug)
-        assert_eq!(log3.attributes.len(), 0);
-
-        // The core functionality (body, no severity, no timestamps for CEF) should still work correctly
+        // Ensure no unexpected attributes are present (7 core + 10 extensions = 17 attributes expected)
+        assert_eq!(log3.attributes.len(), 17);
     }
 
     #[test]
@@ -2931,33 +2984,48 @@ mod tests {
         assert!(log3.trace_id.is_empty());
         assert!(log3.span_id.is_empty());
 
-        // TODO: There seems to be a bug where the third log record's attributes are not properly
-        // converted back from Arrow format to OTLP. The parser correctly extracts attributes,
-        // but they don't appear in the final OTLP output. This affects the CEF message in this mixed test.
+        let log3_attrs: std::collections::HashMap<String, String> = log3
+            .attributes
+            .iter()
+            .map(|kv| {
+                (
+                    kv.key.clone(),
+                    match &kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                        Value::StringValue(s) => s.clone(),
+                        Value::IntValue(i) => i.to_string(),
+                        _ => String::new(),
+                    },
+                )
+            })
+            .collect();
 
-        // // Check CEF core attributes that SHOULD be present for log3
-        // assert_eq!(log3_attrs.get("cef.version"), Some(&"0".to_string()));
-        // assert_eq!(log3_attrs.get("cef.device_vendor"), Some(&"Security".to_string()));
-        // assert_eq!(log3_attrs.get("cef.device_product"), Some(&"threatmanager".to_string()));
-        // assert_eq!(log3_attrs.get("cef.device_version"), Some(&"1.0".to_string()));
-        // assert_eq!(log3_attrs.get("cef.signature_id"), Some(&"100".to_string()));
-        // assert_eq!(log3_attrs.get("cef.name"), Some(&"worm successfully stopped".to_string()));
-        // assert_eq!(log3_attrs.get("cef.severity"), Some(&"10".to_string()));
-        //
-        // // Check CEF extensions that SHOULD be present for log3
-        // assert_eq!(log3_attrs.get("src"), Some(&"10.0.0.1".to_string()));
-        // assert_eq!(log3_attrs.get("dst"), Some(&"2.1.2.2".to_string()));
-        // assert_eq!(log3_attrs.get("spt"), Some(&"1232".to_string()));
-        //
-        // // Ensure no unexpected attributes are present for CEF (7 core + 3 extensions = 10 attributes expected)
-        // assert_eq!(log3.attributes.len(), 10);
+        // Check CEF core attributes that SHOULD be present for log3
+        assert_eq!(log3_attrs.get("cef.version"), Some(&"0".to_string()));
+        assert_eq!(
+            log3_attrs.get("cef.device_vendor"),
+            Some(&"Security".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("cef.device_product"),
+            Some(&"threatmanager".to_string())
+        );
+        assert_eq!(
+            log3_attrs.get("cef.device_version"),
+            Some(&"1.0".to_string())
+        );
+        assert_eq!(log3_attrs.get("cef.signature_id"), Some(&"100".to_string()));
+        assert_eq!(
+            log3_attrs.get("cef.name"),
+            Some(&"worm successfully stopped".to_string())
+        );
+        assert_eq!(log3_attrs.get("cef.severity"), Some(&"10".to_string()));
 
-        // For now, we test the current behavior and verify the basic log properties work.
+        // Check CEF extensions that SHOULD be present for log3
+        assert_eq!(log3_attrs.get("src"), Some(&"10.0.0.1".to_string()));
+        assert_eq!(log3_attrs.get("dst"), Some(&"2.1.2.2".to_string()));
+        assert_eq!(log3_attrs.get("spt"), Some(&"1232".to_string()));
 
-        // Check that the third log record currently has no attributes (due to the bug)
-        assert_eq!(log3.attributes.len(), 0);
-
-        // The core functionality (body, severity mapping, timestamp handling) should work correctly
-        // even when processing mixed message formats in a single batch
+        // Ensure no unexpected attributes are present for CEF (7 core + 3 extensions = 10 attributes expected)
+        assert_eq!(log3.attributes.len(), 10);
     }
 }
