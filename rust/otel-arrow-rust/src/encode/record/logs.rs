@@ -318,12 +318,6 @@ impl LogsRecordBatchBuilder {
     }
 }
 
-impl Default for LogsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Builder for the body of a log record.
 pub struct LogsBodyBuilder {
     value_type: UInt8ArrayBuilder,
@@ -665,12 +659,6 @@ impl LogsBodyBuilder {
     }
 }
 
-impl Default for LogsBodyBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Builder for the `resource` struct column of the logs OTAP record.
 pub struct ResourceBuilder {
     id: UInt16ArrayBuilder,
@@ -779,12 +767,6 @@ impl ResourceBuilder {
         }
 
         StructArray::try_new(Fields::from(fields), columns, None)
-    }
-}
-
-impl Default for ResourceBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -921,11 +903,5 @@ impl ScopeBuilder {
         }
 
         StructArray::try_new(Fields::from(fields), columns, None)
-    }
-}
-
-impl Default for ScopeBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
