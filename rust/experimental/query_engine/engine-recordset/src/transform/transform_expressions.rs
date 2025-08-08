@@ -9,7 +9,7 @@ use data_engine_expressions::*;
 use crate::{
     execution_context::*,
     resolved_value_mut::*,
-    scalar_expressions::execute_scalar_expression,
+    scalars::*,
     transform::reduce_map_transform_expression::execute_map_reduce_transform_expression,
     value_expressions::{execute_immutable_value_expression, execute_mutable_value_expression},
     *,
