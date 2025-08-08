@@ -8,7 +8,7 @@ model. Support for the Go Collector YAML format is planned for the future.
 
 ## Available Configurations
 
-### `otap-otap.json`
+### `otap-otap.yaml`
 
 A basic OTAP pipeline configuration that:
 
@@ -16,7 +16,7 @@ A basic OTAP pipeline configuration that:
 - Exports OTAP traffic to `http://127.0.1:1235`
 - Default channel sizes of 100
 
-### `otap-otlp.json`
+### `otap-otlp.yaml`
 
 A basic OTAP to OTLP pipeline configuration that:
 
@@ -24,7 +24,7 @@ A basic OTAP to OTLP pipeline configuration that:
 - Exports OTLP traffic to `http://127.0.0.1:1235`
 - Default channel sizes of 100
 
-### `otlp-otap.json`
+### `otlp-otap.yaml`
 
 A basic OTLP to OTAP pipeline configuration that:
 
@@ -32,7 +32,7 @@ A basic OTLP to OTAP pipeline configuration that:
 - Exports OTAP traffic to `http://127.0.0.1:1235`
 - Default channel sizes of 100
 
-### `otlp-otlp.json`
+### `otlp-otlp.yaml`
 
 A basic OTLP pipeline configuration that:
 
@@ -40,7 +40,7 @@ A basic OTLP pipeline configuration that:
 - Exports OTLP traffic to `http://127.0.0.1:1235`
 - Default channel sizes of 100
 
-### `otap-perf.json`
+### `otap-perf.yaml`
 
 A pipeline configuration to measure performance metrics, which:
 
@@ -48,7 +48,7 @@ A pipeline configuration to measure performance metrics, which:
 - Measures and exports performance metrics
 - Default channel sizes of 100
 
-### `otlp-perf.json`
+### `otlp-perf.yaml`
 
 A pipeline configuration to measure performance metrics, which:
 
@@ -62,8 +62,8 @@ You can use these configurations with the following CLI command:
 
 ```bash
 # Use a specific configuration
-cargo run -- -p configs/otlp-otlp.json
+cargo run -- -p configs/otlp-otlp.yaml
 
 # Combine with custom core count
-cargo run -- -p configs/otlp-otlp.json --num-cores 4
+cargo run -- -p configs/otlp-otlp.yaml --num-cores 4
 ```
