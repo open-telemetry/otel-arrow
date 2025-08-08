@@ -34,9 +34,7 @@ impl Summaries {
 
         let summary_data = values.get_mut(&summary_id);
 
-        if summary_data.is_some() {
-            let summary = summary_data.expect("Summary could not be found");
-
+        if let Some(summary) = summary_data {
             summary.update(
                 execution_context,
                 summary_data_expression,
