@@ -120,3 +120,14 @@ pub fn no_nulls(values: LargeListArray) -> LargeListArray {
     Arc::make_mut(&mut field).set_nullable(false);
     LargeListArray::new(field, offsets, values, None)
 }
+
+/// TODO docs
+pub fn is_id_plain_encoded(record_batch: &RecordBatch) -> bool {
+    let schema = record_batch.schema_ref();
+    let encoding = get_field_metadata(
+        schema.as_ref(),
+        consts::ID,
+        consts::metadata::COLUMN_ENCODING,
+    );
+    encoding == Some(consts::metadata::encodings::PLAIN)
+}

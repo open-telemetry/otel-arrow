@@ -21,7 +21,7 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
-use crate::schema::consts;
+use crate::schema::{consts, is_id_plain_encoded};
 
 use super::attributes::{cbor, store::AttributeValueType};
 
@@ -193,6 +193,8 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
     let scope_arrays = ScopeArrays::try_from(rb)?;
     let logs_arrays = LogsArrays::try_from(rb)?;
 
+    let ids_plain_encoded = is_id_plain_encoded(&rb);
+
     for idx in 0..rb.num_rows() {
         let res_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
         res_id += res_delta_id;
@@ -261,8 +263,8 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
             .expect("At this stage, we should have added at least one scope log.");
 
         let current_log_record = current_scope_logs.log_records.append_and_get();
-        let delta_id = logs_arrays.id.value_at_or_default(idx);
-        let log_id = related_data.log_record_id_from_delta(delta_id);
+        let maybe_delta_id = logs_arrays.id.value_at_or_default(idx);
+        let log_id = related_data.log_record_id_from_delta(maybe_delta_id);
 
         current_log_record.time_unix_nano =
             logs_arrays.time_unix_nano.value_at_or_default(idx) as u64;
@@ -307,7 +309,13 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
         if let Some(attrs) = related_data
             .log_record_attr_map_store
             .as_mut()
-            .and_then(|store| store.attribute_by_delta_id(delta_id))
+            .and_then(|store| {
+                if ids_plain_encoded {
+                    store.attribute_by_id(maybe_delta_id)
+                } else {
+                    store.attribute_by_delta_id(maybe_delta_id)
+                }
+            })
         {
             current_log_record.attributes = attrs.to_vec()
         }
