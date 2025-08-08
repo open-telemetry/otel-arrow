@@ -3,7 +3,7 @@ pub(crate) mod engine_diagnostic;
 pub(crate) mod execution_context;
 pub(crate) mod logical_expressions;
 pub(crate) mod primitives;
-pub(crate) mod scalar_expressions;
+pub(crate) mod scalars;
 pub(crate) mod summary;
 pub(crate) mod test_helpers;
 pub(crate) mod transform;
