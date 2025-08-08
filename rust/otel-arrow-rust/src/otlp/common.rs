@@ -100,7 +100,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     type Error = error::Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self, Self::Error> {
-        let struct_array = get_required_array(rb, consts::RESOURCE)?;
+        let struct_array = get_required_array(rb, consts::SCOPE)?;
         let scope_array = struct_array
             .as_any()
             .downcast_ref::<StructArray>()

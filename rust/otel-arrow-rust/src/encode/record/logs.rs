@@ -3,7 +3,7 @@
 
 //! This module contains builders for record batches for logs.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow::{
     array::{Array, NullBufferBuilder, RecordBatch, StructArray},
@@ -213,7 +213,14 @@ impl LogsRecordBatchBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
+                    HashMap::from_iter([(
+                        consts::metadata::COLUMN_ENCODING.to_string(),
+                        consts::metadata::encodings::PLAIN.to_string(),
+                    )]),
+                ),
+            );
             columns.push(array);
         }
 
@@ -730,7 +737,14 @@ impl ResourceBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
+                    HashMap::from_iter([(
+                        consts::metadata::COLUMN_ENCODING.to_string(),
+                        consts::metadata::encodings::PLAIN.to_string(),
+                    )]),
+                ),
+            );
             columns.push(array);
         }
 
@@ -858,7 +872,14 @@ impl ScopeBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
+                    HashMap::from_iter([(
+                        consts::metadata::COLUMN_ENCODING.to_string(),
+                        consts::metadata::encodings::PLAIN.to_string(),
+                    )]),
+                ),
+            );
             columns.push(array);
         }
 
