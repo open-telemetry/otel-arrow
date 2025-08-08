@@ -24,22 +24,13 @@ use crate::{
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
-    schema::{consts, no_nulls},
+    schema::{SpanId, TraceId, consts, no_nulls},
 };
 
 use super::array::{
     UInt8ArrayBuilder,
     boolean::{AdaptiveBooleanArrayBuilder, BooleanBuilderOptions},
 };
-
-// These are copied from `pdata-views::views::common` because they're simple and I don't want to
-// introduce a cross-cutting dependency.
-
-/// Trace IDs are 16 binary bytes.
-pub type TraceId = [u8; 16];
-
-/// Span IDs are 8 binary bytes.
-pub type SpanId = [u8; 8];
 
 /// Record batch builder for metrics
 pub struct MetricsRecordBatchBuilder {
@@ -58,12 +49,6 @@ pub struct MetricsRecordBatchBuilder {
     unit: StringArrayBuilder,
     aggregation_temporality: Int32ArrayBuilder,
     is_monotonic: AdaptiveBooleanArrayBuilder,
-}
-
-impl Default for MetricsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl MetricsRecordBatchBuilder {
@@ -278,12 +263,6 @@ pub struct NumberDataPointsRecordBatchBuilder {
     flags: UInt32ArrayBuilder,
 }
 
-impl Default for NumberDataPointsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NumberDataPointsRecordBatchBuilder {
     /// Create a new instance of `NumberDataPoints`
     #[must_use]
@@ -467,12 +446,6 @@ pub struct ExemplarsRecordBatchBuilder {
     trace_id: FixedSizeBinaryArrayBuilder,
 }
 
-impl Default for ExemplarsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ExemplarsRecordBatchBuilder {
     /// Create a new instance of `Exemplars`
     #[must_use]
@@ -636,12 +609,6 @@ pub struct QuantileRecordBatchBuilder {
     lists: LargeListBuilder<StructBuilder>,
 }
 
-impl Default for QuantileRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl QuantileRecordBatchBuilder {
     /// Create a new instance of `Quantile`
     #[must_use]
@@ -717,12 +684,6 @@ pub struct SummaryDataPointsRecordBatchBuilder {
     /// the builder for quantile-value pairs
     pub quantile_values: QuantileRecordBatchBuilder,
     flags: UInt32ArrayBuilder,
-}
-
-impl Default for SummaryDataPointsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl SummaryDataPointsRecordBatchBuilder {
@@ -894,12 +855,6 @@ pub struct HistogramDataPointsRecordBatchBuilder {
     flags: UInt32ArrayBuilder,
     min: Float64ArrayBuilder,
     max: Float64ArrayBuilder,
-}
-
-impl Default for HistogramDataPointsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl HistogramDataPointsRecordBatchBuilder {
@@ -1144,12 +1099,6 @@ pub struct ExponentialHistogramDataPointsRecordBatchBuilder {
     flags: UInt32ArrayBuilder,
     min: Float64ArrayBuilder,
     max: Float64ArrayBuilder,
-}
-
-impl Default for ExponentialHistogramDataPointsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl ExponentialHistogramDataPointsRecordBatchBuilder {
@@ -1411,12 +1360,6 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
 pub struct BucketsRecordBatchBuilder {
     offset: Int32ArrayBuilder,
     bucket_counts: LargeListBuilder<PrimitiveBuilder<UInt64Type>>,
-}
-
-impl Default for BucketsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl BucketsRecordBatchBuilder {
