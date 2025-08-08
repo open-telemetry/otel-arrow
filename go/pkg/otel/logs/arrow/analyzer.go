@@ -23,7 +23,7 @@ import (
 	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/axiomhq/hyperloglog"
 
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
 )
 
 // A log analyzer is a tool designed to generate statistics about the structure

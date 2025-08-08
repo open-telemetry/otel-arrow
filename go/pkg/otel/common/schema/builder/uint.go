@@ -22,8 +22,8 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow/array"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/update"
 )
 
 // Uint8Builder is a wrapper around the arrow array builder for uint8.

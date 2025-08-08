@@ -32,8 +32,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"golang.org/x/exp/rand"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/benchmark"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/otlp"
 )
 
 // ===== Real traces dataset =====

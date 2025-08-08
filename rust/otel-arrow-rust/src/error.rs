@@ -10,6 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Error and result types
+
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::otlp::metrics::MetricType;
 use arrow::datatypes::DataType;
@@ -18,15 +20,17 @@ use num_enum::TryFromPrimitiveError;
 use snafu::{Location, Snafu};
 use std::{backtrace::Backtrace, num::TryFromIntError};
 
+/// Result type
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[allow(missing_docs)]
 #[derive(Snafu, Debug)]
 #[snafu(visibility(pub))]
 pub enum Error {
     #[snafu(display("Cannot find column: {}", name))]
     ColumnNotFound { name: String, backtrace: Backtrace },
     #[snafu(display(
-        "Column {} data type mismatch, expect: {}, actual: {}",
+        "Column `{}` data type mismatch, expect: {}, actual: {}",
         name,
         expect,
         actual
@@ -154,8 +158,24 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Failed to build stream writer"))]
+    BuildStreamWriter {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Failed to read record batch"))]
     ReadRecordBatch {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to write record batch"))]
+    WriteRecordBatch {
         #[snafu(source)]
         source: ArrowError,
         #[snafu(implicit)]
@@ -176,6 +196,12 @@ pub enum Error {
 
     #[snafu(display("Metric record not found"))]
     MetricRecordNotFound {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Span record not found"))]
+    SpanRecordNotFound {
         #[snafu(implicit)]
         location: Location,
     },
@@ -221,6 +247,25 @@ pub enum Error {
     #[snafu(display("Unsupported string dictionary key type, given: {}", data_type))]
     UnsupportedStringDictKeyType {
         data_type: DataType,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Found duplicate field name: {}", name))]
+    DuplicateFieldName {
+        name: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
+        "Invalid byte slice for ID, expect len: {} ,given len: {}",
+        expected,
+        given
+    ))]
+    InvalidId {
+        expected: usize,
+        given: usize,
         #[snafu(implicit)]
         location: Location,
     },

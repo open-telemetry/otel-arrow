@@ -24,10 +24,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/stretchr/testify/assert"
 
-	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
-	stats "github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/events"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/update"
+	stats "github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
 )
 
 var evts = &events.Events{

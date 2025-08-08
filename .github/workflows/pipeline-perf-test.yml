@@ -14,26 +14,57 @@ concurrency:
 
 jobs:
     pipeline-perf-test:
-        runs-on: self-hosted
+        runs-on: oracle-bare-metal-64cpu-512gb-x86-64
         steps:
         - name: Harden the runner (Audit all outbound calls)
-          uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
+          uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
           with:
             egress-policy: audit
 
         - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-        - name: Set up Python
-          uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4.9.1
-          with:
-            python-version: '3.13'
-            cache: 'pip'
+        - id: detect_os
+          name: Detect OS (self-hosted)
+          shell: bash
+          run: |
+            . /etc/os-release
+            echo "id=$ID" >> "$GITHUB_OUTPUT"
+            echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+
+        - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
+          if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
+          shell: bash
+          run: |
+            set -euxo pipefail
+
+            # Enable repos (no-op if already enabled)
+            sudo dnf -y install oracle-epel-release-el8 || true
+            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+            sudo dnf -y makecache
+
+            # Install core packages (ignore subpackages that don't exist on OL8)
+            sudo dnf -y install python3.11 python3.11-devel || true
+            # pip may be packaged as part of python3.11 or available via ensurepip;
+            # fall back to ensurepip if needed.
+            if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
+              /usr/bin/python3.11 -m ensurepip --upgrade || true
+            fi
+            /usr/bin/python3.11 -m pip install --upgrade pip setuptools wheel || true
+
+            # Add a 'python' shim so subsequent steps can call `python ...`
+            mkdir -p "$HOME/.local/bin"
+            ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+            # Smoke test
+            python --version
+            python -m pip --version
 
         - name: Install dependencies
           run: |
-            python -m pip install --upgrade pip
-            pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
-            pip install -r tools/pipeline_perf_test/load_generator/requirements.txt
+            python -m pip install --user --upgrade pip
+            pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
+            pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
 
         - name: Run pipeline performance test with default configuration
           run: |
@@ -85,7 +116,7 @@ jobs:
               cat output.json
 
           - name: Update benchmark data and deploy to GitHub Pages
-            uses: benchmark-action/github-action-benchmark@d48d326b4ca9ba73ca0cd0d59f108f9e02a381c7 # v1
+            uses: benchmark-action/github-action-benchmark@d48d326b4ca9ba73ca0cd0d59f108f9e02a381c7 # v1.20.4
             with:
               tool: "customSmallerIsBetter"
               output-file-path: output.json

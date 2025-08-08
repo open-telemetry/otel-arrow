@@ -23,7 +23,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 
-	v1 "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	v1 "github.com/open-telemetry/otel-arrow/go/api/experimental/arrow/v1"
 )
 
 type PayloadType = v1.ArrowPayloadType

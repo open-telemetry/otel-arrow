@@ -25,17 +25,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
-	"github.com/open-telemetry/otel-arrow/pkg/config"
-	"github.com/open-telemetry/otel-arrow/pkg/datagen"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
-	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
-	ametrics "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/arrow"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/metrics/otlp"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
-	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/go/pkg/config"
+	"github.com/open-telemetry/otel-arrow/go/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/config"
+	ametrics "github.com/open-telemetry/otel-arrow/go/pkg/otel/metrics/arrow"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/metrics/otlp"
+	"github.com/open-telemetry/otel-arrow/go/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/go/pkg/record_message"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
@@ -113,7 +113,7 @@ func TestExponentialHistograms(t *testing.T) {
 }
 
 func MetricsGenerator() *datagen.MetricsGenerator {
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
 		WithConfig(datagen.Config{
@@ -175,7 +175,7 @@ func CheckEncodeDecode(t *testing.T, expectedRequest pmetricotlp.ExportRequest) 
 // records in order to test the robustness of the conversion. In this situation,
 // the conversion can generate errors, but should never panic.
 func MultiRoundOfCheckEncodeMessUpDecode(t *testing.T, expectedRequest pmetricotlp.ExportRequest) {
-	rng := rand.New(rand.NewSource(int64(rand.Uint64())))
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 100; i++ {
 		OneRoundOfMessUpArrowRecords(t, expectedRequest, rng)

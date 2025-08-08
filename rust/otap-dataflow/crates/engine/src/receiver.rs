@@ -7,11 +7,19 @@
 //! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
+use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
-use crate::message::{ControlMsg, Receiver, Sender};
+use crate::message::{Receiver, Sender};
+use crate::node::{Node, NodeWithPDataSender};
+use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
+use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_config::{NodeId, PortName};
+use std::sync::Arc;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
@@ -20,77 +28,51 @@ use otap_df_channel::mpsc;
 pub enum ReceiverWrapper<PData> {
     /// A receiver with a `!Send` implementation.
     Local {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Arc<NodeUserConfig>,
+        /// The runtime configuration for the node.
+        runtime_config: ReceiverConfig,
         /// The receiver instance.
         receiver: Box<dyn local::Receiver<PData>>,
-        /// The effect handler for the receiver.
-        effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: mpsc::Sender<ControlMsg>,
+        control_sender: LocalSender<NodeControlMsg>,
         /// A receiver for control messages.
-        control_receiver: mpsc::Receiver<ControlMsg>,
+        control_receiver: LocalReceiver<NodeControlMsg>,
+        /// Sender for PData messages.
+        /// ToDo(LQ): Support multiple ports
+        pdata_sender: Option<LocalSender<PData>>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<Receiver<PData>>,
+        pdata_receiver: Option<LocalReceiver<PData>>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
+        /// The user configuration for the node, including its name and channel settings.
+        user_config: Arc<NodeUserConfig>,
+        /// The runtime configuration for the node.
+        runtime_config: ReceiverConfig,
         /// The receiver instance.
         receiver: Box<dyn shared::Receiver<PData>>,
-        /// The effect handler for the receiver.
-        effect_handler: shared::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+        control_sender: SharedSender<NodeControlMsg>,
         /// A receiver for control messages.
-        control_receiver: tokio::sync::mpsc::Receiver<ControlMsg>,
+        control_receiver: SharedReceiver<NodeControlMsg>,
+        /// Sender for PData messages.
+        /// ToDo(LQ): Support multiple ports
+        pdata_sender: Option<SharedSender<PData>>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
+        pdata_receiver: Option<SharedReceiver<PData>>,
     },
 }
 
-impl<PData> ReceiverWrapper<PData> {
-    /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
-    pub fn local<R>(receiver: R, config: &ReceiverConfig) -> Self
-    where
-        R: local::Receiver<PData> + 'static,
-    {
-        let (control_sender, control_receiver) =
-            mpsc::Channel::new(config.control_channel.capacity);
-        let (pdata_sender, pdata_receiver) =
-            mpsc::Channel::new(config.output_pdata_channel.capacity);
-
-        ReceiverWrapper::Local {
-            effect_handler: local::EffectHandler::new(
-                config.name.clone(),
-                Sender::Local(pdata_sender),
-            ),
-            receiver: Box::new(receiver),
-            control_sender,
-            control_receiver,
-            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
-        }
-    }
-
-    /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
-    pub fn shared<R>(receiver: R, config: &ReceiverConfig) -> Self
-    where
-        R: shared::Receiver<PData> + 'static,
-    {
-        let (control_sender, control_receiver) =
-            tokio::sync::mpsc::channel(config.control_channel.capacity);
-        let (pdata_sender, pdata_receiver) =
-            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
-
-        ReceiverWrapper::Shared {
-            effect_handler: shared::EffectHandler::new(config.name.clone(), pdata_sender),
-            receiver: Box::new(receiver),
-            control_sender,
-            control_receiver,
-            pdata_receiver: Some(pdata_receiver),
-        }
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ReceiverWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+        self.control_sender().send(msg).await
     }
 
     /// Returns the control message sender for the receiver.
-    #[must_use]
-    pub fn control_sender(&self) -> Sender<ControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg> {
         match self {
             ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ReceiverWrapper::Shared { control_sender, .. } => {
@@ -98,26 +80,99 @@ impl<PData> ReceiverWrapper<PData> {
             }
         }
     }
+}
+
+impl<PData> ReceiverWrapper<PData> {
+    /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
+    pub fn local<R>(receiver: R, user_config: Arc<NodeUserConfig>, config: &ReceiverConfig) -> Self
+    where
+        R: local::Receiver<PData> + 'static,
+    {
+        let (control_sender, control_receiver) =
+            mpsc::Channel::new(config.control_channel.capacity);
+
+        ReceiverWrapper::Local {
+            user_config,
+            runtime_config: config.clone(),
+            receiver: Box::new(receiver),
+            control_sender: LocalSender::MpscSender(control_sender),
+            control_receiver: LocalReceiver::MpscReceiver(control_receiver),
+            pdata_sender: None,
+            pdata_receiver: None,
+        }
+    }
+
+    /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
+    pub fn shared<R>(receiver: R, user_config: Arc<NodeUserConfig>, config: &ReceiverConfig) -> Self
+    where
+        R: shared::Receiver<PData> + 'static,
+    {
+        let (control_sender, control_receiver) =
+            tokio::sync::mpsc::channel(config.control_channel.capacity);
+
+        ReceiverWrapper::Shared {
+            user_config,
+            runtime_config: config.clone(),
+            receiver: Box::new(receiver),
+            control_sender: SharedSender::MpscSender(control_sender),
+            control_receiver: SharedReceiver::MpscReceiver(control_receiver),
+            pdata_sender: None,
+            pdata_receiver: None,
+        }
+    }
 
     /// Starts the receiver and begins receiver incoming data.
-    pub async fn start(self) -> Result<(), Error<PData>> {
+    pub async fn start(
+        self,
+        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+    ) -> Result<(), Error<PData>> {
         match self {
             ReceiverWrapper::Local {
-                effect_handler,
+                runtime_config,
                 receiver,
                 control_receiver,
+                pdata_sender,
                 ..
             } => {
+                let pdata_sender = match pdata_sender {
+                    Some(sender) => sender,
+                    None => {
+                        return Err(Error::ReceiverError {
+                            receiver: runtime_config.name.clone(),
+                            error: "The pdata sender must be defined at this stage".to_owned(),
+                        });
+                    }
+                };
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
+                let effect_handler = local::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender,
+                    pipeline_ctrl_msg_tx,
+                );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
-                effect_handler,
+                runtime_config,
                 receiver,
                 control_receiver,
+                pdata_sender,
                 ..
             } => {
+                let pdata_sender = match pdata_sender {
+                    Some(sender) => sender,
+                    None => {
+                        return Err(Error::ReceiverError {
+                            receiver: runtime_config.name.clone(),
+                            error: "The pdata sender must be defined at this stage".to_owned(),
+                        });
+                    }
+                };
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
+                let effect_handler = shared::EffectHandler::new(
+                    runtime_config.name.clone(),
+                    pdata_sender,
+                    pipeline_ctrl_msg_tx,
+                );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }
@@ -127,11 +182,70 @@ impl<PData> ReceiverWrapper<PData> {
     pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ReceiverWrapper::Local { pdata_receiver, .. } => {
-                pdata_receiver.take().expect("pdata_receiver is None")
+                Receiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
             }
             ReceiverWrapper::Shared { pdata_receiver, .. } => {
                 Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Node for ReceiverWrapper<PData> {
+    fn is_shared(&self) -> bool {
+        match self {
+            ReceiverWrapper::Local { .. } => false,
+            ReceiverWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn user_config(&self) -> Arc<NodeUserConfig> {
+        match self {
+            ReceiverWrapper::Local {
+                user_config: config,
+                ..
+            } => config.clone(),
+            ReceiverWrapper::Shared {
+                user_config: config,
+                ..
+            } => config.clone(),
+        }
+    }
+
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+        match self {
+            ReceiverWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
+            ReceiverWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
+        }
+    }
+}
+
+impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
+    fn set_pdata_sender(
+        &mut self,
+        node_id: NodeId,
+        _port: PortName,
+        sender: Sender<PData>,
+    ) -> Result<(), Error<PData>> {
+        match (self, sender) {
+            (ReceiverWrapper::Local { pdata_sender, .. }, Sender::Local(sender)) => {
+                *pdata_sender = Some(sender);
+                Ok(())
+            }
+            (ReceiverWrapper::Shared { pdata_sender, .. }, Sender::Shared(sender)) => {
+                *pdata_sender = Some(sender);
+                Ok(())
+            }
+            (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
+                processor: node_id,
+                error: "Expected a local sender for PData".to_owned(),
+            }),
+            (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
+                processor: node_id,
+                error: "Expected a shared sender for PData".to_owned(),
+            }),
         }
     }
 }
@@ -145,10 +259,12 @@ mod tests {
     use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use crate::testing::{CtrlMsgCounters, TestMsg};
     use async_trait::async_trait;
+    use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
@@ -405,11 +521,13 @@ mod tests {
     #[test]
     fn test_receiver_local() {
         let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_receiver_config("test_receiver"));
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::local(
             TestReceiver::new(test_runtime.counters(), port_tx),
+            user_config,
             test_runtime.config(),
         );
 
@@ -423,11 +541,13 @@ mod tests {
     #[test]
     fn test_receiver_shared() {
         let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_receiver_config("test_receiver"));
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::shared(
             TestReceiver::new(test_runtime.counters(), port_tx),
+            user_config,
             test_runtime.config(),
         );
 

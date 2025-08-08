@@ -31,7 +31,7 @@ import (
 	"github.com/axiomhq/hyperloglog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	carrow "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
 )
 
 const None = ""

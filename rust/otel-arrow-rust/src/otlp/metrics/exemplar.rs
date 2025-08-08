@@ -77,7 +77,7 @@ impl ExemplarsStore {
             ensure!(
                 span_id_bytes.len() == 8,
                 error::InvalidSpanIdSnafu {
-                    message: format!("rb: {:?}", rb),
+                    message: format!("rb: {rb:?}"),
                 }
             );
             current_exemplar.span_id = span_id_bytes;
@@ -86,7 +86,7 @@ impl ExemplarsStore {
             ensure!(
                 trace_id_bytes.len() == 16,
                 error::InvalidTraceIdSnafu {
-                    message: format!("rb: {:?}", rb),
+                    message: format!("rb: {rb:?}"),
                 }
             );
             current_exemplar.trace_id = trace_id_bytes;
@@ -101,7 +101,7 @@ impl ExemplarsStore {
                 }
                 _ => {
                     return error::InvalidExemplarDataSnafu {
-                        message: format!("record batch: {:?}", rb),
+                        message: format!("record batch: {rb:?}"),
                     }
                     .fail();
                 }
