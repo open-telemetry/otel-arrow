@@ -16,38 +16,24 @@ For more information about the ResolvedRegistry please check the
 
 ```json
 {
-    "steps": [
-        {
-            "delay_between_batches_ms": 0,
-            "batches_to_generate": 1,
-            "signal_type": {
-                "Metrics": {
-                    "resource_count": 1,
-                    "scope_count": 1
-                }
-            }
+    "traffic_config": {
+        "messages_per_second": 10,
+        "metric_load": {
+            "messages_per_scope": 5,
+            "scopes_per_resource": 1,
+            "resources_per_request": 1,
         },
-        {
-            "delay_between_batches_ms": 0,
-            "batches_to_generate": 1,
-            "signal_type": {
-                "Traces": {
-                    "resource_count": 1,
-                    "scope_count": 1
-                }
-            }
+        "trace_load": {
+            "messages_per_scope": 5,
+            "scopes_per_resource": 1,
+            "resources_per_request": 1,
         },
-        {
-            "delay_between_batches_ms": 0,
-            "batches_to_generate": 1,
-            "signal_type": {
-                "Logs": {
-                    "resource_count": 1,
-                    "scope_count": 1
-                }
-            }
-        }
-    ],
+        "log_load": {
+            "messages_per_scope": 5,
+            "scopes_per_resource": 1,
+            "resources_per_request": 1,
+        },
+    },
     "resolved_registry": {
         "groups": [
             {
@@ -539,3 +525,35 @@ For more information about the ResolvedRegistry please check the
     }
 }
 ```
+
+## Controlling signal data
+
+### Attributes
+
+For attributes there are three main types primative and array, Enums, and Template
+ 
+
+#### Enum/Templates
+
+select value from the examples
+
+
+// attribute types ->
+//enum -> use example
+//template -> use example
+//primitive or array ->
+        // boolean
+        // booleans
+        //ints -> annotations
+        // int -> annotations
+        // doubles -> annotations
+        // double -> annotations
+        // string 
+        // strings 
+
+
+// metric values
+
+    // define a range and distribution can use the same annotation config for ints and doubles for primitive attributes
+
+
