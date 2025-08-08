@@ -173,6 +173,10 @@ impl UpdateDictionaryIndexInto<BinaryDictionaryBuilder<UInt16Type>>
     for BinaryDictionaryBuilder<UInt8Type>
 {
     fn upgrade_into(self) -> BinaryDictionaryBuilder<UInt16Type> {
+        // safety: `try_new_from_builder` will return an error here if the source key type cannot
+        // be upgraded into the source key type. This can happen if going signed -> unsigned and there
+        // are negative keys, or if going from a bigger type to smaller and some keys would not fit
+        // int the smaller type. This won't happen going u8 to u16
         BinaryDictionaryBuilder::try_new_from_builder(self).expect("can upgrade from u8 to u16 key")
     }
 }
