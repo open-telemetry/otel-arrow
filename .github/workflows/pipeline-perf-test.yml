@@ -5,8 +5,6 @@ permissions:
 on:
     push:
         branches: [ main ]
-    pull_request:
-        branches: [ main ]
     workflow_dispatch:
 
 # Cancel in-progress runs on new commits to same PR
@@ -17,7 +15,6 @@ concurrency:
 jobs:
     pipeline-perf-test:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
         steps:
         - name: Harden the runner (Audit all outbound calls)
           uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
@@ -62,13 +59,6 @@ jobs:
             # Smoke test
             python --version
             python -m pip --version
-
-        # Now setup-python will pick the locally installed 3.11
-        # - name: Set up Python
-        #   uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        #   with:
-        #     python-version: '3.11'
-        #     cache: 'pip'
 
         - name: Install dependencies
           run: |
