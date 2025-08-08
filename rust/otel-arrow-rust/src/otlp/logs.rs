@@ -296,7 +296,11 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
 
         let current_log_record = current_scope_logs.log_records.append_and_get();
         let maybe_delta_id = logs_arrays.id.value_at_or_default(idx);
-        let log_id = related_data.log_record_id_from_delta(maybe_delta_id);
+        let log_id = if ids_plain_encoded {
+            maybe_delta_id
+        } else {
+            related_data.log_record_id_from_delta(maybe_delta_id)
+        };
 
         current_log_record.time_unix_nano =
             logs_arrays.time_unix_nano.value_at_or_default(idx) as u64;
