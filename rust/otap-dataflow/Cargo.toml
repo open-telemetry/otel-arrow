@@ -18,7 +18,7 @@ rust-version = "1.86.0"
 [package]
 name = "otap-df"
 version = "0.1.0"
-description = "OpenTelemetry Dataflow Engine supporting natively OTLP and OTAP Data Formats"
+description = "OpenTelemetry Rust Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
@@ -52,6 +52,7 @@ thiserror = "2.0.12"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.142" }
+serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
 tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
 uuid = { version = "1.17.0", features = ["v4"] }
 async-trait = "0.1.88"
@@ -124,8 +125,8 @@ missing_crate_level_docs = "deny"
 debug = "line-tables-only"  # minimum required for profiling
 
 # A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
-#[profile.release]          
-#lto = "thin"    
+#[profile.release]
+#lto = "thin"
 #strip = true
 
 [profile.bench]
