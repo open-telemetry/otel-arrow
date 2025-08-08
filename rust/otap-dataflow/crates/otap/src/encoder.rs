@@ -1184,7 +1184,9 @@ mod test {
                     "resource",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new("dropped_attributes_count", DataType::UInt32, true),
                         ]
                         .into(),
@@ -1195,7 +1197,9 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -1252,7 +1256,9 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0; 5])) as ArrayRef,
                     ),
@@ -1269,7 +1275,9 @@ mod test {
                 // scope
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0; 5])) as ArrayRef,
                     ),
@@ -2391,7 +2399,9 @@ mod test {
                     "resource",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter([("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -2410,7 +2420,9 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter([("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -2501,7 +2513,9 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter([("encoding".into(), "plain".into())]),
+                        )),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -2535,7 +2549,9 @@ mod test {
                 // scope
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter([("encoding".into(), "plain".into())]),
+                        )),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -2817,12 +2833,26 @@ mod test {
             Arc::new(Schema::new(vec![
                 Field::new(
                     consts::RESOURCE,
-                    DataType::Struct(vec![Field::new(consts::ID, DataType::UInt16, true)].into()),
+                    DataType::Struct(
+                        vec![
+                            Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
+                        ]
+                        .into(),
+                    ),
                     true,
                 ),
                 Field::new(
                     consts::SCOPE,
-                    DataType::Struct(vec![Field::new(consts::ID, DataType::UInt16, true)].into()),
+                    DataType::Struct(
+                        vec![
+                            Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
+                        ]
+                        .into(),
+                    ),
                     true,
                 ),
                 Field::new(
@@ -2838,12 +2868,22 @@ mod test {
             ])),
             vec![
                 Arc::new(StructArray::new(
-                    vec![Field::new(consts::ID, DataType::UInt16, true)].into(),
+                    vec![
+                        Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        ),
+                    ]
+                    .into(),
                     vec![Arc::new(UInt16Array::from(vec![0]))],
                     None,
                 )),
                 Arc::new(StructArray::new(
-                    vec![Field::new(consts::ID, DataType::UInt16, true)].into(),
+                    vec![
+                        Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        ),
+                    ]
+                    .into(),
                     vec![Arc::new(UInt16Array::from(vec![0]))],
                     None,
                 )),
@@ -2901,7 +2941,9 @@ mod test {
                     consts::RESOURCE,
                     DataType::Struct(
                         vec![
-                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -2919,7 +2961,9 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -2952,7 +2996,9 @@ mod test {
             vec![
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -2976,7 +3022,9 @@ mod test {
                 ])),
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -3087,7 +3135,9 @@ mod test {
                     consts::RESOURCE,
                     DataType::Struct(
                         vec![
-                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -3105,7 +3155,9 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -3141,7 +3193,9 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef,
                     ),
@@ -3165,7 +3219,9 @@ mod test {
                 ])),
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0, 1, 2])) as ArrayRef,
                     ),
@@ -3804,7 +3860,9 @@ mod test {
                     "resource",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -3823,7 +3881,9 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_metadata(
+                                HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                            ),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -3915,7 +3975,9 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -3949,7 +4011,9 @@ mod test {
                 // scope
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_metadata(
+                            HashMap::from_iter(vec![("encoding".into(), "plain".into())]),
+                        )),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),

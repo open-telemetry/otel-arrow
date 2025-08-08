@@ -467,29 +467,63 @@ mod test {
         // roundtrip encoding/decoding
 
         let otlp_service_req = ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::default())
-                        .log_records(vec![
-                            LogRecord::build(1u64, SeverityNumber::Info, "")
-                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                                .finish(),
-                            LogRecord::build(2u64, SeverityNumber::Info, "")
-                                .attributes(vec![KeyValue::new(
-                                    "key",
-                                    AnyValue::new_string("val2"),
-                                )])
-                                .finish(),
-                            LogRecord::build(3u64, SeverityNumber::Info, "")
-                                .attributes(vec![KeyValue::new(
-                                    "key",
-                                    AnyValue::new_string("val3"),
-                                )])
-                                .finish(),
-                        ])
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val1"))],
+                    ..Default::default()
+                })
+                .log_records(vec![
+                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(2u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                        .finish(),
+                    LogRecord::build(3u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
                         .finish(),
                 ])
                 .finish(),
+            ])
+            .finish(),
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val2"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    name: "Scope2".into(),
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val2"))],
+                    ..Default::default()
+                })
+                .log_records(vec![
+                    LogRecord::build(4u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
+                        .finish(),
+                    LogRecord::build(5u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val5"))])
+                        .finish(),
+                ])
+                .finish(),
+                ScopeLogs::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val3"))],
+                    ..Default::default()
+                })
+                .log_records(vec![
+                    LogRecord::build(6u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val6"))])
+                        .finish(),
+                    LogRecord::build(7u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val7"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
         ]);
         let mut otlp_bytes = vec![];
         otlp_service_req.encode(&mut otlp_bytes).unwrap();

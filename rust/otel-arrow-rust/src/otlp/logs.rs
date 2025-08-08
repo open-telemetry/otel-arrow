@@ -195,9 +195,29 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
 
     let ids_plain_encoded = is_id_plain_encoded(rb);
 
+    let resource_ids_plain_encoded = rb
+        .column_by_name(consts::RESOURCE)
+        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
+        .and_then(|col_struct| col_struct.fields().find(consts::ID))
+        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
+        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
+        .unwrap_or(false);
+
+    let scope_ids_plain_encoded = rb
+        .column_by_name(consts::SCOPE)
+        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
+        .and_then(|col_struct| col_struct.fields().find(consts::ID))
+        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
+        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
+        .unwrap_or(false);
+
     for idx in 0..rb.num_rows() {
-        let res_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
-        res_id += res_delta_id;
+        let res_maybe_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
+        if resource_ids_plain_encoded {
+            res_id = res_maybe_delta_id;
+        } else {
+            res_id += res_maybe_delta_id;
+        }
 
         if prev_res_id != Some(res_id) {
             // new resource id
@@ -214,11 +234,13 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
             }
 
             if let Some(res_id) = resource_arrays.id.value_at(idx) {
-                if let Some(attrs) = related_data
-                    .res_attr_map_store
-                    .as_mut()
-                    .and_then(|store| store.attribute_by_delta_id(res_id))
-                {
+                if let Some(attrs) = related_data.res_attr_map_store.as_mut().and_then(|store| {
+                    if resource_ids_plain_encoded {
+                        store.attribute_by_id(res_id)
+                    } else {
+                        store.attribute_by_delta_id(res_id)
+                    }
+                }) {
                     resource.attributes = attrs.to_vec();
                 }
             }
@@ -226,17 +248,27 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
             resource_logs.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
         }
 
-        let scope_delta_id_opt = scope_arrays.id.value_at(idx);
-        scope_id += scope_delta_id_opt.unwrap_or_default();
+        let scope_maybe_delta_id_opt = scope_arrays.id.value_at(idx);
+        if scope_ids_plain_encoded {
+            scope_id = scope_maybe_delta_id_opt.unwrap_or_default();
+        } else {
+            scope_id += scope_maybe_delta_id_opt.unwrap_or_default();
+        }
 
         if prev_scope_id != Some(scope_id) {
             prev_scope_id = Some(scope_id);
             let mut scope = scope_arrays.create_instrumentation_scope(idx);
-            if let Some(scope_id) = scope_delta_id_opt {
+            if let Some(scope_id) = scope_maybe_delta_id_opt {
                 if let Some(attrs) = related_data
                     .scope_attr_map_store
                     .as_mut()
-                    .and_then(|store| store.attribute_by_delta_id(scope_id))
+                    .and_then(|store| {
+                        if scope_ids_plain_encoded {
+                            store.attribute_by_id(scope_id)
+                        } else {
+                            store.attribute_by_delta_id(scope_id)
+                        }
+                    })
                 {
                     scope.attributes = attrs.to_vec();
                 }
