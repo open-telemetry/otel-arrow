@@ -13,6 +13,7 @@ use arrow::{
     datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type},
     error::ArrowError,
 };
+use replace_with::replace_with_or_abort_and_return;
 use snafu::Snafu;
 
 use crate::{
@@ -140,7 +141,7 @@ pub trait ConvertToNativeHelper {
 // keyed by a smaller index type into a larger type. E.g. a builder for
 // DictionaryArray<u8> -> DictionaryArray<u16>
 pub trait UpdateDictionaryIndexInto<T> {
-    fn upgrade_into(&mut self) -> T;
+    fn upgrade_into(self) -> T;
 }
 
 pub struct DictionaryOptions {
@@ -214,21 +215,28 @@ where
     T16: ArrayBuilderConstructor,
 {
     fn upgrade_key(&mut self) -> Result<()> {
-        match &mut self.variant {
-            DictIndexVariant::UInt8(dict_builder) => {
-                // if the max cardinality is less than what the next bigger
-                // index type can hold, we don't want to upgrade
-                if self.max_cardinality <= u8::MAX.into() {
-                    return DictOverflowSnafu.fail();
+        // we use `replace_with..` here so we can temporarily take the inner variant and compute
+        // the new variant using upgrade_into(), which takes an owned self.
+        replace_with_or_abort_and_return(&mut self.variant, |curr| {
+            match curr {
+                DictIndexVariant::UInt8(u8_builder) => {
+                    // if the max cardinality is less than what the next bigger
+                    // index type can hold, we don't want to upgrade
+                    if self.max_cardinality <= u8::MAX.into() {
+                        return (
+                            DictOverflowSnafu.fail(),
+                            DictIndexVariant::UInt8(u8_builder),
+                        );
+                    }
+
+                    let next_bigger = u8_builder.upgrade_into();
+                    (Ok(()), DictIndexVariant::UInt16(next_bigger))
                 }
 
-                let next_bigger = dict_builder.upgrade_into();
-                self.variant = DictIndexVariant::UInt16(next_bigger);
-
-                Ok(())
+                // in this case, the variant is not the u8 builder, so it cannot be upgraded
+                curr => (DictOverflowSnafu.fail(), curr),
             }
-            _ => DictOverflowSnafu.fail(),
-        }
+        })
     }
 }
 
