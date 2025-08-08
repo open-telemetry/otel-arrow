@@ -126,4 +126,3 @@ jobs:
               benchmark-data-dir-path: "docs/benchmarks/pipeline-perf"
               auto-push: true
               save-data-file: true
-          
