@@ -126,7 +126,6 @@ pub(crate) fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> 
 fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
     let iso = ISO_DATE_REGEX.captures(input);
     if let Some(captures) = iso {
-
         let r = captures.get(0).unwrap().range();
 
         let a = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
@@ -141,7 +140,6 @@ fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
 
     let rfc = RFC_DATE_REGEX.captures(input);
     if let Some(captures) = rfc {
-
         let r = captures.get(0).unwrap().range();
 
         let day = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
@@ -162,7 +160,6 @@ fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
 
     let local = LOCAL_DATE_REGEX.captures(input);
     if let Some(captures) = local {
-
         let r = captures.get(0).unwrap().range();
 
         let month = Month::from_str(captures.get(1).unwrap().as_str());
@@ -188,7 +185,6 @@ fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
 fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize>), ()> {
     let local = LOCAL_TIME_REGEX.captures(input);
     if let Some(captures) = local {
-
         let r = captures.get(0).unwrap().range();
 
         let mut hour = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
@@ -234,7 +230,6 @@ fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize>), ()> {
 fn parse_offset(input: &str) -> Option<(i32, Range<usize>)> {
     let c = ISO_TIME_OFFSET_REGEX.captures(input);
     if let Some(captures) = c {
-
         let r = captures.get(0).unwrap().range();
 
         let mut multipler: i32 = 1;

@@ -73,10 +73,8 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
         Ok((included, dropped)) => {
             let mut included_records_otlp_response = Vec::new();
             if let Some(ref included) = included {
-                match ExportLogsServiceRequest::to_protobuf(
-                    included,
-                    OTLP_BUFFER_INITIAL_CAPACITY,
-                ) {
+                match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY)
+                {
                     Ok(r) => {
                         included_records_otlp_response = r.to_vec();
                     }
@@ -88,10 +86,7 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
 
             let mut dropped_records_otlp_response = Vec::new();
             if let Some(ref dropped) = dropped {
-                match ExportLogsServiceRequest::to_protobuf(
-                    dropped,
-                    OTLP_BUFFER_INITIAL_CAPACITY,
-                ) {
+                match ExportLogsServiceRequest::to_protobuf(dropped, OTLP_BUFFER_INITIAL_CAPACITY) {
                     Ok(r) => {
                         dropped_records_otlp_response = r.to_vec();
                     }
