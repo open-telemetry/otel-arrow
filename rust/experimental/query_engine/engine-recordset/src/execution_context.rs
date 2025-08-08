@@ -2,10 +2,9 @@ use std::{cell::RefCell, collections::HashMap};
 
 use data_engine_expressions::{Expression, MapValue, PipelineExpression};
 
-use crate::{
-    AttachedRecords, MapValueStorage, OwnedValue, Record, RecordSetEngineDiagnostic,
-    RecordSetEngineDiagnosticLevel, RecordSetEngineRecord,
-};
+#[cfg(test)]
+use crate::TestRecord;
+use crate::*;
 
 pub(crate) struct ExecutionContext<'a, 'b, 'c, TRecord>
 where
@@ -15,6 +14,7 @@ where
     diagnostic_level: RecordSetEngineDiagnosticLevel,
     diagnostics: RefCell<Vec<RecordSetEngineDiagnostic<'c>>>,
     pipeline: &'a PipelineExpression,
+    summaries: &'b Summaries,
     attached_records: Option<&'b dyn AttachedRecords>,
     record: RefCell<TRecord>,
     variables: RefCell<MapValueStorage<OwnedValue>>,
@@ -24,6 +24,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
     pub fn new(
         diagnostic_level: RecordSetEngineDiagnosticLevel,
         pipeline: &'a PipelineExpression,
+        summaries: &'b Summaries,
         attached_records: Option<&'b dyn AttachedRecords>,
         record: TRecord,
     ) -> ExecutionContext<'a, 'b, 'c, TRecord> {
@@ -34,6 +35,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
             attached_records,
             record: RefCell::new(record),
             variables: RefCell::new(MapValueStorage::new(HashMap::new())),
+            summaries,
         }
     }
 
@@ -83,11 +85,65 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         &self.variables
     }
 
+    pub fn get_summaries(&self) -> &Summaries {
+        self.summaries
+    }
+
     pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, 'c, TRecord> {
         RecordSetEngineRecord::new(
             self.pipeline,
             self.record.into_inner(),
             self.diagnostics.take(),
+        )
+    }
+}
+
+#[cfg(test)]
+pub struct TestExecutionContext {
+    pipeline: PipelineExpression,
+    summaries: Summaries,
+    attached_records: Option<TestAttachedRecords>,
+    record: Option<TestRecord>,
+}
+
+#[cfg(test)]
+impl TestExecutionContext {
+    pub fn new() -> TestExecutionContext {
+        Self {
+            pipeline: Default::default(),
+            summaries: Summaries::new(8192),
+            attached_records: None,
+            record: Some(Default::default()),
+        }
+    }
+
+    pub fn with_pipeline(mut self, pipeline: PipelineExpression) -> TestExecutionContext {
+        self.pipeline = pipeline;
+        self
+    }
+
+    pub fn with_attached_records(
+        mut self,
+        attached_records: TestAttachedRecords,
+    ) -> TestExecutionContext {
+        self.attached_records = Some(attached_records);
+        self
+    }
+
+    pub fn with_record(mut self, record: TestRecord) -> TestExecutionContext {
+        self.record = Some(record);
+        self
+    }
+
+    pub fn create_execution_context(&mut self) -> ExecutionContext<'_, '_, '_, TestRecord> {
+        ExecutionContext::new(
+            RecordSetEngineDiagnosticLevel::Verbose,
+            &self.pipeline,
+            &self.summaries,
+            self.attached_records
+                .as_ref()
+                .map(|v| v as &dyn AttachedRecords),
+            self.record.take().expect("Record wasn't set"),
         )
     }
 }

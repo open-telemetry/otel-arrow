@@ -9,8 +9,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-caseless = "0.2.2"
-
+caseless = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 serde_json = { workspace = true }

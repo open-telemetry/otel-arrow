@@ -28,6 +28,15 @@ where
         final_results.dropped_records.push(record);
     }
 
+    println!("Included summaries:");
+    if final_results.summaries.is_empty() {
+        println!("None")
+    } else {
+        for summary in &final_results.summaries {
+            println!("{summary:?}");
+        }
+    }
+
     println!("Included records:");
 
     if final_results.included_records.is_empty() {

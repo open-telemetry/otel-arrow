@@ -3,8 +3,7 @@ use std::{cell::RefMut, ops::Deref, vec::Drain};
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::ExecutionContext, resolved_value_mut::*,
-    scalar_expressions::execute_scalar_expression, *,
+    execution_context::*, resolved_value_mut::*, scalar_expressions::execute_scalar_expression, *,
 };
 
 pub fn execute_immutable_value_expression<'a, 'b, 'c, TRecord: Record>(
@@ -419,17 +418,10 @@ mod tests {
 
     #[test]
     fn test_execute_immutable_value_expression() {
-        let record = TestRecord::new();
-
         let run_test = |immutable_value_expression, expected_value: Value| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_immutable_value_expression(&execution_context, &immutable_value_expression)
@@ -470,14 +462,9 @@ mod tests {
             );
 
         let run_test = |scalar_expression, validate: &dyn Fn(Option<ResolvedValueMut>)| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new().with_record(record.clone());
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_mutable_value_expression(&execution_context, &scalar_expression).unwrap();
@@ -591,17 +578,10 @@ mod tests {
 
     #[test]
     fn test_execute_variable_mutable_value_expression() {
-        let record = TestRecord::new();
-
         let run_test = |scalar_expression, validate: &dyn Fn(Option<ResolvedValueMut>)| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             {
                 let mut variables = execution_context.get_variables().borrow_mut();

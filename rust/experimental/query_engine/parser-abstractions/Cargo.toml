@@ -9,10 +9,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-pest = "2.8"
-pest_derive = "2.8"
+chrono = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+thiserror = { workspace = true }
 
 data_engine_expressions = { path = "../expressions" }
-
-chrono = { workspace = true }
-thiserror = { workspace = true }

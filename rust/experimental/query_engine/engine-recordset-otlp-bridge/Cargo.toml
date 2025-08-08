@@ -9,8 +9,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-bytes = "1.10.1"
-
+bytes = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
@@ -20,5 +19,5 @@ data_engine_kql_parser = { path = "../kql-parser" }
 data_engine_recordset = { path = "../engine-recordset" }
 
 [dev-dependencies]
-opentelemetry-proto = "0.30.0"
-prost = "0.13.1"
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true }

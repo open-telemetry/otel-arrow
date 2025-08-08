@@ -69,6 +69,11 @@ impl ScopeLogs {
         self.log_records.push(value);
         self
     }
+
+    pub fn with_log_records(mut self, values: Vec<LogRecord>) -> ScopeLogs {
+        self.log_records.extend(values);
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -158,6 +163,18 @@ impl LogRecord {
         if !key.is_empty() {
             self.attributes.get_values_mut().insert(key.into(), value);
         }
+        self
+    }
+
+    pub fn with_attributes(mut self, values: Vec<(Box<str>, AnyValue)>) -> LogRecord {
+        let attributes = self.attributes.get_values_mut();
+
+        for (key, value) in values {
+            if !key.is_empty() {
+                attributes.insert(key, value);
+            }
+        }
+
         self
     }
 

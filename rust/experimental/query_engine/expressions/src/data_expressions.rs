@@ -1,9 +1,14 @@
-use crate::{Expression, LogicalExpression, QueryLocation, TransformExpression};
+use crate::{
+    Expression, LogicalExpression, QueryLocation, SummaryDataExpression, TransformExpression,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataExpression {
     /// Discard data expression.
     Discard(DiscardDataExpression),
+
+    /// Summary data expression.
+    Summary(SummaryDataExpression),
 
     /// Transform data expression.
     Transform(TransformExpression),
@@ -13,6 +18,7 @@ impl Expression for DataExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
             DataExpression::Discard(d) => d.get_query_location(),
+            DataExpression::Summary(s) => s.get_query_location(),
             DataExpression::Transform(t) => t.get_query_location(),
         }
     }
@@ -20,6 +26,7 @@ impl Expression for DataExpression {
     fn get_name(&self) -> &'static str {
         match self {
             DataExpression::Discard(_) => "DataExpression(Discard)",
+            DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
         }
     }

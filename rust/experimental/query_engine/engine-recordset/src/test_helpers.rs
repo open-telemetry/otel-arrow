@@ -6,6 +6,7 @@ use data_engine_expressions::*;
 
 use crate::*;
 
+#[derive(Clone)]
 pub struct TestAttachedRecords {
     records: HashMap<Box<str>, MapValueStorage<OwnedValue>>,
 }
