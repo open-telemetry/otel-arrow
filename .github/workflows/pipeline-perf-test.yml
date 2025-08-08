@@ -5,6 +5,8 @@ permissions:
 on:
     push:
         branches: [ main ]
+    pull_request:
+        branches: [ main ]
     workflow_dispatch:
 
 # Cancel in-progress runs on new commits to same PR
