@@ -425,22 +425,7 @@ impl Value<'_> {
         }
     }
 
-    fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
-        let mut r = None;
-
-        right.convert_to_string(&mut |o| {
-            if case_insensitive {
-                r = Some(caseless::default_caseless_match_str(left, o))
-            } else {
-                r = Some(left == o)
-            }
-        });
-
-        r.expect("Encountered a type which does not correctly implement convert_to_string")
-    }
-
     pub fn replace_matches(
-        _query_location: &QueryLocation,
         haystack: &Value,
         needle: &Value,
         replacement: &Value,
@@ -507,6 +492,36 @@ impl Value<'_> {
             }
             _ => None,
         }
+    }
+
+    pub fn ceiling(value: &Value) -> Option<i64> {
+        if let Value::Double(d) = value {
+            Some(d.get_value().ceil() as i64)
+        } else {
+            value.convert_to_integer()
+        }
+    }
+
+    pub fn floor(value: &Value) -> Option<i64> {
+        if let Value::Double(d) = value {
+            Some(d.get_value().floor() as i64)
+        } else {
+            value.convert_to_integer()
+        }
+    }
+
+    fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
+        let mut r = None;
+
+        right.convert_to_string(&mut |o| {
+            if case_insensitive {
+                r = Some(caseless::default_caseless_match_str(left, o))
+            } else {
+                r = Some(left == o)
+            }
+        });
+
+        r.expect("Encountered a type which does not correctly implement convert_to_string")
     }
 }
 
