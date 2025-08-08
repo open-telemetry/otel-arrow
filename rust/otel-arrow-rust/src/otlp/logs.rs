@@ -193,7 +193,7 @@ pub fn logs_from(logs_otap_batch: OtapArrowRecords) -> Result<ExportLogsServiceR
     let scope_arrays = ScopeArrays::try_from(rb)?;
     let logs_arrays = LogsArrays::try_from(rb)?;
 
-    let ids_plain_encoded = is_id_plain_encoded(&rb);
+    let ids_plain_encoded = is_id_plain_encoded(rb);
 
     for idx in 0..rb.num_rows() {
         let res_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
