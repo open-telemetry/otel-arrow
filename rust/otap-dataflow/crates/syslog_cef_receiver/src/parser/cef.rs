@@ -15,7 +15,7 @@ pub(crate) struct CefMessage<'a> {
     pub(super) input: &'a [u8],
 }
 
-impl<'a> CefMessage<'a> {
+impl CefMessage<'_> {
     /// Parse and iterate over the extensions as key-value pairs
     pub(crate) fn parse_extensions(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
         parse_cef_extensions(self.extensions).into_iter()
@@ -86,8 +86,8 @@ pub(super) fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseErro
     };
 
     // Parse extensions if present
-    let extensions = if parts_count > 7 && parts[7].is_some() {
-        parts[7].unwrap()
+    let extensions = if parts_count > 7 {
+        parts[7].unwrap_or(&[])
     } else {
         &[]
     };
