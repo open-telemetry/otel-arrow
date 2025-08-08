@@ -160,28 +160,12 @@ impl<V> UpdateDictionaryIndexInto<PrimitiveDictionaryBuilder<UInt16Type, V>>
 where
     V: ArrowPrimitiveType,
 {
-    fn upgrade_into(&mut self) -> PrimitiveDictionaryBuilder<UInt16Type, V> {
-        // TODO there should be an optimized way to implement this. Thinking we could
-        // create a new builder with the same keys (but use `cast` kernel) cast them
-        // to u16 then reuse the same values
-        // related issue https://github.com/open-telemetry/otel-arrow/issues/536
-
-        let dict_arr = self.finish();
-
-        // safety: DictionaryBuilder returns a dictionary that has Primitive values
-        let values = dict_arr
-            .downcast_dict::<PrimitiveArray<V>>()
-            .expect("expect values are of type primitive V");
-
-        let mut upgraded_builder = PrimitiveDictionaryBuilder::<UInt16Type, V>::new();
-        for value in values {
-            match value {
-                Some(value) => upgraded_builder.append_value(value),
-                None => upgraded_builder.append_null(),
-            }
-        }
-
-        upgraded_builder
+    fn upgrade_into(self) -> PrimitiveDictionaryBuilder<UInt16Type, V> {
+        // safety: `try_new_from_builder` will return an error here if the source key type cannot
+        // be upgraded into the source key type. This can happen if going signed -> unsigned and there
+        // are negative keys, or if going from a bigger type to smaller and some keys would not fit
+        // int the smaller type. This won't happen going u8 to u16
+        PrimitiveDictionaryBuilder::try_new_from_builder(self).expect("can upgrade u8 to u16")
     }
 }
 
