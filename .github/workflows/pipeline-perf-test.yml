@@ -25,6 +25,13 @@ jobs:
           with:
             egress-policy: audit
 
+        - name: Fix workspace permissions (self-hosted)
+          shell: bash
+          run: |
+            # Fix permissions on the workspace directory to allow cleanup
+            sudo chown -R $(whoami):$(whoami) "${GITHUB_WORKSPACE}" || true
+            sudo chmod -R u+w "${GITHUB_WORKSPACE}" || true
+
         - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
         - id: detect_os
