@@ -6,39 +6,38 @@ use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::pipeline_group::Quota;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 
 #[global_allocator]
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about,
+    long_about = None,
+    after_help = system_info()
+)]
 struct Args {
-    /// Path to the JSON pipeline configuration file
-    #[arg(short, long, default_value = "configs/otlp-otlp.json")]
-    pipeline: String,
+    /// Path to the pipeline configuration file (.json, .yaml, or .yml)
+    #[arg(short, long)]
+    pipeline: PathBuf,
 
     /// Number of cores to use (0 for default)
     #[arg(long, default_value = "0")]
     num_cores: usize,
 }
 
-fn load_pipeline_config(file_path: &str) -> Result<PipelineConfig, Box<dyn std::error::Error>> {
-    if Path::new(file_path).exists() {
-        let config_content = fs::read_to_string(file_path)?;
-        let pipeline_cfg: PipelineConfig = serde_json::from_str(&config_content)?;
-        Ok(pipeline_cfg)
-    } else {
-        Err(format!("Pipeline configuration file '{file_path}' not found").into())
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Load pipeline configuration from file
-    let pipeline_cfg = load_pipeline_config(&args.pipeline)?;
+    let pipeline_cfg = PipelineConfig::from_file(
+        "default_pipeline_group".into(),
+        "default_pipeline".into(),
+        &args.pipeline,
+    )?;
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
@@ -59,4 +58,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     }
+}
+
+fn system_info() -> String {
+    // Your custom logic here - this could read files, check system state, etc.
+    let available_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
+    let build_mode = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+
+    let debug_warning = if cfg!(debug_assertions) {
+        "\n\n⚠️  WARNING: This binary was compiled in debug mode.
+   Debug builds are NOT recommended for production, benchmarks, or performance testing.
+   Use 'cargo build --release' for optimal performance."
+    } else {
+        ""
+    };
+
+    // Get available OTAP plugins
+    let receivers: Vec<&str> = OTAP_PIPELINE_FACTORY
+        .get_receiver_factory_map()
+        .keys()
+        .copied()
+        .collect();
+    let processors: Vec<&str> = OTAP_PIPELINE_FACTORY
+        .get_processor_factory_map()
+        .keys()
+        .copied()
+        .collect();
+    let exporters: Vec<&str> = OTAP_PIPELINE_FACTORY
+        .get_exporter_factory_map()
+        .keys()
+        .copied()
+        .collect();
+
+    let mut receivers_sorted = receivers;
+    let mut processors_sorted = processors;
+    let mut exporters_sorted = exporters;
+    receivers_sorted.sort();
+    processors_sorted.sort();
+    exporters_sorted.sort();
+
+    format!(
+        "Examples:
+  {} --pipeline configs/otlp-perf.yaml --num-cores 4
+  {} -p configs/otlp-perf.yaml
+
+System Information:
+  Available CPU cores: {}
+  Build mode: {}
+  Default memory allocator: mimalloc
+
+Available Plugin URNs:
+  Receivers: {}
+  Processors: {}
+  Exporters: {}
+
+Configuration files can be found in the configs/ directory.{}",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_NAME"),
+        available_cores,
+        build_mode,
+        receivers_sorted.join(", "),
+        processors_sorted.join(", "),
+        exporters_sorted.join(", "),
+        debug_warning
+    )
 }

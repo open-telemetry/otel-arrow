@@ -18,7 +18,11 @@ pub(crate) fn parse_query(
     let parse_result = KqlPestParser::parse(Rule::query, query);
 
     if parse_result.is_err() {
-        let pest_error = parse_result.unwrap_err();
+        let pest_error = if let Err(error) = parse_result {
+            error
+        } else {
+            unreachable!()
+        };
 
         let (start, end) = match pest_error.location {
             pest::error::InputLocation::Pos(p) => (0, p),
