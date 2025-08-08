@@ -7,7 +7,9 @@ use regex::Regex;
 
 use crate::{
     Rule,
+    aggregate_expressions::parse_aggregate_assignment_expression,
     logical_expressions::parse_logical_expression,
+    scalar_expression::parse_scalar_expression,
     scalar_primitive_expressions::{parse_accessor_expression, parse_string_literal},
     shared_expressions::parse_assignment_expression,
 };
@@ -311,6 +313,66 @@ pub(crate) fn parse_where_expression(
     ))
 }
 
+pub(crate) fn parse_summarize_expression(
+    summarize_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<DataExpression, ParserError> {
+    let query_location = to_query_location(&summarize_expression_rule);
+
+    let mut aggregation_expressions: HashMap<Box<str>, AggregationExpression> = HashMap::new();
+    let mut group_by_expressions: HashMap<Box<str>, ScalarExpression> = HashMap::new();
+
+    for summarize_rule in summarize_expression_rule.into_inner() {
+        match summarize_rule.as_rule() {
+            Rule::aggregate_assignment_expression => {
+                let (key, aggregate) =
+                    parse_aggregate_assignment_expression(summarize_rule, state)?;
+
+                aggregation_expressions.insert(key, aggregate);
+            }
+            Rule::group_by_expression => {
+                let mut group_by = summarize_rule.into_inner();
+
+                let identifier_rule = group_by.next().unwrap();
+                let identifier = identifier_rule.as_str();
+
+                let scalar = if let Some(scalar_rule) = group_by.next() {
+                    parse_scalar_expression(scalar_rule, state)?
+                } else {
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        to_query_location(&identifier_rule),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                to_query_location(&identifier_rule),
+                                identifier,
+                            )),
+                        )]),
+                    ))
+                };
+
+                group_by_expressions.insert(identifier.into(), scalar);
+            }
+            _ => {
+                // todo: Support applying tabular expressions to summary
+                parse_tabular_expression(summarize_rule, state)?;
+            }
+        }
+    }
+
+    if group_by_expressions.is_empty() && aggregation_expressions.is_empty() {
+        Err(ParserError::SyntaxError(
+            query_location,
+            "Invalid summarize operator: missing both aggregates and group-by expressions".into(),
+        ))
+    } else {
+        Ok(DataExpression::Summary(SummaryDataExpression::new(
+            query_location,
+            group_by_expressions,
+            aggregation_expressions,
+        )))
+    }
+}
+
 pub(crate) fn parse_tabular_expression(
     tabular_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -354,6 +416,9 @@ pub(crate) fn parse_tabular_expression(
                 }
             }
             Rule::where_expression => expressions.push(parse_where_expression(rule, state)?),
+            Rule::summarize_expression => {
+                expressions.push(parse_summarize_expression(rule, state)?)
+            }
             _ => panic!("Unexpected rule in tabular_expression: {rule}"),
         }
     }
@@ -2082,6 +2147,157 @@ mod tests {
     }
 
     #[test]
+    pub fn test_parse_summarize_expression() {
+        let run_test_success = |input: &str, expected: SummaryDataExpression| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
+
+            let expression = parse_summarize_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(DataExpression::Summary(expected), expression);
+        };
+
+        let run_test_failure = |input: &str, expected: &str| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
+
+            let e = parse_summarize_expression(result.next().unwrap(), &state).unwrap_err();
+
+            assert!(matches!(e, ParserError::SyntaxError(_, msg) if msg == expected))
+        };
+
+        run_test_success(
+            "summarize c = count()",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "c".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            ),
+        );
+
+        run_test_success(
+            "summarize c = count(), d = count()",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([
+                    (
+                        "c".into(),
+                        AggregationExpression::new(
+                            QueryLocation::new_fake(),
+                            AggregationFunction::Count,
+                            None,
+                        ),
+                    ),
+                    (
+                        "d".into(),
+                        AggregationExpression::new(
+                            QueryLocation::new_fake(),
+                            AggregationFunction::Count,
+                            None,
+                        ),
+                    ),
+                ]),
+            ),
+        );
+
+        run_test_success(
+            "summarize by c",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "c".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "c",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize by c, d = a",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([
+                    (
+                        "c".into(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "c",
+                                )),
+                            )]),
+                        )),
+                    ),
+                    (
+                        "d".into(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "a",
+                                )),
+                            )]),
+                        )),
+                    ),
+                ]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize c = count() by a | extend v = 1",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "a".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "a",
+                            )),
+                        )]),
+                    )),
+                )]),
+                HashMap::from([(
+                    "c".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            ),
+        );
+
+        run_test_failure(
+            "summarize | extend v = 1",
+            "Invalid summarize operator: missing both aggregates and group-by expressions",
+        );
+    }
+
+    #[test]
     fn test_parse_tabular_expression() {
         let run_test = |input: &str, expected: Vec<DataExpression>| {
             let state = ParserState::new(input);
@@ -2176,6 +2392,22 @@ mod tests {
                     ),
                 )),
             )],
+        );
+
+        run_test(
+            "source | summarize c = count()",
+            vec![DataExpression::Summary(SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+                HashMap::from([(
+                    "c".into(),
+                    AggregationExpression::new(
+                        QueryLocation::new_fake(),
+                        AggregationFunction::Count,
+                        None,
+                    ),
+                )]),
+            ))],
         );
     }
 }
