@@ -480,7 +480,7 @@ impl NegateScalarExpression {
     pub(crate) fn try_resolve_static(
         &self,
         pipeline: &PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression>, ExpressionError> {
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         if let Some(s) = self.inner_expression.try_resolve_static(pipeline)? {
             match s.to_value() {
                 Value::Integer(i) => {
@@ -1264,7 +1264,7 @@ impl ParseJsonScalarExpression {
     pub(crate) fn try_resolve_static(
         &self,
         pipeline: &PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression>, ExpressionError> {
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         match self.inner_expression.try_resolve_static(pipeline)? {
             Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
                 if let Value::String(s) = v.to_value() {
