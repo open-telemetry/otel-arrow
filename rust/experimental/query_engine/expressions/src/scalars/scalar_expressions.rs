@@ -643,11 +643,13 @@ impl ConditionalScalarExpression {
         let false_e = self.false_expression.try_resolve_static(pipeline)?;
 
         if true_e.is_some() && false_e.is_some() {
-            let true_type = true_e.unwrap().get_value_type();
-            let false_type = false_e.unwrap().get_value_type();
+            if let (Some(true_expr), Some(false_expr)) = (true_e, false_e) {
+                let true_type = true_expr.get_value_type();
+                let false_type = false_expr.get_value_type();
 
-            if true_type == false_type {
-                return Ok(Some(true_type));
+                if true_type == false_type {
+                    return Ok(Some(true_type));
+                }
             }
         }
 
