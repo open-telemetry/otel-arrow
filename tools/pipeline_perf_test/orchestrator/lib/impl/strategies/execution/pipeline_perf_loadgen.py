@@ -145,20 +145,25 @@ components:
             requests.HTTPError: If the HTTP request to start the load generator fails.
         """
         logger = ctx.get_logger(__name__)
+        parameters = {
+            "threads": self.config.threads,
+            "body_size": self.config.body_size,
+            "target_rate": self.config.target_rate,
+            "num_attributes": self.config.num_attributes,
+            "attribute_value_size": self.config.attribute_value_size,
+            "batch_size": self.config.batch_size,
+            "tcp_connection_per_thread": self.config.tcp_connection_per_thread,
+        }
+        ctx.record_event("Requesting Load Start", None, **parameters)
         resp = requests.post(
             self.start_endpoint,
-            json={
-                "threads": self.config.threads,
-                "body_size": self.config.body_size,
-                "target_rate": self.config.target_rate,
-                "num_attributes": self.config.num_attributes,
-                "attribute_value_size": self.config.attribute_value_size,
-                "batch_size": self.config.batch_size,
-                "tcp_connection_per_thread": self.config.tcp_connection_per_thread
-            },
+            json=parameters,
             timeout=60,
         )
         resp.raise_for_status()
+        if self.config.target_rate == None:
+            parameters["target_rate"] = -1
+        ctx.record_event("Load Started", None, **parameters)
         logger.debug(f"Got response from loadgen start: {resp.text}")
 
     def stop(self, _component: Component, ctx: StepContext):
@@ -173,6 +178,8 @@ components:
             requests.HTTPError: If the HTTP request to stop the load generator fails.
         """
         logger = ctx.get_logger(__name__)
+        ctx.record_event("Requesting Load Stop")
         resp = requests.post(self.stop_endpoint, timeout=60)
         resp.raise_for_status()
+        ctx.record_event("Load Stopped")
         logger.debug(f"Got response from loadgen stop: {resp.text}")

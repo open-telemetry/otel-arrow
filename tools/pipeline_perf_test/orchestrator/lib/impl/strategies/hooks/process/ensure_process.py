@@ -88,7 +88,9 @@ components:
 
         else:
             ctx.status = ExecutionStatus.FAILURE
-            logger.error(f"Process for component is no longer running: {component.name}, checking logs...")
+            logger.error(
+                f"Process for component is no longer running: {component.name}, checking logs..."
+            )
             try:
                 stdout_logs, stderr_logs = runtime.process.communicate(timeout=5)
                 if stdout_logs:
@@ -110,4 +112,6 @@ components:
             except TimeoutError:
                 logger.error(f"Failed to fetch logs for: {component.name}.")
 
-            raise RuntimeError(f"Process for component is no longer running: {component.name}")
+            raise RuntimeError(
+                f"Process for component is no longer running: {component.name}"
+            )

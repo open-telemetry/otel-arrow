@@ -236,5 +236,8 @@ components:
             ctx.status = ExecutionStatus.FAILURE
             ctx.error = f"Docker network '{network_name}' not found."
         except APIError as e:
+            if "active endpoints" in e.strerror:
+                ctx.status = ExecutionStatus.SKIPPED
+                return
             logger.error(f"Error removing Docker network: {e}")
             raise
