@@ -2,9 +2,7 @@ use std::{cell::RefMut, ops::Deref, vec::Drain};
 
 use data_engine_expressions::*;
 
-use crate::{
-    execution_context::*, resolved_value_mut::*, scalar_expressions::execute_scalar_expression, *,
-};
+use crate::{execution_context::*, resolved_value_mut::*, scalars::*, *};
 
 pub fn execute_immutable_value_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,

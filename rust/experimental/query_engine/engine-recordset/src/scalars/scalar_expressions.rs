@@ -2,7 +2,10 @@ use std::{cell::Ref, slice::Iter};
 
 use data_engine_expressions::*;
 
-use crate::{execution_context::*, logical_expressions::execute_logical_expression, *};
+use crate::{
+    execution_context::*, logical_expressions::execute_logical_expression,
+    scalars::execute_temporal_scalar_expression, *,
+};
 
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
@@ -546,6 +549,7 @@ where
 
             Ok(v)
         }
+        ScalarExpression::Temporal(t) => execute_temporal_scalar_expression(execution_context, t),
     }
 }
 
