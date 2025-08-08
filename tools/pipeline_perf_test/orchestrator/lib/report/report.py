@@ -135,7 +135,7 @@ def get_report_string(
         - target_process_stats: CPU and Memory stats for the target process
     """
 
-    logs_received_backend_count = get_backend_received_count("http://backend-service:5000/metrics")
+    logs_received_backend_count = get_backend_received_count("http://localhost:5000/metrics")
 
     # Calculate total logs lost (including those that failed at loadgen side and those lost in transit)
     # Logs that failed at loadgen side
