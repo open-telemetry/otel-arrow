@@ -951,6 +951,7 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use super::*;
@@ -2384,7 +2385,8 @@ mod test {
         // check that the logs record batch is what we expect
         let expected_log_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt16, true),
+                Field::new("id", DataType::UInt16, true)
+                    .with_metadata(HashMap::from_iter([("encoding".into(), "plain".into())])),
                 Field::new(
                     "resource",
                     DataType::Struct(
@@ -3078,7 +3080,9 @@ mod test {
 
         let expected_logs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(consts::ID, DataType::UInt16, true).with_metadata(HashMap::from_iter(
+                    vec![("encoding".into(), "plain".into())],
+                )),
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(

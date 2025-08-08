@@ -466,7 +466,7 @@ mod test {
         // test to ensure the correct attributes are assigned to the correct log message after
         // roundtrip encoding/decoding
 
-         let otlp_service_req = ExportLogsServiceRequest::new(vec![
+        let otlp_service_req = ExportLogsServiceRequest::new(vec![
             ResourceLogs::build(Resource::default())
                 .scope_logs(vec![
                     ScopeLogs::build(InstrumentationScope::default())
@@ -475,10 +475,16 @@ mod test {
                                 .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                                 .finish(),
                             LogRecord::build(2u64, SeverityNumber::Info, "")
-                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                                .attributes(vec![KeyValue::new(
+                                    "key",
+                                    AnyValue::new_string("val2"),
+                                )])
                                 .finish(),
                             LogRecord::build(3u64, SeverityNumber::Info, "")
-                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
+                                .attributes(vec![KeyValue::new(
+                                    "key",
+                                    AnyValue::new_string("val3"),
+                                )])
                                 .finish(),
                         ])
                         .finish(),
@@ -497,7 +503,7 @@ mod test {
         let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
         let bytes = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => bytes,
-            _ => panic!("unexpected otlp bytes pdata variant")
+            _ => panic!("unexpected otlp bytes pdata variant"),
         };
 
         let result = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
