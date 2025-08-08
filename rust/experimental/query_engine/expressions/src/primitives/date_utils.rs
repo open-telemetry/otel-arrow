@@ -125,9 +125,7 @@ pub(crate) fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> 
 
 fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
     let iso = ISO_DATE_REGEX.captures(input);
-    if iso.is_some() {
-        let captures = iso.unwrap();
-
+    if let Some(captures) = iso {
         let r = captures.get(0).unwrap().range();
 
         let a = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
@@ -141,9 +139,7 @@ fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
     }
 
     let rfc = RFC_DATE_REGEX.captures(input);
-    if rfc.is_some() {
-        let captures = rfc.unwrap();
-
+    if let Some(captures) = rfc {
         let r = captures.get(0).unwrap().range();
 
         let day = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
@@ -163,9 +159,7 @@ fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
     }
 
     let local = LOCAL_DATE_REGEX.captures(input);
-    if local.is_some() {
-        let captures = local.unwrap();
-
+    if let Some(captures) = local {
         let r = captures.get(0).unwrap().range();
 
         let month = Month::from_str(captures.get(1).unwrap().as_str());
@@ -190,17 +184,15 @@ fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
 
 fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize>), ()> {
     let local = LOCAL_TIME_REGEX.captures(input);
-    if local.is_some() {
-        let captures = local.unwrap();
-
+    if let Some(captures) = local {
         let r = captures.get(0).unwrap().range();
 
         let mut hour = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
 
         let mut minute = 0;
         let cminute = captures.get(2);
-        if cminute.is_some() {
-            minute = cminute.unwrap().as_str().parse::<u32>().unwrap();
+        if let Some(capture) = cminute {
+            minute = capture.as_str().parse::<u32>().unwrap();
         }
 
         if captures.get(3).unwrap().as_str().to_lowercase() == "pm" {
@@ -211,9 +203,7 @@ fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize>), ()> {
     }
 
     let iso = ISO_TIME_REGEX.captures(input);
-    if iso.is_some() {
-        let captures = iso.unwrap();
-
+    if let Some(captures) = iso {
         let r = captures.get(0).unwrap().range();
 
         let hour = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
@@ -221,14 +211,14 @@ fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize>), ()> {
 
         let mut seconds = 0;
         let cseconds = captures.get(3);
-        if cseconds.is_some() {
-            seconds = cseconds.unwrap().as_str().parse::<u32>().unwrap();
+        if let Some(cseconds) = cseconds {
+            seconds = cseconds.as_str().parse::<u32>().unwrap();
         }
 
         let mut micro = 0;
         let cmicro = captures.get(4);
-        if cmicro.is_some() {
-            micro = cmicro.unwrap().as_str().parse::<u32>().unwrap();
+        if let Some(cmicro) = cmicro {
+            micro = cmicro.as_str().parse::<u32>().unwrap();
         }
 
         return Ok((hour, minute, seconds, micro, r));
@@ -239,9 +229,7 @@ fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize>), ()> {
 
 fn parse_offset(input: &str) -> Option<(i32, Range<usize>)> {
     let c = ISO_TIME_OFFSET_REGEX.captures(input);
-    if c.is_some() {
-        let captures = c.unwrap();
-
+    if let Some(captures) = c {
         let r = captures.get(0).unwrap().range();
 
         let mut multipler: i32 = 1;
@@ -253,8 +241,8 @@ fn parse_offset(input: &str) -> Option<(i32, Range<usize>)> {
 
         let mut minutes: i32 = 0;
         let cminutes = captures.get(3);
-        if cminutes.is_some() {
-            minutes = cminutes.unwrap().as_str().parse::<i32>().unwrap();
+        if let Some(cminutes) = cminutes {
+            minutes = cminutes.as_str().parse::<i32>().unwrap();
         }
 
         let offset = (multipler * hours * 60 * 60) + (minutes * 60);
