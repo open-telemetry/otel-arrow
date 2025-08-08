@@ -47,7 +47,7 @@ impl Record for LogRecord {
 }
 
 impl AsStaticValue for LogRecord {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Map(self)
     }
 }
@@ -163,13 +163,13 @@ impl MapValue for LogRecord {
 }
 
 impl AsStaticValueMut for LogRecord {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         Some(StaticValueMut::Map(self))
     }
 }
 
 impl MapValueMut for LogRecord {
-    fn get_mut(&mut self, key: &str) -> ValueMutGetResult {
+    fn get_mut(&mut self, key: &str) -> ValueMutGetResult<'_> {
         match key {
             "Attributes" => ValueMutGetResult::Found(&mut self.attributes),
             "Timestamp" => ValueMutGetResult::NotSupported(

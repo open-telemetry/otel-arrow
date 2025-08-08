@@ -71,7 +71,7 @@ impl OwnedValue {
 }
 
 impl AsStaticValue for OwnedValue {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         match self {
             OwnedValue::Array(a) => StaticValue::Array(a),
             OwnedValue::Boolean(b) => StaticValue::Boolean(b),
@@ -87,7 +87,7 @@ impl AsStaticValue for OwnedValue {
 }
 
 impl AsStaticValueMut for OwnedValue {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         match self {
             OwnedValue::Array(a) => Some(StaticValueMut::Array(a)),
             OwnedValue::Map(m) => Some(StaticValueMut::Map(m)),

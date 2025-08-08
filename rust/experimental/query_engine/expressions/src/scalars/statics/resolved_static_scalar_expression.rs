@@ -7,7 +7,7 @@ pub enum ResolvedStaticScalarExpression<'a> {
 }
 
 impl AsStaticValue for ResolvedStaticScalarExpression<'_> {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         match self {
             ResolvedStaticScalarExpression::Reference(s) => s.to_static_value(),
             ResolvedStaticScalarExpression::Value(s) => s.to_static_value(),

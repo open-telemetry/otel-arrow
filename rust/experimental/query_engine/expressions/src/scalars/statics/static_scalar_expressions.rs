@@ -136,7 +136,7 @@ impl Expression for StaticScalarExpression {
 }
 
 impl AsStaticValue for StaticScalarExpression {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         match self {
             StaticScalarExpression::Array(a) => StaticValue::Array(a),
             StaticScalarExpression::Boolean(b) => StaticValue::Boolean(b),

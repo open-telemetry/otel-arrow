@@ -28,7 +28,7 @@ impl AttachedRecords for OtlpAttachedRecords<'_> {
 }
 
 impl AsStaticValue for Resource {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Map(self)
     }
 }
@@ -60,7 +60,7 @@ impl MapValue for Resource {
 }
 
 impl AsStaticValue for InstrumentationScope {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Map(self)
     }
 }
