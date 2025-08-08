@@ -8,7 +8,7 @@
 
 // use crate::FAKE_SIGNAL_RECEIVERS;
 
-use crate::fake_signal_receiver::config::{Config, OTLPSignal, SignalType};
+use crate::fake_signal_receiver::config::{Config, LoadConfig, OTLPSignal};
 use crate::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
@@ -18,6 +18,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use serde_json::Value;
 use tokio::time::{Duration, Instant, sleep};
+use weaver_forge::registry::ResolvedRegistry;
 
 /// The URN for the fake signal receiver
 pub const FAKE_SIGNAL_RECEIVER_URN: &str = "urn:otel:fake:signal:receiver";
@@ -66,7 +67,26 @@ impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
         effect_handler: local::EffectHandler<OTLPSignal>,
     ) -> Result<(), Error<OTLPSignal>> {
         //start event loop
+        let traffic_config = self.config.get_traffic_config();
+        let registry = self.config.get_registry();
+
+        let metric_load = traffic_config.get_metric_load();
+        let trace_load = traffic_config.get_trace_load();
+        let log_load = traffic_config.get_log_load();
+
+        // use the total message to determine the time needed to wait to meet the specified message rate
+        let total_message_size = traffic_config.get_total_message_size();
+        // check if message rate is 0 if so then we have no delay to set
+        // interval (s) = messages / (messages / second)
+        let interval = if traffic_config.get_message_rate() != 0 {
+            (total_message_size as f64) / (traffic_config.get_message_rate() as f64)
+        } else {
+            0f64
+        };
+        // represent the interval as a duration
+        let signal_generation_delta = Duration::from_secs_f64(interval);
         loop {
+            let wait_till = Instant::now() + signal_generation_delta;
             tokio::select! {
                 biased; //prioritize ctrl_msg over all other blocks
                 // Process internal event
@@ -85,8 +105,13 @@ impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
                     }
                 }
                 // run scenario based on provided configuration
-                _ = run_scenario(&self.config, effect_handler.clone()) => {
-                    // do nothing
+                _ = generate_signal(effect_handler.clone(), &metric_load, &trace_load, &log_load, registry) => {
+                    // calculate how much time we need to sleep
+                    let remaining_time = wait_till - Instant::now();
+                    if remaining_time.as_secs_f64() > 0.0 {
+                        sleep(remaining_time).await;
+                    }
+                    // ToDo: handle negative time_till_next where we can't keep up with the specified message_rate
                 }
 
             }
@@ -97,56 +122,51 @@ impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
 }
 
 /// Run the configured scenario steps
-async fn run_scenario(config: &Config, effect_handler: local::EffectHandler<OTLPSignal>) {
-    // loop through each step
-    let steps = config.get_steps();
-    let registry = config.get_registry();
-    // calculate how many messages to create
+async fn generate_signal(
+    effect_handler: local::EffectHandler<OTLPSignal>,
+    metric_load: &Option<LoadConfig>,
+    trace_load: &Option<LoadConfig>,
+    log_load: &Option<LoadConfig>,
+    registry: &ResolvedRegistry,
+) {
+    // generate and send metric
+    if let Some(load) = metric_load {
+        let signal = OTLPSignal::Metrics(fake_otlp_metrics(
+            load.get_resources(),
+            load.get_scopes(),
+            load.get_messages(),
+            registry,
+        ));
+        _ = effect_handler.send_message(signal).await;
+    }
 
-    for step in steps {
-        // create batches if specified
-        let batches = step.get_batches_to_generate() as usize;
+    // generate and send traces
+    if let Some(load) = trace_load {
+        let signal = OTLPSignal::Traces(fake_otlp_traces(
+            load.get_resources(),
+            load.get_scopes(),
+            load.get_messages(),
+            registry,
+        ));
+        _ = effect_handler.send_message(signal).await;
+    }
 
-        let delay_per_message = if step.get_messages_per_second() != 0 {
-            1.0f64 / (step.get_messages_per_second() as f64)
-        } else {
-            0.0f64
-        };
-        // represent delay as duration
-        let message_delta = Duration::from_secs_f64(delay_per_message);
-        for _ in 0..batches {
-            let next_message_send = Instant::now() + message_delta;
-            let signal = match step.get_signal_type() {
-                SignalType::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-                SignalType::Logs(load) => OTLPSignal::Logs(fake_otlp_logs(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-                SignalType::Traces(load) => OTLPSignal::Traces(fake_otlp_traces(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-            };
-            _ = effect_handler.send_message(signal).await;
-            let time_till_next = next_message_send - Instant::now();
-            if time_till_next.as_secs_f64() > 0.0 {
-                sleep(time_till_next).await;
-            }
-            // ToDo: handle negative time_till_next where we can't keep up with the specified message_rate
-        }
+    // generate and send logs
+    if let Some(load) = log_load {
+        let signal = OTLPSignal::Logs(fake_otlp_logs(
+            load.get_resources(),
+            load.get_scopes(),
+            load.get_messages(),
+            registry,
+        ));
+        _ = effect_handler.send_message(signal).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::fake_signal_receiver::{
-        config::{Config, Load, OTLPSignal, ScenarioStep, SignalType},
+        config::{Config, LoadConfig, OTLPSignal, TrafficConfig},
         receiver::{FAKE_SIGNAL_RECEIVER_URN, FakeSignalReceiver},
     };
     use otap_df_config::node::NodeUserConfig;
@@ -161,10 +181,10 @@ mod tests {
 
     const RESOURCE_COUNT: usize = 1;
     const SCOPE_COUNT: usize = 1;
-    const BATCH_COUNT: u64 = 1;
-    const NO_DELAY_MESSAGE_PER_SECOND: u64 = 0;
+    const MESSAGE_COUNT: usize = 2;
+    const NO_DELAY_MESSAGE_PER_SECOND: usize = 0;
     const RUN_TILL_SHUTDOWN: u64 = 1000;
-    const MESSAGE_PER_SECOND: u64 = 3;
+    const MESSAGE_PER_SECOND: usize = 4;
     const RESOLVED_REGISTRY_JSON: &str = r#"
     {
   "registry_url": "",
@@ -732,6 +752,8 @@ mod tests {
                             let scope_count = resource.scope_metrics.len();
                             assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_metrics.iter() {
+                                let metric_count = scope.metrics.len();
+                                assert!(metric_count == MESSAGE_COUNT);
                                 for metric in scope.metrics.iter() {
                                     // check for metric and see if the signal fields match what is defined in the registry
                                     if metric.name == METRIC_NAME {
@@ -770,6 +792,8 @@ mod tests {
                             let scope_count = resource.scope_spans.len();
                             assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_spans.iter() {
+                                let span_count = scope.spans.len();
+                                assert!(span_count == MESSAGE_COUNT);
                                 for span in scope.spans.iter() {
                                     // check for span and see if the signal fields match what is defined in the registry
                                     if span.name == SPAN_NAME {
@@ -804,6 +828,8 @@ mod tests {
                             let scope_count = resource.scope_logs.len();
                             assert!(scope_count == SCOPE_COUNT);
                             for scope in resource.scope_logs.iter() {
+                                let log_record_count = scope.log_records.len();
+                                assert!(log_record_count == MESSAGE_COUNT);
                                 for log_record in scope.log_records.iter() {
                                     // check for log and see if the signal fields match what is defined in the registry
                                     if log_record.event_name == LOG_NAME {
@@ -832,27 +858,15 @@ mod tests {
 
         let registry: ResolvedRegistry = serde_json::from_str(RESOLVED_REGISTRY_JSON).unwrap();
 
-        let mut steps = vec![];
+        let load = LoadConfig::new(RESOURCE_COUNT, SCOPE_COUNT, MESSAGE_COUNT);
 
-        let load = Load::new(RESOURCE_COUNT, SCOPE_COUNT);
-
-        steps.push(ScenarioStep::new(
-            SignalType::Metrics(load.clone()),
-            BATCH_COUNT,
-            NO_DELAY_MESSAGE_PER_SECOND,
-        ));
-
-        steps.push(ScenarioStep::new(
-            SignalType::Traces(load.clone()),
-            BATCH_COUNT,
-            NO_DELAY_MESSAGE_PER_SECOND,
-        ));
-        steps.push(ScenarioStep::new(
-            SignalType::Logs(load.clone()),
-            BATCH_COUNT,
-            NO_DELAY_MESSAGE_PER_SECOND,
-        ));
-        let config = Config::new(steps, registry);
+        let traffic_config = TrafficConfig::new(
+            MESSAGE_PER_SECOND,
+            Some(load.clone()),
+            Some(load.clone()),
+            Some(load.clone()),
+        );
+        let config = Config::new(traffic_config, registry);
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
@@ -877,14 +891,36 @@ mod tests {
     -> impl FnOnce(NotSendValidateContext<OTLPSignal>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                for num_message in 0..MESSAGE_PER_SECOND + 1 {
-                    if num_message < MESSAGE_PER_SECOND {
-                        _ = timeout(Duration::from_secs(1), ctx.recv()).await.expect("Timed out waiting for message")
-                    .expect("No message received");
-                    } else {
-                        _ = timeout(Duration::from_secs(1), ctx.recv()).await.is_err();
+                let mut received_messages = 0;
+
+                while let Ok(received_signal) = ctx.recv().await {
+                    match received_signal {
+                        OTLPSignal::Metrics(metric) => {
+                            // loop and check count
+                            for resource in metric.resource_metrics.iter() {
+                                for scope in resource.scope_metrics.iter() {
+                                    received_messages += scope.metrics.len();
+                                }
+                            }
+                        }
+                        OTLPSignal::Traces(span) => {
+                            for resource in span.resource_spans.iter() {
+                                for scope in resource.scope_spans.iter() {
+                                    received_messages += scope.spans.len();
+                                }
+                            }
+                        }
+                        OTLPSignal::Logs(log) => {
+                            for resource in log.resource_logs.iter() {
+                                for scope in resource.scope_logs.iter() {
+                                    received_messages += scope.log_records.len();
+                                }
+                            }
+                        }
                     }
                 }
+
+                assert!(received_messages == MESSAGE_PER_SECOND);
             })
         }
     }
@@ -895,16 +931,10 @@ mod tests {
 
         let registry: ResolvedRegistry = serde_json::from_str(RESOLVED_REGISTRY_JSON).unwrap();
 
-        let mut steps = vec![];
+        let load = LoadConfig::new(RESOURCE_COUNT, SCOPE_COUNT, MESSAGE_COUNT);
 
-        let load = Load::new(RESOURCE_COUNT, SCOPE_COUNT);
-
-        steps.push(ScenarioStep::new(
-            SignalType::Metrics(load.clone()),
-            BATCH_COUNT,
-            MESSAGE_PER_SECOND,
-        ));
-        let config = Config::new(steps, registry);
+        let traffic_config = TrafficConfig::new(MESSAGE_PER_SECOND, Some(load.clone()), None, None);
+        let config = Config::new(traffic_config, registry);
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
