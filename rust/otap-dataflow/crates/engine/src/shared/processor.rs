@@ -35,7 +35,6 @@ use crate::error::Error;
 use crate::message::Message;
 use crate::shared::message::SharedSender;
 use async_trait::async_trait;
-use otap_df_channel::error::SendError;
 use otap_df_config::{NodeId, PortName};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -103,6 +102,13 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
     ) -> Self {
         let core = EffectHandlerCore::new(node_id);
+        let default_port = default_port.or_else(|| {
+            if msg_senders.len() == 1 {
+                msg_senders.keys().next().cloned()
+            } else {
+                None
+            }
+        });
         EffectHandler {
             core,
             msg_senders,
@@ -126,29 +132,40 @@ impl<PData> EffectHandler<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
+    /// Returns an [`Error::ProcessorError`] if the message could not be routed to a port.
+    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         let port = if let Some(p) = &self.default_port {
             p.clone()
-        } else if self.msg_senders.len() == 1 {
-            self.msg_senders.keys().next().cloned().expect("non-empty")
         } else {
-            return Err(SendError::Closed(data));
+            return Err(Error::ProcessorError {
+                processor: self.processor_id(),
+                error:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
+            });
         };
         self.send_message_to(port, data).await
     }
 
     /// Sends a message to a specific named out port.
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), SendError<PData>>
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         let sender = match self.msg_senders.get(&port_name).cloned() {
             Some(s) => s,
-            None => return Err(SendError::Closed(data)),
+            None => {
+                return Err(Error::ProcessorError {
+                    processor: self.processor_id(),
+                    error: format!(
+                        "Unknown out port '{port_name}' for node {}",
+                        self.processor_id()
+                    ),
+                });
+            }
         };
-        sender.send(data).await
+        sender.send(data).await.map_err(Error::ChannelSendError)
     }
 
     /// Print an info message to stdout.

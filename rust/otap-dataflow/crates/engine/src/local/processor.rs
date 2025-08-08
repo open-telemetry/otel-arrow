@@ -103,6 +103,14 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
     ) -> Self {
         let core = EffectHandlerCore::new(node_id);
+        // If no default is provided and exactly one port is connected, use it as default.
+        let default_port = default_port.or_else(|| {
+            if msg_senders.len() == 1 {
+                msg_senders.keys().next().cloned()
+            } else {
+                None
+            }
+        });
         EffectHandler {
             core,
             msg_senders,
@@ -124,22 +132,20 @@ impl<PData> EffectHandler<PData> {
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
     ///
-    /// If a default port is explicitly configured, it will be used. Otherwise, if exactly one
-    /// port is connected, that port will be used. If multiple ports are connected and no default
-    /// is configured, an error is returned.
+    /// If a default port is configured (either explicitly or deduced when a single port is
+    /// connected), it will be used. Otherwise, an error is returned.
     ///
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent or if the default
-    /// port is ambiguous.
+    /// port is not configured.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         let port = if let Some(p) = &self.default_port {
             p.clone()
-        } else if self.msg_senders.len() == 1 {
-            self.msg_senders.keys().next().cloned().expect("non-empty")
         } else {
-            return Err(Error::InternalError {
-                message:
+            return Err(Error::ProcessorError {
+                processor: self.processor_id(),
+                error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
             });
@@ -162,8 +168,9 @@ impl<PData> EffectHandler<PData> {
             self.msg_senders
                 .get(&port_name)
                 .cloned()
-                .ok_or_else(|| Error::InternalError {
-                    message: format!(
+                .ok_or_else(|| Error::ProcessorError {
+                    processor: self.processor_id(),
+                    error: format!(
                         "Unknown out port '{port_name}' for node {}",
                         self.processor_id()
                     ),
