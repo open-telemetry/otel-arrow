@@ -488,6 +488,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn append_slice_n(&mut self, value: &[T], n: usize) -> Result<usize> {
         loop {
             let append_result = match &mut self.variant {

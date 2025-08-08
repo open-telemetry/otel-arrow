@@ -529,7 +529,7 @@ impl PartialEq for Value<'_> {
 pub trait AsValue: Debug {
     fn get_value_type(&self) -> ValueType;
 
-    fn to_value(&self) -> Value;
+    fn to_value(&self) -> Value<'_>;
 }
 
 #[derive(Debug, Clone)]
@@ -546,7 +546,7 @@ pub enum StaticValue<'a> {
 }
 
 pub trait AsStaticValue: AsValue {
-    fn to_static_value(&self) -> StaticValue;
+    fn to_static_value(&self) -> StaticValue<'_>;
 }
 
 impl<T: AsStaticValue> AsValue for T {
@@ -564,7 +564,7 @@ impl<T: AsStaticValue> AsValue for T {
         }
     }
 
-    fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value<'_> {
         match self.to_static_value() {
             StaticValue::Array(a) => Value::Array(a),
             StaticValue::Boolean(b) => Value::Boolean(b),
