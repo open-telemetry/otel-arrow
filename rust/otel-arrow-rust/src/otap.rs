@@ -496,7 +496,7 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
             &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
         }
         ArrowPayloadType::MultivariateMetrics => {
-            child_payload_types(ArrowPayloadType::MultivariateMetrics)
+            child_payload_types(ArrowPayloadType::UnivariateMetrics)
         }
         _ => &[],
     }
@@ -514,6 +514,13 @@ mod test {
     use crate::otlp::attributes::store::AttributeValueType;
 
     use super::*;
+
+    #[test]
+    fn test_multivariate_metrics_child_types() {
+        let multivariate_types = child_payload_types(ArrowPayloadType::MultivariateMetrics);
+        let univariate_types = child_payload_types(ArrowPayloadType::UnivariateMetrics);
+        assert_eq!(multivariate_types, univariate_types)
+    }
 
     #[test]
     fn test_log_getset() {
