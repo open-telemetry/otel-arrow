@@ -137,8 +137,8 @@ impl<PData> EffectHandler<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent or if the default
-    /// port is not configured.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent or [`Error::ProcessorError`]
+    /// if the default port is not configured.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         let port = if let Some(p) = &self.default_port {
             p.clone()
@@ -158,7 +158,7 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent, or
-    /// [`Error::InternalError`] if the port does not exist.
+    /// [`Error::ProcessorError`] if the port does not exist.
     pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
     where
         P: Into<PortName>,
