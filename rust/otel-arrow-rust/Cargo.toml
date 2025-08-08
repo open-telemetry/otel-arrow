@@ -37,6 +37,10 @@ tonic = "0.13"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
 
 [[bench]]
+name = "attribute_transform"
+harness = false
+
+[[bench]]
 name = "otlp_bytes"
 harness = false
 
