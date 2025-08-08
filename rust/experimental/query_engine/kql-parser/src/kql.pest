@@ -65,7 +65,7 @@ string_literal = @{
     ("\"" ~ double_quote_string_char* ~ "\"")
     | ("'" ~ single_quote_string_char* ~ "'")
 }
-null_literal = { 
+null_literal = {
     ("bool(" ~ "null" ~ ")") |
     ("datetime(" ~ "null" ~ ")") |
     ("dynamic(" ~ "null" ~ ")") |
@@ -80,7 +80,7 @@ datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
 
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 identifier_or_pattern_literal = ${
-	(("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
+    (("_" | ASCII_ALPHA | "*") ~ ("_" | ASCII_ALPHANUMERIC | "*")* ~ !("["|"."))
     | ("[" ~ string_literal ~ "]")
 }
 
@@ -91,7 +91,7 @@ accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
 
 boolean_expression = _{ true_literal | false_literal }
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
-datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
+datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
@@ -132,7 +132,7 @@ scalar_expression = {
     | ("(" ~ logical_expression ~ ")")
 }
 
-comparison_expression = { 
+comparison_expression = {
     scalar_expression ~ (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token|equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression
     | scalar_expression ~ (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
 }

@@ -207,7 +207,7 @@ impl AsValue for ResolvedValue<'_> {
         }
     }
 
-    fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value<'_> {
         match self {
             ResolvedValue::Value(v) => v.clone(),
             ResolvedValue::Borrowed(_, b) => b.to_value(),
@@ -388,7 +388,7 @@ impl AsValue for ResolvedStringValue<'_> {
         ValueType::String
     }
 
-    fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value<'_> {
         match self {
             ResolvedStringValue::Value(v) => Value::String(*v),
             ResolvedStringValue::Borrowed(_, b) => Value::String(&**b),
@@ -431,7 +431,7 @@ impl AsValue for ResolvedRegexValue<'_> {
         ValueType::String
     }
 
-    fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value<'_> {
         match self {
             ResolvedRegexValue::Value(v) => Value::Regex(*v),
             ResolvedRegexValue::Borrowed(b) => Value::Regex(&**b),
@@ -507,7 +507,7 @@ impl AsValue for ResolvedArrayValue<'_> {
         ValueType::Array
     }
 
-    fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value<'_> {
         Value::Array(self.get_array())
     }
 }

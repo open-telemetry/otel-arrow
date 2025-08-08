@@ -32,7 +32,7 @@ impl BooleanValue for BooleanValueStorage {
 }
 
 impl AsStaticValue for BooleanValueStorage {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Boolean(self)
     }
 }
@@ -63,13 +63,13 @@ impl DateTimeValue for DateTimeValueStorage {
 }
 
 impl AsStaticValue for DateTimeValueStorage {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::DateTime(self)
     }
 }
 
 impl AsStaticValueMut for DateTimeValueStorage {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         None
     }
 }
@@ -104,13 +104,13 @@ impl<T: DoubleValueSource<T>> DoubleValue for DoubleValueStorage<T> {
 }
 
 impl<T: DoubleValueSource<T>> AsStaticValue for DoubleValueStorage<T> {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Double(self)
     }
 }
 
 impl<T: DoubleValueSource<T>> AsStaticValueMut for DoubleValueStorage<T> {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         None
     }
 }
@@ -145,13 +145,13 @@ impl<T: IntegerValueSource<T>> IntegerValue for IntegerValueStorage<T> {
 }
 
 impl<T: IntegerValueSource<T>> AsStaticValue for IntegerValueStorage<T> {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Integer(self)
     }
 }
 
 impl<T: IntegerValueSource<T>> AsStaticValueMut for IntegerValueStorage<T> {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         None
     }
 }
@@ -182,13 +182,13 @@ impl RegexValue for RegexValueStorage {
 }
 
 impl AsStaticValue for RegexValueStorage {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Regex(self)
     }
 }
 
 impl AsStaticValueMut for RegexValueStorage {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         None
     }
 }
@@ -225,13 +225,13 @@ impl StringValueMut for StringValueStorage {
 }
 
 impl AsStaticValue for StringValueStorage {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::String(self)
     }
 }
 
 impl AsStaticValueMut for StringValueStorage {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         Some(StaticValueMut::String(self))
     }
 }
@@ -298,19 +298,19 @@ impl<T: EnumerableValueSource<T>> ArrayValue for ArrayValueStorage<T> {
 }
 
 impl<T: EnumerableValueSource<T>> AsStaticValue for ArrayValueStorage<T> {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Array(self)
     }
 }
 
 impl<T: EnumerableValueSource<T>> AsStaticValueMut for ArrayValueStorage<T> {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         Some(StaticValueMut::Array(self))
     }
 }
 
 impl<T: EnumerableValueSource<T>> ArrayValueMut for ArrayValueStorage<T> {
-    fn get_mut(&mut self, index: usize) -> ValueMutGetResult {
+    fn get_mut(&mut self, index: usize) -> ValueMutGetResult<'_> {
         if let Some(v) = self.values.get_mut(index) {
             ValueMutGetResult::Found(v)
         } else {
@@ -418,19 +418,19 @@ impl<T: EnumerableValueSource<T>> MapValue for MapValueStorage<T> {
 }
 
 impl<T: EnumerableValueSource<T>> AsStaticValue for MapValueStorage<T> {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Map(self)
     }
 }
 
 impl<T: EnumerableValueSource<T>> AsStaticValueMut for MapValueStorage<T> {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut> {
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         Some(StaticValueMut::Map(self))
     }
 }
 
 impl<T: EnumerableValueSource<T>> MapValueMut for MapValueStorage<T> {
-    fn get_mut(&mut self, key: &str) -> ValueMutGetResult {
+    fn get_mut(&mut self, key: &str) -> ValueMutGetResult<'_> {
         match self.values.get_mut(key) {
             Some(v) => ValueMutGetResult::Found(v),
             None => ValueMutGetResult::NotFound,
