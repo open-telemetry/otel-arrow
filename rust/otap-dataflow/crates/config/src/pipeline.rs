@@ -374,6 +374,7 @@ impl PipelineConfigBuilder {
                     plugin_urn,
                     description: None,
                     out_ports: HashMap::new(),
+                    default_out_port: None,
                     config: config.unwrap_or(Value::Null),
                 },
             );

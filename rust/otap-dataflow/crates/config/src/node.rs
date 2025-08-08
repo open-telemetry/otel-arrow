@@ -43,6 +43,12 @@ pub struct NodeUserConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub out_ports: HashMap<PortName, HyperEdgeConfig>,
 
+    /// Optional default output port name to use when a node emits pdata without specifying a port.
+    /// If omitted and multiple out ports are configured, the engine will treat the default as
+    /// ambiguous and require explicit port selection at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_out_port: Option<PortName>,
+
     /// Node-specific configuration.
     ///
     /// This configuration is interpreted by the node itself and is not interpreted and validated by
@@ -108,6 +114,7 @@ impl NodeUserConfig {
             plugin_urn: plugin_urn.into(),
             description: None,
             out_ports: HashMap::new(),
+            default_out_port: None,
             config: Value::Null,
         }
     }
@@ -119,6 +126,7 @@ impl NodeUserConfig {
             plugin_urn: plugin_urn.into(),
             description: None,
             out_ports: HashMap::new(),
+            default_out_port: None,
             config: Value::Null,
         }
     }
@@ -130,6 +138,7 @@ impl NodeUserConfig {
             plugin_urn: plugin_urn.into(),
             description: None,
             out_ports: HashMap::new(),
+            default_out_port: None,
             config: Value::Null,
         }
     }
@@ -142,6 +151,7 @@ impl NodeUserConfig {
             plugin_urn,
             description: None,
             out_ports: HashMap::new(),
+            default_out_port: None,
             config: user_config,
         }
     }
@@ -153,5 +163,10 @@ impl NodeUserConfig {
         edge_config: HyperEdgeConfig,
     ) -> Option<HyperEdgeConfig> {
         self.out_ports.insert(port_name, edge_config)
+    }
+
+    /// Sets the default output port name used by this node when no explicit port is specified.
+    pub fn set_default_out_port<P: Into<PortName>>(&mut self, port: P) {
+        self.default_out_port = Some(port.into());
     }
 }

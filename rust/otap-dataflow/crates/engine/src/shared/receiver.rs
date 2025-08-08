@@ -36,8 +36,9 @@ use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
-use otap_df_channel::error::{RecvError, SendError};
-use otap_df_config::NodeId;
+use otap_df_channel::error::RecvError;
+use otap_df_config::{NodeId, PortName};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -87,7 +88,10 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: SharedSender<PData>,
+    /// Supports multiple named output ports.
+    msg_senders: HashMap<PortName, SharedSender<PData>>,
+    /// Optional default port to use when calling send_message.
+    default_port: Option<PortName>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -99,12 +103,24 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn new(
         node_id: NodeId,
-        msg_sender: SharedSender<PData>,
+        msg_senders: HashMap<PortName, SharedSender<PData>>,
+        default_port: Option<PortName>,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
-        EffectHandler { core, msg_sender }
+        let default_port = default_port.or_else(|| {
+            if msg_senders.len() == 1 {
+                msg_senders.keys().next().cloned()
+            } else {
+                None
+            }
+        });
+        EffectHandler {
+            core,
+            msg_senders,
+            default_port,
+        }
     }
 
     /// Returns the name of the receiver associated with this handler.
@@ -113,13 +129,50 @@ impl<PData> EffectHandler<PData> {
         self.core.node_id()
     }
 
+    /// Returns the list of connected out ports for this receiver.
+    #[must_use]
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.msg_senders.keys().cloned().collect()
+    }
+
     /// Sends a message to the next node(s) in the pipeline.
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
-        self.msg_sender.send(data).await
+    /// Returns an [`Error::ReceiverError`] if the message could not be routed to a port.
+    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
+        let port = if let Some(p) = &self.default_port {
+            p.clone()
+        } else {
+            return Err(Error::ReceiverError {
+                receiver: self.receiver_id(),
+                error:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
+            });
+        };
+        self.send_message_to(port, data).await
+    }
+
+    /// Sends a message to a specific named out port.
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        let sender = match self.msg_senders.get(&port_name).cloned() {
+            Some(s) => s,
+            None => {
+                return Err(Error::ReceiverError {
+                    receiver: self.receiver_id(),
+                    error: format!(
+                        "Unknown out port '{port_name}' for node {}",
+                        self.receiver_id()
+                    ),
+                });
+            }
+        };
+        sender.send(data).await.map_err(Error::ChannelSendError)
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
