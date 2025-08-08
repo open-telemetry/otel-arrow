@@ -37,8 +37,8 @@ use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use otap_df_config::{NodeId, PortName};
-use std::time::Duration;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -103,7 +103,11 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
     ) -> Self {
         let core = EffectHandlerCore::new(node_id);
-        EffectHandler { core, msg_senders, default_port }
+        EffectHandler {
+            core,
+            msg_senders,
+            default_port,
+        }
     }
 
     /// Returns the id of the processor associated with this handler.
@@ -113,6 +117,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Returns the list of connected out ports for this processor.
+    #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.msg_senders.keys().cloned().collect()
     }

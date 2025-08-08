@@ -19,8 +19,8 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///

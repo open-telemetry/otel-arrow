@@ -38,10 +38,10 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_config::{NodeId, PortName};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use std::collections::HashMap;
 
 /// A trait for ingress receivers (Send definition).
 ///
@@ -109,7 +109,11 @@ impl<PData> EffectHandler<PData> {
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
-        EffectHandler { core, msg_senders, default_port }
+        EffectHandler {
+            core,
+            msg_senders,
+            default_port,
+        }
     }
 
     /// Returns the name of the receiver associated with this handler.
@@ -119,6 +123,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Returns the list of connected out ports for this receiver.
+    #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.msg_senders.keys().cloned().collect()
     }

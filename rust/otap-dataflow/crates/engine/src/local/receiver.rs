@@ -138,7 +138,11 @@ impl<PData> EffectHandler<PData> {
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
-        EffectHandler { core, msg_senders, default_port }
+        EffectHandler {
+            core,
+            msg_senders,
+            default_port,
+        }
     }
 
     /// Returns the id of the receiver associated with this handler.
@@ -148,6 +152,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Returns the list of connected out ports for this receiver.
+    #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.msg_senders.keys().cloned().collect()
     }
@@ -169,7 +174,9 @@ impl<PData> EffectHandler<PData> {
             self.msg_senders.keys().next().cloned().expect("non-empty")
         } else {
             return Err(Error::InternalError {
-                message: "Ambiguous default out port: multiple ports connected and no default configured".to_string(),
+                message:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
             });
         };
         self.send_message_to(port, data).await
@@ -186,9 +193,16 @@ impl<PData> EffectHandler<PData> {
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
-        let sender = self.msg_senders.get(&port_name).cloned().ok_or_else(|| Error::InternalError {
-            message: format!("Unknown out port '{port_name}' for node {}", self.receiver_id()),
-        })?;
+        let sender =
+            self.msg_senders
+                .get(&port_name)
+                .cloned()
+                .ok_or_else(|| Error::InternalError {
+                    message: format!(
+                        "Unknown out port '{port_name}' for node {}",
+                        self.receiver_id()
+                    ),
+                })?;
         sender.send(data).await.map_err(Error::ChannelSendError)
     }
 
@@ -234,4 +248,123 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(missing_docs)]
+    use super::*;
+    use crate::control::pipeline_ctrl_msg_channel;
+    use crate::local::message::LocalSender;
+    use otap_df_channel::mpsc;
+    use std::borrow::Cow;
+    use std::collections::{HashMap, HashSet};
+    use tokio::time::{Duration, timeout};
+
+    fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+        mpsc::Channel::new(capacity)
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_to_named_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+
+        eh.send_message_to("b", 42).await.unwrap();
+
+        // Ensure only 'b' received
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(b_rx.recv().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_single_port_fallback() {
+        let (tx, rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
+
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+
+        eh.send_message(7).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_uses_default_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let eh = EffectHandler::new("recv".into(), senders, Some("a".into()), ctrl_tx);
+
+        eh.send_message(11).await.unwrap();
+
+        assert_eq!(a_rx.recv().await.unwrap(), 11);
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_ambiguous_without_default() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+
+        let res = eh.send_message(5).await;
+        assert!(res.is_err());
+
+        // Nothing should be received on either port
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_handler_connected_ports_lists_all() {
+        let (a_tx, _a_rx) = channel::<u64>(1);
+        let (b_tx, _b_rx) = channel::<u64>(1);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+
+        let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
+        let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
+        assert_eq!(ports, expected);
+    }
 }
