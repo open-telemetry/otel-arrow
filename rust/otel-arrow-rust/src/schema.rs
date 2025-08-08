@@ -21,6 +21,12 @@ use std::sync::Arc;
 
 pub mod consts;
 
+/// Trace IDs are 16 binary bytes.
+pub type TraceId = [u8; 16];
+
+/// Span IDs are 8 binary bytes.
+pub type SpanId = [u8; 8];
+
 /// Returns a new record batch with the new key/value updated in the schema metadata.
 #[must_use]
 pub fn update_schema_metadata(
