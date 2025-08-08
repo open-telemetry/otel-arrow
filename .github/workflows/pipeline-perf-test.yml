@@ -55,7 +55,7 @@ jobs:
             mkdir -p "$HOME/.local/bin"
             ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-            
+
             # Smoke test
             python --version
             python -m pip --version
@@ -126,3 +126,4 @@ jobs:
               benchmark-data-dir-path: "docs/benchmarks/pipeline-perf"
               auto-push: true
               save-data-file: true
+                            
