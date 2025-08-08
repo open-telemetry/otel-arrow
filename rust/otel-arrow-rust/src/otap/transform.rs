@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::BTreeMap;
 use std::ops::AddAssign;
 use std::sync::Arc;
 
@@ -610,7 +610,7 @@ fn replace_strings(
     // the values in this range are the (start_index, end_index, replacement_index) where start/end
     // are the index into the original array, and replacement_index in the index into collection of
     // replacements.
-    let mut replace_ranges = BinaryHeap::<(usize, usize, usize)>::new();
+    let mut replace_ranges = Vec::<(usize, usize, usize)>::new();
 
     // we're going to access the raw offsets pointer directly while doing this range computation
     // (see comments below for reasoning), so this check is for safety
@@ -673,8 +673,8 @@ fn replace_strings(
         }
     }
 
-    // convert the heap of ranges into an array of ranges to replace, sorted by the start index
-    let replace_ranges = replace_ranges.into_sorted_vec();
+    // Sort the ranges to replace by start_index (first element in contained tuple)
+    replace_ranges.sort();
 
     // if there were no matches, short circuit replacing the values
     if total_replacement_counts == 0 {
@@ -733,7 +733,7 @@ fn replace_strings(
         // we iterate through ranges create a new offsets buffer.
 
         // byte buffer for new offsets
-        let mut new_offsets = MutableBuffer::new(size_of::<i32>() * len);
+        let mut new_offsets = MutableBuffer::new(size_of::<i32>() * len + 1);
 
         // for each offset that was not replaced, keep track of how much to adjust it based on how
         // many values were replaced and the size difference between target and replacement
