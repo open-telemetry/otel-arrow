@@ -497,6 +497,10 @@ impl Value<'_> {
     pub fn ceiling(value: &Value) -> Option<i64> {
         if let Value::Double(d) = value {
             Some(d.get_value().ceil() as i64)
+        } else if let Value::String(s) = value
+            && let Some(d) = s.get_value().parse::<f64>().ok()
+        {
+            Some(d.ceil() as i64)
         } else {
             value.convert_to_integer()
         }
@@ -505,6 +509,10 @@ impl Value<'_> {
     pub fn floor(value: &Value) -> Option<i64> {
         if let Value::Double(d) = value {
             Some(d.get_value().floor() as i64)
+        } else if let Value::String(s) = value
+            && let Some(d) = s.get_value().parse::<f64>().ok()
+        {
+            Some(d.floor() as i64)
         } else {
             value.convert_to_integer()
         }
@@ -2015,5 +2023,129 @@ mod tests {
             false,
             "Haystack value of 'Integer' type is not supported for contains operation. Only Array and String values are supported.",
         );
+    }
+
+    #[test]
+    pub fn test_ceiling() {
+        let run_test_success = |value: Value, expected: Option<i64>| {
+            let actual = Value::ceiling(&value);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
+            Some(2),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                -1.9,
+            )),
+            Some(-1),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 0.0)),
+            Some(0),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 2.0)),
+            Some(2),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Some(42),
+        );
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                -42,
+            )),
+            Some(-42),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.1",
+            )),
+            Some(2),
+        );
+        // String values that cannot be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_floor() {
+        let run_test_success = |value: Value, expected: Option<i64>| {
+            let actual = Value::floor(&value);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
+            Some(1),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                -1.9,
+            )),
+            Some(-2),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 0.0)),
+            Some(0),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 2.0)),
+            Some(2),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Some(42),
+        );
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                -42,
+            )),
+            Some(-42),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.1",
+            )),
+            Some(1),
+        );
+        // String values that cannot be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, None);
     }
 }
