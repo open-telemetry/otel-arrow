@@ -36,8 +36,9 @@ use crate::error::Error;
 use crate::local::message::LocalSender;
 use crate::message::Message;
 use async_trait::async_trait;
-use otap_df_config::NodeId;
+use otap_df_config::{NodeId, PortName};
 use std::time::Duration;
+use std::collections::HashMap;
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -86,16 +87,23 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: LocalSender<PData>,
+    /// Supports multiple named output ports.
+    msg_senders: HashMap<PortName, LocalSender<PData>>,
+    /// Optional default port to use when calling send_message.
+    default_port: Option<PortName>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(node_id: NodeId, msg_sender: LocalSender<PData>) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, LocalSender<PData>>,
+        default_port: Option<PortName>,
+    ) -> Self {
         let core = EffectHandlerCore::new(node_id);
-        EffectHandler { core, msg_sender }
+        EffectHandler { core, msg_senders, default_port }
     }
 
     /// Returns the id of the processor associated with this handler.
@@ -104,14 +112,45 @@ impl<PData> EffectHandler<PData> {
         self.core.node_id()
     }
 
-    /// Sends a message to the next node(s) in the pipeline.
+    /// Returns the list of connected out ports for this processor.
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.msg_senders.keys().cloned().collect()
+    }
+
+    /// Sends a message to the next node(s) in the pipeline using the default port.
+    ///
+    /// If a default port is explicitly configured, it will be used. Otherwise, if exactly one
+    /// port is connected, that port will be used. If multiple ports are connected and no default
+    /// is configured, an error is returned.
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent or if the default
+    /// port is ambiguous.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send(data).await?;
-        Ok(())
+        let port = if let Some(p) = &self.default_port {
+            p.clone()
+        } else if self.msg_senders.len() == 1 {
+            self.msg_senders.keys().next().cloned().expect("non-empty")
+        } else {
+            return Err(Error::InternalError { message: "Ambiguous default out port: multiple ports connected and no default configured".to_string() });
+        };
+        self.send_message_to(port, data).await
+    }
+
+    /// Sends a message to a specific named out port.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent, or
+    /// [`Error::InternalError`] if the port does not exist.
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        let sender = self.msg_senders.get(&port_name).cloned().ok_or_else(|| Error::InternalError { message: format!("Unknown out port '{port_name}' for node {}", self.processor_id()) })?;
+        sender.send(data).await.map_err(Error::ChannelSendError)
     }
 
     /// Print an info message to stdout.

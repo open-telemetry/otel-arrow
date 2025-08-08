@@ -20,6 +20,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
 use std::sync::Arc;
+use std::collections::HashMap;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
@@ -38,9 +39,8 @@ pub enum ReceiverWrapper<PData> {
         control_sender: LocalSender<NodeControlMsg>,
         /// A receiver for control messages.
         control_receiver: LocalReceiver<NodeControlMsg>,
-        /// Sender for PData messages.
-        /// ToDo(LQ): Support multiple ports
-        pdata_sender: Option<LocalSender<PData>>,
+        /// Senders for PData messages per out port.
+        pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<LocalReceiver<PData>>,
     },
@@ -56,9 +56,8 @@ pub enum ReceiverWrapper<PData> {
         control_sender: SharedSender<NodeControlMsg>,
         /// A receiver for control messages.
         control_receiver: SharedReceiver<NodeControlMsg>,
-        /// Sender for PData messages.
-        /// ToDo(LQ): Support multiple ports
-        pdata_sender: Option<SharedSender<PData>>,
+        /// Senders for PData messages per out port.
+        pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
     },
@@ -97,7 +96,7 @@ impl<PData> ReceiverWrapper<PData> {
             receiver: Box::new(receiver),
             control_sender: LocalSender::MpscSender(control_sender),
             control_receiver: LocalReceiver::MpscReceiver(control_receiver),
-            pdata_sender: None,
+            pdata_senders: HashMap::new(),
             pdata_receiver: None,
         }
     }
@@ -116,7 +115,7 @@ impl<PData> ReceiverWrapper<PData> {
             receiver: Box::new(receiver),
             control_sender: SharedSender::MpscSender(control_sender),
             control_receiver: SharedReceiver::MpscReceiver(control_receiver),
-            pdata_sender: None,
+            pdata_senders: HashMap::new(),
             pdata_receiver: None,
         }
     }
@@ -131,22 +130,24 @@ impl<PData> ReceiverWrapper<PData> {
                 runtime_config,
                 receiver,
                 control_receiver,
-                pdata_sender,
+                pdata_senders,
+                user_config,
                 ..
             } => {
-                let pdata_sender = match pdata_sender {
-                    Some(sender) => sender,
-                    None => {
-                        return Err(Error::ReceiverError {
-                            receiver: runtime_config.name.clone(),
-                            error: "The pdata sender must be defined at this stage".to_owned(),
-                        });
-                    }
+                let msg_senders = if pdata_senders.is_empty() {
+                    return Err(Error::ReceiverError {
+                        receiver: runtime_config.name.clone(),
+                        error: "The pdata sender must be defined at this stage".to_owned(),
+                    });
+                } else {
+                    pdata_senders
                 };
+                let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
                 let effect_handler = local::EffectHandler::new(
                     runtime_config.name.clone(),
-                    pdata_sender,
+                    msg_senders,
+                    default_port,
                     pipeline_ctrl_msg_tx,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
@@ -155,22 +156,24 @@ impl<PData> ReceiverWrapper<PData> {
                 runtime_config,
                 receiver,
                 control_receiver,
-                pdata_sender,
+                pdata_senders,
+                user_config,
                 ..
             } => {
-                let pdata_sender = match pdata_sender {
-                    Some(sender) => sender,
-                    None => {
-                        return Err(Error::ReceiverError {
-                            receiver: runtime_config.name.clone(),
-                            error: "The pdata sender must be defined at this stage".to_owned(),
-                        });
-                    }
+                let msg_senders = if pdata_senders.is_empty() {
+                    return Err(Error::ReceiverError {
+                        receiver: runtime_config.name.clone(),
+                        error: "The pdata sender must be defined at this stage".to_owned(),
+                    });
+                } else {
+                    pdata_senders
                 };
+                let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
                 let effect_handler = shared::EffectHandler::new(
                     runtime_config.name.clone(),
-                    pdata_sender,
+                    msg_senders,
+                    default_port,
                     pipeline_ctrl_msg_tx,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
@@ -226,16 +229,16 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
         node_id: NodeId,
-        _port: PortName,
+        port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, sender) {
-            (ReceiverWrapper::Local { pdata_sender, .. }, Sender::Local(sender)) => {
-                *pdata_sender = Some(sender);
+            (ReceiverWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
+                let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
-            (ReceiverWrapper::Shared { pdata_sender, .. }, Sender::Shared(sender)) => {
-                *pdata_sender = Some(sender);
+            (ReceiverWrapper::Shared { pdata_senders, .. }, Sender::Shared(sender)) => {
+                let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
             (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {

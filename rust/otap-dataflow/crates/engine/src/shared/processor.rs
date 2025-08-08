@@ -36,8 +36,9 @@ use crate::message::Message;
 use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
+use otap_df_config::{NodeId, PortName};
 use std::time::Duration;
+use std::collections::HashMap;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -86,16 +87,23 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: SharedSender<PData>,
+    /// Supports multiple named output ports.
+    msg_senders: HashMap<PortName, SharedSender<PData>>,
+    /// Optional default port to use when calling send_message.
+    default_port: Option<PortName>,
 }
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given processor name and pdata sender.
     #[must_use]
-    pub fn new(node_id: NodeId, msg_sender: SharedSender<PData>) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, SharedSender<PData>>,
+        default_port: Option<PortName>,
+    ) -> Self {
         let core = EffectHandlerCore::new(node_id);
-        EffectHandler { core, msg_sender }
+        EffectHandler { core, msg_senders, default_port }
     }
 
     /// Returns the id of the processor associated with this handler.
@@ -104,13 +112,38 @@ impl<PData> EffectHandler<PData> {
         self.core.node_id()
     }
 
+    /// Returns the list of connected out ports for this processor.
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.msg_senders.keys().cloned().collect()
+    }
+
     /// Sends a message to the next node(s) in the pipeline.
     ///
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: PData) -> Result<(), SendError<PData>> {
-        self.msg_sender.send(data).await
+        let port = if let Some(p) = &self.default_port {
+            p.clone()
+        } else if self.msg_senders.len() == 1 {
+            self.msg_senders.keys().next().cloned().expect("non-empty")
+        } else {
+            return Err(SendError::Closed(data));
+        };
+        self.send_message_to(port, data).await
+    }
+
+    /// Sends a message to a specific named out port.
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), SendError<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        let sender = match self.msg_senders.get(&port_name).cloned() {
+            Some(s) => s,
+            None => return Err(SendError::Closed(data)),
+        };
+        sender.send(data).await
     }
 
     /// Print an info message to stdout.

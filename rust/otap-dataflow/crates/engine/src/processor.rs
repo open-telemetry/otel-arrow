@@ -20,6 +20,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
 use std::sync::Arc;
+use std::collections::HashMap;
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -39,9 +40,8 @@ pub enum ProcessorWrapper<PData> {
         control_sender: LocalSender<NodeControlMsg>,
         /// A receiver for control messages.
         control_receiver: LocalReceiver<NodeControlMsg>,
-        /// Sender for PData messages.
-        /// ToDo(LQ): Support multiple ports
-        pdata_sender: Option<LocalSender<PData>>,
+        /// Senders for PData messages per out port.
+        pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<LocalReceiver<PData>>,
     },
@@ -57,9 +57,8 @@ pub enum ProcessorWrapper<PData> {
         control_sender: SharedSender<NodeControlMsg>,
         /// A receiver for control messages.
         control_receiver: SharedReceiver<NodeControlMsg>,
-        /// Sender for PData messages.
-        /// ToDo(LQ): Support multiple ports
-        pdata_sender: Option<SharedSender<PData>>,
+        /// Senders for PData messages per out port.
+        pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
     },
@@ -111,7 +110,7 @@ impl<PData> ProcessorWrapper<PData> {
             processor: Box::new(processor),
             control_sender: LocalSender::MpscSender(control_sender),
             control_receiver: LocalReceiver::MpscReceiver(control_receiver),
-            pdata_sender: None,
+            pdata_senders: HashMap::new(),
             pdata_receiver: None,
         }
     }
@@ -135,7 +134,7 @@ impl<PData> ProcessorWrapper<PData> {
             processor: Box::new(processor),
             control_sender: SharedSender::MpscSender(control_sender),
             control_receiver: SharedReceiver::MpscReceiver(control_receiver),
-            pdata_sender: None,
+            pdata_senders: HashMap::new(),
             pdata_receiver: None,
         }
     }
@@ -148,8 +147,9 @@ impl<PData> ProcessorWrapper<PData> {
                 processor,
                 runtime_config,
                 control_receiver,
-                pdata_sender,
+                pdata_senders,
                 pdata_receiver,
+                user_config,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -159,12 +159,11 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                     })?),
                 );
+                let default_port = user_config.default_out_port.clone();
                 let effect_handler = local::EffectHandler::new(
                     runtime_config.name.clone(),
-                    pdata_sender.ok_or_else(|| Error::ProcessorError {
-                        processor: runtime_config.name.clone(),
-                        error: "The pdata sender must be defined at this stage".to_owned(),
-                    })?,
+                    pdata_senders,
+                    default_port,
                 );
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
@@ -176,8 +175,9 @@ impl<PData> ProcessorWrapper<PData> {
                 processor,
                 runtime_config,
                 control_receiver,
-                pdata_sender,
+                pdata_senders,
                 pdata_receiver,
+                user_config,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -187,12 +187,11 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                     })?),
                 );
+                let default_port = user_config.default_out_port.clone();
                 let effect_handler = shared::EffectHandler::new(
                     runtime_config.name.clone(),
-                    pdata_sender.ok_or_else(|| Error::ProcessorError {
-                        processor: runtime_config.name.clone(),
-                        error: "The pdata sender must be defined at this stage".to_owned(),
-                    })?,
+                    pdata_senders,
+                    default_port,
                 );
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
@@ -305,16 +304,16 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
         node_id: NodeId,
-        _port: PortName,
+        port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, sender) {
-            (ProcessorWrapper::Local { pdata_sender, .. }, Sender::Local(sender)) => {
-                *pdata_sender = Some(sender);
+            (ProcessorWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
+                let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
-            (ProcessorWrapper::Shared { pdata_sender, .. }, Sender::Shared(sender)) => {
-                *pdata_sender = Some(sender);
+            (ProcessorWrapper::Shared { pdata_senders, .. }, Sender::Shared(sender)) => {
+                let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
