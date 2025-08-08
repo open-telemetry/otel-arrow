@@ -16,10 +16,16 @@ workspace = true
 otap-df-engine = { path = "../engine", features = ["testing"] }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-config = { path = "../config" }
+otap-df-pdata-views = { path = "../pdata-views"}
+otap-df-otap = { path = "../otap" }
 
 # Workspace dependencies
+arrow.workspace = true
 async-trait.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+otel-arrow-rust.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
