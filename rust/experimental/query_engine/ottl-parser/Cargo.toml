@@ -9,8 +9,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-pest = "2.8"
-pest_derive = "2.8"
+pest = { workspace = true }
+pest_derive = { workspace = true }
 
 data_engine_expressions = { path = "../expressions" }
 data_engine_parser_abstractions = { path = "../parser-abstractions" }
