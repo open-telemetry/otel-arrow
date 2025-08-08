@@ -22,7 +22,7 @@ trace = []
 derive = []
 
 [dependencies]
-arrow = "55.2"
+arrow = "56.0"
 arrow-ipc = { version = "55.2", features = ["zstd"] }
 ciborium = "0.2.2"
 lazy_static = "1.5"
@@ -33,6 +33,7 @@ rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 snafu = { version = "0.8" }
 prost = "0.13"
+replace_with = "0.1.8"
 tonic = "0.13"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
 
