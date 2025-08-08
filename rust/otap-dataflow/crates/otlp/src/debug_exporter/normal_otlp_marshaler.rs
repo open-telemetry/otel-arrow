@@ -357,7 +357,7 @@ fn write_summary_datapoints_normal(
                 quantile = quantile.quantile,
                 value = quantile.value
             )
-            .unwrap();
+            .expect("Failed to write quantile value");
         }
 
         _ = writeln!(

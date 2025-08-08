@@ -1,9 +1,8 @@
-use chrono::{FixedOffset, NaiveDate};
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
-use crate::{Rule, date_utils, scalar_expression::parse_scalar_expression};
+use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 /// The goal of this code is to unescape string literal values as they come in
 /// when parsed from pest:
@@ -62,95 +61,28 @@ pub(crate) fn parse_datetime_expression(
 
     let datetime_rule = datetime_expression_rule.into_inner().next().unwrap();
 
-    match datetime_rule.as_rule() {
-        Rule::datetime_literal => {
-            let original_value = datetime_rule.as_str();
-            let mut raw_value: String = original_value.into();
-
-            let date = date_utils::parse_date(&raw_value);
-            if date.is_err() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let (month, day, year, range) = date.unwrap();
-
-            raw_value.replace_range(range, "");
-
-            let time = date_utils::parse_time(&raw_value);
-            if time.is_err() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let (hour, min, sec, micro, range) = time.unwrap();
-
-            raw_value.replace_range(range, "");
-
-            let offset = date_utils::parse_offset(&raw_value);
-
-            let nd = NaiveDate::from_ymd_opt(year as i32, month, day);
-            if nd.is_none() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let ndt = nd.unwrap().and_hms_micro_opt(hour, min, sec, micro);
-
-            if ndt.is_none() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let tz = FixedOffset::east_opt(offset);
-            if tz.is_none() {
-                return Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                ));
-            }
-
-            let l = ndt.unwrap().and_local_timezone(tz.unwrap());
-
-            match l {
-                chrono::offset::LocalResult::Single(date_time) => {
-                    Ok(StaticScalarExpression::DateTime(
-                        DateTimeScalarExpression::new(query_location, date_time),
-                    ))
-                }
-                _ => Err(ParserError::SyntaxError(
-                    to_query_location(&datetime_rule),
-                    format!(
-                        "'{}' could not be parsed as a literal of type 'datetime'",
-                        original_value.trim()
-                    ),
-                )),
-            }
-        }
+    let original_value: String = match datetime_rule.as_rule() {
+        Rule::string_literal => match parse_string_literal(datetime_rule) {
+            StaticScalarExpression::String(v) => v.get_value().into(),
+            _ => panic!("Unexpected type returned from parse_string_literal"),
+        },
+        Rule::datetime_literal => datetime_rule.as_str().into(),
         _ => panic!("Unexpected rule in datetime_expression: {datetime_rule}"),
+    };
+
+    let s = StringScalarExpression::new(query_location.clone(), &original_value);
+
+    match Value::String(&s).convert_to_datetime() {
+        Some(d) => Ok(StaticScalarExpression::DateTime(
+            DateTimeScalarExpression::new(query_location, d),
+        )),
+        _ => Err(ParserError::SyntaxError(
+            query_location,
+            format!(
+                "'{}' could not be parsed as a literal of type 'datetime'",
+                original_value.trim()
+            ),
+        )),
     }
 }
 
@@ -524,13 +456,10 @@ fn get_value_type(state: &ParserState, value_accessor: &ValueAccessor) -> Option
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Datelike, Utc};
+    use chrono::{DateTime, Datelike, FixedOffset, Utc};
     use pest::Parser;
 
-    use crate::{
-        KqlPestParser,
-        date_utils::{create_fixed, create_utc},
-    };
+    use crate::{KqlPestParser, date_utils::*};
 
     use super::*;
 
@@ -718,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_parse_datetime_expression() {
-        let run_test = |input: &str, expected: DateTime<FixedOffset>| {
+        let run_test_success = |input: &str, expected: DateTime<FixedOffset>| {
             let mut result = KqlPestParser::parse(Rule::datetime_expression, input).unwrap();
 
             let d = parse_datetime_expression(result.next().unwrap());
@@ -731,155 +660,170 @@ mod tests {
             }
         };
 
+        let run_test_failure = |input: &str| {
+            let mut result = KqlPestParser::parse(Rule::datetime_expression, input).unwrap();
+
+            let d = parse_datetime_expression(result.next().unwrap());
+
+            assert!(d.is_err());
+        };
+
+        run_test_failure("datetime('hello world')");
+        run_test_failure("datetime('hello world 8/5/2025')");
+
         let now = Utc::now();
 
-        run_test("datetime(12/31/2025)", create_utc(2025, 12, 31, 0, 0, 0, 0));
-        run_test("datetime(12/31/50)", create_utc(1950, 12, 31, 0, 0, 0, 0));
-        run_test("datetime(12/31/49)", create_utc(2049, 12, 31, 0, 0, 0, 0));
-        run_test("datetime(2025/12/31)", create_utc(2025, 12, 31, 0, 0, 0, 0));
-        run_test(
+        run_test_success(
+            "datetime('12/31/2025')",
+            create_utc(2025, 12, 31, 0, 0, 0, 0),
+        );
+        run_test_success("datetime(12/31/2025)", create_utc(2025, 12, 31, 0, 0, 0, 0));
+        run_test_success("datetime(12/31/50)", create_utc(1950, 12, 31, 0, 0, 0, 0));
+        run_test_success("datetime(12/31/49)", create_utc(2049, 12, 31, 0, 0, 0, 0));
+        run_test_success("datetime(2025/12/31)", create_utc(2025, 12, 31, 0, 0, 0, 0));
+        run_test_success(
             "datetime(2025/12/31 22:30:10.1)",
             create_utc(2025, 12, 31, 22, 30, 10, 1),
         );
-        run_test(
+        run_test_success(
             "datetime(12-31-2025 10AM)",
             create_utc(2025, 12, 31, 10, 0, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2025-12-31 10:30 PM)",
             create_utc(2025, 12, 31, 22, 30, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(10PM)",
             create_utc(now.year(), now.month(), now.day(), 22, 0, 0, 0),
         );
 
         // ISO 8601
-        run_test(
+        run_test_success(
             "datetime(2014-05-25T08:20:03.123456Z)",
             create_utc(2014, 5, 25, 8, 20, 3, 123456),
         );
-        run_test(
+        run_test_success(
             "datetime(2009-06-15T13:45:30.0000000-07:00)",
             create_fixed(2009, 6, 15, 13, 45, 30, 0, -7 * 60 * 60),
         );
-        run_test(
+        run_test_success(
             "datetime(2009-06-15T13:45:30.0000000+07:30)",
             create_fixed(2009, 6, 15, 13, 45, 30, 0, (7 * 60 * 60) + (30 * 60)),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-05-25T08:20:03.123456)",
             create_utc(2014, 5, 25, 8, 20, 3, 123456),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-05-25T08:20)",
             create_utc(2014, 5, 25, 8, 20, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:55:55.123456Z)",
             create_utc(2014, 11, 8, 15, 55, 55, 123456),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:55:55)",
             create_utc(2014, 11, 8, 15, 55, 55, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:55)",
             create_utc(2014, 11, 8, 15, 55, 0, 0),
         );
-        run_test("datetime(2014-11-08)", create_utc(2014, 11, 8, 0, 0, 0, 0));
+        run_test_success("datetime(2014-11-08)", create_utc(2014, 11, 8, 0, 0, 0, 0));
 
         // RFC 822
-        run_test(
+        run_test_success(
             "datetime(Sat, 8 Nov 14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Sat, 8 Nov 14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(8 Nov 14 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test("datetime(8 Nov 14)", create_utc(2014, 11, 8, 0, 0, 0, 0));
+        run_test_success("datetime(8 Nov 14)", create_utc(2014, 11, 8, 0, 0, 0, 0));
 
         // RFC 850
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(Saturday, 08-Nov-14 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05:02 GMT)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05:02)",
             create_utc(2014, 11, 8, 15, 5, 2, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(08-Nov-14 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
 
         // Sortable
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05:25)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05:25 GMT)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08 15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05:25)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05:25 GMT)",
             create_utc(2014, 11, 8, 15, 5, 25, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );
-        run_test(
+        run_test_success(
             "datetime(2014-11-08T15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
         );

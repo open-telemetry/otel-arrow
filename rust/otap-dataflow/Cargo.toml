@@ -18,23 +18,25 @@ rust-version = "1.86.0"
 [package]
 name = "otap-df"
 version = "0.1.0"
-description = "OpenTelemetry Dataflow Engine supporting natively OTLP and OTAP Data Formats"
+description = "OpenTelemetry Rust Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
 keywords = ["OpenTelemetry", "OTLP", "OTAP", "Dataflow", "Engine"]
 categories = ["asynchronous", "network-programming"]
 
-[[example]]
-name = "engine"
-path = "examples/engine.rs"
+[[bin]]
+name = "df_engine"
+path = "src/main.rs"
 
 [dependencies]
-otap-df-engine = { path = "crates/engine" }
 otap-df-config = { path = "crates/config" }
-otap-df-otlp = { path = "crates/otlp" }
+otap-df-controller = { path = "crates/controller" }
+otap-df-otap = { path = "crates/otap" }
 thiserror.workspace = true
 serde_json.workspace = true
+clap = { version = "4.5.42", features = ["derive"] }
+mimalloc-rust = "0.2.1"
 
 [workspace.dependencies]
 arrow = "55.2"
@@ -49,7 +51,8 @@ tempfile = "3"
 thiserror = "2.0.12"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
-serde_json = { version = "1.0.140" }
+serde_json = { version = "1.0.142" }
+serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
 tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
 uuid = { version = "1.17.0", features = ["v4"] }
 async-trait = "0.1.88"
@@ -119,9 +122,12 @@ broken_intra_doc_links = "deny"
 missing_crate_level_docs = "deny"
 
 [profile.release]
-lto = "thin"    # Evaluate the performance gain of lto=true
-strip = true
-#panic = "abort"
+debug = "line-tables-only"  # minimum required for profiling
+
+# A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
+#[profile.release]
+#lto = "thin"
+#strip = true
 
 [profile.bench]
 inherits = "release"
