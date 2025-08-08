@@ -17,7 +17,7 @@ dist:
 
   # Note: this version number is replaced to match the current release using `sed`
   # during the release process, see ../../../RELEASING.md.
-  version: 0.40.0
+  version: 0.41.0
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
