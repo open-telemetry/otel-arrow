@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Retry Processor with ACK/NACK Feedback Loop
 //!
 //! The retry processor implements reliable message delivery through an ACK/NACK feedback system.
@@ -355,7 +357,9 @@ mod tests {
     async fn test_process_pdata_message() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         let test_data = create_test_data(1);
         let message = Message::PData(test_data.clone());
@@ -377,7 +381,9 @@ mod tests {
     async fn test_ack_removes_pending_message() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -407,7 +413,9 @@ mod tests {
     async fn test_nack_schedules_retry() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -440,7 +448,9 @@ mod tests {
     async fn test_max_retries_exceeded() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -472,7 +482,9 @@ mod tests {
     async fn test_timer_tick_retries_ready_messages() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         // Add a message and NACK it
         let test_data = create_test_data(1);
@@ -518,7 +530,9 @@ mod tests {
         };
         let mut processor = RetryProcessor::with_config(config);
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         // Fill the queue
         for i in 1..=2 {
@@ -548,7 +562,9 @@ mod tests {
     async fn test_exponential_backoff() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -597,7 +613,9 @@ mod tests {
     async fn test_shutdown_flushes_pending_messages() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         // Add multiple messages and NACK them
         for i in 1..=3 {
@@ -647,7 +665,9 @@ mod tests {
     async fn test_config_update() {
         let mut processor = create_test_processor();
         let (sender, _receiver) = create_test_channel(10);
-        let mut effect_handler = EffectHandler::new("test".into(), LocalSender::MpscSender(sender));
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
 
         let new_config = RetryConfig {
             max_retries: 5,

@@ -2,9 +2,6 @@ use crate::{primitives::*, resolved_static_scalar_expression::ResolvedStaticScal
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
-    /// Resolve a value from the mutable query source.
-    Source(SourceScalarExpression),
-
     /// Resolve a value from an immutable record attached to a query.
     ///
     /// Attached data is related to the query source but not necessarily owned.
@@ -16,25 +13,11 @@ pub enum ScalarExpression {
     /// unrelated records.
     Attached(AttachedScalarExpression),
 
-    /// Resolve a value from a query variable.
-    ///
-    /// Note: Variables are scoped to the execution of a query for a given
-    /// record. Each time a query is run for a record it starts with no
-    /// variables defined. Variables cannot be shared or reused across
-    /// executions.
-    Variable(VariableScalarExpression),
-
-    /// Resolve a static value provided directly in a query.
-    Static(StaticScalarExpression),
-
     /// A constant static value defined in a collection on [`PipelineExpression`].
     Constant(ConstantScalarExpression),
 
-    /// Negate the value returned by the inner scalar expression.
-    Negate(NegateScalarExpression),
-
-    /// Boolean value returned by the inner logical expression.
-    Logical(Box<LogicalExpression>),
+    /// Returns one of many inner scalar expressions based on multiple logical conditions.
+    Case(CaseScalarExpression),
 
     /// Returns the first non-null scalar expression in a list.
     Coalesce(CoalesceScalarExpression),
@@ -42,15 +25,25 @@ pub enum ScalarExpression {
     /// Returns one of two inner scalar expressions based on a logical condition.
     Conditional(ConditionalScalarExpression),
 
-    /// Returns one of many inner scalar expressions based on multiple logical conditions.
-    Case(CaseScalarExpression),
-
     /// Convert scalar values into different types.
     Convert(ConvertScalarExpression),
+
+    /// Contains scalar functions for working with date and time values.
+    Temporal(TemporalScalarExpression),
 
     /// Returns the number of characters in an inner string value, the number of
     /// items in an inner array/map values, or null for invalid input.
     Length(LengthScalarExpression),
+
+    /// Boolean value returned by the inner logical expression.
+    Logical(Box<LogicalExpression>),
+
+    /// Negate the value returned by the inner scalar expression.
+    Negate(NegateScalarExpression),
+
+    /// Parses an inner string scalar value as JSON and returns a Map, Array,
+    /// Integer, Double, or Null value.
+    ParseJson(ParseJsonScalarExpression),
 
     /// Returns a string with all occurrences of a lookup value replaced with a
     /// replacement value or null for invalid input.
@@ -60,9 +53,19 @@ pub enum ScalarExpression {
     /// items from an inner array value, or null for invalid input.
     Slice(SliceScalarExpression),
 
-    /// Parses an inner string scalar value as JSON and returns a Map, Array,
-    /// Integer, Double, or Null value.
-    ParseJson(ParseJsonScalarExpression),
+    /// Resolve a value from the mutable query source.
+    Source(SourceScalarExpression),
+
+    /// Resolve a static value provided directly in a query.
+    Static(StaticScalarExpression),
+
+    /// Resolve a value from a query variable.
+    ///
+    /// Note: Variables are scoped to the execution of a query for a given
+    /// record. Each time a query is run for a record it starts with no
+    /// variables defined. Variables cannot be shared or reused across
+    /// executions.
+    Variable(VariableScalarExpression),
 }
 
 impl ScalarExpression {
@@ -86,6 +89,7 @@ impl ScalarExpression {
             ScalarExpression::ReplaceString(r) => r.try_resolve_value_type(pipeline),
             ScalarExpression::Slice(s) => s.try_resolve_value_type(pipeline),
             ScalarExpression::ParseJson(p) => p.try_resolve_value_type(pipeline),
+            ScalarExpression::Temporal(t) => t.try_resolve_value_type(pipeline),
         }
     }
 
@@ -113,6 +117,7 @@ impl ScalarExpression {
             ScalarExpression::ReplaceString(r) => r.try_resolve_static(pipeline),
             ScalarExpression::Slice(s) => s.try_resolve_static(pipeline),
             ScalarExpression::ParseJson(p) => p.try_resolve_static(pipeline),
+            ScalarExpression::Temporal(t) => t.try_resolve_static(pipeline),
         }
     }
 }
@@ -135,6 +140,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::ReplaceString(r) => r.get_query_location(),
             ScalarExpression::Slice(s) => s.get_query_location(),
             ScalarExpression::ParseJson(p) => p.get_query_location(),
+            ScalarExpression::Temporal(t) => t.get_query_location(),
         }
     }
 
@@ -155,6 +161,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::ReplaceString(_) => "ScalarExpression(ReplaceString)",
             ScalarExpression::Slice(_) => "ScalarExpression(Slice)",
             ScalarExpression::ParseJson(_) => "ScalarExpression(ParseJson)",
+            ScalarExpression::Temporal(t) => t.get_name(),
         }
     }
 }

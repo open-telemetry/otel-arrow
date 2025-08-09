@@ -1,6 +1,6 @@
 use data_engine_expressions::*;
 
-use crate::{execution_context::*, scalar_expressions::execute_scalar_expression, *};
+use crate::{execution_context::*, scalars::*, *};
 
 pub fn execute_logical_expression<'a, TRecord: Record>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{execution_context::*, scalar_expressions::execute_scalar_expression, *};
+use crate::{execution_context::*, scalars::*, *};
 use data_engine_expressions::*;
 
 pub fn execute_summary_data_expression<'a, TRecord: Record>(

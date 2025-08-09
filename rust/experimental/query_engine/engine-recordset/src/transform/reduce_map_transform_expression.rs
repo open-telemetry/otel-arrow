@@ -8,7 +8,7 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::*, resolved_value_mut::*, scalar_expressions::execute_scalar_expression,
+    execution_context::*, resolved_value_mut::*, scalars::*,
     value_expressions::execute_mutable_value_expression, *,
 };
 
