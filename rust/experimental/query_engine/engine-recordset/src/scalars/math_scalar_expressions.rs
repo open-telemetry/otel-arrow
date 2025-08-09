@@ -12,24 +12,20 @@ where
 {
     let value = match math_scalar_expression {
         MathScalarExpression::Ceiling(u) => {
-            let value = execute_scalar_expression(execution_context, u.get_value_expression())?;
-
-            match Value::ceiling(&value.to_value()) {
-                Some(i) => {
-                    ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
-                }
-                None => ResolvedValue::Computed(OwnedValue::Null),
-            }
+            execute_unary_operation(execution_context, u, Value::ceiling)?
         }
         MathScalarExpression::Floor(u) => {
-            let value = execute_scalar_expression(execution_context, u.get_value_expression())?;
-
-            match Value::floor(&value.to_value()) {
-                Some(i) => {
-                    ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
-                }
-                None => ResolvedValue::Computed(OwnedValue::Null),
-            }
+            execute_unary_operation(execution_context, u, Value::floor)?
+        }
+        MathScalarExpression::Add(b) => execute_binary_operation(execution_context, b, Value::add)?,
+        MathScalarExpression::Divide(b) => {
+            execute_binary_operation(execution_context, b, Value::divide)?
+        }
+        MathScalarExpression::Multiply(b) => {
+            execute_binary_operation(execution_context, b, Value::multiply)?
+        }
+        MathScalarExpression::Subtract(b) => {
+            execute_binary_operation(execution_context, b, Value::subtract)?
         }
     };
 
@@ -40,6 +36,51 @@ where
     );
 
     Ok(value)
+}
+
+fn execute_unary_operation<'a, 'b, TRecord: Record, F>(
+    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    unary_expression: &'a UnaryMathmaticalScalarExpression,
+    op: F,
+) -> Result<ResolvedValue<'b>, ExpressionError>
+where
+    F: FnOnce(&Value) -> Option<i64>,
+{
+    let value =
+        execute_scalar_expression(execution_context, unary_expression.get_value_expression())?;
+
+    match (op)(&value.to_value()) {
+        Some(i) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
+            IntegerValueStorage::new(i),
+        ))),
+        None => Ok(ResolvedValue::Computed(OwnedValue::Null)),
+    }
+}
+
+fn execute_binary_operation<'a, 'b, TRecord: Record, F>(
+    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    binary_expression: &'a BinaryMathmaticalScalarExpression,
+    op: F,
+) -> Result<ResolvedValue<'b>, ExpressionError>
+where
+    F: FnOnce(&Value, &Value) -> Option<NumericValue>,
+{
+    let left =
+        execute_scalar_expression(execution_context, binary_expression.get_left_expression())?;
+    let right =
+        execute_scalar_expression(execution_context, binary_expression.get_right_expression())?;
+
+    match (op)(&left.to_value(), &right.to_value()) {
+        Some(v) => match v {
+            NumericValue::Integer(v) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
+                IntegerValueStorage::new(v),
+            ))),
+            NumericValue::Double(v) => Ok(ResolvedValue::Computed(OwnedValue::Double(
+                DoubleValueStorage::new(v),
+            ))),
+        },
+        None => Ok(ResolvedValue::Computed(OwnedValue::Null)),
+    }
 }
 
 #[cfg(test)]

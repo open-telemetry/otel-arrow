@@ -2,11 +2,23 @@ use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MathScalarExpression {
+    /// Returns the sum of two values.
+    Add(BinaryMathmaticalScalarExpression),
+
     /// Returns the smallest integral value greater than or equal to the specified number.
     Ceiling(UnaryMathmaticalScalarExpression),
 
+    /// Returns the result of dividing two values.
+    Divide(BinaryMathmaticalScalarExpression),
+
     /// Returns the largest integral value less than or equal to the specified number.
     Floor(UnaryMathmaticalScalarExpression),
+
+    /// Returns the result of multiplying two values.
+    Multiply(BinaryMathmaticalScalarExpression),
+
+    /// Returns the result of subtracting two values.
+    Subtract(BinaryMathmaticalScalarExpression),
 }
 
 impl MathScalarExpression {
@@ -17,12 +29,40 @@ impl MathScalarExpression {
         match self {
             MathScalarExpression::Ceiling(u) | MathScalarExpression::Floor(u) => {
                 match u.get_value_expression().try_resolve_value_type(pipeline)? {
-                    Some(v)
-                        if ConvertScalarExpression::is_always_convertable_to_numeric(v.clone()) =>
-                    {
+                    Some(v) if ConvertScalarExpression::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Integer))
                     }
                     _ => Ok(None),
+                }
+            }
+            MathScalarExpression::Add(b)
+            | MathScalarExpression::Divide(b)
+            | MathScalarExpression::Multiply(b)
+            | MathScalarExpression::Subtract(b) => {
+                let left = b
+                    .get_left_expression()
+                    .try_resolve_value_type(pipeline)?
+                    .unwrap_or(ValueType::Null);
+                let right = b
+                    .get_right_expression()
+                    .try_resolve_value_type(pipeline)?
+                    .unwrap_or(ValueType::Null);
+                match (left, right) {
+                    (ValueType::Integer, ValueType::Integer) => Ok(Some(ValueType::Integer)),
+                    (ValueType::Double, ValueType::Double) => Ok(Some(ValueType::Double)),
+                    (left, right) => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&left)
+                            && ConvertScalarExpression::is_always_convertable_to_numeric(&right)
+                        {
+                            if left == ValueType::Double || right == ValueType::Double {
+                                Ok(Some(ValueType::Double))
+                            } else {
+                                Ok(Some(ValueType::Integer))
+                            }
+                        } else {
+                            Ok(None)
+                        }
+                    }
                 }
             }
         }
@@ -38,45 +78,100 @@ impl MathScalarExpression {
     {
         match self {
             MathScalarExpression::Ceiling(u) => {
-                if let Some(v) = u.get_value_expression().try_resolve_static(pipeline)? {
-                    if let Some(i) = Value::ceiling(&v.to_value()) {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
-                            StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                u.query_location.clone(),
-                                i,
-                            )),
-                        )))
-                    } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
-                            StaticScalarExpression::Null(NullScalarExpression::new(
-                                u.query_location.clone(),
-                            )),
-                        )))
-                    }
-                } else {
-                    Ok(None)
-                }
+                Self::try_resolve_static_unary_operation(pipeline, u, Value::ceiling)
             }
             MathScalarExpression::Floor(u) => {
-                if let Some(v) = u.get_value_expression().try_resolve_static(pipeline)? {
-                    if let Some(i) = Value::floor(&v.to_value()) {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
-                            StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                u.query_location.clone(),
-                                i,
+                Self::try_resolve_static_unary_operation(pipeline, u, Value::floor)
+            }
+            MathScalarExpression::Add(b) => {
+                Self::try_resolve_static_binary_operation(pipeline, b, Value::add)
+            }
+            MathScalarExpression::Divide(b) => {
+                Self::try_resolve_static_binary_operation(pipeline, b, Value::divide)
+            }
+            MathScalarExpression::Multiply(b) => {
+                Self::try_resolve_static_binary_operation(pipeline, b, Value::multiply)
+            }
+            MathScalarExpression::Subtract(b) => {
+                Self::try_resolve_static_binary_operation(pipeline, b, Value::subtract)
+            }
+        }
+    }
+
+    fn try_resolve_static_unary_operation<'a, F>(
+        pipeline: &PipelineExpression,
+        unary_expression: &UnaryMathmaticalScalarExpression,
+        op: F,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
+    where
+        F: FnOnce(&Value) -> Option<i64>,
+    {
+        if let Some(v) = unary_expression
+            .get_value_expression()
+            .try_resolve_static(pipeline)?
+        {
+            if let Some(i) = (op)(&v.to_value()) {
+                Ok(Some(ResolvedStaticScalarExpression::Value(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        unary_expression.query_location.clone(),
+                        i,
+                    )),
+                )))
+            } else {
+                Ok(Some(ResolvedStaticScalarExpression::Value(
+                    StaticScalarExpression::Null(NullScalarExpression::new(
+                        unary_expression.query_location.clone(),
+                    )),
+                )))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn try_resolve_static_binary_operation<'a, F>(
+        pipeline: &PipelineExpression,
+        binary_expression: &BinaryMathmaticalScalarExpression,
+        op: F,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
+    where
+        F: FnOnce(&Value, &Value) -> Option<NumericValue>,
+    {
+        let left = binary_expression
+            .get_left_expression()
+            .try_resolve_static(pipeline)?;
+        let right = binary_expression
+            .get_right_expression()
+            .try_resolve_static(pipeline)?;
+
+        match (left, right) {
+            (Some(l), Some(r)) => {
+                if let Some(v) = (op)(&l.to_value(), &r.to_value()) {
+                    match v {
+                        NumericValue::Integer(v) => {
+                            Ok(Some(ResolvedStaticScalarExpression::Value(
+                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                                    binary_expression.query_location.clone(),
+                                    v,
+                                )),
+                            )))
+                        }
+                        NumericValue::Double(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Double(DoubleScalarExpression::new(
+                                binary_expression.query_location.clone(),
+                                v,
                             )),
-                        )))
-                    } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
-                            StaticScalarExpression::Null(NullScalarExpression::new(
-                                u.query_location.clone(),
-                            )),
-                        )))
+                        ))),
                     }
                 } else {
-                    Ok(None)
+                    Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::Null(NullScalarExpression::new(
+                            binary_expression.query_location.clone(),
+                        )),
+                    )))
                 }
             }
+            _ => Ok(None),
         }
     }
 }
@@ -84,15 +179,23 @@ impl MathScalarExpression {
 impl Expression for MathScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
+            MathScalarExpression::Add(b) => b.get_query_location(),
             MathScalarExpression::Ceiling(u) => u.get_query_location(),
+            MathScalarExpression::Divide(b) => b.get_query_location(),
             MathScalarExpression::Floor(u) => u.get_query_location(),
+            MathScalarExpression::Multiply(b) => b.get_query_location(),
+            MathScalarExpression::Subtract(b) => b.get_query_location(),
         }
     }
 
     fn get_name(&self) -> &'static str {
         match self {
+            MathScalarExpression::Add(_) => "MathScalar(Add)",
             MathScalarExpression::Ceiling(_) => "MathScalar(Ceiling)",
+            MathScalarExpression::Divide(_) => "MathScalar(Divide)",
             MathScalarExpression::Floor(_) => "MathScalar(Floor)",
+            MathScalarExpression::Multiply(_) => "MathScalar(Multiply)",
+            MathScalarExpression::Subtract(_) => "MathScalar(Subtract)",
         }
     }
 }
@@ -126,6 +229,45 @@ impl Expression for UnaryMathmaticalScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "UnaryMathmaticalScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryMathmaticalScalarExpression {
+    query_location: QueryLocation,
+    left_expression: Box<ScalarExpression>,
+    right_expression: Box<ScalarExpression>,
+}
+
+impl BinaryMathmaticalScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        left_expression: ScalarExpression,
+        right_expression: ScalarExpression,
+    ) -> BinaryMathmaticalScalarExpression {
+        Self {
+            query_location,
+            left_expression: left_expression.into(),
+            right_expression: right_expression.into(),
+        }
+    }
+
+    pub fn get_left_expression(&self) -> &ScalarExpression {
+        &self.left_expression
+    }
+
+    pub fn get_right_expression(&self) -> &ScalarExpression {
+        &self.right_expression
+    }
+}
+
+impl Expression for BinaryMathmaticalScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "BinaryMathmaticalScalarExpression"
     }
 }
 
