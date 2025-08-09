@@ -287,8 +287,6 @@ fn process_log_record_results(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
 
     use bytes::BytesMut;
@@ -464,24 +462,7 @@ mod tests {
             ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
         );
 
-        /* todo: Use KQL when parsing is done:
         let pipeline = parse_kql_query_into_pipeline("source | summarize Count = count()").unwrap();
-        */
-        let pipeline = PipelineExpressionBuilder::new(" ")
-            .with_expressions(vec![DataExpression::Summary(SummaryDataExpression::new(
-                QueryLocation::new_fake(),
-                HashMap::new(),
-                HashMap::from([(
-                    "Count".into(),
-                    AggregationExpression::new(
-                        QueryLocation::new_fake(),
-                        AggregationFunction::Count,
-                        None,
-                    ),
-                )]),
-            ))])
-            .build()
-            .unwrap();
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
