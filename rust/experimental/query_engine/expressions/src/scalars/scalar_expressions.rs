@@ -38,6 +38,9 @@ pub enum ScalarExpression {
     /// Boolean value returned by the inner logical expression.
     Logical(Box<LogicalExpression>),
 
+    /// Contains scalar functions for performing mathematical operations.
+    Math(MathScalarExpression),
+
     /// Negate the value returned by the inner scalar expression.
     Negate(NegateScalarExpression),
 
@@ -90,6 +93,7 @@ impl ScalarExpression {
             ScalarExpression::Slice(s) => s.try_resolve_value_type(pipeline),
             ScalarExpression::ParseJson(p) => p.try_resolve_value_type(pipeline),
             ScalarExpression::Temporal(t) => t.try_resolve_value_type(pipeline),
+            ScalarExpression::Math(m) => m.try_resolve_value_type(pipeline),
         }
     }
 
@@ -118,6 +122,7 @@ impl ScalarExpression {
             ScalarExpression::Slice(s) => s.try_resolve_static(pipeline),
             ScalarExpression::ParseJson(p) => p.try_resolve_static(pipeline),
             ScalarExpression::Temporal(t) => t.try_resolve_static(pipeline),
+            ScalarExpression::Math(m) => m.try_resolve_static(pipeline),
         }
     }
 }
@@ -141,6 +146,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Slice(s) => s.get_query_location(),
             ScalarExpression::ParseJson(p) => p.get_query_location(),
             ScalarExpression::Temporal(t) => t.get_query_location(),
+            ScalarExpression::Math(m) => m.get_query_location(),
         }
     }
 
@@ -162,6 +168,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Slice(_) => "ScalarExpression(Slice)",
             ScalarExpression::ParseJson(_) => "ScalarExpression(ParseJson)",
             ScalarExpression::Temporal(t) => t.get_name(),
+            ScalarExpression::Math(m) => m.get_name(),
         }
     }
 }
@@ -997,7 +1004,6 @@ impl ReplaceStringScalarExpression {
             let replacement_value = replacement.to_value();
 
             if let Some(result) = Value::replace_matches(
-                &self.query_location,
                 &haystack_value,
                 &needle_value,
                 &replacement_value,

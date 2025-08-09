@@ -3,8 +3,10 @@ use std::{cell::Ref, slice::Iter};
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::*, logical_expressions::execute_logical_expression,
-    scalars::execute_temporal_scalar_expression, *,
+    execution_context::*,
+    logical_expressions::execute_logical_expression,
+    scalars::{execute_math_scalar_expression, execute_temporal_scalar_expression},
+    *,
 };
 
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
@@ -423,7 +425,6 @@ where
                 execute_scalar_expression(execution_context, r.get_replacement_expression())?;
 
             let v = if let Some(result) = Value::replace_matches(
-                r.get_query_location(),
                 &haystack_value.to_value(),
                 &needle_value.to_value(),
                 &replacement_value.to_value(),
@@ -550,6 +551,7 @@ where
             Ok(v)
         }
         ScalarExpression::Temporal(t) => execute_temporal_scalar_expression(execution_context, t),
+        ScalarExpression::Math(m) => execute_math_scalar_expression(execution_context, m),
     }
 }
 
