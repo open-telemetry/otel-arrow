@@ -128,3 +128,111 @@ impl Expression for UnaryMathmaticalScalarExpression {
         "UnaryMathmaticalScalarExpression"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn test_try_resolve_unary() {
+        fn run_test<F>(build: F, input: Vec<(ScalarExpression, Option<ValueType>, Option<Value>)>)
+        where
+            F: Fn(UnaryMathmaticalScalarExpression) -> MathScalarExpression,
+        {
+            for (inner, expected_type, expected_value) in input {
+                let e = build(UnaryMathmaticalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    inner,
+                ));
+
+                let pipeline = Default::default();
+
+                let actual_type = e.try_resolve_value_type(&pipeline).unwrap();
+                assert_eq!(expected_type, actual_type);
+
+                let actual_value = e.try_resolve_static(&pipeline).unwrap();
+                assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
+            }
+        }
+
+        run_test(
+            MathScalarExpression::Ceiling,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1),
+                    )),
+                    Some(ValueType::Integer),
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.1"),
+                    )),
+                    None,
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+            ],
+        );
+
+        run_test(
+            MathScalarExpression::Floor,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1),
+                    )),
+                    Some(ValueType::Integer),
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.1"),
+                    )),
+                    None,
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+            ],
+        );
+    }
+}
