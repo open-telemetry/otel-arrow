@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 use data_engine_recordset_otlp_bridge::*;
@@ -92,26 +90,9 @@ fn test_summarize_count_only() {
         ),
     );
 
-    /* todo: Use KQL when parsing is done:
     let query = "source | summarize Count = count()";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();*/
-
-    let pipeline = PipelineExpressionBuilder::new(" ")
-        .with_expressions(vec![DataExpression::Summary(SummaryDataExpression::new(
-            QueryLocation::new_fake(),
-            HashMap::new(),
-            HashMap::from([(
-                "Count".into(),
-                AggregationExpression::new(
-                    QueryLocation::new_fake(),
-                    AggregationFunction::Count,
-                    None,
-                ),
-            )]),
-        ))])
-        .build()
-        .unwrap();
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -162,37 +143,9 @@ fn test_summarize_count_and_group_by() {
         ),
     );
 
-    /* todo: Use KQL when parsing is done:
     let query = "source | summarize Count = count() by Body";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();*/
-
-    let pipeline = PipelineExpressionBuilder::new(" ")
-        .with_expressions(vec![DataExpression::Summary(SummaryDataExpression::new(
-            QueryLocation::new_fake(),
-            HashMap::from([(
-                "Body".into(),
-                ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "Body",
-                        )),
-                    )]),
-                )),
-            )]),
-            HashMap::from([(
-                "Count".into(),
-                AggregationExpression::new(
-                    QueryLocation::new_fake(),
-                    AggregationFunction::Count,
-                    None,
-                ),
-            )]),
-        ))])
-        .build()
-        .unwrap();
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()

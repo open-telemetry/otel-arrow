@@ -36,7 +36,8 @@ use crate::error::Error;
 use crate::local::message::LocalSender;
 use crate::message::Message;
 use async_trait::async_trait;
-use otap_df_config::NodeId;
+use otap_df_config::{NodeId, PortName};
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// A trait for processors in the pipeline (!Send definition).
@@ -86,16 +87,35 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: LocalSender<PData>,
+    /// Supports multiple named output ports.
+    msg_senders: HashMap<PortName, LocalSender<PData>>,
+    /// Optional default port to use when calling send_message.
+    default_port: Option<PortName>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(node_id: NodeId, msg_sender: LocalSender<PData>) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, LocalSender<PData>>,
+        default_port: Option<PortName>,
+    ) -> Self {
         let core = EffectHandlerCore::new(node_id);
-        EffectHandler { core, msg_sender }
+        // If no default is provided and exactly one port is connected, use it as default.
+        let default_port = default_port.or_else(|| {
+            if msg_senders.len() == 1 {
+                msg_senders.keys().next().cloned()
+            } else {
+                None
+            }
+        });
+        EffectHandler {
+            core,
+            msg_senders,
+            default_port,
+        }
     }
 
     /// Returns the id of the processor associated with this handler.
@@ -104,14 +124,58 @@ impl<PData> EffectHandler<PData> {
         self.core.node_id()
     }
 
-    /// Sends a message to the next node(s) in the pipeline.
+    /// Returns the list of connected out ports for this processor.
+    #[must_use]
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.msg_senders.keys().cloned().collect()
+    }
+
+    /// Sends a message to the next node(s) in the pipeline using the default port.
+    ///
+    /// If a default port is configured (either explicitly or deduced when a single port is
+    /// connected), it will be used. Otherwise, an error is returned.
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent or [`Error::ProcessorError`]
+    /// if the default port is not configured.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send(data).await?;
-        Ok(())
+        let port = if let Some(p) = &self.default_port {
+            p.clone()
+        } else {
+            return Err(Error::ProcessorError {
+                processor: self.processor_id(),
+                error:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
+            });
+        };
+        self.send_message_to(port, data).await
+    }
+
+    /// Sends a message to a specific named out port.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent, or
+    /// [`Error::ProcessorError`] if the port does not exist.
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        let sender =
+            self.msg_senders
+                .get(&port_name)
+                .cloned()
+                .ok_or_else(|| Error::ProcessorError {
+                    processor: self.processor_id(),
+                    error: format!(
+                        "Unknown out port '{port_name}' for node {}",
+                        self.processor_id()
+                    ),
+                })?;
+        sender.send(data).await.map_err(Error::ChannelSendError)
     }
 
     /// Print an info message to stdout.
@@ -134,4 +198,117 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(missing_docs)]
+    use super::*;
+    use crate::local::message::LocalSender;
+    use otap_df_channel::mpsc;
+    use std::borrow::Cow;
+    use std::collections::{HashMap, HashSet};
+    use tokio::time::{Duration, timeout};
+
+    fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+        mpsc::Channel::new(capacity)
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_to_named_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let eh = EffectHandler::new("proc".into(), senders, None);
+
+        eh.send_message_to("b", 42).await.unwrap();
+
+        // Ensure only 'b' received
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(b_rx.recv().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_single_port_fallback() {
+        let (tx, rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
+
+        let eh = EffectHandler::new("proc".into(), senders, None);
+
+        eh.send_message(7).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_uses_default_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let eh = EffectHandler::new("proc".into(), senders, Some("a".into()));
+
+        eh.send_message(11).await.unwrap();
+
+        assert_eq!(a_rx.recv().await.unwrap(), 11);
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_ambiguous_without_default() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let eh = EffectHandler::new("proc".into(), senders, None);
+
+        let res = eh.send_message(5).await;
+        assert!(res.is_err());
+
+        // Nothing should be received on either port
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_handler_connected_ports_lists_all() {
+        let (a_tx, _a_rx) = channel::<u64>(1);
+        let (b_tx, _b_rx) = channel::<u64>(1);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
+
+        let eh = EffectHandler::new("proc".into(), senders, None);
+
+        let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
+        let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
+        assert_eq!(ports, expected);
+    }
 }
