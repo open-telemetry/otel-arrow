@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1.0.98"
-toml = "0.8.22"
+toml = "0.9.0"
 tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }
 
 [lints.rust]
