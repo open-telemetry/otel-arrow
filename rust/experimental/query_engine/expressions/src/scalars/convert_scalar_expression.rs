@@ -310,6 +310,36 @@ mod tests {
                         true,
                     ))),
                 ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+            ],
+        );
+
+        run_test(
+            ConvertScalarExpression::DateTime,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "8/8/2025"),
+                    )),
+                    None,
+                    Some(Value::DateTime(&DateTimeScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        date_utils::create_utc(2025, 8, 8, 0, 0, 0, 0),
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
             ],
         );
 
@@ -356,6 +386,13 @@ mod tests {
                         18.18,
                     ))),
                 ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
             ],
         );
 
@@ -401,6 +438,13 @@ mod tests {
                         QueryLocation::new_fake(),
                         18,
                     ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
                 ),
             ],
         );
