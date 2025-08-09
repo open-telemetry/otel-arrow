@@ -19,7 +19,7 @@ pub enum ConvertScalarExpression {
 }
 
 impl ConvertScalarExpression {
-    pub(crate) fn is_always_convertable_to_numeric(value_type: ValueType) -> bool {
+    pub(crate) fn is_always_convertable_to_numeric(value_type: &ValueType) -> bool {
         matches!(
             value_type,
             ValueType::DateTime | ValueType::Boolean | ValueType::Integer | ValueType::Double
@@ -33,7 +33,7 @@ impl ConvertScalarExpression {
         match self {
             ConvertScalarExpression::Boolean(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(v) if Self::is_always_convertable_to_numeric(v.clone()) => {
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Boolean))
                     }
                     _ => Ok(None),
@@ -41,7 +41,7 @@ impl ConvertScalarExpression {
             }
             ConvertScalarExpression::DateTime(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(v) if Self::is_always_convertable_to_numeric(v.clone()) => {
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::DateTime))
                     }
                     _ => Ok(None),
@@ -49,7 +49,7 @@ impl ConvertScalarExpression {
             }
             ConvertScalarExpression::Double(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(v) if Self::is_always_convertable_to_numeric(v.clone()) => {
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Double))
                     }
                     _ => Ok(None),
@@ -57,7 +57,7 @@ impl ConvertScalarExpression {
             }
             ConvertScalarExpression::Integer(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(v) if Self::is_always_convertable_to_numeric(v.clone()) => {
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Integer))
                     }
                     _ => Ok(None),
