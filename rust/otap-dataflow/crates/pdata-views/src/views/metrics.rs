@@ -471,7 +471,7 @@ impl DataPointFlags {
     /// explicitly missing data in a series, as for an equivalent to the Prometheus "staleness
     /// marker".
     #[must_use]
-    pub fn no_recorded_value(&self) -> bool {
+    pub const fn no_recorded_value(&self) -> bool {
         self.0 & 1 != 0
     }
 

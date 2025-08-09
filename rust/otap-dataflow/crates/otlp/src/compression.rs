@@ -22,7 +22,7 @@ impl CompressionMethod {
     /// map the compression method to the proper tonic compression encoding equivalent
     /// use the CompressionMethod enum to abstract from tonic
     #[must_use]
-    pub fn map_to_compression_encoding(&self) -> CompressionEncoding {
+    pub const fn map_to_compression_encoding(&self) -> CompressionEncoding {
         match *self {
             CompressionMethod::Gzip => CompressionEncoding::Gzip,
             CompressionMethod::Zstd => CompressionEncoding::Zstd,

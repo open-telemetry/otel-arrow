@@ -91,13 +91,13 @@ impl ScenarioStep {
 
     /// return the number of batches to generate
     #[must_use]
-    pub fn get_batches_to_generate(&self) -> u64 {
+    pub const fn get_batches_to_generate(&self) -> u64 {
         self.batches_to_generate
     }
 
     /// return the delay in ms
     #[must_use]
-    pub fn get_delay_between_batches_ms(&self) -> u64 {
+    pub const fn get_delay_between_batches_ms(&self) -> u64 {
         self.delay_between_batches_ms
     }
 }
@@ -121,12 +121,12 @@ impl Load {
 
     /// Provide a reference to the vector of scenario steps
     #[must_use]
-    pub fn resource_count(&self) -> usize {
+    pub const fn resource_count(&self) -> usize {
         self.resource_count
     }
     /// Provide a reference to the vector of scenario steps
     #[must_use]
-    pub fn scope_count(&self) -> usize {
+    pub const fn scope_count(&self) -> usize {
         self.scope_count
     }
 }

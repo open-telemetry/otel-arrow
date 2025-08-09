@@ -82,37 +82,37 @@ impl Config {
     }
     /// check the frequency interval
     #[must_use]
-    pub fn frequency(&self) -> u64 {
+    pub const fn frequency(&self) -> u64 {
         self.frequency
     }
     /// check if self_usage is enabled
     #[must_use]
-    pub fn self_usage(&self) -> bool {
+    pub const fn self_usage(&self) -> bool {
         self.self_usage
     }
     /// check if cpu_usage is enabled
     #[must_use]
-    pub fn cpu_usage(&self) -> bool {
+    pub const fn cpu_usage(&self) -> bool {
         self.cpu_usage
     }
     /// check if mem_usage is enabled
     #[must_use]
-    pub fn mem_usage(&self) -> bool {
+    pub const fn mem_usage(&self) -> bool {
         self.mem_usage
     }
     /// check if disk_usage is enabled
     #[must_use]
-    pub fn disk_usage(&self) -> bool {
+    pub const fn disk_usage(&self) -> bool {
         self.disk_usage
     }
     /// check if io_usage is enabled
     #[must_use]
-    pub fn io_usage(&self) -> bool {
+    pub const fn io_usage(&self) -> bool {
         self.io_usage
     }
     /// get the smoothing factor
     #[must_use]
-    pub fn smoothing_factor(&self) -> f32 {
+    pub const fn smoothing_factor(&self) -> f32 {
         self.smoothing_factor
     }
 }
