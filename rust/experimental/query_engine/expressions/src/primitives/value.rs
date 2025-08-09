@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Display};
 
 use chrono::{DateTime, FixedOffset, SecondsFormat, TimeZone, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde_json::json;
 
 use crate::{
@@ -515,6 +515,60 @@ impl Value<'_> {
             Some(d.floor() as i64)
         } else {
             value.convert_to_integer()
+        }
+    }
+
+    pub fn parse_regex(
+        query_location: &QueryLocation,
+        pattern: &Value,
+        options: Option<&Value>,
+    ) -> Result<Regex, ExpressionError> {
+        if let Value::String(s) = pattern {
+            match options {
+                None => Regex::new(s.get_value()).map_err(|e| {
+                    ExpressionError::ParseError(
+                        query_location.clone(),
+                        format!("Failed to parse Regex from pattern: {e}"),
+                    )
+                }),
+                Some(Value::String(options)) => {
+                    let options = options.get_value();
+
+                    let mut builder = RegexBuilder::new(s.get_value());
+
+                    if options.contains('i') {
+                        builder.case_insensitive(true);
+                    }
+                    if options.contains('m') {
+                        builder.multi_line(true);
+                    }
+                    if options.contains('s') {
+                        builder.dot_matches_new_line(true);
+                    }
+
+                    builder.build().map_err(|e| {
+                        ExpressionError::ParseError(
+                            query_location.clone(),
+                            format!("Failed to parse Regex from pattern: {e}"),
+                        )
+                    })
+                }
+                _ => Err(ExpressionError::ParseError(
+                    query_location.clone(),
+                    format!(
+                        "Input of '{:?}' type could not be pased as Regex options",
+                        options.unwrap().get_value_type()
+                    ),
+                )),
+            }
+        } else {
+            Err(ExpressionError::ParseError(
+                query_location.clone(),
+                format!(
+                    "Input of '{:?}' type could not be pased as a Regex",
+                    pattern.get_value_type()
+                ),
+            ))
         }
     }
 
@@ -2147,5 +2201,86 @@ mod tests {
 
         // Null value
         run_test_success(Value::Null, None);
+    }
+
+    #[test]
+    fn test_parse_regex() {
+        let run_test_success = |pattern: Value, options: Option<Value>, test: &str| {
+            let is_match =
+                Value::parse_regex(&QueryLocation::new_fake(), &pattern, options.as_ref())
+                    .unwrap()
+                    .is_match(test);
+
+            assert!(is_match);
+        };
+
+        let run_test_failure = |pattern: Value, options: Option<Value>| {
+            Value::parse_regex(&QueryLocation::new_fake(), &pattern, options.as_ref()).unwrap_err();
+        };
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "[^a]ello world",
+            )),
+            None,
+            "hello world",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "i",
+            ))),
+            "HELLO WORLD",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "^\\w*.\\w*$",
+            )),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "s",
+            ))),
+            "hello\nworld",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "^\\w*$",
+            )),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "m",
+            ))),
+            "hello\nworld",
+        );
+
+        run_test_failure(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(")),
+            None,
+        );
+
+        run_test_failure(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(")),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "m",
+            ))),
+        );
+
+        run_test_failure(Value::Null, None);
+
+        run_test_failure(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(")),
+            Some(Value::Null),
+        );
     }
 }
