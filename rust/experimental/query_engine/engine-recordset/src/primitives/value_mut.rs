@@ -12,7 +12,7 @@ pub enum StaticValueMut<'a> {
 }
 
 impl<'a> AsStaticValue for StaticValueMut<'a> {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         match self {
             StaticValueMut::Array(a) => StaticValue::Array(*a),
             StaticValueMut::Map(b) => StaticValue::Map(*b),
@@ -22,7 +22,7 @@ impl<'a> AsStaticValue for StaticValueMut<'a> {
 }
 
 pub trait AsStaticValueMut: AsStaticValue {
-    fn to_static_value_mut(&mut self) -> Option<StaticValueMut>;
+    fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>>;
 }
 
 pub enum ValueMutGetResult<'a> {
@@ -44,7 +44,7 @@ pub enum ValueMutRemoveResult {
 }
 
 pub trait ArrayValueMut: ArrayValue {
-    fn get_mut(&mut self, index: usize) -> ValueMutGetResult;
+    fn get_mut(&mut self, index: usize) -> ValueMutGetResult<'_>;
 
     fn set(&mut self, index: usize, value: ResolvedValue) -> ValueMutWriteResult;
 
@@ -87,7 +87,7 @@ where
 }
 
 pub trait MapValueMut: MapValue {
-    fn get_mut(&mut self, key: &str) -> ValueMutGetResult;
+    fn get_mut(&mut self, key: &str) -> ValueMutGetResult<'_>;
 
     fn set(&mut self, key: &str, value: ResolvedValue) -> ValueMutWriteResult;
 

@@ -3,7 +3,7 @@
 
 //! This module contains builders for record batches for logs.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow::{
     array::{Array, NullBufferBuilder, RecordBatch, StructArray},
@@ -213,7 +213,14 @@ impl LogsRecordBatchBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
+                    HashMap::from_iter([(
+                        consts::metadata::COLUMN_ENCODING.to_string(),
+                        consts::metadata::encodings::PLAIN.to_string(),
+                    )]),
+                ),
+            );
             columns.push(array);
         }
 
@@ -308,12 +315,6 @@ impl LogsRecordBatchBuilder {
         }
 
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-    }
-}
-
-impl Default for LogsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -658,12 +659,6 @@ impl LogsBodyBuilder {
     }
 }
 
-impl Default for LogsBodyBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Builder for the `resource` struct column of the logs OTAP record.
 pub struct ResourceBuilder {
     id: UInt16ArrayBuilder,
@@ -742,7 +737,14 @@ impl ResourceBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
+                    HashMap::from_iter([(
+                        consts::metadata::COLUMN_ENCODING.to_string(),
+                        consts::metadata::encodings::PLAIN.to_string(),
+                    )]),
+                ),
+            );
             columns.push(array);
         }
 
@@ -765,12 +767,6 @@ impl ResourceBuilder {
         }
 
         StructArray::try_new(Fields::from(fields), columns, None)
-    }
-}
-
-impl Default for ResourceBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -876,7 +872,14 @@ impl ScopeBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
+                    HashMap::from_iter([(
+                        consts::metadata::COLUMN_ENCODING.to_string(),
+                        consts::metadata::encodings::PLAIN.to_string(),
+                    )]),
+                ),
+            );
             columns.push(array);
         }
 
@@ -900,11 +903,5 @@ impl ScopeBuilder {
         }
 
         StructArray::try_new(Fields::from(fields), columns, None)
-    }
-}
-
-impl Default for ScopeBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -96,16 +96,33 @@ impl Default for PipelineSettings {
 }
 
 impl PipelineConfig {
-    /// Create a new PipelineSpec from a JSON string.
+    /// Create a new [`PipelineConfig`] from a JSON string.
     pub fn from_json(
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         json_str: &str,
     ) -> Result<Self, Error> {
-        let spec: PipelineConfig =
+        let cfg: PipelineConfig =
             serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
                 context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 format: "JSON".to_string(),
+                details: e.to_string(),
+            })?;
+
+        cfg.validate(&pipeline_group_id, &pipeline_id)?;
+        Ok(cfg)
+    }
+
+    /// Create a new [`PipelineConfig`] from a YAML string.
+    pub fn from_yaml(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        yaml_str: &str,
+    ) -> Result<Self, Error> {
+        let spec: PipelineConfig =
+            serde_yaml::from_str(yaml_str).map_err(|e| Error::DeserializationError {
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                format: "YAML".to_string(),
                 details: e.to_string(),
             })?;
 
@@ -113,7 +130,7 @@ impl PipelineConfig {
         Ok(spec)
     }
 
-    /// Load a PipelineSpec from a JSON file.
+    /// Load a [`PipelineConfig`] from a JSON file.
     pub fn from_json_file<P: AsRef<Path>>(
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
@@ -126,7 +143,50 @@ impl PipelineConfig {
         Self::from_json(pipeline_group_id, pipeline_id, &contents)
     }
 
-    // ToDo : Add support for YAML format.
+    /// Load a [`PipelineConfig`] from a YAML file.
+    pub fn from_yaml_file<P: AsRef<Path>>(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        path: P,
+    ) -> Result<Self, Error> {
+        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
+            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+            details: e.to_string(),
+        })?;
+        Self::from_yaml(pipeline_group_id, pipeline_id, &contents)
+    }
+
+    /// Load a [`PipelineConfig`] from a file, automatically detecting the format based on file extension.
+    ///
+    /// Supports:
+    /// - JSON files: `.json`
+    /// - YAML files: `.yaml`, `.yml`
+    pub fn from_file<P: AsRef<Path>>(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        path: P,
+    ) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase());
+
+        match extension.as_deref() {
+            Some("json") => Self::from_json_file(pipeline_group_id, pipeline_id, path),
+            Some("yaml") | Some("yml") => {
+                Self::from_yaml_file(pipeline_group_id, pipeline_id, path)
+            }
+            _ => {
+                let context = Context::new(pipeline_group_id, pipeline_id);
+                let details = format!(
+                    "Unsupported file extension: {}. Supported extensions are: .json, .yaml, .yml",
+                    extension.unwrap_or_else(|| "<none>".to_string())
+                );
+                Err(Error::FileReadError { context, details })
+            }
+        }
+    }
 
     /// Returns the general settings for this pipeline.
     #[must_use]
@@ -314,6 +374,7 @@ impl PipelineConfigBuilder {
                     plugin_urn,
                     description: None,
                     out_ports: HashMap::new(),
+                    default_out_port: None,
                     config: config.unwrap_or(Value::Null),
                 },
             );
@@ -840,6 +901,185 @@ mod tests {
                 assert_eq!(pipeline_spec.nodes.len(), 18);
             }
             Err(e) => panic!("Failed to build pipeline DAG: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_json_file() {
+        // Use a dedicated test fixture file
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.json"
+        );
+
+        // Test loading from JSON file
+        let result = super::PipelineConfig::from_json_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 2);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_yaml_file() {
+        // Use a dedicated test fixture file
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.yaml"
+        );
+
+        // Test loading from YAML file
+        let result = super::PipelineConfig::from_yaml_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 3);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("processor1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_json_file_nonexistent_file() {
+        let result = super::PipelineConfig::from_json_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/nonexistent/path/pipeline.json",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { .. }) => {}
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_yaml_file_nonexistent_file() {
+        let result = super::PipelineConfig::from_yaml_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/nonexistent/path/pipeline.yaml",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { .. }) => {}
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_json_extension() {
+        // Test auto-detection with .json extension
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.json"
+        );
+
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 2);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_file_yaml_extension() {
+        // Test auto-detection with .yaml extension
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.yaml"
+        );
+
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 3);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("processor1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_file_yml_extension() {
+        // Test auto-detection with .yml extension (alternative YAML extension)
+        // We'll create a simple test using a path that would have .yml extension
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/nonexistent/test.yml", // This will fail at file reading, but should pass extension detection
+        );
+
+        assert!(result.is_err());
+        // Should be FileReadError (file doesn't exist), not unsupported extension
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                // Make sure it's a file read error and not an extension error
+                assert!(!details.contains("Unsupported file extension"));
+            }
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_unsupported_extension() {
+        // Test with unsupported file extension
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/some/path/config.txt",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                assert!(details.contains("Unsupported file extension"));
+                assert!(details.contains("txt"));
+                assert!(details.contains(".json, .yaml, .yml"));
+            }
+            other => panic!("Expected FileReadError with unsupported extension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_no_extension() {
+        // Test with file that has no extension
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/some/path/config",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                assert!(details.contains("Unsupported file extension"));
+                assert!(details.contains("<none>"));
+                assert!(details.contains(".json, .yaml, .yml"));
+            }
+            other => panic!("Expected FileReadError with no extension, got {other:?}"),
         }
     }
 }

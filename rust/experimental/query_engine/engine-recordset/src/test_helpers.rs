@@ -6,6 +6,7 @@ use data_engine_expressions::*;
 
 use crate::*;
 
+#[derive(Clone)]
 pub struct TestAttachedRecords {
     records: HashMap<Box<str>, MapValueStorage<OwnedValue>>,
 }
@@ -122,7 +123,7 @@ impl Record for TestRecord {
 }
 
 impl AsStaticValue for TestRecord {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         StaticValue::Map(self)
     }
 }
@@ -156,7 +157,7 @@ impl MapValue for TestRecord {
 }
 
 impl MapValueMut for TestRecord {
-    fn get_mut(&mut self, key: &str) -> ValueMutGetResult {
+    fn get_mut(&mut self, key: &str) -> ValueMutGetResult<'_> {
         if let Some(v) = self.values.get_mut(key) {
             ValueMutGetResult::Found(v)
         } else {
