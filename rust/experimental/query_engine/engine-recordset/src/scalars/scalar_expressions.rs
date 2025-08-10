@@ -165,33 +165,6 @@ where
                 Ok(ResolvedValue::Value(value))
             }
         },
-        ScalarExpression::Negate(n) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, n.get_inner_expression())?;
-
-            let v = match inner_value.to_value() {
-                Value::Integer(i) => ResolvedValue::Computed(OwnedValue::Integer(
-                    IntegerValueStorage::new(-i.get_value()),
-                )),
-                Value::Double(d) => ResolvedValue::Computed(OwnedValue::Double(
-                    DoubleValueStorage::new(-d.get_value()),
-                )),
-                _ => {
-                    return Err(ExpressionError::TypeMismatch(
-                        n.get_query_location().clone(),
-                        "Negate expression can only be used with integer and double types".into(),
-                    ));
-                }
-            };
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: '{v}'"),
-            );
-
-            Ok(v)
-        }
         ScalarExpression::Logical(l) => {
             let value = execute_logical_expression(execution_context, l)?;
 
@@ -1003,39 +976,6 @@ mod tests {
                 ),
             )),
             Value::Integer(&IntegerValueStorage::new(99)),
-        );
-    }
-
-    #[test]
-    fn test_execute_negate_scalar_expression() {
-        let run_test = |scalar_expression, expected_value: Value| {
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
-
-            assert_eq!(expected_value, value.to_value());
-        };
-
-        run_test(
-            ScalarExpression::Negate(NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
-                )),
-            )),
-            Value::Integer(&IntegerValueStorage::new(-18)),
-        );
-
-        run_test(
-            ScalarExpression::Negate(NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Double(
-                    DoubleScalarExpression::new(QueryLocation::new_fake(), 18.18),
-                )),
-            )),
-            Value::Double(&DoubleValueStorage::new(-18.18)),
         );
     }
 
