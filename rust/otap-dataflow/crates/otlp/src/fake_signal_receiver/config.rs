@@ -29,6 +29,7 @@ pub struct Config {
     resolved_registry: ResolvedRegistry,
 }
 
+/// Configuration to describe the traffic being sent
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TrafficConfig {
     #[serde(default = "default_messages_per_second")]
@@ -41,6 +42,7 @@ pub struct TrafficConfig {
     log_load: Option<LoadConfig>,
 }
 
+/// Configuration to describe how large the data should be
 #[derive(Clone, Deserialize, Serialize)]
 pub struct LoadConfig {
     // number of messages produced
@@ -152,21 +154,25 @@ impl LoadConfig {
         }
     }
 
+    /// get the number of resources to generate
     #[must_use]
     pub fn get_resources(&self) -> usize {
         self.resources_per_request
     }
 
+    /// get the number of scopes to generate per resource
     #[must_use]
     pub fn get_scopes(&self) -> usize {
         self.scopes_per_resource
     }
 
+    /// get the number of messages to generate per scope
     #[must_use]
     pub fn get_messages(&self) -> usize {
         self.messages_per_scope
     }
 
+    /// calculate the total messages that will be sent with a signal load
     #[must_use]
     pub fn calculate_total_message_size(&self) -> usize {
         self.resources_per_request * self.scopes_per_resource * self.messages_per_scope
