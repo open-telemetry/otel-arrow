@@ -789,7 +789,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, vec};
 
     use chrono::{TimeZone, Utc};
 
@@ -2382,5 +2382,41 @@ mod tests {
             Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
         );
         run_test_success("hello world", Value::Null);
+    }
+
+    #[test]
+    pub fn text_execute_list_scalar_expression() {
+        fn run_test_success(input: Vec<ScalarExpression>, expected_value: Value) {
+            let expression = ScalarExpression::List(ListScalarExpression::new(
+                QueryLocation::new_fake(),
+                input),
+            );
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value());
+        }
+
+        run_test_success(
+            vec![],
+            OwnedValue::Array(ArrayValueStorage::new(vec![])).to_value()
+        );
+
+        run_test_success(
+            vec![
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                )),
+            ],
+            OwnedValue::Array(ArrayValueStorage::new(vec![
+                OwnedValue::Integer(IntegerValueStorage::new(1)),
+                OwnedValue::Integer(IntegerValueStorage::new(2)),
+            ])).to_value());
     }
 }
