@@ -10,7 +10,7 @@ use arrow::array::{
     PrimitiveBuilder, RecordBatch, StringArray,
 };
 use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::and;
+use arrow::compute::{and, concat};
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
 use snafu::{OptionExt, ResultExt};
@@ -458,6 +458,7 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
 }
 
+
 /// Replaces the attribute keys.
 ///
 /// Accepts the attribute record batch, along with a map of old attribute key to new key.
@@ -806,6 +807,75 @@ pub struct AttributesTransform {
     delete: BTreeSet<String>,
 }
 
+pub fn transform_attributes(
+    attrs_record_batch: &RecordBatch,
+    transform: AttributesTransform,
+) -> Result<RecordBatch> {
+    let schema = attrs_record_batch.schema();
+    let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
+        error::ColumnNotFoundSnafu {
+            name: consts::ATTRIBUTE_KEY
+        }.build()
+    })?;
+
+    match schema.field(key_column_idx).data_type() {
+        DataType::UInt8 => {
+            let keys_arr = attrs_record_batch
+                .column(key_column_idx)
+                .as_any()
+                .downcast_ref()
+                .expect("can downcast Utf8 Column to string array");
+
+            let key_tx_intermediate_result = transform_keys(keys_arr, &transform);
+
+            let mut keep_ranges = vec![];
+            let mut last_delete_range_end = 0;
+            for (start, end) in key_tx_intermediate_result.deletion_ranges {
+                keep_ranges.push((last_delete_range_end, start));
+                last_delete_range_end = end;
+            }
+
+            let offset_buffer_len = key_tx_intermediate_result.offsets.len() / size_of::<i32>();
+            let offset_scalar_buf = ScalarBuffer::<i32>::new(key_tx_intermediate_result.offsets.into(), 0, offset_buffer_len);
+            #[allow(unsafe_code)]
+            let new_key_offsets = unsafe {
+                OffsetBuffer::new_unchecked(offset_scalar_buf)
+            };
+
+            let new_keys_value_buf = key_tx_intermediate_result.values.into();
+            #[allow(unsafe_code)]
+            let new_keys = Arc::new(unsafe {
+                // TODO nulls
+                StringArray::new_unchecked(new_key_offsets, new_keys_value_buf, None)
+            });
+
+            let columns = attrs_record_batch
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    if i == key_column_idx {
+                        new_keys.clone()
+                    } else {
+                        // TODO if the field is parent ID, we need to either remove the transport optimized encoding?
+                        // maybe not if we've removed an entire segment of keys... but maybe if a replacement can 
+                        // cause an invalid run ...
+                        take_ranges_slice(col, &keep_ranges)
+                    }
+                }).collect::<Vec<ArrayRef>>();
+
+            // safety: this should only return an error if our schema, or column lengths don't match
+            // but based on how we've constructed the batch, this shouldn't happen
+            Ok(RecordBatch::try_new(schema, columns)
+                .expect("can build record batch with same schema and columns"))
+        }
+
+        _ => {
+            todo!()
+        }
+    }
+}
+
 struct KeysTransformIntermediateResult {
     values: MutableBuffer,
     offsets: MutableBuffer,
@@ -1049,6 +1119,22 @@ fn plan_key_deletes<'a>(
 ) -> KeyDeletePlan<'a> {
     todo!()
     // TODO ensure we sort the ranges before returning here
+}
+
+fn take_ranges_slice<T>(array: T, ranges: &[(usize, usize)]) -> ArrayRef where T: Array {
+    let slices: Vec<ArrayRef> = ranges
+        .iter()
+        .map(|&(start, end)| {
+            array.slice(start, end - start) // zero-copy view
+        })
+        .collect();
+
+    // TODO can avoid a second vec alloc here?
+    let borrowed_slices: Vec<&dyn Array> = slices.iter().map(|arr| arr.as_ref()).collect();
+    // TODO no unwrap here? Safe to expect
+    let concatenated = concat(&borrowed_slices).unwrap();
+
+    concatenated
 }
 
 #[cfg(test)]
@@ -1787,7 +1873,7 @@ mod test {
 
         for (input, expected, target, replacement) in test_cases {
             let keys = StringArray::from_iter_values(input);
-            // let values = UInt8Array::from_iter_values(vec![1, 2, 3, 4, 5]);
+
             let schema = Arc::new(Schema::new(vec![Field::new(
                 consts::ATTRIBUTE_KEY,
                 DataType::Utf8,
@@ -1991,5 +2077,39 @@ mod test {
             "xyz",
             vec!["baz", "xyz", "bar"],
         );
+    }
+
+
+    #[test]
+    fn transform_attributes_basic() {
+        // TODO test replacement on dict
+        let keys = StringArray::from_iter_values(vec!["a", "b", "c", "d", "e"]);
+        // TODO this should be a dict
+        let parent_ids = UInt16Array::from_iter_values(vec![1, 1, 1, 2, 2]);
+        // TODO this should maybe be a dict? need to test it both ways
+        let values_str = StringArray::from_iter_values(vec!["1", "2", "3", "4", "5"]);
+
+        let value_type = UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(5));
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false)
+        ]));
+
+        let record_batch = RecordBatch::try_new(schema, vec![
+            Arc::new(keys),
+            Arc::new(value_type),
+            Arc::new(values_str),
+            Arc::new(parent_ids)
+        ]).unwrap();
+
+        let result = transform_attributes(&record_batch, AttributesTransform {
+            rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]), 
+            delete: BTreeSet::from_iter(vec!["d".into()])
+        }).unwrap();
+
+        println!("{:?}", result)
     }
 }
