@@ -18,7 +18,7 @@ use crate::{
         UInt8ArrayBuilder, boolean::AdaptiveBooleanArrayBuilder, dictionary::DictionaryOptions,
     },
     otlp::attributes::parent_id::ParentId,
-    schema::consts,
+    schema::{FieldExt, consts},
 };
 use crate::{
     encode::record::array::{ArrayAppendSlice, boolean::BooleanBuilderOptions},
@@ -278,11 +278,11 @@ where
         let mut fields = vec![];
 
         if let Some(array) = self.parent_id.finish() {
-            fields.push(Field::new(
-                consts::PARENT_ID,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(
+                Field::new(consts::PARENT_ID, array.data_type().clone(), false)
+                    .with_plain_encoding(),
+            );
+
             columns.push(array);
         }
 

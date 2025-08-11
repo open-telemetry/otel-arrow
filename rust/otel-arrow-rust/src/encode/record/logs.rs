@@ -3,7 +3,7 @@
 
 //! This module contains builders for record batches for logs.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use arrow::{
     array::{Array, NullBufferBuilder, RecordBatch, StructArray},
@@ -21,7 +21,7 @@ use crate::{
         dictionary::DictionaryOptions,
     },
     otlp::attributes::store::AttributeValueType,
-    schema::consts,
+    schema::{FieldExt, consts},
 };
 
 /// Record batch builder for logs
@@ -214,12 +214,7 @@ impl LogsRecordBatchBuilder {
 
         if let Some(array) = self.id.finish() {
             fields.push(
-                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
-                    HashMap::from_iter([(
-                        consts::metadata::COLUMN_ENCODING.to_string(),
-                        consts::metadata::encodings::PLAIN.to_string(),
-                    )]),
-                ),
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
             );
             columns.push(array);
         }
@@ -738,12 +733,7 @@ impl ResourceBuilder {
 
         if let Some(array) = self.id.finish() {
             fields.push(
-                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
-                    HashMap::from_iter([(
-                        consts::metadata::COLUMN_ENCODING.to_string(),
-                        consts::metadata::encodings::PLAIN.to_string(),
-                    )]),
-                ),
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
             );
             columns.push(array);
         }
@@ -873,12 +863,7 @@ impl ScopeBuilder {
 
         if let Some(array) = self.id.finish() {
             fields.push(
-                Field::new(consts::ID, array.data_type().clone(), true).with_metadata(
-                    HashMap::from_iter([(
-                        consts::metadata::COLUMN_ENCODING.to_string(),
-                        consts::metadata::encodings::PLAIN.to_string(),
-                    )]),
-                ),
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
             );
             columns.push(array);
         }
