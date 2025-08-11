@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::AddAssign;
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
     PrimitiveBuilder, RecordBatch, StringArray,
 };
-use arrow::buffer::{MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::and;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
@@ -798,6 +798,257 @@ fn replace_strings(
     let new_array = unsafe { StringArray::new_unchecked(new_offsets, new_values, nulls) };
 
     Ok(Some(new_array))
+}
+
+// TODO comments on what this is for
+pub struct AttributesTransform {
+    rename: BTreeMap<String, String>,
+    delete: BTreeSet<String>,
+}
+
+struct KeysTransformIntermediateResult {
+    values: MutableBuffer,
+    offsets: MutableBuffer,
+    deletion_ranges: Vec<(usize, usize)>,
+}
+
+fn transform_keys(
+    array: &StringArray,
+    transform: &AttributesTransform,
+) -> KeysTransformIntermediateResult {
+    let values = array.values();
+    let offsets = array.offsets();
+
+    let replacement_plan = plan_key_replacements(values, offsets, &transform.rename);
+    let delete_plan = plan_key_deletes(values, offsets, &transform.delete);
+
+    let transform_ranges = merge_transform_ranges(&replacement_plan, &delete_plan);
+
+    // TODO there should be an optimization here where we can reuse the same values & offsets ...
+
+    // Next create the new values array
+    let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
+        values,
+        &replacement_plan,
+        &delete_plan,
+    ));
+
+    // keep track pointer to the previous offset that had values replaced
+    let mut last_end_offset = 0;
+
+    for range in transform_ranges.iter().cloned() {
+        match range {
+            KeyTransformRange::Replace((start_idx, end_idx, replacement_idx)) => {
+                // directly copy all the bytes of the values that were not replaced
+                let start_offset = offsets[start_idx] as usize;
+                new_values.extend_from_slice(
+                    &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
+                );
+
+                let replacement_bytes = replacement_plan.replacement_bytes[replacement_idx];
+                for _ in start_idx..end_idx {
+                    new_values.extend_from_slice(replacement_bytes);
+                }
+
+                last_end_offset = offsets[end_idx] as usize;
+            }
+            KeyTransformRange::Delete((start_idx, end_idx, _)) => {
+                // directly copy all the bytes of the values that were not deleted
+                let start_offset = offsets[start_idx] as usize;
+                new_values.extend_from_slice(
+                    &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
+                );
+
+                // TODO here we keep track of the deleted ranges ...
+
+                last_end_offset = offsets[end_idx] as usize;
+            }
+        }
+    }
+
+    // next we'll create the new offsets buffer
+    // TODO there should be an optimization here where we can reuse the same offset buffer ...
+    let mut new_offsets =
+        MutableBuffer::new(size_of::<i32>() * (array.len() - delete_plan.total_deletions) + 1);
+
+    // for each offset that was not replaced, keep track of how much to adjust it based on how
+    // many values were replaced and the size difference between target and replacement
+    let mut curr_total_offset_adjustment = 0;
+
+    // pointer to the end of the previous range where the values were replaced
+    let mut prev_replaced_index_end = 0;
+
+    for range in transform_ranges {
+        match range {
+            KeyTransformRange::Replace((start_idx, end_idx, replacement_idx)) => {
+                // copy offsets for values that were not replaced, but add the offset adjustment
+                offsets
+                    .inner()
+                    .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
+                    .into_iter()
+                    .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+
+                // append offsets for values that were replaced
+                let replacement_bytes = replacement_plan.replacement_bytes[replacement_idx];
+                let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
+                for _ in start_idx..end_idx {
+                    new_offsets.push(offset);
+                    offset += replacement_bytes.len() as i32;
+                }
+
+                curr_total_offset_adjustment += replacement_plan.replacement_byte_len_diffs
+                    [replacement_idx]
+                    * (end_idx - start_idx) as i32;
+                prev_replaced_index_end = end_idx;
+            }
+            KeyTransformRange::Delete((start_idx, end_idx, delete_idx)) => {
+                // copy offsets for values that were not replaced, but add the offset adjustment
+                offsets
+                    .inner()
+                    .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
+                    .into_iter()
+                    .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+
+                curr_total_offset_adjustment -=
+                    (delete_plan.target_keys[delete_idx].len() * (end_idx - start_idx)) as i32;
+                prev_replaced_index_end = end_idx;
+            }
+        }
+    }
+
+    // copy any remaining offsets between the last replaced range and the end of the array
+    offsets
+        .inner()
+        .slice(
+            prev_replaced_index_end,
+            array.len() - prev_replaced_index_end,
+        )
+        .into_iter()
+        .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+
+    // add the final offset
+    new_offsets.push(new_values.len() as i32);
+
+    KeysTransformIntermediateResult {
+        values: new_values,
+        offsets: new_offsets,
+        deletion_ranges: delete_plan
+            .ranges
+            .iter()
+            .map(|(start, end, _)| (*start, *end))
+            .collect(),
+    }
+}
+
+#[derive(Clone)]
+enum KeyTransformRange {
+    Replace((usize, usize, usize)),
+    Delete((usize, usize, usize)),
+}
+
+fn merge_transform_ranges(
+    replacement_plan: &KeyReplacementPlan,
+    delete_plan: &KeyDeletePlan,
+) -> Vec<KeyTransformRange> {
+    let mut result = Vec::with_capacity(replacement_plan.ranges.len() + delete_plan.ranges.len());
+
+    let mut rep_idx = 0;
+    let mut del_idx = 0;
+
+    while rep_idx < replacement_plan.ranges.len() && del_idx < delete_plan.ranges.len() {
+        let rep_start = replacement_plan.ranges[rep_idx].0;
+        let del_start = delete_plan.ranges[del_idx].0;
+
+        if rep_start <= del_start {
+            result.push(KeyTransformRange::Replace(replacement_plan.ranges[rep_idx]));
+            rep_idx += 1;
+        } else {
+            result.push(KeyTransformRange::Delete(delete_plan.ranges[del_idx]));
+            del_idx += 1;
+        }
+    }
+
+    // append any remaining replacements
+    while rep_idx < replacement_plan.ranges.len() {
+        result.push(KeyTransformRange::Replace(replacement_plan.ranges[rep_idx]));
+        rep_idx += 1;
+    }
+
+    // append any remaining deletions
+    while del_idx < delete_plan.ranges.len() {
+        result.push(KeyTransformRange::Delete(delete_plan.ranges[del_idx]));
+        del_idx += 1;
+    }
+
+    result
+}
+
+fn calculate_new_keys_buffer_len(
+    key_arr_values_buffer: &Buffer,
+    replacement_plan: &KeyReplacementPlan,
+    delete_plan: &KeyDeletePlan,
+) -> usize {
+    // TODO these might get reused later
+    // let replacement_byte_len_diffs = (0..replacement_plan.replacement_bytes.len())
+    //     .map(|i| replacement_plan.replacement_bytes[i].len() as i32 - replacement_plan.target_bytes[i].len() as i32)
+    //     .collect::<Vec<_>>();
+    // let all_replacements_same_len = replacement_byte_len_diffs.iter().all(|val| *val == 0);
+
+    if replacement_plan.all_replacements_same_len && delete_plan.total_deletions == 0 {
+        key_arr_values_buffer.len()
+    } else {
+        let replacement_len_delta: i32 = (0..replacement_plan.counts.len())
+            .map(|i| {
+                replacement_plan.counts[i] as i32 * replacement_plan.replacement_byte_len_diffs[i]
+            })
+            .sum();
+        let count_deleted_bytes: usize = (0..delete_plan.counts.len())
+            .map(|i| delete_plan.counts[i] * replacement_plan.target_bytes[i].len())
+            .sum();
+
+        (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize - count_deleted_bytes
+    }
+}
+
+pub struct KeyReplacementPlan<'a> {
+    target_bytes: Vec<&'a [u8]>,
+    replacement_bytes: Vec<&'a [u8]>,
+    ranges: Vec<(usize, usize, usize)>,
+
+    counts: Vec<usize>,
+    total_replacements: usize,
+
+    all_replacements_same_len: bool,
+    // TODO -- this is only needed to be calculated if all_replacement_same_len is false?
+    // should it be lazily calculated ..
+    replacement_byte_len_diffs: Vec<i32>,
+}
+
+fn plan_key_replacements<'a>(
+    source: &'a Buffer,
+    offsets: &'a OffsetBuffer<i32>,
+    replacements: &'a BTreeMap<String, String>,
+) -> KeyReplacementPlan<'a> {
+    todo!()
+    // TODO ensure we sort the ranges before returning here
+}
+
+pub struct KeyDeletePlan<'a> {
+    target_keys: Vec<&'a [u8]>,
+    // TODO comment on the invariant that this will be in order
+    ranges: Vec<(usize, usize, usize)>,
+
+    counts: Vec<usize>,
+    total_deletions: usize,
+}
+
+fn plan_key_deletes<'a>(
+    source: &'a Buffer,
+    offsets: &'a OffsetBuffer<i32>,
+    delete_keys: &'a BTreeSet<String>,
+) -> KeyDeletePlan<'a> {
+    todo!()
+    // TODO ensure we sort the ranges before returning here
 }
 
 #[cfg(test)]
