@@ -558,23 +558,59 @@ mod test {
 
         let otlp_service_req = ExportLogsServiceRequest::new(vec![
             ResourceLogs::build(Resource {
-                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
                 ..Default::default()
             })
             .scope_logs(vec![
-                ScopeLogs::build(InstrumentationScope::default())
-                    .log_records(vec![
-                        LogRecord::build(1u64, SeverityNumber::Info, "")
-                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                            .finish(),
-                        LogRecord::build(2u64, SeverityNumber::Info, "")
-                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                            .finish(),
-                        LogRecord::build(3u64, SeverityNumber::Info, "")
-                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                            .finish(),
-                    ])
-                    .finish(),
+                ScopeLogs::build(InstrumentationScope::build("scope1").attributes(vec![
+                    KeyValue::new("scope_key", AnyValue::new_string("val")),
+                ]))
+                .log_records(vec![
+                    // Add some logs with repeated attributes
+                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(2u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(3u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+            // also add some scopes and resources where the attributes repeat ...
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::build("scope2").attributes(vec![
+                    KeyValue::new("scope_key", AnyValue::new_string("val")),
+                ]))
+                .log_records(vec![
+                    LogRecord::build(4u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::build("scope2").attributes(vec![
+                    KeyValue::new("scope_key", AnyValue::new_string("val")),
+                ]))
+                .log_records(vec![
+                    LogRecord::build(7u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                ])
+                .finish(),
             ])
             .finish(),
         ]);
