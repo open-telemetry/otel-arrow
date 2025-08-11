@@ -216,11 +216,3 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
         }
     }
 }
-
-
-// if let Some(annotation) = &attribute.annotations {
-//     // use key to get yaml
-//     // get yaml
-
-//     // using yaml get the relevent struct and call function to get random data generated
-// }

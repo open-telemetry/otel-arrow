@@ -3,38 +3,22 @@ use rand_distr::{Distribution, Normal, Pareto, Zipf};
 use rand::distributions::Uniform;
 
 
-pub struct IntConfig {
+pub struct RandIntConfig {
     distribution: Distribution
-    range: Range
-
 }
 
-pub struct DoubleConfig {
+pub struct RandDoubleConfig {
     distriution: Distribution,
-    range: Range
 }
-
-pub struct Range(f64, f64);
 
 
 pub enum ValueDistribution {
-    Pareto,
-    Zipf,
-    Normal,
+    Pareto(Pareto),
+    Zipf(Zipf),
+    Normal(Normal),
 }
 
-impl Into<ValueDistribution> for impl Distribution
 
-impl ValueDistribution {
-    pub fn get_rand_distr(self) -> impl Distribution {
-        match self {
-            ValueDistribution::Pareto => Pareto,
-            ValueDistribution::Zipf => Zipf
-            ValueDistribution::Normal => Normal
-        }
-    }
-
-}
 
 
 impl IntConfig {
@@ -50,3 +34,39 @@ impl IntConfig {
         let distribution
     }
 }
+
+
+
+impl 
+
+## Controlling signal data
+
+### Attributes
+
+For attributes there are three main types primative and array, Enums, and Template
+ 
+
+#### Enum/Templates
+
+select value from the examples
+
+
+// attribute types ->
+//enum -> use example
+//template -> use example
+//primitive or array ->
+        // boolean
+        // booleans
+        //ints -> annotations
+        // int -> annotations
+        // doubles -> annotations
+        // double -> annotations
+        // string 
+        // strings 
+
+
+// metric values
+
+    // define a range and distribution can use the same annotation config for ints and doubles for primitive attributes
+
+

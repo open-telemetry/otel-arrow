@@ -1,8 +1,6 @@
 use data_engine_expressions::*;
 
-use crate::{
-    execution_context::ExecutionContext, scalar_expressions::execute_scalar_expression, *,
-};
+use crate::{execution_context::*, scalars::*, *};
 
 pub fn execute_logical_expression<'a, TRecord: Record>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
@@ -181,17 +179,10 @@ mod tests {
 
     #[test]
     fn test_execute_scalar_logical_expression() {
-        let record = TestRecord::new();
-
         let run_test = |logical_expression, expected_value: bool| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -216,17 +207,10 @@ mod tests {
 
     #[test]
     fn test_execute_equal_to_logical_expression() {
-        let record = TestRecord::new();
-
         let run_test = |logical_expression, expected_value: bool| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -280,17 +264,10 @@ mod tests {
 
     #[test]
     fn test_execute_greater_than_logical_expression() {
-        let record = TestRecord::new();
-
         let run_test = |logical_expression, expected_value: bool| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -327,17 +304,10 @@ mod tests {
 
     #[test]
     fn test_execute_greater_than_or_equal_to_logical_expression() {
-        let record = TestRecord::new();
-
         let run_test = |logical_expression, expected_value: bool| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -387,17 +357,10 @@ mod tests {
 
     #[test]
     fn test_execute_not_logical_expression() {
-        let record = TestRecord::new();
-
         let run_test = |logical_expression, expected_value: bool| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -434,17 +397,10 @@ mod tests {
 
     #[test]
     fn test_execute_chain_logical_expression() {
-        let record = TestRecord::new();
-
         let run_test = |logical_expression, expected_value: bool| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();
@@ -568,17 +524,10 @@ mod tests {
 
     #[test]
     fn test_execute_contains_logical_expression() {
-        let record = TestRecord::new();
-
         let run_test = |logical_expression, expected_value: bool| {
-            let pipeline = PipelineExpressionBuilder::new("").build().unwrap();
+            let mut test = TestExecutionContext::new();
 
-            let execution_context = ExecutionContext::new(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                &pipeline,
-                None,
-                record.clone(),
-            );
+            let execution_context = test.create_execution_context();
 
             let value =
                 execute_logical_expression(&execution_context, &logical_expression).unwrap();

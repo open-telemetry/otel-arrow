@@ -4,7 +4,6 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
-
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::{OTAP_RECEIVER_FACTORIES, pdata};
 use async_trait::async_trait;
@@ -172,7 +171,7 @@ async fn generate_signal(
         ));
         _ = effect_handler.send_message(signal.try_into()?).await;
     }
-  Ok(())
+    Ok(())
 }
 
 impl TryFrom<OTLPSignal> for OtapPdata {
@@ -218,14 +217,12 @@ mod tests {
     use otel_arrow_rust::proto::opentelemetry::trace::v1::TracesData;
     use std::future::Future;
     use std::pin::Pin;
-    use std::rc::Rc;
     use tokio::time::{Duration, sleep, timeout};
     use weaver_forge::registry::ResolvedRegistry;
 
     const RESOURCE_COUNT: usize = 1;
     const SCOPE_COUNT: usize = 1;
     const MESSAGE_COUNT: usize = 2;
-    const NO_DELAY_MESSAGE_PER_SECOND: usize = 0;
     const RUN_TILL_SHUTDOWN: u64 = 1000;
     const MESSAGE_PER_SECOND: usize = 4;
 

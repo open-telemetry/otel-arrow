@@ -137,7 +137,7 @@ async fn generate_signal(
             load.get_messages(),
             registry,
         ));
-        _ = effect_handler.send_message(signal).await?;
+        effect_handler.send_message(signal).await?;
     }
 
     // generate and send traces
@@ -148,7 +148,7 @@ async fn generate_signal(
             load.get_messages(),
             registry,
         ));
-        _ = effect_handler.send_message(signal).await?;
+        effect_handler.send_message(signal).await?;
     }
 
     // generate and send logs
@@ -159,7 +159,7 @@ async fn generate_signal(
             load.get_messages(),
             registry,
         ));
-        _ = effect_handler.send_message(signal).await?;
+        effect_handler.send_message(signal).await?;
     }
     Ok(())
 }
@@ -183,7 +183,6 @@ mod tests {
     const RESOURCE_COUNT: usize = 1;
     const SCOPE_COUNT: usize = 1;
     const MESSAGE_COUNT: usize = 2;
-    const NO_DELAY_MESSAGE_PER_SECOND: usize = 0;
     const RUN_TILL_SHUTDOWN: u64 = 1000;
     const MESSAGE_PER_SECOND: usize = 4;
     const RESOLVED_REGISTRY_JSON: &str = r#"

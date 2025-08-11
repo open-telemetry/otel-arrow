@@ -525,35 +525,3 @@ For more information about the ResolvedRegistry please check the
     }
 }
 ```
-
-## Controlling signal data
-
-### Attributes
-
-For attributes there are three main types primative and array, Enums, and Template
- 
-
-#### Enum/Templates
-
-select value from the examples
-
-
-// attribute types ->
-//enum -> use example
-//template -> use example
-//primitive or array ->
-        // boolean
-        // booleans
-        //ints -> annotations
-        // int -> annotations
-        // doubles -> annotations
-        // double -> annotations
-        // string 
-        // strings 
-
-
-// metric values
-
-    // define a range and distribution can use the same annotation config for ints and doubles for primitive attributes
-
-

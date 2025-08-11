@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::{Debug, Display, Write},
     time::SystemTime,
 };
@@ -6,12 +7,16 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::ExecutionContext, logical_expressions::execute_logical_expression,
-    transform::transform_expressions::execute_transform_expression, *,
+    execution_context::ExecutionContext,
+    logical_expressions::execute_logical_expression,
+    summary::{summary_data_expression::execute_summary_data_expression, *},
+    transform::transform_expressions::execute_transform_expression,
+    *,
 };
 
 pub struct RecordSetEngineOptions {
     pub(crate) diagnostic_level: RecordSetEngineDiagnosticLevel,
+    pub(crate) summary_cardinality_limit: usize,
 }
 
 impl Default for RecordSetEngineOptions {
@@ -24,6 +29,7 @@ impl RecordSetEngineOptions {
     pub fn new() -> RecordSetEngineOptions {
         Self {
             diagnostic_level: RecordSetEngineDiagnosticLevel::Warn,
+            summary_cardinality_limit: 8192,
         }
     }
 
@@ -34,10 +40,19 @@ impl RecordSetEngineOptions {
         self.diagnostic_level = diagnostic_level;
         self
     }
+
+    pub fn with_summary_cardinality_limit(
+        mut self,
+        summary_cardinality_limit: usize,
+    ) -> RecordSetEngineOptions {
+        self.summary_cardinality_limit = summary_cardinality_limit;
+        self
+    }
 }
 
 pub struct RecordSetEngine {
     diagnostic_level: RecordSetEngineDiagnosticLevel,
+    summary_cardinality_limit: usize,
 }
 
 impl Default for RecordSetEngine {
@@ -54,6 +69,7 @@ impl RecordSetEngine {
     pub fn new_with_options(options: RecordSetEngineOptions) -> RecordSetEngine {
         Self {
             diagnostic_level: options.diagnostic_level,
+            summary_cardinality_limit: options.summary_cardinality_limit,
         }
     }
 
@@ -72,6 +88,7 @@ impl RecordSetEngine {
 pub struct RecordSetEngineBatch<'a, 'b, 'c, TRecord: Record> {
     pipeline: &'a PipelineExpression,
     engine: &'b RecordSetEngine,
+    summaries: Summaries,
     included_records: Vec<RecordSetEngineRecord<'a, 'c, TRecord>>,
 }
 
@@ -87,6 +104,7 @@ where
         Self {
             engine,
             pipeline,
+            summaries: Summaries::new(engine.summary_cardinality_limit),
             included_records: Vec::new(),
         }
     }
@@ -108,7 +126,12 @@ where
     }
 
     pub fn flush(self) -> RecordSetEngineResults<'a, 'c, TRecord> {
-        RecordSetEngineResults::new(self.pipeline, self.included_records, Vec::new())
+        RecordSetEngineResults::new(
+            self.pipeline,
+            self.summaries,
+            self.included_records,
+            Vec::new(),
+        )
     }
 
     fn process_record<'d>(
@@ -120,8 +143,13 @@ where
             .get_diagnostic_level()
             .unwrap_or(self.engine.diagnostic_level.clone());
 
-        let execution_context =
-            ExecutionContext::new(diagnostic_level, self.pipeline, attached_records, record);
+        let execution_context = ExecutionContext::new(
+            diagnostic_level,
+            self.pipeline,
+            &self.summaries,
+            attached_records,
+            record,
+        );
 
         if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
             for (constant_id, constant) in self.pipeline.get_constants().iter().enumerate() {
@@ -166,6 +194,27 @@ where
                     );
 
                     return RecordSetEngineResult::Drop(execution_context.into());
+                }
+                DataExpression::Summary(s) => {
+                    match execute_summary_data_expression(&execution_context, s) {
+                        Ok(_) => {
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Info,
+                                s,
+                                || "Record summarized and dropped".into(),
+                            );
+
+                            return RecordSetEngineResult::Drop(execution_context.into());
+                        }
+                        Err(e) => {
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Error,
+                                s,
+                                || e.to_string(),
+                            );
+                            break;
+                        }
+                    }
                 }
                 DataExpression::Transform(t) => {
                     match execute_transform_expression(&execution_context, t) {
@@ -313,6 +362,7 @@ impl<TRecord: Record> Display for RecordSetEngineRecord<'_, '_, TRecord> {
 #[derive(Debug)]
 pub struct RecordSetEngineResults<'a, 'b, TRecord: Record> {
     pipeline: &'a PipelineExpression,
+    pub summaries: Vec<RecordSetEngineSummary>,
     pub included_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
     pub dropped_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
 }
@@ -320,11 +370,13 @@ pub struct RecordSetEngineResults<'a, 'b, TRecord: Record> {
 impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
     pub(crate) fn new(
         pipeline: &'a PipelineExpression,
+        summaries: Summaries,
         included_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
         dropped_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
     ) -> RecordSetEngineResults<'a, 'b, TRecord> {
         Self {
             pipeline,
+            summaries: summaries.into(),
             included_records,
             dropped_records,
         }
@@ -332,5 +384,44 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
 
     pub fn get_pipeline(&self) -> &PipelineExpression {
         self.pipeline
+    }
+}
+
+#[derive(Debug)]
+pub struct RecordSetEngineSummary {
+    pub summary_id: String,
+    pub group_by_values: Vec<(Box<str>, OwnedValue)>,
+    pub aggregation_values: HashMap<Box<str>, SummaryAggregation>,
+}
+
+impl RecordSetEngineSummary {
+    pub fn new(
+        summary_id: String,
+        group_by_values: Vec<(Box<str>, OwnedValue)>,
+        aggregation_values: HashMap<Box<str>, SummaryAggregation>,
+    ) -> RecordSetEngineSummary {
+        Self {
+            summary_id,
+            group_by_values,
+            aggregation_values,
+        }
+    }
+}
+
+impl From<Summaries> for Vec<RecordSetEngineSummary> {
+    fn from(value: Summaries) -> Self {
+        let mut values = value.values.borrow_mut();
+
+        let mut results = Vec::with_capacity(values.len());
+
+        for (summary_id, summary) in values.drain() {
+            results.push(RecordSetEngineSummary::new(
+                summary_id,
+                summary.group_by_values,
+                summary.aggregation_values,
+            ));
+        }
+
+        results
     }
 }
