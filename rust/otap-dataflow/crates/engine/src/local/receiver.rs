@@ -138,7 +138,7 @@ impl<PData> EffectHandler<PData> {
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
-        
+
         // Determine and cache the default sender
         let default_sender = if let Some(ref port) = default_port {
             msg_senders.get(port).cloned()
@@ -147,7 +147,7 @@ impl<PData> EffectHandler<PData> {
         } else {
             None
         };
-        
+
         EffectHandler {
             core,
             msg_senders,
@@ -182,8 +182,9 @@ impl<PData> EffectHandler<PData> {
             Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
             None => Err(Error::ReceiverError {
                 receiver: self.receiver_id(),
-                error: "Ambiguous default out port: multiple ports connected and no default configured"
-                    .to_string(),
+                error:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
             }),
         }
     }

@@ -149,8 +149,9 @@ impl<PData> EffectHandler<PData> {
             Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
             None => Err(Error::ReceiverError {
                 receiver: self.receiver_id(),
-                error: "Ambiguous default out port: multiple ports connected and no default configured"
-                    .to_string(),
+                error:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
             }),
         }
     }
