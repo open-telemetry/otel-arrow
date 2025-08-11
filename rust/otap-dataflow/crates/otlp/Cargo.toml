@@ -27,7 +27,7 @@ otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-config = { path = "../config" }
 
 # gRPC and Protocol Buffers
-tonic = { version = "0.13.1", default-features = false, features = [
+tonic = { version = "0.14.0", default-features = false, features = [
     "server", "channel", "router", "transport", "codegen", 
     "prost", "zstd", "gzip", "deflate"
 ] }
@@ -47,7 +47,7 @@ futures.workspace = true
 log.workspace = true
 
 [build-dependencies]
-tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }
+tonic-build = { version = "0.14.0", features = ["cleanup-markdown"] }
 linkme = { workspace = true }
 
 [dev-dependencies]

@@ -29,7 +29,7 @@ otap-df-config = { path = "../config" }
 otap-df-otlp = { path = "../otlp", features = ["test-utils"]}
 otap-df-pdata-views = { path = "../pdata-views" }
 parquet.workspace = true
-tonic = { version = "0.13.1", default-features = false, features = [
+tonic = { version = "0.14.0", default-features = false, features = [
     "server",
     "channel",
     "router",
