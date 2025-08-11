@@ -1298,6 +1298,7 @@ mod test {
     use arrow::datatypes::{
         ArrowDictionaryKeyType, DataType, Field, Schema, UInt8Type, UInt16Type,
     };
+    use arrow::record_batch;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -2360,6 +2361,8 @@ mod test {
                     vec!["1", "4",],
                 ),
             ),
+
+            // TODO add more tests for deletion ...
             
 
         ];
@@ -2392,4 +2395,193 @@ mod test {
             assert_eq!(result, expected)
         }
     }
+
+    #[test]
+    fn test_transform_attrs_retains_original_schema() {
+        // the basic test just checks that we keep the key & values column. This test simply
+        // checks that we retain all the columns
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR, DataType::Dictionary(
+                    Box::new(DataType::UInt8),
+                    Box::new(DataType::Utf8)
+                ),
+                true
+            ),
+            Field::new(
+                consts::ATTRIBUTE_INT, DataType::Dictionary(
+                    Box::new(DataType::UInt8),
+                    Box::new(DataType::Int64)
+                ),
+                true
+            ),
+            Field::new(
+                consts::ATTRIBUTE_DOUBLE, DataType::Float64, true
+            ),
+            Field::new(
+                consts::ATTRIBUTE_BOOL, DataType::Boolean, true
+            ),
+            Field::new(
+                consts::ATTRIBUTE_BYTES, DataType::Dictionary(
+                    Box::new(DataType::UInt16),
+                    Box::new(DataType::Binary)
+                ),
+                true
+            ),
+            Field::new(
+                consts::ATTRIBUTE_SER, DataType::Binary, true
+            )
+        ]));
+
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                // parent ids
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4, 5, 6, 7, 8, 9])),
+                // attribute_types
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                // keys
+                Arc::new(StringArray::from_iter_values(vec![
+                    "k1", "k2", "k3", 
+                    "k4", "k5", "k6", 
+                    "k7", "k8", "k9", 
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter(vec![
+                        Some(0), None, None,
+                        None, None, None,
+                        None, None, None
+                    ]),
+                    Arc::new(StringArray::from_iter_values(vec!["a"]))
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter(vec![
+                        None, Some(0), None,
+                        None, None, None,
+                        None, None, None
+                    ]),
+                    Arc::new(Int64Array::from_iter_values(vec![1]))
+                )),
+                Arc::new(Float64Array::from_iter(vec![
+                    None, None, Some(1.0),
+                    None, None, None,
+                    None, None, Some(2.0)
+                ])),
+                Arc::new(BooleanArray::from_iter(vec![
+                    None, None, None,
+                    Some(true), None, None,
+                    None, None, None
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter(vec![
+                        None, Some(0), None,
+                        None, None, None,
+                        None, None, None
+                    ]),
+                    Arc::new(BinaryArray::from_iter_values(vec![b"a"]))
+                )),
+                Arc::new(BinaryArray::from_iter(vec![
+                    None, None, None,
+                    Some(b"test"), None, None,
+                    None, None, None
+                ])),
+
+            ]
+        ).unwrap();
+
+        let result = transform_attributes(
+            &record_batch,
+            AttributesTransform {
+                rename: BTreeMap::from_iter(vec![("k2".into(), "K2".into())]),
+                delete: BTreeSet::from_iter(vec!["k3".into()]),
+            },
+        ).unwrap();
+
+        let expected_record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                // parent ids
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 4, 5, 6, 7, 8, 9])),
+                // attribute_types
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                // keys
+                Arc::new(StringArray::from_iter_values(vec![
+                    "k1", "K2",
+                    "k4", "k5", "k6", 
+                    "k7", "k8", "k9", 
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter(vec![
+                        Some(0), None, 
+                        None, None, None,
+                        None, None, None
+                    ]),
+                    Arc::new(StringArray::from_iter_values(vec!["a"]))
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter(vec![
+                        None, Some(0), 
+                        None, None, None,
+                        None, None, None
+                    ]),
+                    Arc::new(Int64Array::from_iter_values(vec![1]))
+                )),
+                Arc::new(Float64Array::from_iter(vec![
+                    None, None, 
+                    None, None, None,
+                    None, None, Some(2.0)
+                ])),
+                Arc::new(BooleanArray::from_iter(vec![
+                    None, None, 
+                    Some(true), None, None,
+                    None, None, None
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter(vec![
+                        None, Some(0), 
+                        None, None, None,
+                        None, None, None
+                    ]),
+                    Arc::new(BinaryArray::from_iter_values(vec![b"a"]))
+                )),
+                Arc::new(BinaryArray::from_iter(vec![
+                    None, None, 
+                    Some(b"test"), None, None,
+                    None, None, None
+                ])),
+
+            ]
+        ).unwrap();
+
+        assert_eq!(result, expected_record_batch);
+    }
+    
+
+    // TODO testing
+    // - with nulls
+    // - keeps all the other extra columns
+    // - parent ID non-plain encoding handling
+    // - dictionary
 }
