@@ -16,7 +16,8 @@
 #![allow(missing_docs)]
 
 use arrow::array::{LargeListArray, RecordBatch};
-use arrow::datatypes::Schema;
+use arrow::datatypes::{Field, Schema};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod consts;
@@ -152,6 +153,7 @@ pub fn is_id_plain_encoded(record_batch: &RecordBatch) -> bool {
 /// encoding identified explicitly. If the encoding metadata is absent, then the batch may have
 /// been produced by the golang exporter, which adds no metadata and generally uses the transport
 /// optimized/quasi-delta encoding for the Parent ID column by default.
+#[must_use]
 pub fn is_parent_id_plain_encoded(record_batch: &RecordBatch) -> bool {
     let schema = record_batch.schema_ref();
     let encoding = get_field_metadata(
@@ -160,4 +162,23 @@ pub fn is_parent_id_plain_encoded(record_batch: &RecordBatch) -> bool {
         consts::metadata::COLUMN_ENCODING,
     );
     encoding == Some(consts::metadata::encodings::PLAIN)
+}
+
+/// Additional helper methods for Arrow Field
+pub trait FieldExt {
+    /// Sets the encoding column metadata key to "plain".
+    ///
+    /// This can be used as an indicator for various utilities that need to process the record
+    /// batch of how the column is encoded. Commonly, this is used for ID columns that may or
+    /// may not use some alternate encoding (like delta encoding)
+    fn with_plain_encoding(self) -> Self;
+}
+
+impl FieldExt for Field {
+    fn with_plain_encoding(self) -> Self {
+        self.with_metadata(HashMap::from_iter(vec![(
+            consts::metadata::COLUMN_ENCODING.into(),
+            consts::metadata::encodings::PLAIN.into(),
+        )]))
+    }
 }

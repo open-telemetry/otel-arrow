@@ -3,7 +3,7 @@
 
 //! This module contains builders for record batches for attributes.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use arrow::{
     array::{ArrowPrimitiveType, RecordBatch},
@@ -18,7 +18,7 @@ use crate::{
         UInt8ArrayBuilder, boolean::AdaptiveBooleanArrayBuilder, dictionary::DictionaryOptions,
     },
     otlp::attributes::parent_id::ParentId,
-    schema::consts,
+    schema::{FieldExt, consts},
 };
 use crate::{
     encode::record::array::{ArrayAppendSlice, boolean::BooleanBuilderOptions},
@@ -279,12 +279,8 @@ where
 
         if let Some(array) = self.parent_id.finish() {
             fields.push(
-                Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_metadata(
-                    HashMap::from_iter(vec![(
-                        consts::metadata::COLUMN_ENCODING.into(),
-                        consts::metadata::encodings::PLAIN.into(),
-                    )]),
-                ),
+                Field::new(consts::PARENT_ID, array.data_type().clone(), false)
+                    .with_plain_encoding(),
             );
 
             columns.push(array);

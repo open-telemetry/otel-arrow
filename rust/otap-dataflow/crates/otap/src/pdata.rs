@@ -563,18 +563,18 @@ mod test {
             })
             .scope_logs(vec![
                 ScopeLogs::build(InstrumentationScope::default())
-                .log_records(vec![
-                    LogRecord::build(1u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                        .finish(),
-                    LogRecord::build(2u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                        .finish(),
-                    LogRecord::build(3u64, SeverityNumber::Info, "")
-                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
-                        .finish(),
-                ])
-                .finish()
+                    .log_records(vec![
+                        LogRecord::build(1u64, SeverityNumber::Info, "")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                        LogRecord::build(2u64, SeverityNumber::Info, "")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                        LogRecord::build(3u64, SeverityNumber::Info, "")
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                            .finish(),
+                    ])
+                    .finish(),
             ])
             .finish(),
         ]);
