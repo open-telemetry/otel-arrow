@@ -50,6 +50,7 @@ hooks:
               destination:
                 console: {}
 """
+
 import os
 from typing import ClassVar, Optional, List, Dict, Any, Literal
 from pathlib import Path
@@ -166,7 +167,6 @@ class SQLReport(Report):
         """
         data = self.to_dict()
         # ordered_meta = reorder_metadata(self.metadata, self.PRIORITY_KEYS)
-        data["metadata"] = yaml.dump(self.metadata, indent=2)
         data["markdown_results"] = {}
         data["table_descriptions"] = {
             conf.name: conf.description
@@ -185,7 +185,7 @@ class SQLReport(Report):
 
     @classmethod
     def get_template(cls, mode: ReportAggregation) -> str:
-        default = """# {{ report.metadata.report_name }}
+        default = """# {{ report.metadata["report.name"] }}
 {%- if report.markdown_results %}
 {% for table_name in report.result_tables if report.table_display[table_name] %}
 ## Table: {{ table_name }}
@@ -358,12 +358,15 @@ hooks:
 
     def _write_table_to_json(self, table_name, path):
         """Output the given table name to the specified path in json format"""
-        self.conn.execute(f"COPY {table_name} TO '{path}' (OVERWRITE TRUE);")
+        # OVERWRITE TRUE is not compatible with json
+        if os.path.exists(path):
+            os.remove(path)
+        self.conn.execute(f"COPY {table_name} TO '{path}' (FORMAT JSON, ARRAY);")
 
     def _write_table_to_csv(self, table_name, path):
         """Output the given table name to the specified path in csv format"""
         self.conn.execute(
-            f"COPY {table_name} TO '{path}' (HEADER, DELIMITER ',', OVERWRITE TRUE);"
+            f"COPY {table_name} TO '{path}' (FORMAT CSV, HEADER, DELIMITER ',', OVERWRITE TRUE);"
         )
 
     def _write_tables(self, logger, report):

@@ -62,12 +62,22 @@ class FrameworkLifecyclePhase(Enum):
     RUN = "run"
 
 
+class TemplateReference(BaseModel):
+    """
+    Base configuration model for FrameworkElement Template configs.
+    """
+
+    path: str
+    variables: Dict[str, Any] = {}
+
+
 class FrameworkElementConfig(BaseModel):
     """
     Base configuration model for FrameworkElements.
     """
 
     name: str
+    from_template: Optional[TemplateReference] = Field(default_factory=dict)
     on_error: Optional[OnErrorConfig] = Field(default_factory=OnErrorConfig)
 
 
