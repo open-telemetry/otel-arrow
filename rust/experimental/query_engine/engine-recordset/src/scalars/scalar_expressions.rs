@@ -189,6 +189,23 @@ where
 
             Ok(v)
         }
+        ScalarExpression::List(l) => {
+            let mut values = Vec::new();
+
+            for v in l.get_value_expressions() {
+                values.push(execute_scalar_expression(execution_context, v)?);
+            }
+
+            let r = ResolvedValue::List(List::new(values));
+
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                scalar_expression,
+                || format!("Evaluated as: '{r}'"),
+            );
+
+            Ok(r)
+        }
         ScalarExpression::Logical(l) => {
             let value = execute_logical_expression(execution_context, l)?;
 
@@ -471,7 +488,6 @@ where
                     )?;
 
                     ResolvedValue::Slice(
-                        string_value.get_borrow_source(),
                         Slice::String(StringSlice::new(
                             string_value,
                             range_start_inclusive,
@@ -489,7 +505,6 @@ where
                         )?;
 
                         ResolvedValue::Slice(
-                            array_value.get_borrow_source(),
                             Slice::Array(ArraySlice::new(
                                 array_value,
                                 range_start_inclusive,
@@ -613,8 +628,8 @@ where
                                     );
                             None
                         } else {
-                            match a.get(index as usize) {
-                                Some(v) => {
+                            match a.get_static(index as usize) {
+                                Ok(Some(v)) => {
                                     execution_context.add_diagnostic_if_enabled(
                                                     RecordSetEngineDiagnosticLevel::Verbose,
                                                     s,
@@ -622,11 +637,19 @@ where
                                                 );
                                     Some(v)
                                 }
-                                None => {
+                                Ok(None) => {
                                     execution_context.add_diagnostic_if_enabled(
                                                 RecordSetEngineDiagnosticLevel::Warn,
                                                 s,
                                                 || format!("Could not find array index '{index}' specified in accessor expression"),
+                                            );
+                                    None
+                                }
+                                Err(e) => {
+                                    execution_context.add_diagnostic_if_enabled(
+                                                RecordSetEngineDiagnosticLevel::Error,
+                                                s,
+                                                || format!("Interior mutability is not supported by the target array: {e}"),
                                             );
                                     None
                                 }

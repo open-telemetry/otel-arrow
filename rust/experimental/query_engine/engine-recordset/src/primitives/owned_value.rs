@@ -101,14 +101,7 @@ impl From<Value<'_>> for OwnedValue {
     fn from(value: Value<'_>) -> Self {
         match value {
             Value::Array(a) => {
-                let mut values = Vec::new();
-
-                a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
-                    values.push(v.into());
-                    true
-                }));
-
-                OwnedValue::Array(ArrayValueStorage::new(values))
+                OwnedValue::Array(a.into())
             }
             Value::Boolean(b) => OwnedValue::Boolean(BooleanValueStorage::new(b.get_value())),
             Value::DateTime(d) => OwnedValue::DateTime(DateTimeValueStorage::new(d.get_value())),
@@ -128,6 +121,19 @@ impl From<Value<'_>> for OwnedValue {
             Value::Regex(r) => OwnedValue::Regex(RegexValueStorage::new(r.get_value().clone())),
             Value::String(s) => OwnedValue::String(StringValueStorage::new(s.get_value().into())),
         }
+    }
+}
+
+impl From<&dyn ArrayValue> for ArrayValueStorage<OwnedValue> {
+    fn from(value: &dyn ArrayValue) -> Self {
+        let mut values = Vec::new();
+
+        value.get_items(&mut IndexValueClosureCallback::new(|_, v| {
+            values.push(v.into());
+            true
+        }));
+
+        ArrayValueStorage::new(values)
     }
 }
 
