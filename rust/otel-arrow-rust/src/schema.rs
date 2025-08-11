@@ -144,3 +144,20 @@ pub fn is_id_plain_encoded(record_batch: &RecordBatch) -> bool {
     );
     encoding == Some(consts::metadata::encodings::PLAIN)
 }
+
+/// Checks the Arrow schema field metadata to determine if the "parent_id" field in this record
+/// batch is plain encoded.
+///
+/// It is assumed that if the Parent ID column is plain encoded, the schema metadata will have the
+/// encoding identified explicitly. If the encoding metadata is absent, then the batch may have
+/// been produced by the golang exporter, which adds no metadata and generally uses the transport
+/// optimized/quasi-delta encoding for the Parent ID column by default.
+pub fn is_parent_id_plain_encoded(record_batch: &RecordBatch) -> bool {
+    let schema = record_batch.schema_ref();
+    let encoding = get_field_metadata(
+        schema.as_ref(),
+        consts::PARENT_ID,
+        consts::metadata::COLUMN_ENCODING,
+    );
+    encoding == Some(consts::metadata::encodings::PLAIN)
+}

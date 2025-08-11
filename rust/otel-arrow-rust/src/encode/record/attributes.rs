@@ -3,7 +3,7 @@
 
 //! This module contains builders for record batches for attributes.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow::{
     array::{ArrowPrimitiveType, RecordBatch},
@@ -278,11 +278,15 @@ where
         let mut fields = vec![];
 
         if let Some(array) = self.parent_id.finish() {
-            fields.push(Field::new(
-                consts::PARENT_ID,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(
+                Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_metadata(
+                    HashMap::from_iter(vec![(
+                        consts::metadata::COLUMN_ENCODING.into(),
+                        consts::metadata::encodings::PLAIN.into(),
+                    )]),
+                ),
+            );
+
             columns.push(array);
         }
 

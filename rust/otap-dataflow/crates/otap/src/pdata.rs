@@ -461,8 +461,28 @@ mod test {
     // these signal types
     // https://github.com/open-telemetry/otel-arrow/issues/768
 
+    fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
+        let mut otlp_bytes = vec![];
+        otlp_service_req.encode(&mut otlp_bytes).unwrap();
+        let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
+
+        // test can go OtlpProtoBytes -> OtapBatch & back
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
+        let pdata: OtapPdata = otap_batch.into();
+
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let bytes = match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => bytes,
+            _ => panic!("unexpected otlp bytes pdata variant"),
+        };
+
+        let result = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
+        assert_eq!(otlp_service_req, result);
+    }
+
     #[test]
-    fn test_otlp_otap_logs_roundtrip_with_attributes() {
+    fn test_otlp_otap_logs_roundtrip() {
         // test to ensure the correct attributes are assigned to the correct log message after
         // roundtrip encoding/decoding
 
@@ -525,23 +545,41 @@ mod test {
             ])
             .finish(),
         ]);
-        let mut otlp_bytes = vec![];
-        otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
 
-        // test can go OtlpProtoBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
-        assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
-        let pdata: OtapPdata = otap_batch.into();
+        roundtrip_otlp_otap_logs(otlp_service_req);
+    }
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
-        let bytes = match otlp_bytes {
-            OtlpProtoBytes::ExportLogsRequest(bytes) => bytes,
-            _ => panic!("unexpected otlp bytes pdata variant"),
-        };
+    #[test]
+    fn test_otlp_otap_logs_repeated_attributes() {
+        // check to ensure attributes that are repeated are correctly encoded and decoding when
+        // doing round-trip between OTLP and OTAP. This test is needed because OTAP attributes'
+        // parent IDs can be in multiple formats: plain encoded, and quasi-delta encoded (where
+        // delta encoding is used for sequential runs of some key-value pairs).
 
-        let result = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
-        assert_eq!(otlp_service_req, result);
+        let otlp_service_req = ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::default())
+                .log_records(vec![
+                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(2u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(3u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                ])
+                .finish()
+            ])
+            .finish(),
+        ]);
+
+        roundtrip_otlp_otap_logs(otlp_service_req);
     }
 
     #[test]
