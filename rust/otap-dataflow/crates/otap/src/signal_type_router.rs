@@ -9,7 +9,9 @@ use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::PortName;
 use otap_df_config::error::Error as ConfigError;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
@@ -27,8 +29,22 @@ pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router"
 /// Configuration for the SignalTypeRouter processor
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalTypeRouterConfig {
-    /// Whether to drop signals of unknown types. If false, unknown signals are
-    /// forwarded to the default output (first port if available).
+    /// Named out ports to route traces signals to (broadcast if more than one).
+    #[serde(default)]
+    pub traces_ports: Vec<PortName>,
+    /// Named out ports to route metrics signals to (broadcast if more than one).
+    #[serde(default)]
+    pub metrics_ports: Vec<PortName>,
+    /// Named out ports to route logs signals to (broadcast if more than one).
+    #[serde(default)]
+    pub logs_ports: Vec<PortName>,
+    /// Optional default out port name to use when a mapping is not defined.
+    /// If not set, the engine's single-port fallback or configured default is used.
+    #[serde(default)]
+    pub default_port: Option<PortName>,
+    /// Whether to drop signals of unknown or unmapped types.
+    /// If false, undefined/unknown signals may be forwarded to a default/first port
+    /// as determined by the pipeline engine.
     #[serde(default = "default_drop_unknown_signals")]
     pub drop_unknown_signals: bool,
 }
@@ -40,6 +56,10 @@ fn default_drop_unknown_signals() -> bool {
 impl Default for SignalTypeRouterConfig {
     fn default() -> Self {
         Self {
+            traces_ports: Vec::new(),
+            metrics_ports: Vec::new(),
+            logs_ports: Vec::new(),
+            default_port: None,
             drop_unknown_signals: default_drop_unknown_signals(),
         }
     }
@@ -69,12 +89,42 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
     ) -> Result<(), EngineError<OtapPdata>> {
         match msg {
             Message::Control(_ctrl) => {
-                // No-op for control messages in pass-through mode
+                // No specific control handling required currently.
                 Ok(())
             }
             Message::PData(data) => {
-                // Pass-through for now
-                effect_handler.send_message(data).await
+                // Determine signal type and route to the configured port list if present.
+                let signal_type = data.signal_type();
+                let ports: &[PortName] = match signal_type {
+                    SignalType::Traces => &self.config.traces_ports,
+                    SignalType::Metrics => &self.config.metrics_ports,
+                    SignalType::Logs => &self.config.logs_ports,
+                };
+
+                match ports.len() {
+                    n if n > 1 => {
+                        // Broadcast: send a shallow clone per port.
+                        for p in ports {
+                            // Clone is expected to be shallow (Arrow/OTLP bytes)
+                            effect_handler
+                                .send_message_to(p.clone(), data.clone())
+                                .await?;
+                        }
+                        Ok(())
+                    }
+                    1 => effect_handler.send_message_to(ports[0].clone(), data).await,
+                    _ => {
+                        // No mapping for this type.
+                        if self.config.drop_unknown_signals {
+                            return Ok(());
+                        }
+                        if let Some(default_port) = self.config.default_port.clone() {
+                            return effect_handler.send_message_to(default_port, data).await;
+                        }
+                        // Engine default: single-port fallback or configured node-level default.
+                        effect_handler.send_message(data).await
+                    }
+                }
             }
         }
     }
