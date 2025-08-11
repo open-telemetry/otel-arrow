@@ -27,7 +27,7 @@ pub enum ResolvedValue<'a> {
     Slice(Slice<'a>),
 
     /// A list of resolved values
-    List(List<'a>)
+    List(List<'a>),
 }
 
 impl<'a> ResolvedValue<'a> {
@@ -36,10 +36,10 @@ impl<'a> ResolvedValue<'a> {
             ResolvedValue::Borrowed(b, v) => Some((b, v.to_value())),
             ResolvedValue::Slice(s) => {
                 return s.copy_if_borrowed_from_target(target);
-            },
+            }
             ResolvedValue::List(l) => {
                 return l.copy_if_borrowed_from_target(target);
-            },
+            }
             _ => None,
         };
 
@@ -98,7 +98,7 @@ impl<'a> ResolvedValue<'a> {
                 Slice::Array(_) => panic!(),
                 Slice::String(s) => Ok(ResolvedStringValue::Slice(s.into())),
             },
-            ResolvedValue::List(_) => panic!()
+            ResolvedValue::List(_) => panic!(),
         }
     }
 
@@ -231,7 +231,7 @@ impl Display for ResolvedValue<'_> {
 
 #[derive(Debug)]
 pub struct List<'a> {
-    values: Vec<ResolvedValue<'a>>
+    values: Vec<ResolvedValue<'a>>,
 }
 
 impl<'a> List<'a> {
@@ -269,8 +269,11 @@ impl ArrayValue for List<'_> {
         Err("List does not support static access".to_string())
     }
 
-    fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback)
-    -> bool {
+    fn get_item_range(
+        &self,
+        range: ArrayRange,
+        item_callback: &mut dyn IndexValueCallback,
+    ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !item_callback.next(index, value.to_value()) {
                 return false;
@@ -331,7 +334,8 @@ impl ArrayValue for ArraySlice<'_> {
     }
 
     fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
-        self.inner_value.get_static(self.range_start_inclusive + index)
+        self.inner_value
+            .get_static(self.range_start_inclusive + index)
     }
 
     fn get_item_range(
@@ -436,7 +440,7 @@ impl ResolvedStringValue<'_> {
             ResolvedStringValue::Borrowed(b, v) => Some((b, v)),
             ResolvedStringValue::Slice(s) => {
                 return s.inner_value.copy_if_borrowed_from_target(target);
-            },
+            }
             _ => None,
         };
 
@@ -451,7 +455,8 @@ impl ResolvedStringValue<'_> {
             };
 
             if writing_while_holding_borrow {
-                *self = ResolvedStringValue::Computed(StringValueStorage::new(v.get_value().into()));
+                *self =
+                    ResolvedStringValue::Computed(StringValueStorage::new(v.get_value().into()));
                 return true;
             }
         }
@@ -558,10 +563,10 @@ impl ResolvedArrayValue<'_> {
             ResolvedArrayValue::Borrowed(b, v) => Some((b, v)),
             ResolvedArrayValue::Slice(s) => {
                 return s.inner_value.copy_if_borrowed_from_target(target);
-            },
+            }
             ResolvedArrayValue::List(l) => {
                 return l.copy_if_borrowed_from_target(target);
-            },
+            }
             _ => None,
         };
 

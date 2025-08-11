@@ -41,12 +41,8 @@ pub(crate) fn parse_comparison_expression(
             // For "in" operations, the semantics are flipped:
             // [source] in ([value1], [value2]) means any of the values contains the source
             // So we create a list from the values and check if it contains the source
-            let list_expr = ScalarExpression::List(
-                ListScalarExpression::new(
-                    query_location.clone(),
-                    values
-                ),
-            );
+            let list_expr =
+                ScalarExpression::List(ListScalarExpression::new(query_location.clone(), values));
 
             let case_insensitive = matches!(
                 operation_rule.as_rule(),
@@ -805,21 +801,17 @@ mod tests {
             "variable in ('test1', 'test2')",
             LogicalExpression::Contains(ContainsLogicalExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::List(
-                    ListScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        vec![
-                            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "test1",
-                            ))),
-                            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "test2",
-                            ))),
-                        ],
-                    ),
-                ),
+                ScalarExpression::List(ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "test1"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "test2"),
+                        )),
+                    ],
+                )),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
                     StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
@@ -834,21 +826,17 @@ mod tests {
             "variable in~ ('test1', 'test2')",
             LogicalExpression::Contains(ContainsLogicalExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::List(
-                    ListScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        vec![
-                            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "test1",
-                            ))),
-                            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "test2",
-                            ))),
-                        ],
-                    ),
-                ),
+                ScalarExpression::List(ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "test1"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "test2"),
+                        )),
+                    ],
+                )),
                 ScalarExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
                     StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
@@ -865,21 +853,17 @@ mod tests {
                 QueryLocation::new_fake(),
                 LogicalExpression::Contains(ContainsLogicalExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::List(
-                        ListScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            vec![
-                                ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "test1",
-                                ))),
-                                ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "test2",
-                                ))),
-                            ],
-                        ),
-                    ),
+                    ScalarExpression::List(ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "test1"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "test2"),
+                            )),
+                        ],
+                    )),
                     ScalarExpression::Variable(VariableScalarExpression::new(
                         QueryLocation::new_fake(),
                         StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
@@ -897,21 +881,17 @@ mod tests {
                 QueryLocation::new_fake(),
                 LogicalExpression::Contains(ContainsLogicalExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::List(
-                        ListScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            vec![
-                                ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "test1",
-                                ))),
-                                ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "test2",
-                                ))),
-                            ],
-                        ),
-                    ),
+                    ScalarExpression::List(ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "test1"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "test2"),
+                            )),
+                        ],
+                    )),
                     ScalarExpression::Variable(VariableScalarExpression::new(
                         QueryLocation::new_fake(),
                         StringScalarExpression::new(QueryLocation::new_fake(), "variable"),

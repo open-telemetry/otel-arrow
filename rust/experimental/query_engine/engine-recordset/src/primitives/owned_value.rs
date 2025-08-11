@@ -100,9 +100,7 @@ impl AsStaticValueMut for OwnedValue {
 impl From<Value<'_>> for OwnedValue {
     fn from(value: Value<'_>) -> Self {
         match value {
-            Value::Array(a) => {
-                OwnedValue::Array(a.into())
-            }
+            Value::Array(a) => OwnedValue::Array(a.into()),
             Value::Boolean(b) => OwnedValue::Boolean(BooleanValueStorage::new(b.get_value())),
             Value::DateTime(d) => OwnedValue::DateTime(DateTimeValueStorage::new(d.get_value())),
             Value::Double(d) => OwnedValue::Double(DoubleValueStorage::new(d.get_value())),

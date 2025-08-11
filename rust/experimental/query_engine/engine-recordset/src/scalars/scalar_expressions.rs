@@ -487,13 +487,11 @@ where
                         range_end_exclusive,
                     )?;
 
-                    ResolvedValue::Slice(
-                        Slice::String(StringSlice::new(
-                            string_value,
-                            range_start_inclusive,
-                            range_end_exclusive,
-                        )),
-                    )
+                    ResolvedValue::Slice(Slice::String(StringSlice::new(
+                        string_value,
+                        range_start_inclusive,
+                        range_end_exclusive,
+                    )))
                 }
                 Err(v) => match v.try_resolve_array() {
                     Ok(array_value) => {
@@ -504,13 +502,11 @@ where
                             range_end_exclusive,
                         )?;
 
-                        ResolvedValue::Slice(
-                            Slice::Array(ArraySlice::new(
-                                array_value,
-                                range_start_inclusive,
-                                range_end_exclusive,
-                            )),
-                        )
+                        ResolvedValue::Slice(Slice::Array(ArraySlice::new(
+                            array_value,
+                            range_start_inclusive,
+                            range_end_exclusive,
+                        )))
                     }
                     Err(_) => ResolvedValue::Computed(OwnedValue::Null),
                 },
@@ -2387,10 +2383,8 @@ mod tests {
     #[test]
     pub fn text_execute_list_scalar_expression() {
         fn run_test_success(input: Vec<ScalarExpression>, expected_value: Value) {
-            let expression = ScalarExpression::List(ListScalarExpression::new(
-                QueryLocation::new_fake(),
-                input),
-            );
+            let expression =
+                ScalarExpression::List(ListScalarExpression::new(QueryLocation::new_fake(), input));
 
             let mut test = TestExecutionContext::new();
 
@@ -2402,7 +2396,7 @@ mod tests {
 
         run_test_success(
             vec![],
-            OwnedValue::Array(ArrayValueStorage::new(vec![])).to_value()
+            OwnedValue::Array(ArrayValueStorage::new(vec![])).to_value(),
         );
 
         run_test_success(
@@ -2417,6 +2411,8 @@ mod tests {
             OwnedValue::Array(ArrayValueStorage::new(vec![
                 OwnedValue::Integer(IntegerValueStorage::new(1)),
                 OwnedValue::Integer(IntegerValueStorage::new(2)),
-            ])).to_value());
+            ]))
+            .to_value(),
+        );
     }
 }
