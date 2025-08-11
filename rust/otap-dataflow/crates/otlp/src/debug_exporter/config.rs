@@ -35,7 +35,7 @@ impl Config {
     }
     /// check the frequency interval
     #[must_use]
-    pub fn verbosity(&self) -> Verbosity {
+    pub const fn verbosity(&self) -> Verbosity {
         self.verbosity
     }
 }
