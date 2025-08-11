@@ -128,7 +128,7 @@ async fn generate_signal(
     trace_load: &Option<LoadConfig>,
     log_load: &Option<LoadConfig>,
     registry: &ResolvedRegistry,
-) -> Result<(), Error<OTLPSignal>>{
+) -> Result<(), Error<OTLPSignal>> {
     // generate and send metric
     if let Some(load) = metric_load {
         let signal = OTLPSignal::Metrics(fake_otlp_metrics(
