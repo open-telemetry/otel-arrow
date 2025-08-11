@@ -34,6 +34,7 @@ from ..registry import step_action_registry
 from ..wrappers import TestStepActionWrapper
 from ...core.framework.element import FrameworkElementConfig, FrameworkLifecyclePhase
 from .hook_config import HooksConfig
+from .template_utils import expand_template_if_needed
 
 
 class StepConfig(FrameworkElementConfig):
@@ -79,6 +80,8 @@ class StepConfig(FrameworkElementConfig):
         Raises:
             ValueError: If an unknown action type is encountered during processing.
         """
+
+        data = expand_template_if_needed(data)
         action = data.get("action")
 
         # If 'action' exists and is a dictionary, process it.
@@ -130,6 +133,11 @@ class ScenarioConfig(FrameworkElementConfig):
     steps: Optional[List[StepConfig]]
     hooks: Dict[FrameworkLifecyclePhase, HooksConfig] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def expand_from_template(cls, data: Any) -> Any:
+        return expand_template_if_needed(data)
+
 
 class SuiteConfig(FrameworkElementConfig):
     """
@@ -160,3 +168,8 @@ class SuiteConfig(FrameworkElementConfig):
     )
     tests: Optional[List[ScenarioConfig]] = Field(default_factory=list)
     hooks: Dict[FrameworkLifecyclePhase, HooksConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def expand_from_template(cls, data: Any) -> Any:
+        return expand_template_if_needed(data)
