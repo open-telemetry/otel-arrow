@@ -10,8 +10,8 @@ use arrow::array::{
     PrimitiveBuilder, RecordBatch, StringArray,
 };
 use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::{and, concat};
 use arrow::compute::kernels::cmp::eq;
+use arrow::compute::{and, concat};
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
 use snafu::{OptionExt, ResultExt};
 
@@ -458,7 +458,6 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
 }
 
-
 /// Replaces the attribute keys.
 ///
 /// Accepts the attribute record batch, along with a map of old attribute key to new key.
@@ -814,8 +813,9 @@ pub fn transform_attributes(
     let schema = attrs_record_batch.schema();
     let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
         error::ColumnNotFoundSnafu {
-            name: consts::ATTRIBUTE_KEY
-        }.build()
+            name: consts::ATTRIBUTE_KEY,
+        }
+        .build()
     })?;
 
     match schema.field(key_column_idx).data_type() {
@@ -838,15 +838,14 @@ pub fn transform_attributes(
             keep_ranges.push((last_delete_range_end, keys_arr.len()));
             println!("keep ranges = {:?}", keep_ranges);
 
-
-            
-
             let offset_buffer_len = key_tx_intermediate_result.offsets.len() / size_of::<i32>();
-            let offset_scalar_buf = ScalarBuffer::<i32>::new(key_tx_intermediate_result.offsets.into(), 0, offset_buffer_len);
+            let offset_scalar_buf = ScalarBuffer::<i32>::new(
+                key_tx_intermediate_result.offsets.into(),
+                0,
+                offset_buffer_len,
+            );
             #[allow(unsafe_code)]
-            let new_key_offsets = unsafe {
-                OffsetBuffer::new_unchecked(offset_scalar_buf)
-            };
+            let new_key_offsets = unsafe { OffsetBuffer::new_unchecked(offset_scalar_buf) };
 
             let new_keys_value_buf = key_tx_intermediate_result.values.into();
             #[allow(unsafe_code)]
@@ -864,11 +863,12 @@ pub fn transform_attributes(
                         new_keys.clone()
                     } else {
                         // TODO if the field is parent ID, we need to either remove the transport optimized encoding?
-                        // maybe not if we've removed an entire segment of keys... but maybe if a replacement can 
+                        // maybe not if we've removed an entire segment of keys... but maybe if a replacement can
                         // cause an invalid run ...
                         take_ranges_slice(col, &keep_ranges)
                     }
-                }).collect::<Vec<ArrayRef>>();
+                })
+                .collect::<Vec<ArrayRef>>();
 
             println!("columns = {:?}", columns);
 
@@ -915,34 +915,27 @@ fn transform_keys(
     // keep track pointer to the previous offset that had values replaced
     let mut last_end_offset = 0;
 
-    for range in transform_ranges.iter().cloned() {
-        match range {
-            KeyTransformRange::Replace((start_idx, end_idx, replacement_idx)) => {
-                // directly copy all the bytes of the values that were not replaced
-                let start_offset = offsets[start_idx] as usize;
-                new_values.extend_from_slice(
-                    &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
-                );
+    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().cloned() {
+        // directly copy all the bytes of the values that were not replaced
+        let start_offset = offsets[start_idx] as usize;
+        new_values.extend_from_slice(
+            &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
+        );
 
-                let replacement_bytes = replacement_plan.replacement_bytes[replacement_idx];
+        match range_type {
+            KeyTransformRangeType::Replace => {
+                // insert the replaced values into the new_values buffer
+                let replacement_bytes = replacement_plan.replacement_bytes[transform_idx];
                 for _ in start_idx..end_idx {
                     new_values.extend_from_slice(replacement_bytes);
                 }
-
-                last_end_offset = offsets[end_idx] as usize;
             }
-            KeyTransformRange::Delete((start_idx, end_idx, _)) => {
-                // directly copy all the bytes of the values that were not deleted
-                let start_offset = offsets[start_idx] as usize;
-                new_values.extend_from_slice(
-                    &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
-                );
-
-                // TODO here we keep track of the deleted ranges ...
-
-                last_end_offset = offsets[end_idx] as usize;
+            _  => {
+                // insert no values into new_values buffer for deletes
             }
         }
+
+        last_end_offset = offsets[end_idx] as usize;
     }
 
     // copy any non replaced bytes at the tail of the previous values buffer
@@ -958,20 +951,20 @@ fn transform_keys(
     let mut curr_total_offset_adjustment = 0;
 
     // pointer to the end of the previous range where the values were replaced
-    let mut prev_replaced_index_end = 0;
+    let mut prev_range_index_end = 0;
 
-    for range in transform_ranges {
-        match range {
-            KeyTransformRange::Replace((start_idx, end_idx, replacement_idx)) => {
-                // copy offsets for values that were not replaced, but add the offset adjustment
-                offsets
-                    .inner()
-                    .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
-                    .into_iter()
-                    .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges {
+        // copy offsets for values that were not replaced, but add the offset adjustment
+        offsets
+            .inner()
+            .slice(prev_range_index_end, start_idx - prev_range_index_end)
+            .into_iter()
+            .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
 
+        match range_type {
+            KeyTransformRangeType::Replace  => {
                 // append offsets for values that were replaced
-                let replacement_bytes = replacement_plan.replacement_bytes[replacement_idx];
+                let replacement_bytes = replacement_plan.replacement_bytes[transform_idx];
                 let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
                 for _ in start_idx..end_idx {
                     new_offsets.push(offset);
@@ -979,31 +972,61 @@ fn transform_keys(
                 }
 
                 curr_total_offset_adjustment += replacement_plan.replacement_byte_len_diffs
-                    [replacement_idx]
+                    [transform_idx]
                     * (end_idx - start_idx) as i32;
-                prev_replaced_index_end = end_idx;
-            }
-            KeyTransformRange::Delete((start_idx, end_idx, delete_idx)) => {
-                // copy offsets for values that were not replaced, but add the offset adjustment
-                offsets
-                    .inner()
-                    .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
-                    .into_iter()
-                    .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
-
+            }   
+            KeyTransformRangeType::Delete => {
                 curr_total_offset_adjustment -=
-                    (delete_plan.target_keys[delete_idx].len() * (end_idx - start_idx)) as i32;
-                prev_replaced_index_end = end_idx;
+                    (delete_plan.target_keys[transform_idx].len() * (end_idx - start_idx)) as i32;
             }
         }
+        prev_range_index_end = end_idx
+
+
+
+        // match range {
+        //     KeyTransformRange::Replace((start_idx, end_idx, replacement_idx)) => {
+        //         // copy offsets for values that were not replaced, but add the offset adjustment
+        //         offsets
+        //             .inner()
+        //             .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
+        //             .into_iter()
+        //             .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+
+        //         // append offsets for values that were replaced
+        //         let replacement_bytes = replacement_plan.replacement_bytes[replacement_idx];
+        //         let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
+        //         for _ in start_idx..end_idx {
+        //             new_offsets.push(offset);
+        //             offset += replacement_bytes.len() as i32;
+        //         }
+
+        //         curr_total_offset_adjustment += replacement_plan.replacement_byte_len_diffs
+        //             [replacement_idx]
+        //             * (end_idx - start_idx) as i32;
+        //         prev_replaced_index_end = end_idx;
+        //     }
+        //     KeyTransformRange::Delete((start_idx, end_idx, delete_idx)) => {
+        //         // copy offsets for values that were not replaced, but add the offset adjustment
+        //         offsets
+        //             .inner()
+        //             .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
+        //             .into_iter()
+        //             .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+
+        //         curr_total_offset_adjustment -=
+        //             (delete_plan.target_keys[delete_idx].len() * (end_idx - start_idx)) as i32;
+        //         prev_replaced_index_end = end_idx;
+        //     }
+        // }
     }
 
     // copy any remaining offsets between the last replaced range and the end of the array
     offsets
         .inner()
         .slice(
-            prev_replaced_index_end,
-            array.len() - prev_replaced_index_end,
+            prev_range_index_end,
+            array.len() - prev_range_index_end,
         )
         .into_iter()
         .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
@@ -1026,15 +1049,15 @@ fn transform_keys(
 }
 
 #[derive(Clone)]
-enum KeyTransformRange {
-    Replace((usize, usize, usize)),
-    Delete((usize, usize, usize)),
+enum KeyTransformRangeType {
+    Replace,
+    Delete,
 }
 
 fn merge_transform_ranges(
     replacement_plan: &KeyReplacementPlan,
     delete_plan: &KeyDeletePlan,
-) -> Vec<KeyTransformRange> {
+) -> Vec<(usize, usize, usize, KeyTransformRangeType)> {
     let mut result = Vec::with_capacity(replacement_plan.ranges.len() + delete_plan.ranges.len());
 
     let mut rep_idx = 0;
@@ -1045,54 +1068,31 @@ fn merge_transform_ranges(
         let del_start = delete_plan.ranges[del_idx].0;
 
         if rep_start <= del_start {
-            result.push(KeyTransformRange::Replace(replacement_plan.ranges[rep_idx]));
+            let (start, end, r_idx) = replacement_plan.ranges[rep_idx];
+            result.push((start, end, r_idx, KeyTransformRangeType::Replace));
             rep_idx += 1;
         } else {
-            result.push(KeyTransformRange::Delete(delete_plan.ranges[del_idx]));
+            let (start, end, d_idx) = delete_plan.ranges[del_idx];
+            result.push((start, end, d_idx, KeyTransformRangeType::Delete));
             del_idx += 1;
         }
     }
 
     // append any remaining replacements
     while rep_idx < replacement_plan.ranges.len() {
-        result.push(KeyTransformRange::Replace(replacement_plan.ranges[rep_idx]));
+        let (start, end, r_idx) = replacement_plan.ranges[rep_idx];
+        result.push((start, end, r_idx, KeyTransformRangeType::Replace));
         rep_idx += 1;
     }
 
     // append any remaining deletions
     while del_idx < delete_plan.ranges.len() {
-        result.push(KeyTransformRange::Delete(delete_plan.ranges[del_idx]));
+        let (start, end, d_idx) = delete_plan.ranges[del_idx];
+        result.push((start, end, d_idx, KeyTransformRangeType::Delete));
         del_idx += 1;
     }
 
     result
-}
-
-fn calculate_new_keys_buffer_len(
-    key_arr_values_buffer: &Buffer,
-    replacement_plan: &KeyReplacementPlan,
-    delete_plan: &KeyDeletePlan,
-) -> usize {
-    // TODO these might get reused later
-    // let replacement_byte_len_diffs = (0..replacement_plan.replacement_bytes.len())
-    //     .map(|i| replacement_plan.replacement_bytes[i].len() as i32 - replacement_plan.target_bytes[i].len() as i32)
-    //     .collect::<Vec<_>>();
-    // let all_replacements_same_len = replacement_byte_len_diffs.iter().all(|val| *val == 0);
-
-    if replacement_plan.all_replacements_same_len && delete_plan.total_deletions == 0 {
-        key_arr_values_buffer.len()
-    } else {
-        let replacement_len_delta: i32 = (0..replacement_plan.counts.len())
-            .map(|i| {
-                replacement_plan.counts[i] as i32 * replacement_plan.replacement_byte_len_diffs[i]
-            })
-            .sum();
-        let count_deleted_bytes: usize = (0..delete_plan.counts.len())
-            .map(|i| delete_plan.counts[i] * replacement_plan.target_bytes[i].len())
-            .sum();
-
-        (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize - count_deleted_bytes
-    }
 }
 
 pub struct KeyReplacementPlan<'a> {
@@ -1115,77 +1115,32 @@ fn plan_key_replacements<'a>(
     offsets: &'a OffsetBuffer<i32>,
     replacements: &'a BTreeMap<String, String>,
 ) -> KeyReplacementPlan<'a> {
-    
     let target_bytes = replacements
         .keys()
         .map(|target| target.as_bytes())
         .collect::<Vec<_>>();
+
     let replacement_bytes = replacements
         .values()
         .map(|replacement| replacement.as_bytes())
         .collect::<Vec<_>>();
 
-    let mut replace_ranges = Vec::<(usize, usize, usize)>::new();
-
-    let mut total_replacement_counts = 0;
-    let mut replacement_counts = vec![0; replacements.len()];
-
-    // TODO the lens NEEDS to be checked somewhere before this called
-    // to avoid serious issues
-    let offset_ptr = offsets.as_ptr();
-
-    for replacement_idx in 0..replacements.len() {
-        let target_bytes = target_bytes[replacement_idx];
-        let replacement_count = replacement_counts
-            .get_mut(replacement_idx)
-            .expect("replacement counts should have been initialized here");
-        let mut eq_range_start = None;
-
-        for i in 0..array_len {
-            // accessing the offsets using the pointer here is much faster than indexing the offsets
-            // buffer as offsets[i], because we skip doing the bounds check on each iteration.
-            // Safety: we've already checked that offsets.len() >= len + 1
-            #[allow(unsafe_code)]
-            let val_start = unsafe { *offset_ptr.add(i) } as usize;
-            #[allow(unsafe_code)]
-            let val_end = unsafe { *offset_ptr.add(i + 1) } as usize;
-
-                        // don't access the value bytes unless we know it could be the correct length
-            if val_end - val_start == target_bytes.len() {
-                let value = &values_buf[val_start..val_end];
-                if value == target_bytes {
-                    total_replacement_counts += 1;
-                    *replacement_count += 1;
-                    if eq_range_start.is_none() {
-                        eq_range_start = Some(i);
-                    }
-                    continue;
-                }
-            }
-
-            // if we're here, we've found a non matching value
-            if let Some(s) = eq_range_start.take() {
-                // close current range
-                replace_ranges.push((s, i, replacement_idx))
-            }
-        }
-    }
-
-    replace_ranges.sort();
+    let target_ranges = find_matching_key_ranges(
+        array_len, values_buf, offsets, &target_bytes);
 
     let replacement_byte_len_diffs = (0..replacements.len())
         .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
         .collect::<Vec<_>>();
     let all_replacements_same_len = replacement_byte_len_diffs.iter().all(|val| *val == 0);
 
-    KeyReplacementPlan { 
+    KeyReplacementPlan {
         target_bytes,
         replacement_bytes,
-        ranges: replace_ranges,
-        counts: replacement_counts,
-        total_replacements: total_replacement_counts,
+        ranges: target_ranges.ranges,
+        counts: target_ranges.counts,
+        total_replacements: target_ranges.total_matches,
         all_replacements_same_len,
-        replacement_byte_len_diffs
+        replacement_byte_len_diffs,
     }
 }
 
@@ -1204,22 +1159,50 @@ fn plan_key_deletes<'a>(
     offsets: &'a OffsetBuffer<i32>,
     delete_keys: &'a BTreeSet<String>,
 ) -> KeyDeletePlan<'a> {
-    let target_bytes = delete_keys.iter().map(|key| key.as_bytes()).collect::<Vec<_>>();
+    let target_bytes = delete_keys
+        .iter()
+        .map(|key| key.as_bytes())
+        .collect::<Vec<_>>();
 
-    let mut delete_counts = vec![0; delete_keys.len()];
+    let target_ranges = find_matching_key_ranges(
+        array_len, 
+        values_buf,
+        offsets,
+        &target_bytes
+    );
 
-    // TODO len NEEDS to be checked somewhere before next loop
+    KeyDeletePlan {
+        target_keys: target_bytes,
+        ranges: target_ranges.ranges,
+        counts: target_ranges.counts,
+        total_deletions: target_ranges.total_matches,
+    }
+}
+
+struct TargetRanges {
+    ranges: Vec<(usize, usize, usize)>,
+    counts: Vec<usize>,
+    total_matches: usize,
+}
+
+fn find_matching_key_ranges(
+    array_len: usize,
+    values_buf: &Buffer,
+    offsets: &OffsetBuffer<i32>,
+    target_bytes: &Vec<&[u8]>,
+) -> TargetRanges {
+    let mut ranges = Vec::new();
+    let mut total_matches = 0;
+    let mut counts = vec![0; target_bytes.len()];
+
+    // TODO len needs to be checked somewhere for safety
     let offset_ptr = offsets.as_ptr();
 
-    let mut total_delete_counts = 0;
-
-    let mut delete_ranges = Vec::<(usize, usize, usize)>::new();
-
-    for delete_idx in 0..delete_keys.len() {
-        let target_bytes = target_bytes[delete_idx];
-        let delete_count = delete_counts
-            .get_mut(delete_idx)
-            .expect("delete counts should be initialized");
+    for target_idx in 0..target_bytes.len() {
+        let target_bytes = target_bytes[target_idx];
+        let count = counts
+            .get_mut(target_idx)
+            .expect("counts should be initialized");
         let mut eq_range_start = None;
 
         for i in 0..array_len {
@@ -1234,8 +1217,8 @@ fn plan_key_deletes<'a>(
             if val_end - val_start == target_bytes.len() {
                 let value = &values_buf[val_start..val_end];
                 if value == target_bytes {
-                    total_delete_counts += 1;
-                    *delete_count += 1;
+                    total_matches += 1;
+                    *count += 1;
                     if eq_range_start.is_none() {
                         eq_range_start = Some(i);
                     }
@@ -1246,22 +1229,42 @@ fn plan_key_deletes<'a>(
             // if we're here, we've found a non matching value
             if let Some(s) = eq_range_start.take() {
                 // close current range
-                delete_ranges.push((s, i, delete_idx))
+                ranges.push((s, i, target_idx))
             }
         }
     }
 
-    delete_ranges.sort();
+    // TODO comments blah blah
+    ranges.sort();
 
-    KeyDeletePlan { 
-        target_keys: target_bytes, 
-        ranges: delete_ranges,
-        counts: delete_counts,
-        total_deletions: total_delete_counts
+    return TargetRanges { ranges, counts, total_matches }
+}
+
+fn calculate_new_keys_buffer_len(
+    key_arr_values_buffer: &Buffer,
+    replacement_plan: &KeyReplacementPlan,
+    delete_plan: &KeyDeletePlan,
+) -> usize {
+    if replacement_plan.all_replacements_same_len && delete_plan.total_deletions == 0 {
+        key_arr_values_buffer.len()
+    } else {
+        let replacement_len_delta: i32 = (0..replacement_plan.counts.len())
+            .map(|i| {
+                replacement_plan.counts[i] as i32 * replacement_plan.replacement_byte_len_diffs[i]
+            })
+            .sum();
+        let count_deleted_bytes: usize = (0..delete_plan.counts.len())
+            .map(|i| delete_plan.counts[i] * replacement_plan.target_bytes[i].len())
+            .sum();
+
+        (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize - count_deleted_bytes
     }
 }
 
-fn take_ranges_slice<T>(array: T, ranges: &[(usize, usize)]) -> ArrayRef where T: Array {
+fn take_ranges_slice<T>(array: T, ranges: &[(usize, usize)]) -> ArrayRef
+where
+    T: Array,
+{
     let slices: Vec<ArrayRef> = ranges
         .iter()
         .map(|&(start, end)| {
@@ -2219,7 +2222,6 @@ mod test {
         );
     }
 
-
     #[test]
     fn transform_attributes_basic() {
         // TODO test replacement on dict
@@ -2229,26 +2231,35 @@ mod test {
         // TODO this should maybe be a dict? need to test it both ways
         let values_str = StringArray::from_iter_values(vec!["1", "2", "3", "4", "5"]);
 
-        let value_type = UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(5));
+        let value_type =
+            UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(5));
 
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false)
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
         ]));
 
-        let record_batch = RecordBatch::try_new(schema, vec![
-            Arc::new(keys),
-            Arc::new(value_type),
-            Arc::new(values_str),
-            Arc::new(parent_ids)
-        ]).unwrap();
+        let record_batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(keys),
+                Arc::new(value_type),
+                Arc::new(values_str),
+                Arc::new(parent_ids),
+            ],
+        )
+        .unwrap();
 
-        let result = transform_attributes(&record_batch, AttributesTransform {
-            rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]), 
-            delete: BTreeSet::from_iter(vec!["d".into()])
-        }).unwrap();
+        let result = transform_attributes(
+            &record_batch,
+            AttributesTransform {
+                rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]),
+                delete: BTreeSet::from_iter(vec!["d".into()]),
+            },
+        )
+        .unwrap();
 
         println!("{:?}", result)
     }
