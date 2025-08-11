@@ -23,7 +23,7 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -35,6 +35,7 @@ use sysinfo::{
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
+use otap_df_telemetry::{Registry as TelemetryRegistry, SpscQueue, SimpleCollector, NodeMetricsHandle, PerfExporterMetrics, StaticAttrs};
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -123,7 +124,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         let mut received_pdata_batch_count: u64 = 0;
         let mut invalid_pdata_count: u64 = 0;
         let mut total_received_pdata_batch_count: u64 = 0;
-        let mut last_perf_time: Instant = Instant::now();
+    let mut last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
             exporter: effect_handler.exporter_id(),
             error: format!("Failed to get process pid: {e}\n"),
@@ -136,9 +137,28 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         let sys_refresh_list = sys_refresh_list(&self.config);
 
         effect_handler.info("Starting Perf Exporter\n").await;
-        _ = effect_handler
+        // Start report generation TimerTick (existing behavior).
+        let _report_timer = effect_handler
             .start_periodic_timer(Duration::from_millis(self.config.frequency()))
             .await?;
+
+        // Start telemetry collection tick as a dedicated control message.
+        let _telemetry_timer = effect_handler
+            .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
+            .await?;
+
+        // Telemetry: setup per-exporter metrics + local SPSC and collector (prototype).
+        let telemetry_registry = TelemetryRegistry::global().clone();
+        let queue = SpscQueue::with_capacity_pow2(64);
+        let (producer, consumer) = queue.split();
+        let collector = SimpleCollector::new(consumer, &telemetry_registry);
+        let attrs = StaticAttrs {
+            pipeline_id: 0, // TODO: inject pipeline id mapping
+            core_id: 0,     // TODO: retrieve current core id (sched_getcpu)
+            numa_node_id: 0, // TODO: map core->numa
+            process_id: process_pid.as_u32(),
+        };
+        let mut metrics = NodeMetricsHandle::new_with_attrs(0, PerfExporterMetrics::new(), attrs); // TODO: encode node_id
 
         // Helper function to generate performance report
         let generate_report = async |received_arrow_records_count: u64,
@@ -220,6 +240,12 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
+                Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
+                    // Telemetry: flush metrics snapshot and aggregate.
+                    let _ = producer.push(metrics.flush_snapshot());
+                    let _aggregated = collector.drain();
+                    // We no longer couple report generation to telemetry collection.
+                }
                 Message::Control(NodeControlMsg::TimerTick { .. }) => {
                     generate_report(
                         received_arrow_records_count,
@@ -320,8 +346,21 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // increment counters for received arrow payloads
                     received_arrow_records_count += batch.arrow_payloads.len() as u64;
                     total_received_arrow_records_count += received_arrow_records_count as u128;
-                    // increment counters for otlp signals
-                    received_otlp_signal_count += calculate_otlp_signal_count(batch);
+                    // increment counters for otlp signals and update telemetry counters
+                    let mut per_kind_logs = 0u64;
+                    let mut per_kind_spans = 0u64;
+                    let mut per_kind_metrics = 0u64;
+                    for payload in &batch.arrow_payloads {
+                        let n = payload.record.len() as u64;
+                        if payload.r#type == ArrowPayloadType::Logs as i32 { per_kind_logs += n; }
+                        else if payload.r#type == ArrowPayloadType::Spans as i32 { per_kind_spans += n; }
+                        else if payload.r#type == ArrowPayloadType::UnivariateMetrics as i32 { per_kind_metrics += n; }
+                    }
+                    received_otlp_signal_count += per_kind_logs + per_kind_spans + per_kind_metrics;
+                    metrics.metrics.pdata_msgs.inc();
+                    metrics.metrics.logs.add(per_kind_logs);
+                    metrics.metrics.spans.add(per_kind_spans);
+                    metrics.metrics.metrics.add(per_kind_metrics);
                     total_received_otlp_signal_count += received_otlp_signal_count as u128;
                 }
                 _ => {
@@ -352,7 +391,6 @@ async fn get_writer(output_file: Option<String>) -> Box<dyn AsyncWrite + Unpin> 
         None => Box::new(tokio::io::stdout()),
     }
 }
-
 /// takes in the configuration and returns the appropriate system refresh list to make sure only the necessary data is refreshed
 fn sys_refresh_list(config: &Config) -> RefreshKind {
     let mut sys_refresh_list = RefreshKind::nothing();
@@ -392,20 +430,7 @@ fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     Ok(Duration::new(secs, nanosecs))
 }
 
-/// calculate number of otlp signals based on arrow payload type
-fn calculate_otlp_signal_count(batch: BatchArrowRecords) -> u64 {
-    batch.arrow_payloads.iter().fold(0, |acc, arrow_payload| {
-        let table_size = if arrow_payload.r#type == ArrowPayloadType::Spans as i32
-            || arrow_payload.r#type == ArrowPayloadType::Logs as i32
-            || arrow_payload.r#type == ArrowPayloadType::UnivariateMetrics as i32
-        {
-            arrow_payload.record.len() as u64
-        } else {
-            0
-        };
-        acc + table_size
-    })
-}
+// calculate_otlp_signal_count moved inline for telemetry updates.
 
 /// takes in the process and system outputs cpu stats via the writer
 async fn display_cpu_usage(
@@ -774,10 +799,8 @@ mod tests {
                 // TODO ADD DELAY BETWEEN HERE
                 _ = sleep(Duration::from_millis(5000));
 
-                // send timertick to generate the report
-                ctx.send_timer_tick()
-                    .await
-                    .expect("Failed to send TimerTick");
+                // trigger dedicated collect telemetry (replaces TimerTick for telemetry)
+                ctx.send_collect_telemetry().await.expect("Failed to send CollectTelemetry");
 
                 // Send shutdown
                 ctx.send_shutdown(Duration::from_millis(200), "test complete")

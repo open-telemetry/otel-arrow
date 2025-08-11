@@ -58,6 +58,12 @@ impl<Data> Message<Data> {
         Message::Control(NodeControlMsg::TimerTick {})
     }
 
+    /// Creates a collect-telemetry control message.
+    #[must_use]
+    pub fn collect_telemetry_ctrl_msg() -> Self {
+        Message::Control(NodeControlMsg::CollectTelemetry {})
+    }
+
     /// Creates a shutdown control message with the given reason.
     #[must_use]
     pub fn shutdown_ctrl_msg(deadline: Duration, reason: &str) -> Self {

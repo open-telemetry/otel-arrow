@@ -86,6 +86,13 @@ impl<PData> TestContext<PData> {
             .await
     }
 
+    /// Sends a collect-telemetry control message.
+    pub async fn send_collect_telemetry(&self) -> Result<(), SendError<NodeControlMsg>> {
+        self.control_tx
+            .send(NodeControlMsg::CollectTelemetry {})
+            .await
+    }
+
     /// Sends a shutdown control message.
     ///
     /// # Errors

@@ -32,7 +32,7 @@
 //! in parallel on different cores, each with its own exporter instance.
 
 use crate::control::NodeControlMsg;
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
 use crate::shared::message::SharedReceiver;
@@ -242,6 +242,14 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle, Error<PData>> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error<PData>> {
+        self.core.start_periodic_telemetry(duration).await
     }
 
     // More methods will be added in the future as needed.

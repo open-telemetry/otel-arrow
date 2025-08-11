@@ -28,19 +28,91 @@ use tokio::time::Instant;
 /// - All data structures are optimized for single-threaded async use.
 /// - The combination of `timer_map` and `canceled` ensures correctness and avoids spurious timer
 ///   events.
+/// A reusable per-node repeating timer set.
+///
+/// Manages scheduling, cancellation, and expiration for recurrent timers keyed by NodeId.
+/// Optimized for single-threaded async use.
+struct TimerSet {
+    timers: BinaryHeap<Reverse<(Instant, NodeId)>>,
+    canceled: HashSet<NodeId>,
+    timer_map: HashMap<NodeId, Instant>,
+    durations: HashMap<NodeId, std::time::Duration>,
+}
+
+impl TimerSet {
+    fn new() -> Self {
+        Self {
+            timers: BinaryHeap::new(),
+            canceled: HashSet::new(),
+            timer_map: HashMap::new(),
+            durations: HashMap::new(),
+        }
+    }
+
+    /// Schedule or replace a repeating timer for node_id.
+    fn start(&mut self, node_id: NodeId, duration: std::time::Duration) {
+        let when = Instant::now() + duration;
+        self.timers.push(Reverse((when, node_id.clone())));
+        let _ = self.timer_map.insert(node_id.clone(), when);
+        let _ = self.durations.insert(node_id.clone(), duration);
+        let _ = self.canceled.remove(&node_id);
+    }
+
+    /// Cancel an existing timer for node_id.
+    fn cancel(&mut self, node_id: &NodeId) {
+        let _ = self.canceled.insert(node_id.clone());
+        let _ = self.timer_map.remove(node_id);
+        let _ = self.durations.remove(node_id);
+    }
+
+    /// Peek the next expiration instant, if any.
+    fn next_expiry(&self) -> Option<Instant> {
+        self.timers.peek().map(|Reverse((when, _))| *when)
+    }
+
+    /// Fire all due timers at or before `now`, invoking the provided callback per firing node.
+    /// Reschedules recurring timers automatically when still active.
+    fn fire_due<F: FnMut(&NodeId)>(&mut self, now: Instant, mut on_fire: F) {
+        while let Some(Reverse((when, node_id))) = self.timers.peek().cloned() {
+            if when > now { break; }
+            // Pop the entry and validate it.
+            let _ = self.timers.pop();
+            if self.canceled.contains(&node_id) {
+                let _ = self.timer_map.remove(&node_id);
+                let _ = self.durations.remove(&node_id);
+                let _ = self.canceled.remove(&node_id);
+                continue;
+            }
+            if let Some(&exp) = self.timer_map.get(&node_id) {
+                if exp == when {
+                    // Fire callback
+                    on_fire(&node_id);
+                    // Reschedule if still active
+                    if let Some(&duration) = self.durations.get(&node_id) {
+                        let next_when = Instant::now() + duration;
+                        self.timers.push(Reverse((next_when, node_id.clone())));
+                        let _ = self.timer_map.insert(node_id.clone(), next_when);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Manages pipeline control messages and per-node recurring timers (tick and telemetry).
+///
+/// Internally uses two TimerSet instances: one for generic TimerTick and one for
+/// CollectTelemetry events. It receives Start*/Cancel* requests and emits the
+/// corresponding NodeControlMsg to nodes when timers expire.
 pub struct PipelineCtrlMsgManager {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
     /// Allows sending control messages back to nodes.
     control_senders: HashMap<NodeId, Sender<NodeControlMsg>>,
-    /// Min-heap of (Instant, NodeId) for timer expirations.
-    timers: BinaryHeap<Reverse<(Instant, NodeId)>>,
-    /// Set of NodeIds with canceled timers, so we can skip them when they pop.
-    canceled: HashSet<NodeId>,
-    /// Maps NodeId to the currently scheduled expiration Instant, to avoid firing outdated timers.
-    timer_map: HashMap<NodeId, Instant>,
-    /// Maps NodeId to the timer duration, for recurring timers.
-    durations: HashMap<NodeId, std::time::Duration>,
+    /// Repeating timers for generic TimerTick.
+    tick_timers: TimerSet,
+    /// Repeating timers for telemetry collection (CollectTelemetry).
+    telemetry_timers: TimerSet,
 }
 
 impl PipelineCtrlMsgManager {
@@ -53,10 +125,8 @@ impl PipelineCtrlMsgManager {
         Self {
             pipeline_ctrl_msg_receiver,
             control_senders,
-            timers: BinaryHeap::new(),
-            canceled: HashSet::new(),
-            timer_map: HashMap::new(),
-            durations: HashMap::new(),
+            tick_timers: TimerSet::new(),
+            telemetry_timers: TimerSet::new(),
         }
     }
 
@@ -68,8 +138,15 @@ impl PipelineCtrlMsgManager {
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
     pub async fn run<PData>(mut self) -> Result<(), Error<PData>> {
         loop {
-            // Get the next timer expiration, if any.
-            let next_expiry = self.timers.peek().map(|Reverse((instant, _))| *instant);
+            // Get the next expirations, if any.
+            let next_expiry = self.tick_timers.next_expiry();
+            let next_tel_expiry = self.telemetry_timers.next_expiry();
+            let next_earliest = match (next_expiry, next_tel_expiry) {
+                (Some(a), Some(b)) => Some(std::cmp::min(a, b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
             tokio::select! {
                 biased;
                 // Handle incoming control messages from nodes.
@@ -78,24 +155,22 @@ impl PipelineCtrlMsgManager {
                     match msg {
                         PipelineControlMsg::Shutdown => break,
                         PipelineControlMsg::StartTimer { node_id, duration } => {
-                            // Schedule a new timer for this node.
-                            let when = Instant::now() + duration;
-                            self.timers.push(Reverse((when, node_id.clone())));
-                            let _ = self.timer_map.insert(node_id.clone(), when);
-                            let _ = self.durations.insert(node_id.clone(), duration);
-                            let _ = self.canceled.remove(&node_id); // Un-cancel if previously canceled.
+                            self.tick_timers.start(node_id, duration);
                         }
                         PipelineControlMsg::CancelTimer { node_id } => {
-                            // Mark the timer as canceled and remove from maps.
-                            let _ = self.canceled.insert(node_id.clone());
-                            let _ = self.timer_map.remove(&node_id);
-                            let _ = self.durations.remove(&node_id);
+                            self.tick_timers.cancel(&node_id);
+                        }
+                        PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
+                            self.telemetry_timers.start(node_id, duration);
+                        }
+                        PipelineControlMsg::CancelTelemetryTimer { node_id } => {
+                            self.telemetry_timers.cancel(&node_id);
                         }
                     }
                 }
                 // Handle timer expiration events.
                 _ = async {
-                    if let Some(when) = next_expiry {
+                    if let Some(when) = next_earliest {
                         let now = Instant::now();
                         if when > now {
                             tokio::time::sleep_until(when).await;
@@ -104,37 +179,69 @@ impl PipelineCtrlMsgManager {
                         // No timers scheduled, wait indefinitely.
                         futures::future::pending::<()>().await;
                     }
-                }, if next_expiry.is_some() => {
-                    if let Some(Reverse((when, node_id))) = self.timers.pop() {
-                        // Only fire the timer if not canceled and not outdated.
-                        if !self.canceled.contains(&node_id) {
-                            if let Some(&exp) = self.timer_map.get(&node_id) {
-                                if exp == when {
-                                    // Timer fires: handle expiration.
-                                    if let Some(sender) = self.control_senders.get(&node_id) {
-                                        let _ = sender.send(NodeControlMsg::TimerTick {}).await;
-                                    } else {
-                                        return Err(Error::InternalError {message: format!("No control sender for node: {node_id}")});
-                                    }
-
-                                    // Schedule next recurrence if still not canceled
-                                    if let Some(&duration) = self.durations.get(&node_id) {
-                                        let next_when = Instant::now() + duration;
-                                        self.timers.push(Reverse((next_when, node_id.clone())));
-                                        let _ = self.timer_map.insert(node_id.clone(), next_when);
-                                    }
-                                }
-                            }
-                        } else {
-                            let _ = self.timer_map.remove(&node_id);
-                            let _ = self.durations.remove(&node_id);
-                            let _ = self.canceled.remove(&node_id);
+                }, if next_earliest.is_some() => {
+                    let now = Instant::now();
+                    // Fire all due generic timers
+                    let senders = &self.control_senders;
+                    self.tick_timers.fire_due(now, |node_id| {
+                        if let Some(sender) = senders.get(node_id) {
+                            // best-effort; ignore send errors
+                            let _ = futures::executor::block_on(sender.send(NodeControlMsg::TimerTick {}));
                         }
-                    }
+                    });
+
+                    // Fire all due telemetry timers
+                    let senders = &self.control_senders;
+                    self.telemetry_timers.fire_due(now, |node_id| {
+                        if let Some(sender) = senders.get(node_id) {
+                            let _ = futures::executor::block_on(sender.send(NodeControlMsg::CollectTelemetry {}));
+                        }
+                    });
                 }
             }
         }
         Ok(())
+    }
+}
+
+// Test-only helpers to introspect internal state without exposing fields publicly.
+#[cfg(test)]
+impl PipelineCtrlMsgManager {
+    pub(crate) fn test_tick_counts(&self) -> (usize, usize, usize, usize) {
+        (
+            self.tick_timers.timers.len(),
+            self.tick_timers.canceled.len(),
+            self.tick_timers.timer_map.len(),
+            self.tick_timers.durations.len(),
+        )
+    }
+
+    pub(crate) fn test_telemetry_counts(&self) -> (usize, usize, usize, usize) {
+        (
+            self.telemetry_timers.timers.len(),
+            self.telemetry_timers.canceled.len(),
+            self.telemetry_timers.timer_map.len(),
+            self.telemetry_timers.durations.len(),
+        )
+    }
+
+    pub(crate) fn test_control_senders_len(&self) -> usize {
+        self.control_senders.len()
+    }
+
+    pub(crate) fn test_push_tick_heap(&mut self, when: Instant, node_id: NodeId) {
+        self.tick_timers.timers.push(Reverse((when, node_id)));
+    }
+
+    pub(crate) fn test_pop_tick_heap(&mut self) -> Option<(Instant, NodeId)> {
+        self.tick_timers
+            .timers
+            .pop()
+            .map(|Reverse((when, node))| (when, node))
+    }
+
+    pub(crate) fn test_tick_heap_len(&self) -> usize {
+        self.tick_timers.timers.len()
     }
 }
 
@@ -655,31 +762,19 @@ mod tests {
         let (manager, _pipeline_tx, _control_receivers) = setup_test_manager();
 
         // Verify manager is created with correct initial state
-        assert_eq!(
-            manager.timers.len(),
-            0,
-            "Timer queue should be empty initially"
-        );
-        assert_eq!(
-            manager.canceled.len(),
-            0,
-            "Canceled set should be empty initially"
-        );
-        assert_eq!(
-            manager.timer_map.len(),
-            0,
-            "Timer map should be empty initially"
-        );
-        assert_eq!(
-            manager.durations.len(),
-            0,
-            "Durations map should be empty initially"
-        );
-        assert_eq!(
-            manager.control_senders.len(),
-            3,
-            "Should have 3 mock control senders"
-        );
+    let (t_len, c_len, m_len, d_len) = manager.test_tick_counts();
+    assert_eq!(t_len, 0, "Tick timer queue should be empty initially");
+    assert_eq!(c_len, 0, "Tick canceled set should be empty initially");
+    assert_eq!(m_len, 0, "Tick timer map should be empty initially");
+    assert_eq!(d_len, 0, "Tick durations map should be empty initially");
+
+    let (tt_len, tc_len, tm_len, td_len) = manager.test_telemetry_counts();
+    assert_eq!(tt_len, 0, "Telemetry timer queue should be empty initially");
+    assert_eq!(tc_len, 0, "Telemetry canceled set should be empty initially");
+    assert_eq!(tm_len, 0, "Telemetry timer map should be empty initially");
+    assert_eq!(td_len, 0, "Telemetry durations map should be empty initially");
+
+    assert_eq!(manager.test_control_senders_len(), 3, "Should have 3 mock control senders");
     }
 
     /// Validates the internal timer priority queue data structure:
@@ -702,21 +797,15 @@ mod tests {
         let when3 = now + Duration::from_millis(200); // Middle
 
         // Add timers in non-chronological order to test heap behavior
-        manager
-            .timers
-            .push(std::cmp::Reverse((when1, node1.clone())));
-        manager
-            .timers
-            .push(std::cmp::Reverse((when2, node2.clone())));
-        manager
-            .timers
-            .push(std::cmp::Reverse((when3, node3.clone())));
+    manager.test_push_tick_heap(when1, node1.clone());
+    manager.test_push_tick_heap(when2, node2.clone());
+    manager.test_push_tick_heap(when3, node3.clone());
 
         // Verify heap maintains correct size
-        assert_eq!(manager.timers.len(), 3, "All timers should be in the heap");
+    assert_eq!(manager.test_tick_heap_len(), 3, "All timers should be in the heap");
 
         // Pop timers and verify they come out in chronological order (min-heap behavior)
-        if let Some(std::cmp::Reverse((first_when, first_node))) = manager.timers.pop() {
+    if let Some((first_when, first_node)) = manager.test_pop_tick_heap() {
             assert_eq!(first_when, when2, "Earliest timer should be popped first");
             assert_eq!(
                 first_node, node2,
@@ -724,7 +813,7 @@ mod tests {
             );
         }
 
-        if let Some(std::cmp::Reverse((second_when, second_node))) = manager.timers.pop() {
+    if let Some((second_when, second_node)) = manager.test_pop_tick_heap() {
             assert_eq!(second_when, when3, "Middle timer should be popped second");
             assert_eq!(
                 second_node, node3,
@@ -732,7 +821,7 @@ mod tests {
             );
         }
 
-        if let Some(std::cmp::Reverse((third_when, third_node))) = manager.timers.pop() {
+    if let Some((third_when, third_node)) = manager.test_pop_tick_heap() {
             assert_eq!(third_when, when1, "Latest timer should be popped last");
             assert_eq!(
                 third_node, node1,

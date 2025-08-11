@@ -291,6 +291,10 @@ impl<PData: Clone + Send + 'static> Processor<PData> for RetryProcessor<PData> {
                     self.cleanup_expired_messages();
                     Ok(())
                 }
+                NodeControlMsg::CollectTelemetry { .. } => {
+                    // Retry processor has no telemetry collection to perform here.
+                    Ok(())
+                }
                 NodeControlMsg::Config { config } => {
                     if let Ok(new_config) = serde_json::from_value::<RetryConfig>(config) {
                         self.config = new_config;
