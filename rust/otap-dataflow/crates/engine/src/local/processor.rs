@@ -89,8 +89,8 @@ pub struct EffectHandler<PData> {
     /// A sender used to forward messages from the processor.
     /// Supports multiple named output ports.
     msg_senders: HashMap<PortName, LocalSender<PData>>,
-    /// Optional default port to use when calling send_message.
-    default_port: Option<PortName>,
+    /// Cached default sender for fast access in the hot path
+    default_sender: Option<LocalSender<PData>>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -103,18 +103,20 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
     ) -> Self {
         let core = EffectHandlerCore::new(node_id);
-        // If no default is provided and exactly one port is connected, use it as default.
-        let default_port = default_port.or_else(|| {
-            if msg_senders.len() == 1 {
-                msg_senders.keys().next().cloned()
-            } else {
-                None
-            }
-        });
+        
+        // Determine and cache the default sender
+        let default_sender = if let Some(ref port) = default_port {
+            msg_senders.get(port).cloned()
+        } else if msg_senders.len() == 1 {
+            msg_senders.values().next().cloned()
+        } else {
+            None
+        };
+
         EffectHandler {
             core,
             msg_senders,
-            default_port,
+            default_sender,
         }
     }
 
@@ -139,18 +141,17 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent or [`Error::ProcessorError`]
     /// if the default port is not configured.
+    #[inline]
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        let port = if let Some(p) = &self.default_port {
-            p.clone()
-        } else {
-            return Err(Error::ProcessorError {
+        match &self.default_sender {
+            Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
+            None => Err(Error::ProcessorError {
                 processor: self.processor_id(),
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
-            });
-        };
-        self.send_message_to(port, data).await
+            }),
+        }
     }
 
     /// Sends a message to a specific named out port.
@@ -159,23 +160,22 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent, or
     /// [`Error::ProcessorError`] if the port does not exist.
+    #[inline]
     pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
-        let sender =
-            self.msg_senders
-                .get(&port_name)
-                .cloned()
-                .ok_or_else(|| Error::ProcessorError {
-                    processor: self.processor_id(),
-                    error: format!(
-                        "Unknown out port '{port_name}' for node {}",
-                        self.processor_id()
-                    ),
-                })?;
-        sender.send(data).await.map_err(Error::ChannelSendError)
+        match self.msg_senders.get(&port_name) {
+            Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
+            None => Err(Error::ProcessorError {
+                processor: self.processor_id(),
+                error: format!(
+                    "Unknown out port '{port_name}' for node {}",
+                    self.processor_id()
+                ),
+            }),
+        }
     }
 
     /// Print an info message to stdout.
