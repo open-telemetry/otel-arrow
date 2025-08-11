@@ -176,7 +176,7 @@ pub trait FieldExt {
 
 impl FieldExt for Field {
     fn with_plain_encoding(self) -> Self {
-        self.with_metadata(HashMap::from_iter(vec![(
+        self.with_metadata(HashMap::from_iter([(
             consts::metadata::COLUMN_ENCODING.into(),
             consts::metadata::encodings::PLAIN.into(),
         )]))
