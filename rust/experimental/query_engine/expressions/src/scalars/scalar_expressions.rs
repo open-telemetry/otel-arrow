@@ -1439,6 +1439,14 @@ mod tests {
         );
 
         run_test_success(
+            ScalarExpression::List(ListScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![]
+            )),
+            Some(ValueType::Array),
+        );
+
+        run_test_success(
             ScalarExpression::Logical(
                 LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -1769,6 +1777,34 @@ mod tests {
             )),
             Some(StaticScalarExpression::Integer(
                 IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
+            )),
+        );
+
+        run_test_success(
+            ScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                        )),
+                    ],
+                )
+            ),
+            Some(StaticScalarExpression::Array(
+                ArrayScalarExpression::new(QueryLocation::new_fake(), vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                ]),
             )),
         );
 
