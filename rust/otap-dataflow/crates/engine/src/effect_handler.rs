@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::time::Instant;
 
 /// Common implementation of all effect handlers.
 ///
@@ -150,21 +151,21 @@ impl EffectHandlerCore {
         UdpSocket::from_std(sock.into()).map_err(into_engine_error)
     }
 
-    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
-    /// Returns a handle that can be used to cancel the timer.
-    ///
-    /// Current limitation: The timer can only be started once per node.
-    pub async fn start_periodic_timer<PData>(
+    /// Generic helper for sending timer control messages.
+    async fn send_timer_message<PData, F>(
         &self,
-        duration: Duration,
-    ) -> Result<TimerCancelHandle, Error<PData>> {
+        create_message: F,
+    ) -> Result<TimerCancelHandle, Error<PData>>
+    where
+        F: FnOnce(NodeId) -> PipelineControlMsg,
+    {
         let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
+
+        let message = create_message(self.node_id.clone());
+
         pipeline_ctrl_msg_sender
-            .send(PipelineControlMsg::StartTimer {
-                node_id: self.node_id.clone(),
-                duration,
-            })
+            .send(message)
             .await
             .map_err(Error::PipelineControlMsgError)?;
 
@@ -172,6 +173,30 @@ impl EffectHandlerCore {
             node_id: self.node_id.clone(),
             pipeline_ctrl_msg_sender,
         })
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Currently, only one timer can only be started at once per node, recurring or non-recurring.
+    pub async fn start_periodic_timer<PData>(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.send_timer_message(|node_id| PipelineControlMsg::StartTimer { node_id, duration })
+            .await
+    }
+
+    /// Schedules a cancellable non-recurring timer that emits TimerTick on the control channel at the specified time.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Currently, only one timer can only be started at once per node, recurring or non-recurring.
+    pub async fn run_at_timer<PData>(
+        &self,
+        when: Instant,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.send_timer_message(|node_id| PipelineControlMsg::RunAtTimer { node_id, when })
+            .await
     }
 }
 
@@ -189,5 +214,103 @@ impl TimerCancelHandle {
                 node_id: self.node_id,
             })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(missing_docs)]
+    use super::*;
+    use crate::control::{PipelineControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel};
+    use tokio::time::{Duration, Instant};
+
+    /// Helper function to set up a test environment
+    fn setup_test_core() -> (EffectHandlerCore, PipelineCtrlMsgReceiver) {
+        let (ctrl_tx, ctrl_rx) = pipeline_ctrl_msg_channel(10);
+        let mut core = EffectHandlerCore::new("test_node".into());
+        core.set_pipeline_ctrl_msg_sender(ctrl_tx);
+
+        (core, ctrl_rx)
+    }
+
+    /// Helper function to assert that a specific control message was received
+    async fn assert_control_message(
+        ctrl_rx: &mut PipelineCtrlMsgReceiver,
+        expected_message: impl Fn(PipelineControlMsg) -> bool + Send,
+        message_description: &str,
+    ) {
+        let msg = ctrl_rx
+            .recv()
+            .await
+            .expect("Control message should be valid");
+
+        assert!(
+            expected_message(msg.clone()),
+            "Expected {}, got {:?}",
+            message_description,
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_at_timer() {
+        let (core, mut ctrl_rx) = setup_test_core();
+
+        let target_time = Instant::now() + Duration::from_millis(100);
+        let _handle = core.run_at_timer::<()>(target_time).await.unwrap();
+
+        assert_control_message(
+            &mut ctrl_rx,
+            |msg| {
+                matches!(msg, PipelineControlMsg::RunAtTimer { node_id, when } 
+                if node_id == "test_node" && when == target_time)
+            },
+            "RunAtTimer message with correct node_id and time",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_start_periodic_timer() {
+        let (core, mut ctrl_rx) = setup_test_core();
+
+        let period = Duration::from_millis(200);
+        let _handle = core.start_periodic_timer::<()>(period).await.unwrap();
+
+        assert_control_message(
+            &mut ctrl_rx,
+            |msg| {
+                matches!(msg, PipelineControlMsg::StartTimer { node_id, duration }
+                if node_id == "test_node" && duration == period)
+            },
+            "StartTimer message with correct node_id and duration",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_cancel_timer() {
+        let (core, mut ctrl_rx) = setup_test_core();
+
+        let handle = core
+            .start_periodic_timer::<()>(Duration::from_millis(100))
+            .await
+            .unwrap();
+
+        // Clear the StartTimer message
+        let _ = ctrl_rx.recv().await;
+
+        // Cancel the timer
+        handle.cancel().await.unwrap();
+
+        assert_control_message(
+            &mut ctrl_rx,
+            |msg| {
+                matches!(msg, PipelineControlMsg::CancelTimer { node_id }
+                if node_id == "test_node")
+            },
+            "CancelTimer message with correct node_id",
+        )
+        .await;
     }
 }

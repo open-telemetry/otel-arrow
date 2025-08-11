@@ -39,6 +39,7 @@ use async_trait::async_trait;
 use otap_df_config::NodeId;
 use std::marker::PhantomData;
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// A trait for egress exporters (!Send definition).
 #[async_trait( ? Send)]
@@ -124,6 +125,17 @@ impl<PData> EffectHandler<PData> {
         duration: Duration,
     ) -> Result<TimerCancelHandle, Error<PData>> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Schedules a cancellable non-recurring timer that emits TimerTick at the specified time.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by an exporter at a time.
+    pub async fn run_timer_at(
+        &self,
+        when: Instant,
+    ) -> Result<TimerCancelHandle, Error<PData>> {
+        self.core.run_at_timer(when).await
     }
 
     // More methods will be added in the future as needed.

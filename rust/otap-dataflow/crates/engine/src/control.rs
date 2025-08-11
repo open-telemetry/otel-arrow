@@ -9,6 +9,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
@@ -74,7 +75,14 @@ pub enum PipelineControlMsg {
         /// Duration of the timer interval.
         duration: Duration,
     },
-    /// Requests cancellation of a periodic timer for the specified node.
+    /// Requests the pipeline engine to start a non-recurring timer for the specified node.
+    RunAtTimer {
+        /// Identifier of the node for which the timer is being started.
+        node_id: NodeId,
+        /// Instant when to run.
+        when: Instant,
+    },
+    /// Requests cancellation of a periodic or non-recurring timer for the specified node.
     CancelTimer {
         /// Identifier of the node for which the timer is being canceled.
         node_id: NodeId,

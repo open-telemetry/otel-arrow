@@ -53,7 +53,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.142" }
 serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
-tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std"] }
+tokio = { version = "1.46.1", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "test-util"] }
 uuid = { version = "1.17.0", features = ["v4"] }
 async-trait = "0.1.88"
 futures = "0.3.31"

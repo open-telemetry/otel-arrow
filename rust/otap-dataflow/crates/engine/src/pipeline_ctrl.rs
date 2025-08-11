@@ -4,7 +4,7 @@
 //!
 //! This module provides the `PipelineCtrlMsgManager` which is responsible for managing
 //! timers for nodes in the pipeline. It handles scheduling, cancellation, and expiration
-//! of recurring timers, using a priority queue for efficient timer management.
+//! of periodic timers, using a priority queue for efficient timer management.
 //!
 //! Note 1: This manager is designed for single-threaded async execution.
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
@@ -18,7 +18,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
 
-/// Manages pipeline control messages such as recurrent and cancelable timers.
+/// Manages pipeline control messages such as periodic and cancelable timers.
 ///
 /// This manager is responsible for managing timers for nodes in the pipeline.
 /// It uses a priority queue to efficiently handle timer expirations and cancellations.
@@ -28,6 +28,13 @@ use tokio::time::Instant;
 /// - All data structures are optimized for single-threaded async use.
 /// - The combination of `timer_map` and `canceled` ensures correctness and avoids spurious timer
 ///   events.
+/// - StartTimer event creates a periodic timer.
+/// - RunAtTimer event creates a non-recurring timer.
+///
+/// Only the most recently scheduled timer for each node is considered "active".
+/// If a node's timer is rescheduled before the previous one fires, the old timer remains in the heap,
+/// but is ignored when popped (using `timer_map` for last-value-wins semantics).
+/// This ensures that only one timer per node is ever fired, even if multiple are present in the heap.
 pub struct PipelineCtrlMsgManager {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
@@ -39,7 +46,7 @@ pub struct PipelineCtrlMsgManager {
     canceled: HashSet<NodeId>,
     /// Maps NodeId to the currently scheduled expiration Instant, to avoid firing outdated timers.
     timer_map: HashMap<NodeId, Instant>,
-    /// Maps NodeId to the timer duration, for recurring timers.
+    /// Maps NodeId to the timer duration, for periodic timers.
     durations: HashMap<NodeId, std::time::Duration>,
 }
 
@@ -60,10 +67,20 @@ impl PipelineCtrlMsgManager {
         }
     }
 
+    /// Schedules a timer for the given node at the specified time.
+    /// If duration is provided, it's stored for recurring timers.
+    /// Cancels any previously active timer for this node.
+    fn schedule_timer(&mut self, node_id: &NodeId, when: Instant) {
+        self.timers.push(Reverse((when, node_id.clone())));
+        let _ = self.timer_map.insert(node_id.clone(), when);
+        let _ = self.canceled.remove(node_id); // Un-cancel if previously canceled.
+    }
+
     /// Runs the manager event loop.
     ///
     /// Handles incoming control messages and timer expirations.
-    /// - On StartTimer: schedules a timer for the node, updating all relevant maps.
+    /// - On StartTimer: schedules a recurring timer for the node, replaces existing timer.
+    /// - On RunAtTimer: schedules a non-recurring timer for a node, replaces existing timer.
     /// - On CancelTimer: marks the timer as canceled and removes from maps.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
     pub async fn run<PData>(mut self) -> Result<(), Error<PData>> {
@@ -80,10 +97,12 @@ impl PipelineCtrlMsgManager {
                         PipelineControlMsg::StartTimer { node_id, duration } => {
                             // Schedule a new timer for this node.
                             let when = Instant::now() + duration;
-                            self.timers.push(Reverse((when, node_id.clone())));
-                            let _ = self.timer_map.insert(node_id.clone(), when);
-                            let _ = self.durations.insert(node_id.clone(), duration);
-                            let _ = self.canceled.remove(&node_id); // Un-cancel if previously canceled.
+                            self.schedule_timer(&node_id, when);
+                            let _ = self.durations.insert(node_id, duration);
+                        }
+                        PipelineControlMsg::RunAtTimer { node_id, when } => {
+                            self.schedule_timer(&node_id, when);
+                            let _ = self.durations.remove(&node_id);
                         }
                         PipelineControlMsg::CancelTimer { node_id } => {
                             // Mark the timer as canceled and remove from maps.
@@ -95,14 +114,10 @@ impl PipelineCtrlMsgManager {
                 }
                 // Handle timer expiration events.
                 _ = async {
-                    if let Some(when) = next_expiry {
-                        let now = Instant::now();
-                        if when > now {
-                            tokio::time::sleep_until(when).await;
-                        }
-                    } else {
-                        // No timers scheduled, wait indefinitely.
-                        futures::future::pending::<()>().await;
+                    let when = next_expiry.expect("guarded");
+                    let now = Instant::now();
+                    if when > now {
+                        tokio::time::sleep_until(when).await;
                     }
                 }, if next_expiry.is_some() => {
                     if let Some(Reverse((when, node_id))) = self.timers.pop() {
@@ -646,6 +661,82 @@ mod tests {
             let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
+    }
+
+    /// Validates RunAtTimer, the non-recurring timer workflow:
+    /// 1. RunAtTimer message scheduling for a specific time
+    /// 2. Timer expiration at the scheduled time
+    /// 3. TimerTick message delivery to the correct node
+    /// 4. No automatic recurrence
+    #[tokio::test]
+    async fn test_run_at_integration() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                // Pause time to use Tokio's testable clock
+                tokio::time::pause();
+
+                let (manager, pipeline_tx, mut control_receivers) = setup_test_manager();
+
+                let node_id: NodeId = "node1".into();
+                let delay = Duration::from_millis(100);
+                let when = Instant::now() + delay;
+
+                // Start the manager in the background using spawn_local (not Send)
+                let manager_handle =
+                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+
+                // Send RunAtTimer message to schedule a one-shot timer
+                let run_at_msg = PipelineControlMsg::RunAtTimer {
+                    node_id: node_id.clone(),
+                    when,
+                };
+                pipeline_tx.send(run_at_msg).await.unwrap();
+
+                let mut receiver = control_receivers.remove(&node_id).unwrap();
+
+                // Advance time by 50ms - timer should not fire yet
+                tokio::time::advance(Duration::from_millis(50)).await;
+
+                // Check that no tick has been received yet (should timeout immediately)
+                let early_tick_result = timeout(Duration::from_millis(1), receiver.recv()).await;
+                assert!(
+                    early_tick_result.is_err(),
+                    "Should not receive TimerTick before scheduled time"
+                );
+
+                // Advance time by another 60ms (total 110ms) - timer should fire now
+                tokio::time::advance(Duration::from_millis(60)).await;
+
+                // Timer should have fired - check for the tick
+                let tick_result = timeout(Duration::from_millis(10), receiver.recv()).await;
+                assert!(
+                    tick_result.is_ok(),
+                    "Should receive TimerTick after advancing past scheduled time"
+                );
+                match tick_result.unwrap() {
+                    Ok(NodeControlMsg::TimerTick {}) => {
+                        // Success - received expected TimerTick
+                    }
+                    Ok(other) => panic!("Expected TimerTick, got {other:?}"),
+                    Err(e) => panic!("Failed to receive message: {e:?}"),
+                }
+
+                // Advance time more and verify NO automatic recurrence
+                tokio::time::advance(Duration::from_millis(200)).await;
+
+                let second_tick_result = timeout(Duration::from_millis(10), receiver.recv()).await;
+                assert!(
+                    second_tick_result.is_err(),
+                    "Should NOT receive second TimerTick for non-recurring RunAtTimer"
+                );
+
+                // Clean shutdown
+                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
+                let _ = timeout(Duration::from_millis(10), manager_handle).await;
+            })
+            .await;
     }
 
     /// Validates that the PipelineCtrlMsgManager is created with correct
