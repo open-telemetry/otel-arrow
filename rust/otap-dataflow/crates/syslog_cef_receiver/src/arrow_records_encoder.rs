@@ -126,7 +126,7 @@ mod tests {
         otlp::logs::logs_from, proto::opentelemetry::common::v1::any_value::Value,
     };
 
-    use chrono::{DateTime, Datelike};
+    use chrono::{DateTime, Datelike, Local, TimeZone};
 
     /// Custom enum for attribute values that provides stronger type assertions
     /// than using String for all values
@@ -777,25 +777,37 @@ mod tests {
 
             // Verify timestamps are correctly parsed (RFC3164 assumes current year)
             let current_year = Utc::now().year();
-            let expected_timestamp_1 = chrono::NaiveDate::from_ymd_opt(current_year, 10, 11)
+            let expected_timestamp_1 = Local
+                .from_local_datetime(
+                    &chrono::NaiveDate::from_ymd_opt(current_year, 10, 11)
+                        .unwrap()
+                        .and_hms_opt(22, 14, 15)
+                        .unwrap(),
+                )
                 .unwrap()
-                .and_hms_opt(22, 14, 15)
-                .unwrap()
-                .and_utc()
+                .with_timezone(&Utc)
                 .timestamp_nanos_opt()
                 .unwrap();
-            let expected_timestamp_2 = chrono::NaiveDate::from_ymd_opt(current_year, 2, 5)
+            let expected_timestamp_2 = Local
+                .from_local_datetime(
+                    &chrono::NaiveDate::from_ymd_opt(current_year, 2, 5)
+                        .unwrap()
+                        .and_hms_opt(17, 32, 18)
+                        .unwrap(),
+                )
                 .unwrap()
-                .and_hms_opt(17, 32, 18)
-                .unwrap()
-                .and_utc()
+                .with_timezone(&Utc)
                 .timestamp_nanos_opt()
                 .unwrap();
-            let expected_timestamp_3 = chrono::NaiveDate::from_ymd_opt(current_year, 1, 15)
+            let expected_timestamp_3 = Local
+                .from_local_datetime(
+                    &chrono::NaiveDate::from_ymd_opt(current_year, 1, 15)
+                        .unwrap()
+                        .and_hms_opt(10, 30, 45)
+                        .unwrap(),
+                )
                 .unwrap()
-                .and_hms_opt(10, 30, 45)
-                .unwrap()
-                .and_utc()
+                .with_timezone(&Utc)
                 .timestamp_nanos_opt()
                 .unwrap();
 
@@ -2331,13 +2343,17 @@ mod tests {
         assert_eq!(log1.severity_number, 18);
         assert_eq!(log1.severity_text, "ERROR2");
 
-        // Parse timestamp from message: Oct 11 22:14:15 (assumes current year)
+        // Parse timestamp from message: Oct 11 22:14:15 UTC (assumes current year)
         let current_year = Utc::now().year();
-        let expected_timestamp_1 = chrono::NaiveDate::from_ymd_opt(current_year, 10, 11)
+        let expected_timestamp_1 = Local
+            .from_local_datetime(
+                &chrono::NaiveDate::from_ymd_opt(current_year, 10, 11)
+                    .unwrap()
+                    .and_hms_opt(22, 14, 15)
+                    .unwrap(),
+            )
             .unwrap()
-            .and_hms_opt(22, 14, 15)
-            .unwrap()
-            .and_utc()
+            .with_timezone(&Utc)
             .timestamp_nanos_opt()
             .unwrap() as u64;
         assert_eq!(log1.time_unix_nano, expected_timestamp_1);
@@ -2366,11 +2382,15 @@ mod tests {
         assert_eq!(log2.severity_text, "INFO2");
 
         // Parse timestamp from message: Feb  5 17:32:18 (assumes current year)
-        let expected_timestamp_2 = chrono::NaiveDate::from_ymd_opt(current_year, 2, 5)
+        let expected_timestamp_2 = Local
+            .from_local_datetime(
+                &chrono::NaiveDate::from_ymd_opt(current_year, 2, 5)
+                    .unwrap()
+                    .and_hms_opt(17, 32, 18)
+                    .unwrap(),
+            )
             .unwrap()
-            .and_hms_opt(17, 32, 18)
-            .unwrap()
-            .and_utc()
+            .with_timezone(&Utc)
             .timestamp_nanos_opt()
             .unwrap() as u64;
         assert_eq!(log2.time_unix_nano, expected_timestamp_2);
@@ -2462,11 +2482,15 @@ mod tests {
         assert_eq!(log3.severity_text, "INFO");
 
         // Parse timestamp from message: Jan 15 10:30:45 (assumes current year)
-        let expected_timestamp_3 = chrono::NaiveDate::from_ymd_opt(current_year, 1, 15)
+        let expected_timestamp_3 = Local
+            .from_local_datetime(
+                &chrono::NaiveDate::from_ymd_opt(current_year, 1, 15)
+                    .unwrap()
+                    .and_hms_opt(10, 30, 45)
+                    .unwrap(),
+            )
             .unwrap()
-            .and_hms_opt(10, 30, 45)
-            .unwrap()
-            .and_utc()
+            .with_timezone(&Utc)
             .timestamp_nanos_opt()
             .unwrap() as u64;
         assert_eq!(log3.time_unix_nano, expected_timestamp_3);
@@ -2915,11 +2939,15 @@ mod tests {
 
         // Parse timestamp from RFC3164 message: Oct 11 22:14:15 (assumes current year)
         let current_year = Utc::now().year();
-        let expected_timestamp_2 = chrono::NaiveDate::from_ymd_opt(current_year, 10, 11)
+        let expected_timestamp_2 = Local
+            .from_local_datetime(
+                &chrono::NaiveDate::from_ymd_opt(current_year, 10, 11)
+                    .unwrap()
+                    .and_hms_opt(22, 14, 15)
+                    .unwrap(),
+            )
             .unwrap()
-            .and_hms_opt(22, 14, 15)
-            .unwrap()
-            .and_utc()
+            .with_timezone(&Utc)
             .timestamp_nanos_opt()
             .unwrap() as u64;
         assert_eq!(log2.time_unix_nano, expected_timestamp_2);
