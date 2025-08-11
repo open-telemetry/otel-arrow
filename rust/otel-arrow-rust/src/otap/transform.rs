@@ -1145,6 +1145,8 @@ fn plan_key_replacements<'a>(
 }
 
 pub struct KeyDeletePlan<'a> {
+    // TODO name is inconsistent here with replace_plan
+
     target_keys: Vec<&'a [u8]>,
     // TODO comment on the invariant that this will be in order
     ranges: Vec<(usize, usize, usize)>,
@@ -1232,6 +1234,11 @@ fn find_matching_key_ranges(
                 ranges.push((s, i, target_idx))
             }
         }
+
+        // add the final trailing range
+        if let Some(s) = eq_range_start {
+            ranges.push((s, array_len, target_idx))
+        }
     }
 
     // TODO comments blah blah
@@ -1254,7 +1261,7 @@ fn calculate_new_keys_buffer_len(
             })
             .sum();
         let count_deleted_bytes: usize = (0..delete_plan.counts.len())
-            .map(|i| delete_plan.counts[i] * replacement_plan.target_bytes[i].len())
+            .map(|i| delete_plan.counts[i] * delete_plan.target_keys[i].len())
             .sum();
 
         (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize - count_deleted_bytes
@@ -2224,43 +2231,165 @@ mod test {
 
     #[test]
     fn transform_attributes_basic() {
-        // TODO test replacement on dict
-        let keys = StringArray::from_iter_values(vec!["a", "b", "c", "d", "e"]);
-        // TODO this should be a dict
-        let parent_ids = UInt16Array::from_iter_values(vec![1, 1, 1, 2, 2]);
-        // TODO this should maybe be a dict? need to test it both ways
-        let values_str = StringArray::from_iter_values(vec!["1", "2", "3", "4", "5"]);
+        let test_cases = vec![
+            // most basic transform
+            (
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]),
+                    delete: BTreeSet::from_iter(vec![("d".into())])
+                },
+                (
+                    vec!["a", "b", "c", "d", "e"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+                (
+                    vec!["a", "B", "c", "e"],
+                    vec!["1", "1", "3", "5"],
+                ),
+            ),
+            (
+                // test replacements at array boundaries
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![("a".into(), "A".into())]),
+                    delete: BTreeSet::from_iter(vec![]),
+                },
+                (
+                    vec!["a", "b", "a", "d", "a"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+                (
+                    vec!["A", "b", "A", "d", "A"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+            ),
+            (
+                // test replacements where replacements longer than target
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![("a".into(), "AAA".into())]),
+                    delete: BTreeSet::from_iter(vec![])
+                },
+                (
+                    vec!["a", "b", "a", "d", "a"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+                (
+                    vec!["AAA", "b", "AAA", "d", "AAA"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+            ),
+            (
+                // test replacements where replacements shorter than target
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![("aaa".into(), "a".into())]),
+                    delete: BTreeSet::from_iter(vec![])
+                },
+                (
+                    vec!["aaa", "b", "aaa", "d", "aaa"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+                (
+                    vec!["a", "b", "a", "d", "a"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+            ),
+            (
+                // test replacing single contiguous block of keys
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![("a".into(), "AA".into())]),
+                    delete: BTreeSet::from_iter(vec![])
+                },
+                (
+                    vec!["a", "b", "a", "a", "b", "a", "a"],
+                    vec!["1", "1", "3", "4", "5", "6", "7"],
+                ),
+                (
+                    vec!["AA", "b", "AA", "AA", "b", "AA", "AA"],
+                    vec!["1", "1", "3", "4", "5", "6", "7"],
+                ),
+            ),
 
-        let value_type =
-            UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(5));
+            (
+                // test multiple replacements
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![
+                        ("a".into(), "AA".into()),
+                        ("dd".into(), "D".into())
+                    ]),
+                    delete: BTreeSet::from_iter(vec![])
+                },
+                (
+                    vec!["a", "a", "b", "c", "dd", "dd", "e"],
+                    vec!["1", "1", "3", "4", "5", "6", "7"],
+                ),
+                (
+                    vec!["AA", "AA", "b", "c", "D", "D", "e"],
+                    vec!["1", "1", "3", "4", "5", "6", "7"],
+                ),
+            ),
+            (
+                // test multiple replacements interleaved
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![
+                        ("a".into(), "AA".into()),
+                        ("dd".into(), "D".into())
+                    ]),
+                    delete: BTreeSet::from_iter(vec![])
+                },
+                (
+                    vec!["a", "a", "b", "dd", "e", "a", "dd"],
+                    vec!["1", "1", "3", "4", "5", "6", "7"],
+                ),
+                (
+                    vec!["AA", "AA", "b", "D", "e", "AA", "D"],
+                    vec!["1", "1", "3", "4", "5", "6", "7"],
+                ),
+            ),
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
-            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-        ]));
+            (
+                // test deletion at array boundaries without replaces
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![]),
+                    delete: BTreeSet::from_iter(vec!["a".into()]),
+                },
+                (
+                    vec!["a", "b", "a", "d", "a"],
+                    vec!["1", "1", "3", "4", "5"],
+                ),
+                (
+                    vec!["b", "d",],
+                    vec!["1", "4",],
+                ),
+            ),
+            
 
-        let record_batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(keys),
-                Arc::new(value_type),
-                Arc::new(values_str),
-                Arc::new(parent_ids),
-            ],
-        )
-        .unwrap();
+        ];
 
-        let result = transform_attributes(
-            &record_batch,
-            AttributesTransform {
-                rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]),
-                delete: BTreeSet::from_iter(vec!["d".into()]),
-            },
-        )
-        .unwrap();
+        for (transform, input_cols, expected_cols) in test_cases {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ]));
 
-        println!("{:?}", result)
+            let keys = StringArray::from_iter_values(input_cols.0);
+            let values = StringArray::from_iter_values(input_cols.1);
+
+            let record_batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(keys),
+                    Arc::new(values),
+                ],
+            )
+            .unwrap();
+
+            let result = transform_attributes(&record_batch, transform)
+            .unwrap();
+
+            let keys = StringArray::from_iter_values(expected_cols.0);
+            let values = StringArray::from_iter_values(expected_cols.1);
+            let expected = RecordBatch::try_new(schema.clone(), vec![Arc::new(keys), Arc::new(values)]).unwrap();
+
+            assert_eq!(result, expected)
+        }
     }
 }
