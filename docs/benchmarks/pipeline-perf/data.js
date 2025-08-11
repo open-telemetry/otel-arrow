@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1754944902559,
+  "lastUpdate": 1754946574174,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -8491,6 +8491,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 149.7,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cbd46d6329b2d22ab54b168d5a2123dcedc1a549",
+          "message": "fix: OTAP decoding handle plain encoded attribute IDs (#913)\n\nPart of: #878 \n\nWe have some bugs in the OTAP -> OTLP decoding code where the OTLP\ndecoding expects all the IDs & Parent IDs to be encoded as they are\nproduced by the Golang Collector. For attribute Parent IDs, this means\nthat we expect the Parent IDs to use the transport-optimized quasi-delta\nencoding. However, our OTAP encoder (which is used when converting OTAP\nPdata representation), always produces plain encoded IDs & parent IDs.\n\nThis PR adds support to the OTLP decoder to handle these plain encoded\nparent IDs. To do this, the attribute store will check the metadata on\nthe parent ID column and not use the parent ID decoder if the ID is\nplain encoded.\n\nThis PR also adds a helper method called `with_plain_encoding()` to the\nArrow `Field` type via an extension trait, which adds the correct field\nmetadata. This cuts down the verbosity of having to set the field\nencoding using `HashMap::from_iter` in many places (especially in test\ncode).\n\n---------\n\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
+          "timestamp": "2025-08-11T21:01:41Z",
+          "tree_id": "995bc06ec1a637fd76a1697e320f25a3af7da4b5",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cbd46d6329b2d22ab54b168d5a2123dcedc1a549"
+        },
+        "date": 1754946565020,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 748166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22445000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22445000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.79,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.97,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 159.49,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 190.15,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 745666.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22370000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22370000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.76,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.8,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 121.59,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 139.1,
             "unit": "MiB"
           }
         ]
