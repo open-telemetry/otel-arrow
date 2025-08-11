@@ -17,7 +17,6 @@
 
 use arrow::array::{LargeListArray, RecordBatch};
 use arrow::datatypes::{Field, Schema};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod consts;
@@ -175,10 +174,13 @@ pub trait FieldExt {
 }
 
 impl FieldExt for Field {
-    fn with_plain_encoding(self) -> Self {
-        self.with_metadata(HashMap::from_iter([(
+    fn with_plain_encoding(mut self) -> Self {
+        let current_metadata = self.metadata_mut();
+        _ = current_metadata.insert(
             consts::metadata::COLUMN_ENCODING.into(),
             consts::metadata::encodings::PLAIN.into(),
-        )]))
+        );
+
+        self
     }
 }
