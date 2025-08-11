@@ -6,8 +6,7 @@ use std::ops::AddAssign;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
-    PrimitiveBuilder, RecordBatch, StringArray,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray
 };
 use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
@@ -847,11 +846,33 @@ pub fn transform_attributes(
             #[allow(unsafe_code)]
             let new_key_offsets = unsafe { OffsetBuffer::new_unchecked(offset_scalar_buf) };
 
-            let new_keys_value_buf = key_tx_intermediate_result.values.into();
+
+
+            // compute the new null buffer
+            let new_nulls = match keys_arr.nulls(){
+                Some(current_nulls) => {
+                    let mut new_nulls_builder = NullBufferBuilder::new(new_key_offsets.len() - 1);
+                    for (start, end) in &keep_ranges {
+                        let nulls_for_range = current_nulls.slice(*start, end - start);
+                        new_nulls_builder.append_buffer(&nulls_for_range);
+                    }
+
+                    new_nulls_builder.finish()
+
+                },
+                None => None,
+            };
+                       
+            if new_nulls.is_some() {
+                new_nulls.clone().unwrap().iter().for_each(|b| print!("{:?},", b));
+                println!("^^^ null buffer");
+            }
+
+            let new_keys_value_buf = key_tx_intermediate_result.values.into(); 
             #[allow(unsafe_code)]
             let new_keys = Arc::new(unsafe {
                 // TODO nulls
-                StringArray::new_unchecked(new_key_offsets, new_keys_value_buf, None)
+                StringArray::new_unchecked(new_key_offsets, new_keys_value_buf, new_nulls)
             });
 
             let columns = attrs_record_batch
@@ -930,7 +951,7 @@ fn transform_keys(
                     new_values.extend_from_slice(replacement_bytes);
                 }
             }
-            _  => {
+            _ => {
                 // insert no values into new_values buffer for deletes
             }
         }
@@ -962,7 +983,7 @@ fn transform_keys(
             .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
 
         match range_type {
-            KeyTransformRangeType::Replace  => {
+            KeyTransformRangeType::Replace => {
                 // append offsets for values that were replaced
                 let replacement_bytes = replacement_plan.replacement_bytes[transform_idx];
                 let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
@@ -974,60 +995,19 @@ fn transform_keys(
                 curr_total_offset_adjustment += replacement_plan.replacement_byte_len_diffs
                     [transform_idx]
                     * (end_idx - start_idx) as i32;
-            }   
+            }
             KeyTransformRangeType::Delete => {
                 curr_total_offset_adjustment -=
                     (delete_plan.target_keys[transform_idx].len() * (end_idx - start_idx)) as i32;
             }
         }
         prev_range_index_end = end_idx
-
-
-
-        // match range {
-        //     KeyTransformRange::Replace((start_idx, end_idx, replacement_idx)) => {
-        //         // copy offsets for values that were not replaced, but add the offset adjustment
-        //         offsets
-        //             .inner()
-        //             .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
-        //             .into_iter()
-        //             .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
-
-        //         // append offsets for values that were replaced
-        //         let replacement_bytes = replacement_plan.replacement_bytes[replacement_idx];
-        //         let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
-        //         for _ in start_idx..end_idx {
-        //             new_offsets.push(offset);
-        //             offset += replacement_bytes.len() as i32;
-        //         }
-
-        //         curr_total_offset_adjustment += replacement_plan.replacement_byte_len_diffs
-        //             [replacement_idx]
-        //             * (end_idx - start_idx) as i32;
-        //         prev_replaced_index_end = end_idx;
-        //     }
-        //     KeyTransformRange::Delete((start_idx, end_idx, delete_idx)) => {
-        //         // copy offsets for values that were not replaced, but add the offset adjustment
-        //         offsets
-        //             .inner()
-        //             .slice(prev_replaced_index_end, start_idx - prev_replaced_index_end)
-        //             .into_iter()
-        //             .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
-
-        //         curr_total_offset_adjustment -=
-        //             (delete_plan.target_keys[delete_idx].len() * (end_idx - start_idx)) as i32;
-        //         prev_replaced_index_end = end_idx;
-        //     }
-        // }
     }
 
     // copy any remaining offsets between the last replaced range and the end of the array
     offsets
         .inner()
-        .slice(
-            prev_range_index_end,
-            array.len() - prev_range_index_end,
-        )
+        .slice(prev_range_index_end, array.len() - prev_range_index_end)
         .into_iter()
         .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
 
@@ -1125,8 +1105,7 @@ fn plan_key_replacements<'a>(
         .map(|replacement| replacement.as_bytes())
         .collect::<Vec<_>>();
 
-    let target_ranges = find_matching_key_ranges(
-        array_len, values_buf, offsets, &target_bytes);
+    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes);
 
     let replacement_byte_len_diffs = (0..replacements.len())
         .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
@@ -1146,7 +1125,6 @@ fn plan_key_replacements<'a>(
 
 pub struct KeyDeletePlan<'a> {
     // TODO name is inconsistent here with replace_plan
-
     target_keys: Vec<&'a [u8]>,
     // TODO comment on the invariant that this will be in order
     ranges: Vec<(usize, usize, usize)>,
@@ -1166,12 +1144,7 @@ fn plan_key_deletes<'a>(
         .map(|key| key.as_bytes())
         .collect::<Vec<_>>();
 
-    let target_ranges = find_matching_key_ranges(
-        array_len, 
-        values_buf,
-        offsets,
-        &target_bytes
-    );
+    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes);
 
     KeyDeletePlan {
         target_keys: target_bytes,
@@ -1244,7 +1217,11 @@ fn find_matching_key_ranges(
     // TODO comments blah blah
     ranges.sort();
 
-    return TargetRanges { ranges, counts, total_matches }
+    return TargetRanges {
+        ranges,
+        counts,
+        total_matches,
+    };
 }
 
 fn calculate_new_keys_buffer_len(
@@ -2237,16 +2214,10 @@ mod test {
             (
                 AttributesTransform {
                     rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]),
-                    delete: BTreeSet::from_iter(vec![("d".into())])
+                    delete: BTreeSet::from_iter(vec![("d".into())]),
                 },
-                (
-                    vec!["a", "b", "c", "d", "e"],
-                    vec!["1", "1", "3", "4", "5"],
-                ),
-                (
-                    vec!["a", "B", "c", "e"],
-                    vec!["1", "1", "3", "5"],
-                ),
+                (vec!["a", "b", "c", "d", "e"], vec!["1", "1", "3", "4", "5"]),
+                (vec!["a", "B", "c", "e"], vec!["1", "1", "3", "5"]),
             ),
             (
                 // test replacements at array boundaries
@@ -2254,25 +2225,16 @@ mod test {
                     rename: BTreeMap::from_iter(vec![("a".into(), "A".into())]),
                     delete: BTreeSet::from_iter(vec![]),
                 },
-                (
-                    vec!["a", "b", "a", "d", "a"],
-                    vec!["1", "1", "3", "4", "5"],
-                ),
-                (
-                    vec!["A", "b", "A", "d", "A"],
-                    vec!["1", "1", "3", "4", "5"],
-                ),
+                (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
+                (vec!["A", "b", "A", "d", "A"], vec!["1", "1", "3", "4", "5"]),
             ),
             (
                 // test replacements where replacements longer than target
                 AttributesTransform {
                     rename: BTreeMap::from_iter(vec![("a".into(), "AAA".into())]),
-                    delete: BTreeSet::from_iter(vec![])
+                    delete: BTreeSet::from_iter(vec![]),
                 },
-                (
-                    vec!["a", "b", "a", "d", "a"],
-                    vec!["1", "1", "3", "4", "5"],
-                ),
+                (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (
                     vec!["AAA", "b", "AAA", "d", "AAA"],
                     vec!["1", "1", "3", "4", "5"],
@@ -2282,22 +2244,19 @@ mod test {
                 // test replacements where replacements shorter than target
                 AttributesTransform {
                     rename: BTreeMap::from_iter(vec![("aaa".into(), "a".into())]),
-                    delete: BTreeSet::from_iter(vec![])
+                    delete: BTreeSet::from_iter(vec![]),
                 },
                 (
                     vec!["aaa", "b", "aaa", "d", "aaa"],
                     vec!["1", "1", "3", "4", "5"],
                 ),
-                (
-                    vec!["a", "b", "a", "d", "a"],
-                    vec!["1", "1", "3", "4", "5"],
-                ),
+                (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
             ),
             (
                 // test replacing single contiguous block of keys
                 AttributesTransform {
                     rename: BTreeMap::from_iter(vec![("a".into(), "AA".into())]),
-                    delete: BTreeSet::from_iter(vec![])
+                    delete: BTreeSet::from_iter(vec![]),
                 },
                 (
                     vec!["a", "b", "a", "a", "b", "a", "a"],
@@ -2308,15 +2267,14 @@ mod test {
                     vec!["1", "1", "3", "4", "5", "6", "7"],
                 ),
             ),
-
             (
                 // test multiple replacements
                 AttributesTransform {
                     rename: BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
-                        ("dd".into(), "D".into())
+                        ("dd".into(), "D".into()),
                     ]),
-                    delete: BTreeSet::from_iter(vec![])
+                    delete: BTreeSet::from_iter(vec![]),
                 },
                 (
                     vec!["a", "a", "b", "c", "dd", "dd", "e"],
@@ -2332,9 +2290,9 @@ mod test {
                 AttributesTransform {
                     rename: BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
-                        ("dd".into(), "D".into())
+                        ("dd".into(), "D".into()),
                     ]),
-                    delete: BTreeSet::from_iter(vec![])
+                    delete: BTreeSet::from_iter(vec![]),
                 },
                 (
                     vec!["a", "a", "b", "dd", "e", "a", "dd"],
@@ -2345,26 +2303,60 @@ mod test {
                     vec!["1", "1", "3", "4", "5", "6", "7"],
                 ),
             ),
-
             (
                 // test deletion at array boundaries without replaces
                 AttributesTransform {
                     rename: BTreeMap::from_iter(vec![]),
                     delete: BTreeSet::from_iter(vec!["a".into()]),
                 },
-                (
-                    vec!["a", "b", "a", "d", "a"],
-                    vec!["1", "1", "3", "4", "5"],
-                ),
-                (
-                    vec!["b", "d",],
-                    vec!["1", "4",],
-                ),
+                (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
+                (vec!["b", "d"], vec!["1", "4"]),
             ),
-
-            // TODO add more tests for deletion ...
-            
-
+            (
+                // test delete contiguous segment
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![]),
+                    delete: BTreeSet::from_iter(vec!["a".into()])
+                },
+                (
+                    vec!["a", "a", "a", "b", "a", "a", "b", "b", "a", "a"],
+                    vec!["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+                ),
+                (
+                    vec!["b", "b", "b"],
+                    vec!["4", "7", "8"]
+                )
+            ),
+            (
+                // test multiple deletes
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![]),
+                    delete: BTreeSet::from_iter(vec!["a".into(), "b".into()])
+                },
+                (
+                    vec!["a", "a", "a", "b", "a", "a", "b", "c", "a", "a"],
+                    vec!["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+                ),
+                (
+                    vec!["c"],
+                    vec!["8"]
+                )
+            ),
+            (
+                // test adjacent replacement and delete
+                AttributesTransform {
+                    rename: BTreeMap::from_iter(vec![("a".into(), "AAA".into())]),
+                    delete: BTreeSet::from_iter(vec!["b".into()])
+                },
+                (
+                    vec!["_", "a", "a", "b", "c"],
+                    vec!["1", "2", "3", "4", "5"]
+                ),
+                (
+                    vec!["_", "AAA", "AAA", "c"],
+                    vec!["1", "2", "3", "5"]
+                )
+            )
         ];
 
         for (transform, input_cols, expected_cols) in test_cases {
@@ -2376,21 +2368,17 @@ mod test {
             let keys = StringArray::from_iter_values(input_cols.0);
             let values = StringArray::from_iter_values(input_cols.1);
 
-            let record_batch = RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(keys),
-                    Arc::new(values),
-                ],
-            )
-            .unwrap();
+            let record_batch =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(keys), Arc::new(values)])
+                    .unwrap();
 
-            let result = transform_attributes(&record_batch, transform)
-            .unwrap();
+            let result = transform_attributes(&record_batch, transform).unwrap();
 
             let keys = StringArray::from_iter_values(expected_cols.0);
             let values = StringArray::from_iter_values(expected_cols.1);
-            let expected = RecordBatch::try_new(schema.clone(), vec![Arc::new(keys), Arc::new(values)]).unwrap();
+            let expected =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(keys), Arc::new(values)])
+                    .unwrap();
 
             assert_eq!(result, expected)
         }
@@ -2405,42 +2393,32 @@ mod test {
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(
-                consts::ATTRIBUTE_STR, DataType::Dictionary(
-                    Box::new(DataType::UInt8),
-                    Box::new(DataType::Utf8)
-                ),
-                true
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
             ),
             Field::new(
-                consts::ATTRIBUTE_INT, DataType::Dictionary(
-                    Box::new(DataType::UInt8),
-                    Box::new(DataType::Int64)
-                ),
-                true
+                consts::ATTRIBUTE_INT,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int64)),
+                true,
             ),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
             Field::new(
-                consts::ATTRIBUTE_DOUBLE, DataType::Float64, true
+                consts::ATTRIBUTE_BYTES,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
             ),
-            Field::new(
-                consts::ATTRIBUTE_BOOL, DataType::Boolean, true
-            ),
-            Field::new(
-                consts::ATTRIBUTE_BYTES, DataType::Dictionary(
-                    Box::new(DataType::UInt16),
-                    Box::new(DataType::Binary)
-                ),
-                true
-            ),
-            Field::new(
-                consts::ATTRIBUTE_SER, DataType::Binary, true
-            )
+            Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
         ]));
 
         let record_batch = RecordBatch::try_new(
             schema.clone(),
             vec![
                 // parent ids
-                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4, 5, 6, 7, 8, 9])),
+                Arc::new(UInt16Array::from_iter_values(vec![
+                    1, 2, 3, 4, 5, 6, 7, 8, 9,
+                ])),
                 // attribute_types
                 Arc::new(UInt8Array::from_iter_values(vec![
                     AttributeValueType::Str as u8,
@@ -2455,52 +2433,86 @@ mod test {
                 ])),
                 // keys
                 Arc::new(StringArray::from_iter_values(vec![
-                    "k1", "k2", "k3", 
-                    "k4", "k5", "k6", 
-                    "k7", "k8", "k9", 
+                    "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9",
                 ])),
                 Arc::new(DictionaryArray::new(
                     UInt8Array::from_iter(vec![
-                        Some(0), None, None,
-                        None, None, None,
-                        None, None, None
+                        Some(0),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     ]),
-                    Arc::new(StringArray::from_iter_values(vec!["a"]))
+                    Arc::new(StringArray::from_iter_values(vec!["a"])),
                 )),
                 Arc::new(DictionaryArray::new(
                     UInt8Array::from_iter(vec![
-                        None, Some(0), None,
-                        None, None, None,
-                        None, None, None
+                        None,
+                        Some(0),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     ]),
-                    Arc::new(Int64Array::from_iter_values(vec![1]))
+                    Arc::new(Int64Array::from_iter_values(vec![1])),
                 )),
                 Arc::new(Float64Array::from_iter(vec![
-                    None, None, Some(1.0),
-                    None, None, None,
-                    None, None, Some(2.0)
+                    None,
+                    None,
+                    Some(1.0),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(2.0),
                 ])),
                 Arc::new(BooleanArray::from_iter(vec![
-                    None, None, None,
-                    Some(true), None, None,
-                    None, None, None
+                    None,
+                    None,
+                    None,
+                    Some(true),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 ])),
                 Arc::new(DictionaryArray::new(
                     UInt16Array::from_iter(vec![
-                        None, Some(0), None,
-                        None, None, None,
-                        None, None, None
+                        None,
+                        Some(0),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     ]),
-                    Arc::new(BinaryArray::from_iter_values(vec![b"a"]))
+                    Arc::new(BinaryArray::from_iter_values(vec![b"a"])),
                 )),
                 Arc::new(BinaryArray::from_iter(vec![
-                    None, None, None,
-                    Some(b"test"), None, None,
-                    None, None, None
+                    None,
+                    None,
+                    None,
+                    Some(b"test"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 ])),
-
-            ]
-        ).unwrap();
+            ],
+        )
+        .unwrap();
 
         let result = transform_attributes(
             &record_batch,
@@ -2508,7 +2520,8 @@ mod test {
                 rename: BTreeMap::from_iter(vec![("k2".into(), "K2".into())]),
                 delete: BTreeSet::from_iter(vec!["k3".into()]),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let expected_record_batch = RecordBatch::try_new(
             schema.clone(),
@@ -2528,60 +2541,85 @@ mod test {
                 ])),
                 // keys
                 Arc::new(StringArray::from_iter_values(vec![
-                    "k1", "K2",
-                    "k4", "k5", "k6", 
-                    "k7", "k8", "k9", 
+                    "k1", "K2", "k4", "k5", "k6", "k7", "k8", "k9",
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter(vec![
-                        Some(0), None, 
-                        None, None, None,
-                        None, None, None
-                    ]),
-                    Arc::new(StringArray::from_iter_values(vec!["a"]))
+                    UInt8Array::from_iter(vec![Some(0), None, None, None, None, None, None, None]),
+                    Arc::new(StringArray::from_iter_values(vec!["a"])),
                 )),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter(vec![
-                        None, Some(0), 
-                        None, None, None,
-                        None, None, None
-                    ]),
-                    Arc::new(Int64Array::from_iter_values(vec![1]))
+                    UInt8Array::from_iter(vec![None, Some(0), None, None, None, None, None, None]),
+                    Arc::new(Int64Array::from_iter_values(vec![1])),
                 )),
                 Arc::new(Float64Array::from_iter(vec![
-                    None, None, 
-                    None, None, None,
-                    None, None, Some(2.0)
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(2.0),
                 ])),
                 Arc::new(BooleanArray::from_iter(vec![
-                    None, None, 
-                    Some(true), None, None,
-                    None, None, None
+                    None,
+                    None,
+                    Some(true),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter(vec![
-                        None, Some(0), 
-                        None, None, None,
-                        None, None, None
-                    ]),
-                    Arc::new(BinaryArray::from_iter_values(vec![b"a"]))
+                    UInt16Array::from_iter(vec![None, Some(0), None, None, None, None, None, None]),
+                    Arc::new(BinaryArray::from_iter_values(vec![b"a"])),
                 )),
                 Arc::new(BinaryArray::from_iter(vec![
-                    None, None, 
-                    Some(b"test"), None, None,
-                    None, None, None
+                    None,
+                    None,
+                    Some(b"test"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 ])),
-
-            ]
-        ).unwrap();
+            ],
+        )
+        .unwrap();
 
         assert_eq!(result, expected_record_batch);
     }
-    
+
+    #[test]
+    fn test_transform_delete_with_nulls() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, false)
+        ]));
+
+        let input = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(StringArray::from_iter(vec![Some("a"), Some("b"), None, Some("c"), Some("d"), None, Some("e")])),
+            Arc::new(StringArray::from_iter_values(vec!["1", "2", "3", "4", "5", "6", "7"]))
+        ]).unwrap();
+
+        let result = transform_attributes(
+            &input,
+            AttributesTransform { rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]), delete: BTreeSet::from_iter(vec!["c".into(), "e".into()]) 
+        }).unwrap();
+
+        let expected = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(StringArray::from_iter(vec![Some("a"), Some("B"), None, Some("d"), None])),
+            Arc::new(StringArray::from_iter_values(vec!["1", "2", "3", "5", "6"]))
+        ]).unwrap();
+
+
+        assert_eq!(result, expected);
+    }
 
     // TODO testing
     // - with nulls
-    // - keeps all the other extra columns
     // - parent ID non-plain encoding handling
-    // - dictionary
+    // - dictionary keys
 }
