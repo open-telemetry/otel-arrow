@@ -858,147 +858,74 @@ pub fn transform_attributes(
             Ok(RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns"))
         }
-        DataType::Dictionary(k, _) => match *k.clone() {
-            DataType::UInt8 => {
-                let dict_arr = attrs_record_batch
-                    .column(key_column_idx)
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt8Type>>()
-                    .expect("can downcast dictionary column to dictionary array");
+        DataType::Dictionary(k, _) => {
+            let (new_dict, keep_ranges) = match *k.clone() {
+                DataType::UInt8 => {
+                    let dict_arr = attrs_record_batch
+                        .column(key_column_idx)
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .expect("can downcast dictionary column to dictionary array");
 
-                let values = dict_arr.values();
-                match values.data_type() {
-                    DataType::Utf8 => {
-                        // let dict_values_arr = values
-                        //     .as_any()
-                        //     .downcast_ref()
-                        //     .expect("can downcast Utf8 Column to string array");
+                    let values = dict_arr.values();
+                    match values.data_type() {
+                        DataType::Utf8 => {
+                            let dict_imm_result = transform_dictionary_keys(dict_arr, &transform)?;
+                            let new_dict = Arc::new(dict_imm_result.keys_array);
+                            (new_dict as ArrayRef, dict_imm_result.keep_ranges)
 
-                        // let imm_result = transform_keys(dict_values_arr, &transform);
-
-                        // let dict_keys = dict_arr.keys();
-
-                        // // find the ranges of values we need to keep
-                        // // TODO -- consider combining this with the loop above to see if performance is better
-                        // let mut keep_ranges = vec![];
-                        // let mut curr_range_start = None;
-                        // 'arr_loop: for i in 0..dict_arr.len() {
-                        //     if dict_keys.is_valid(i) {
-                        //         let dict_key = dict_keys.value(i) as usize;
-
-                        //         for range in &imm_result.deletion_ranges {
-                        //             if dict_key >= range.0 && dict_key < range.1 {
-                        //                 if let Some(s) = curr_range_start.take() {
-                        //                     keep_ranges.push((s, i));
-                        //                 }
-                        //                 continue 'arr_loop;
-                        //             }
-                        //         }
-                        //     }
-
-                        //     if curr_range_start.is_none() {
-                        //         curr_range_start = Some(i)
-                        //     }
-                        // }
-                        // // add final range
-                        // if let Some(s) = curr_range_start {
-                        //     keep_ranges.push((s, dict_arr.len()));
-                        // }
-
-                        // // keep the keys
-                        // // TODO -- are there any shortcuts here if there were no deletes?
-                        // let count_kept_values =
-                        //     keep_ranges.iter().map(|(start, end)| end - start).sum();
-                        // let mut new_keys_builder =
-                        //     PrimitiveBuilder::<UInt8Type>::with_capacity(count_kept_values);
-                        // let key_offsets = imm_result
-                        //     .deletion_ranges
-                        //     .iter()
-                        //     .map(|(start, end)| end - start)
-                        //     .collect::<Vec<_>>();
-
-                        // 'arr_loop: for i in 0..dict_arr.len() {
-                        //     if !dict_arr.is_valid(i) {
-                        //         new_keys_builder.append_null();
-                        //         continue;
-                        //     }
-
-                        //     let dict_key = dict_keys.value(i) as usize;
-
-                        //     let mut kept_after_delete_range = None;
-                        //     let mut range_idx = 0;
-                        //     for range in &imm_result.deletion_ranges {
-                        //         if dict_key >= range.0 {
-                        //             if dict_key < range.1 {
-                        //                 continue 'arr_loop;
-                        //             } else {
-                        //                 kept_after_delete_range = Some(range_idx);
-                        //                 range_idx += 1;
-                        //             }
-                        //         } else {
-                        //             break;
-                        //         }
-                        //     }
-
-                        //     if let Some(idx) = kept_after_delete_range {
-                        //         let new_key = dict_key - key_offsets[idx];
-                        //         // TODO should be K::Native here
-                        //         new_keys_builder.append_value(new_key as u8);
-                        //     } else {
-                        //         new_keys_builder.append_value(dict_key as u8);
-                        //     }
-                        // }
-
-                        // let new_dict_keys = new_keys_builder.finish();
-
-                        // let new_dict_value = finish_keys_array(
-                        //     imm_result.values,
-                        //     imm_result.offsets,
-                        //     imm_result.null_buffer,
-                        // );
-
-                        // #[allow(unsafe_code)]
-                        // let new_dict = Arc::new(unsafe {
-                        //     DictionaryArray::<UInt8Type>::new_unchecked(
-                        //         new_dict_keys,
-                        //         Arc::new(new_dict_value),
-                        //     )
-                        // });
-                        let dict_imm_result = transform_dictionary_keys(dict_arr, &transform)?;
-                        let new_dict = Arc::new(dict_imm_result.keys_array);
-
-                        let columns = attrs_record_batch
-                            .columns()
-                            .iter()
-                            .enumerate()
-                            .map(|(i, col)| {
-                                if i == key_column_idx {
-                                    new_dict.clone()
-                                } else {
-                                    // TODO if the field is parent ID, we need to either remove the transport optimized encoding?
-                                    // maybe not if we've removed an entire segment of keys... but maybe if a replacement can
-                                    // cause an invalid run ...
-                                    take_ranges_slice(col, &dict_imm_result.keep_ranges)
-                                }
-                            })
-                            .collect::<Vec<ArrayRef>>();
-
-                        println!("columns = {:?}", columns);
-
-                        // safety: this should only return an error if our schema, or column lengths don't match
-                        // but based on how we've constructed the batch, this shouldn't happen
-                        Ok(RecordBatch::try_new(schema, columns)
-                            .expect("can build record batch with same schema and columns"))
-                    }
-                    _ => {
-                        todo!("should return an error here")
+                        }
+                        _ => {
+                            todo!("should return an error here")
+                        }
                     }
                 }
-            }
-            _ => {
-                todo!()
-            }
-        },
+                DataType::UInt16 => {
+                    let dict_arr = attrs_record_batch
+                        .column(key_column_idx)
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .expect("can downcast dictionary column to dictionary array");
+                    let values = dict_arr.values();
+                    match values.data_type() {
+                        DataType::Utf8 => {
+                            let dict_imm_result = transform_dictionary_keys(dict_arr, &transform)?;
+                            let new_dict = Arc::new(dict_imm_result.keys_array);
+                            (new_dict as ArrayRef, dict_imm_result.keep_ranges)
+                        }
+                        _ => {
+                            todo!("should return an error here")
+                        }
+                    }
+                }
+                _ => {
+                    todo!()
+                }
+            };
+
+            let columns = attrs_record_batch
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    if i == key_column_idx {
+                        new_dict.clone()
+                    } else {
+                        // TODO if the field is parent ID, we need to either remove the transport optimized encoding?
+                        // maybe not if we've removed an entire segment of keys... but maybe if a replacement can
+                        // cause an invalid run ...
+                        take_ranges_slice(col, &keep_ranges)
+                    }
+                })
+                .collect::<Vec<ArrayRef>>();
+
+            println!("columns = {:?}", columns);
+
+            // safety: this should only return an error if our schema, or column lengths don't match
+            // but based on how we've constructed the batch, this shouldn't happen
+            Ok(RecordBatch::try_new(schema, columns)
+                .expect("can build record batch with same schema and columns"))
+        }
 
         _ => {
             todo!()
@@ -3078,8 +3005,50 @@ mod test {
         }
     }
 
+    #[test]
+    fn test_transform_attrs_u16_keys() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(DictionaryArray::new(
+                        UInt16Array::from_iter(vec![Some(1), Some(0), None, Some(2), Some(3), None]),
+                        Arc::new(StringArray::from_iter_values(vec!["a", "b", "c", "d"])),
+                    )),
+                    Arc::new(StringArray::from_iter_values(vec!["1", "2", "3", "4", "5", "6"])),
+                ],
+            )
+            .unwrap();
+
+        let result = transform_attributes(&input, AttributesTransform {
+            rename: BTreeMap::from_iter([("c".into(), "CCCCC".into())]),
+            delete: BTreeSet::from_iter(["b".into()]) 
+        }).unwrap();
+
+        let expected = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(DictionaryArray::new(
+                        UInt16Array::from_iter(vec![Some(0), None, Some(1), Some(2), None]),
+                        Arc::new(StringArray::from_iter_values(vec!["a", "CCCCC", "d"])),
+                    )),
+                    Arc::new(StringArray::from_iter_values(vec!["2", "3", "4", "5", "6"])),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
     // TODO:
-    // - dict 16
     // - dict with null values
     // - dict with null keys
     // - parent ID non-plain encoding handling
