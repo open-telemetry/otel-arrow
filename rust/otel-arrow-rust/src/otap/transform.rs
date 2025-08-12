@@ -828,21 +828,8 @@ pub fn transform_attributes(
 
             let imm_result = transform_keys(keys_arr, &transform);
 
-            let mut keep_ranges: Vec<(usize, usize)>  = vec![];
-            let mut last_delete_range_end = 0;
-            for (start, end) in &imm_result.deletion_ranges {
-                keep_ranges.push((last_delete_range_end, *start));
-                last_delete_range_end = *end;
-            }
-            // add final range
-            keep_ranges.push((last_delete_range_end, keys_arr.len()));
-
-            // compute the new null buffer
-            let new_nulls = take_null_buffer_ranges(
-                keys_arr.nulls(), &keep_ranges, imm_result.len()
-            );
-
-            let new_keys = Arc::new(imm_result.finish(new_nulls));
+            let new_keys = Arc::new(finish_keys_array(
+                imm_result.values, imm_result.offsets, imm_result.null_buffer));
 
             let columns = attrs_record_batch
                 .columns()
@@ -855,7 +842,7 @@ pub fn transform_attributes(
                         // TODO if the field is parent ID, we need to either remove the transport optimized encoding?
                         // maybe not if we've removed an entire segment of keys... but maybe if a replacement can
                         // cause an invalid run ...
-                        take_ranges_slice(col, &keep_ranges)
+                        take_ranges_slice(col, &imm_result.keep_ranges)
                     }
                 })
                 .collect::<Vec<ArrayRef>>();
@@ -885,24 +872,34 @@ pub fn transform_attributes(
 
                         let imm_result = transform_keys(dict_values_arr, &transform);
 
-
-                        let mut values_keep_ranges: Vec<(usize, usize)>  = vec![];
-                        let mut last_delete_range_end = 0;
-                        for (start, end) in &imm_result.deletion_ranges {
-                            values_keep_ranges.push((last_delete_range_end, *start));
-                            last_delete_range_end = *end;
-                        }
-
-                        // TODO need this?
-                        //  add final range
-                        // keep_ranges.push((last_delete_range_end, keys_arr.len()));
-
-                        let values_new_nulls = take_null_buffer_ranges(
-                            dict_values_arr.nulls(), &values_keep_ranges, imm_result.len()
-                        );
-                        
                         let dict_keys = dict_arr.keys();
 
+                        // find the ranges of values we need to keep
+                        // TODO -- consider combining this with the loop above to see if performance is better
+                        let mut keep_ranges = vec![];
+                        let mut curr_range_start = None;
+                        'arr_loop: for i in 0..dict_arr.len() {
+                            if dict_keys.is_valid(i) {
+                                let dict_key = dict_keys.value(i) as usize;
+
+                                for range in &imm_result.deletion_ranges {
+                                    if dict_key >= range.0 && dict_key < range.1 {
+                                        if let Some(s) = curr_range_start.take() {
+                                            keep_ranges.push((s, i));
+                                        }
+                                        continue 'arr_loop
+                                    }
+                                }
+                            }
+
+                            if curr_range_start.is_none() {
+                                curr_range_start = Some(i)
+                            }
+                        }
+                        // add final range
+                        if let Some(s) = curr_range_start {
+                            keep_ranges.push((s, dict_arr.len()));
+                        }
 
                         // keep the keys
                         // TODO -- initialize with capacity
@@ -946,39 +943,12 @@ pub fn transform_attributes(
                         }
 
                         let new_dict_keys = new_keys_builder.finish();
-
-                        // find the ranges of values we need to keep
-                        // TODO -- consider combining this with the loop above to see if performance is better
-                        let mut keep_ranges = vec![];
-                        let mut curr_range_start = None;
-                        'arr_loop: for i in 0..dict_arr.len() {
-                            if dict_keys.is_valid(i) {
-                                let dict_key = dict_keys.value(i) as usize;
-
-                                for range in &imm_result.deletion_ranges {
-                                    if dict_key >= range.0 && dict_key < range.1 {
-                                        if let Some(s) = curr_range_start.take() {
-                                            keep_ranges.push((s, i));
-                                        }
-                                        continue 'arr_loop
-                                    }
-                                }
-                            }
-
-                            if curr_range_start.is_none() {
-                                curr_range_start = Some(i)
-                            }
-                        }
-                        // add final range
-                        if let Some(s) = curr_range_start {
-                            keep_ranges.push((s, dict_arr.len()));
-                        }
-
-                        println!("curr range start = {:?}", curr_range_start);
-                        println!("keep ranges = {:?}", keep_ranges);
                         
-                        
-                        let new_dict_value = imm_result.finish(values_new_nulls);
+                        let new_dict_value = finish_keys_array(
+                            imm_result.values,
+                            imm_result.offsets,
+                            imm_result.null_buffer
+                        );
 
                         #[allow(unsafe_code)]
                         let new_dict = Arc::new(unsafe {
@@ -1034,32 +1004,36 @@ fn transform_dictionary_keys() {
 struct KeysTransformIntermediateResult {
     values: MutableBuffer,
     offsets: MutableBuffer,
+    // TODO should this be named something else to be consistent?
+    null_buffer: Option<NullBufferBuilder>,
+
+    keep_ranges: Vec<(usize, usize)>,
     deletion_ranges: Vec<(usize, usize)>,
 }
 
+fn finish_keys_array(
+    values: MutableBuffer,
+    offsets: MutableBuffer,
+    nulls_builder: Option<NullBufferBuilder>,
+) -> StringArray {
+    let len = offsets.len() / size_of::<i32>();
+    let offset_scalar_buf = ScalarBuffer::<i32>::new(
+        offsets.into(),
+        0,
+        len
+    );
 
-impl KeysTransformIntermediateResult {
-    fn len(&self) -> usize {
-        self.offsets.len() / size_of::<i32>()
-    }
+    #[allow(unsafe_code)]
+    let offsets = unsafe { OffsetBuffer::new_unchecked(offset_scalar_buf) };
+    let values_buf = values.into();
+    let nulls = match nulls_builder {
+        Some(mut builder) => builder.finish(),
+        None => None,
+    };
 
-    fn finish(self, nulls: Option<NullBuffer>) -> StringArray {
-        let len = self.len();
-        let offset_scalar_buf = ScalarBuffer::<i32>::new(
-            self.offsets.into(),
-            0,
-            len
-        );
-
-        #[allow(unsafe_code)]
-        let offsets = unsafe { OffsetBuffer::new_unchecked(offset_scalar_buf) };
-
-        let values_buf = self.values.into();
-
-        #[allow(unsafe_code)]
-        return unsafe {
-            StringArray::new_unchecked(offsets, values_buf, nulls)
-        }
+    #[allow(unsafe_code)]
+    return unsafe {
+        StringArray::new_unchecked(offsets, values_buf, nulls)
     }
 }
 
@@ -1166,17 +1140,41 @@ fn transform_keys(
     // add the final offset
     new_offsets.push(new_values.len() as i32);
 
-    println!("new_values bytes = {:?}", new_values.as_slice());
-    println!("new_offsets bytes = {:?}", new_offsets.as_slice());
+    // calculate which ranges from other arrays in the dataset should be kept
+    let mut keep_ranges: Vec<(usize, usize)>  = vec![];
+    let mut last_delete_range_end = 0;
+    for (start, end, _) in &delete_plan.ranges {
+        keep_ranges.push((last_delete_range_end, *start));
+        last_delete_range_end = *end;
+    }
+    // add final range
+    keep_ranges.push((last_delete_range_end, len));
+
+    // build the new null buffer, if necessary
+    let new_nulls = match array.nulls() {
+        Some(nulls) => {
+            let capacity = new_offsets.len() / size_of::<i32>() - 1;
+            let mut new_nulls_builder = NullBufferBuilder::new(capacity);
+            for (start, end) in &keep_ranges {
+                let nulls_for_range = nulls.slice(*start, end - start);
+                new_nulls_builder.append_buffer(&nulls_for_range);
+            }
+
+            Some(new_nulls_builder)
+        },
+        None => None
+    };
 
     KeysTransformIntermediateResult {
         values: new_values,
         offsets: new_offsets,
+        null_buffer: new_nulls,
         deletion_ranges: delete_plan
             .ranges
             .iter()
             .map(|(start, end, _)| (*start, *end))
             .collect(),
+        keep_ranges
     }
 }
 
