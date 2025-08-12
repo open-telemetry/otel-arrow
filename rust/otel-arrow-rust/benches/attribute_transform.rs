@@ -3,14 +3,16 @@
 
 //! Benchmarks for functions that transform attributes
 
-use arrow::array::{RecordBatch, StringBuilder};
+use arrow::array::{DictionaryArray, RecordBatch, StringArray, StringBuilder, UInt8Array};
+use arrow::compute::{filter, filter_record_batch};
+use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::sync::Arc;
 
-use otel_arrow_rust::otap::transform::rename_attributes;
+use otel_arrow_rust::otap::transform::{rename_attributes, transform_attributes, AttributesTransform};
 use otel_arrow_rust::schema::consts;
 
 fn generate_attribute_batch(num_rows: usize, key_gen: impl Fn(usize) -> String) -> RecordBatch {
@@ -103,9 +105,155 @@ fn bench_attribute_rename(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_transform_attributes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("transform_attributes");
+
+    for size in [128, 1536, 8092] {
+        let single_replace_input = generate_attribute_batch(size, |i| format!("attr{i}"));
+
+        // TODO comment on what's the scoop with this one
+        let _ = group.bench_with_input(
+            BenchmarkId::new("single_replace_single_delete", size),
+            &single_replace_input,
+            |b, input| {
+                b.iter_batched(
+                    || input,
+                    |input| {
+                        let result = transform_attributes(
+                            input,
+                            &AttributesTransform{
+                                rename: BTreeMap::from_iter([("attr100".into(), "attr_100".into())]),
+                                delete: BTreeSet::from_iter(["attr50".into()]),
+                            }
+                        )
+                        .expect("expect no errors");
+                        _ = black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+
+        
+        let dict_input = DictionaryArray::new(
+            UInt8Array::from_iter_values((0..single_replace_input.num_rows()).map(|u| u as u8)),
+            Arc::new(single_replace_input.column_by_name(consts::ATTRIBUTE_KEY).unwrap().clone())
+        );
+
+        let dict_input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            )])),
+            vec![Arc::new(dict_input)],
+        )
+        .expect("expect no error");
+
+        let _ = group.bench_with_input(
+            BenchmarkId::new("single_replace_single_delete_dict", size),
+            &dict_input,
+            |b, input| {
+                b.iter_batched(
+                    || input,
+                    |input| {
+                        let result = transform_attributes(
+                            input,
+                            &AttributesTransform{
+                                rename: BTreeMap::from_iter([("attr100".into(), "attr_100".into())]),
+                                delete: BTreeSet::from_iter(["attr50".into()]),
+                            }
+                        )
+                        .expect("expect no errors");
+                        _ = black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+
+        // TODO comment on what's the scoop with this one
+        // actually, can probably delete it ...
+        let _ = group.bench_with_input(
+            BenchmarkId::new("single_replace_single_delete_naive", size),
+            &single_replace_input,
+            |b, input| {
+                b.iter_batched(
+                    || input,
+                    |input| {
+                        let result = rename_attributes(
+                            input,
+                            &BTreeMap::from_iter([("attr100", "attr_100")]),
+                        )
+                        .expect("expect no errors");
+
+                        let key_col = result.column_by_name("key").unwrap();
+                        let del_mask = eq(key_col, &StringArray::new_scalar("attr50")).unwrap();
+
+                        let result = filter_record_batch(&result, &del_mask).unwrap();
+                        _ = black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+
+        let _ = group.bench_with_input(
+            BenchmarkId::new("single_replace_no_delete", size),
+            &single_replace_input,
+            |b, input| {
+                b.iter_batched(
+                    || input,
+                    |input| {
+                        let result = transform_attributes(
+                            input,
+                            &AttributesTransform{
+                                rename: BTreeMap::from_iter([("attr100".into(), "attr_100".into())]),
+                                delete: BTreeSet::from_iter([]),
+                            }
+                        )
+                        .expect("expect no errors");
+                        _ = black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+
+        let _ = group.bench_with_input(
+            BenchmarkId::new("no_replace_single_delete", size),
+            &single_replace_input,
+            |b, input| {
+                b.iter_batched(
+                    || input,
+                    |input| {
+                        let result = transform_attributes(
+                            input,
+                            &AttributesTransform{
+                                rename: BTreeMap::from_iter([]),
+                                delete: BTreeSet::from_iter(["attr50".into()]),
+                            }
+                        )
+                        .expect("expect no errors");
+                        _ = black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+    }
+
+
+    group.finish();
+}
+
 #[allow(missing_docs)]
 mod benches {
     use super::*;
-    criterion_group!(benches, bench_attribute_rename);
+    criterion_group!(
+        name = benches;
+        config = Criterion::default();
+        targets = bench_attribute_rename, bench_transform_attributes
+    );
 }
 criterion_main!(benches::benches);

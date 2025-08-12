@@ -803,13 +803,13 @@ fn replace_strings(
 
 // TODO comments on what this is for
 pub struct AttributesTransform {
-    rename: BTreeMap<String, String>,
-    delete: BTreeSet<String>,
+    pub rename: BTreeMap<String, String>,
+    pub delete: BTreeSet<String>,
 }
 
 pub fn transform_attributes(
     attrs_record_batch: &RecordBatch,
-    transform: AttributesTransform,
+    transform: &AttributesTransform,
 ) -> Result<RecordBatch> {
     let schema = attrs_record_batch.schema();
     let key_column_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| {
@@ -961,7 +961,7 @@ pub fn transform_attributes(
                 .collect::<Vec<ArrayRef>>();
 
             println!("columns = {:?}", columns);
-
+            
             // safety: this should only return an error if our schema, or column lengths don't match
             // but based on how we've constructed the batch, this shouldn't happen
             Ok(RecordBatch::try_new(schema, columns)
@@ -1036,9 +1036,8 @@ fn transform_keys(
     new_values.extend_from_slice(&values.slice(last_end_offset));
 
     // next we'll create the new offsets buffer
-    // TODO there should be an optimization here where we can reuse the same offset buffer ...
-    let mut new_offsets =
-        MutableBuffer::new(size_of::<i32>() * (array.len() - delete_plan.total_deletions) + 1);
+    let num_offsets = (array.len() - delete_plan.total_deletions) + 1;
+    let mut new_offsets = MutableBuffer::new(num_offsets * size_of::<i32>());
 
     // for each offset that was not replaced, keep track of how much to adjust it based on how
     // many values were replaced and the size difference between target and replacement
@@ -1082,7 +1081,12 @@ fn transform_keys(
         .inner()
         .slice(prev_range_index_end, array.len() - prev_range_index_end)
         .into_iter()
-        .for_each(|offset| new_offsets.push(offset + curr_total_offset_adjustment));
+        .for_each(|offset| {
+            #[allow(unsafe_code)]
+            unsafe {
+                new_offsets.push_unchecked(offset + curr_total_offset_adjustment);
+            }
+        });
 
     // add the final offset
     new_offsets.push(new_values.len() as i32);
@@ -1151,6 +1155,7 @@ where
             // find the ranges we need to keep for the dictionary keys
             let mut keep_ranges = vec![];
             let mut curr_range_start = None;
+
             'arr_loop: for i in 0..dict_arr.len() {
                 if dict_keys.is_valid(i) {
                     let dict_key: usize = dict_keys.value(i).as_usize();
@@ -1175,8 +1180,13 @@ where
                 keep_ranges.push((s, dict_arr.len()));
             }
 
+
             // build the new dictionary keys array;
             let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
+            
+            // TODO this is probably fine for now, but eventually we might be able to optimize
+            // this further by writing directly to buffer, then taking slices of the null exiting
+            // null buffer from the dictionary keys
             let mut new_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
 
             // we'll need to adjust the size of the current offsets that have not been deleted
@@ -1420,6 +1430,7 @@ fn find_matching_key_ranges(
             .get_mut(target_idx)
             .expect("counts should be initialized");
         let mut eq_range_start = None;
+        let target_len = target_bytes.len();
 
         for i in 0..array_len {
             // accessing the offsets using the pointer here is much faster than indexing the offsets
@@ -1429,8 +1440,7 @@ fn find_matching_key_ranges(
             let val_start = unsafe { *offset_ptr.add(i) } as usize;
             #[allow(unsafe_code)]
             let val_end = unsafe { *offset_ptr.add(i + 1) } as usize;
-
-            if val_end - val_start == target_bytes.len() {
+            if val_end - val_start == target_len {
                 let value = &values_buf[val_start..val_end];
                 if value == target_bytes {
                     total_matches += 1;
@@ -1447,6 +1457,7 @@ fn find_matching_key_ranges(
                 // close current range
                 ranges.push((s, i, target_idx))
             }
+
         }
 
         // add the final trailing range
@@ -2621,7 +2632,7 @@ mod test {
                 RecordBatch::try_new(schema.clone(), vec![Arc::new(keys), Arc::new(values)])
                     .unwrap();
 
-            let result = transform_attributes(&record_batch, transform).unwrap();
+            let result = transform_attributes(&record_batch, &transform).unwrap();
 
             let keys = StringArray::from_iter_values(expected_cols.0);
             let values = StringArray::from_iter_values(expected_cols.1);
@@ -2765,7 +2776,7 @@ mod test {
 
         let result = transform_attributes(
             &record_batch,
-            AttributesTransform {
+            &AttributesTransform {
                 rename: BTreeMap::from_iter(vec![("k2".into(), "K2".into())]),
                 delete: BTreeSet::from_iter(vec!["k3".into()]),
             },
@@ -2869,7 +2880,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            AttributesTransform {
+            &AttributesTransform {
                 rename: BTreeMap::from_iter(vec![("b".into(), "B".into())]),
                 delete: BTreeSet::from_iter(vec!["c".into(), "e".into()]),
             },
@@ -3052,7 +3063,7 @@ mod test {
             )
             .unwrap();
 
-            let result = transform_attributes(&input, transform).unwrap();
+            let result = transform_attributes(&input, &transform).unwrap();
 
             let expected = RecordBatch::try_new(
                 schema.clone(),
@@ -3097,7 +3108,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            AttributesTransform {
+            &AttributesTransform {
                 rename: BTreeMap::from_iter([("c".into(), "CCCCC".into())]),
                 delete: BTreeSet::from_iter(["b".into()]),
             },
@@ -3190,7 +3201,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            AttributesTransform {
+            &AttributesTransform {
                 rename: BTreeMap::from_iter([]),
                 delete: BTreeSet::from_iter(["b".into()]),
             },
@@ -3265,7 +3276,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            AttributesTransform {
+            &AttributesTransform {
                 rename: BTreeMap::from_iter([]),
                 delete: BTreeSet::from_iter(["b".into()]),
             },
@@ -3324,7 +3335,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            AttributesTransform {
+            &AttributesTransform {
                 rename: BTreeMap::from_iter([("b".into(), "BBB".into())]),
                 delete: BTreeSet::from_iter(["e".into()]),
             },
@@ -3387,7 +3398,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            AttributesTransform {
+            &AttributesTransform {
                 rename: BTreeMap::from_iter([("b".into(), "BBB".into())]),
                 delete: BTreeSet::from_iter(["e".into()]),
             },

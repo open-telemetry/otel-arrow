@@ -115,3 +115,9 @@ too_many_arguments = "allow"
 type_complexity = "allow"
 wrong_self_convention = "allow"
 module_name_repetitions = "allow"
+
+[profile.bench]
+# lto = true
+# opt-level = 3
+debug="full"
+strip="none"
