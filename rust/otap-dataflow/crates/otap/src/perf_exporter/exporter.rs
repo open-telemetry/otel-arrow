@@ -321,13 +321,14 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 
                     // increment counters for received arrow payloads
                     received_arrow_records_count += batch.arrow_payloads.len() as u64;
-                    total_received_arrow_records_count += received_arrow_records_count as u128;
+                    total_received_arrow_records_count += batch.arrow_payloads.len() as u128;
                     // increment counters for otlp signals
-                    let received_otlp_signal_count = match calculate_otlp_signal_count(&mut batch) {
+                    let batch_received_otlp_signal_count = match calculate_otlp_signal_count(&mut batch) {
                         Ok(count) => count,
                         Err(_) => 0, // Set to 0 if there's an error
                     };
-                    total_received_otlp_signal_count += received_otlp_signal_count as u128;
+                    received_otlp_signal_count += batch_received_otlp_signal_count;
+                    total_received_otlp_signal_count += batch_received_otlp_signal_count as u128;
                 }
                 _ => {
                     return Err(Error::ExporterError {
