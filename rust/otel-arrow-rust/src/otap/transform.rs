@@ -6,12 +6,13 @@ use std::ops::AddAssign;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt8Array
 };
-use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{and, concat};
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
+use rand::seq::IndexedRandom;
 use snafu::{OptionExt, ResultExt};
 
 use crate::arrays::{NullableArrayAccessor, get_u8_array};
@@ -825,53 +826,23 @@ pub fn transform_attributes(
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
 
-            let key_tx_intermediate_result = transform_keys(keys_arr, &transform);
+            let imm_result = transform_keys(keys_arr, &transform);
 
-            let mut keep_ranges = vec![];
+            let mut keep_ranges: Vec<(usize, usize)>  = vec![];
             let mut last_delete_range_end = 0;
-            for (start, end) in key_tx_intermediate_result.deletion_ranges {
-                keep_ranges.push((last_delete_range_end, start));
-                last_delete_range_end = end;
+            for (start, end) in &imm_result.deletion_ranges {
+                keep_ranges.push((last_delete_range_end, *start));
+                last_delete_range_end = *end;
             }
             // add final range
             keep_ranges.push((last_delete_range_end, keys_arr.len()));
-            println!("keep ranges = {:?}", keep_ranges);
-
-            let offset_buffer_len = key_tx_intermediate_result.offsets.len() / size_of::<i32>();
-            let offset_scalar_buf = ScalarBuffer::<i32>::new(
-                key_tx_intermediate_result.offsets.into(),
-                0,
-                offset_buffer_len,
-            );
-            #[allow(unsafe_code)]
-            let new_key_offsets = unsafe { OffsetBuffer::new_unchecked(offset_scalar_buf) };
 
             // compute the new null buffer
-            let new_nulls = match keys_arr.nulls() {
-                Some(current_nulls) => {
-                    let mut new_nulls_builder = NullBufferBuilder::new(new_key_offsets.len() - 1);
-                    for (start, end) in &keep_ranges {
-                        let nulls_for_range = current_nulls.slice(*start, end - start);
-                        new_nulls_builder.append_buffer(&nulls_for_range);
-                    }
+            let new_nulls = take_null_buffer_ranges(
+                keys_arr.nulls(), &keep_ranges, imm_result.len()
+            );
 
-                    new_nulls_builder.finish()
-
-                },
-                None => None,
-            };
-                       
-            if new_nulls.is_some() {
-                new_nulls.clone().unwrap().iter().for_each(|b| print!("{:?},", b));
-                println!("^^^ null buffer");
-            }
-
-            let new_keys_value_buf = key_tx_intermediate_result.values.into(); 
-            #[allow(unsafe_code)]
-            let new_keys = Arc::new(unsafe {
-                // TODO nulls
-                StringArray::new_unchecked(new_key_offsets, new_keys_value_buf, new_nulls)
-            });
+            let new_keys = Arc::new(imm_result.finish(new_nulls));
 
             let columns = attrs_record_batch
                 .columns()
@@ -906,45 +877,139 @@ pub fn transform_attributes(
 
                 let values = dict_arr.values();
                 match values.data_type() {
-                    DataType::UInt8 => {
+                    DataType::Utf8 => {
                         let dict_values_arr = values
                             .as_any()
                             .downcast_ref()
                             .expect("can downcast Utf8 Column to string array");
 
-                        let key_tx_intermediate_result = transform_keys(dict_values_arr, &transform);
+                        let imm_result = transform_keys(dict_values_arr, &transform);
+
+
+                        let mut values_keep_ranges: Vec<(usize, usize)>  = vec![];
+                        let mut last_delete_range_end = 0;
+                        for (start, end) in &imm_result.deletion_ranges {
+                            values_keep_ranges.push((last_delete_range_end, *start));
+                            last_delete_range_end = *end;
+                        }
+
+                        // TODO need this?
+                        //  add final range
+                        // keep_ranges.push((last_delete_range_end, keys_arr.len()));
+
+                        let values_new_nulls = take_null_buffer_ranges(
+                            dict_values_arr.nulls(), &values_keep_ranges, imm_result.len()
+                        );
                         
-                        // TODO -- here we run thru the dict keys and for each one check if it is in the
-                        // delete range. IF not, create a new range ... e.g do an efficient version of the opposite
-                        // of what's below here!!
-                        ///
-                        // this is bad and untested and not right ...
-                        let mut deleted_ranges = vec![];
-                        let mut curr_range_start = None;
-                        for i in 0..dict_arr.len() {
-                            // TODO this var name is actually if the sequence should continue?
-                            let mut is_deleted = false;
-                            for range in &key_tx_intermediate_result.deletion_ranges {
-                                if i >= range.0 && i < range.1 {
-                                    if curr_range_start.is_none() {
-                                        curr_range_start = Some(i)
+                        let dict_keys = dict_arr.keys();
+
+
+                        // keep the keys
+                        // TODO -- initialize with capacity
+                        // TODO -- are there any shortcuts here if there were no deletes?
+                        let mut new_keys_builder = PrimitiveBuilder::<UInt8Type>::new();
+                        let key_offsets = imm_result.deletion_ranges.iter().map(|(start, end)| {
+                            end - start
+                        }).collect::<Vec<_>>();
+
+                        'arr_loop: for i in 0..dict_arr.len() {
+                            if !dict_arr.is_valid(i) {
+                                new_keys_builder.append_null();
+                                continue
+                            }
+
+                            // TODO handle if key is not valid here...
+                            let dict_key = dict_keys.value(i) as usize;
+
+                            let mut kept_after_delete_range = None;
+                            let mut range_idx = 0;
+                            for range in &imm_result.deletion_ranges {
+                                if dict_key >= range.0  {
+                                    if dict_key < range.1 {
+                                        continue 'arr_loop
                                     } else {
-                                        is_deleted = true;
+                                        kept_after_delete_range = Some(range_idx);
+                                        range_idx += 1;
                                     }
+                                } else {
                                     break
                                 }
                             }
 
-                            if !is_deleted {
-                                if let Some(s) = curr_range_start {
-                                    deleted_ranges.push((s, i))
-                                }
+                            if let Some(idx) = kept_after_delete_range {
+                                let new_key = dict_key - key_offsets[idx];
+                                // TODO should be K::Native here
+                                new_keys_builder.append_value(new_key as u8);
+                            } else {
+                                new_keys_builder.append_value(dict_key as u8);
                             }
                         }
 
-                        // let dict_keys = take_ranges_slice(dict_arr.keys(), &keep_ranges);
+                        let new_dict_keys = new_keys_builder.finish();
 
-                        todo!()
+                        // find the ranges of values we need to keep
+                        // TODO -- consider combining this with the loop above to see if performance is better
+                        let mut keep_ranges = vec![];
+                        let mut curr_range_start = None;
+                        'arr_loop: for i in 0..dict_arr.len() {
+                            if dict_keys.is_valid(i) {
+                                let dict_key = dict_keys.value(i) as usize;
+
+                                for range in &imm_result.deletion_ranges {
+                                    if dict_key >= range.0 && dict_key < range.1 {
+                                        if let Some(s) = curr_range_start.take() {
+                                            keep_ranges.push((s, i));
+                                        }
+                                        continue 'arr_loop
+                                    }
+                                }
+                            }
+
+                            if curr_range_start.is_none() {
+                                curr_range_start = Some(i)
+                            }
+                        }
+                        // add final range
+                        if let Some(s) = curr_range_start {
+                            keep_ranges.push((s, dict_arr.len()));
+                        }
+
+                        println!("curr range start = {:?}", curr_range_start);
+                        println!("keep ranges = {:?}", keep_ranges);
+                        
+                        
+                        let new_dict_value = imm_result.finish(values_new_nulls);
+
+                        #[allow(unsafe_code)]
+                        let new_dict = Arc::new(unsafe {
+                            DictionaryArray::<UInt8Type>::new_unchecked(
+                                new_dict_keys,
+                                Arc::new(new_dict_value)
+                            )
+                        });
+
+                        let columns = attrs_record_batch
+                            .columns()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, col)| {
+                                if i == key_column_idx {
+                                    new_dict.clone()
+                                } else {
+                                    // TODO if the field is parent ID, we need to either remove the transport optimized encoding?
+                                    // maybe not if we've removed an entire segment of keys... but maybe if a replacement can
+                                    // cause an invalid run ...
+                                    take_ranges_slice(col, &keep_ranges)
+                                }
+                            })
+                            .collect::<Vec<ArrayRef>>();
+
+                            println!("columns = {:?}", columns);
+
+                            // safety: this should only return an error if our schema, or column lengths don't match
+                            // but based on how we've constructed the batch, this shouldn't happen
+                            Ok(RecordBatch::try_new(schema, columns)
+                                .expect("can build record batch with same schema and columns"))
                     },
                     _ => {
                         todo!("should return an error here")
@@ -970,6 +1035,32 @@ struct KeysTransformIntermediateResult {
     values: MutableBuffer,
     offsets: MutableBuffer,
     deletion_ranges: Vec<(usize, usize)>,
+}
+
+
+impl KeysTransformIntermediateResult {
+    fn len(&self) -> usize {
+        self.offsets.len() / size_of::<i32>()
+    }
+
+    fn finish(self, nulls: Option<NullBuffer>) -> StringArray {
+        let len = self.len();
+        let offset_scalar_buf = ScalarBuffer::<i32>::new(
+            self.offsets.into(),
+            0,
+            len
+        );
+
+        #[allow(unsafe_code)]
+        let offsets = unsafe { OffsetBuffer::new_unchecked(offset_scalar_buf) };
+
+        let values_buf = self.values.into();
+
+        #[allow(unsafe_code)]
+        return unsafe {
+            StringArray::new_unchecked(offsets, values_buf, nulls)
+        }
+    }
 }
 
 fn transform_keys(
@@ -1323,6 +1414,24 @@ where
     let concatenated = concat(&borrowed_slices).unwrap();
 
     concatenated
+}
+
+fn take_null_buffer_ranges(source: Option<&NullBuffer>, ranges: &[(usize, usize)], capacity: usize) -> Option<NullBuffer> {
+    let new_nulls = match source {
+        Some(current_nulls) => {
+            let mut new_nulls_builder = NullBufferBuilder::new(capacity);
+            for (start, end) in ranges {
+                let nulls_for_range = current_nulls.slice(*start, end - start);
+                new_nulls_builder.append_buffer(&nulls_for_range);
+            }
+
+            new_nulls_builder.finish()
+
+        },
+        None => None,
+    };
+
+    new_nulls
 }
 
 #[cfg(test)]
@@ -2679,8 +2788,105 @@ mod test {
         assert_eq!(result, expected);
     }
 
+    #[test]
+    fn test_transform_attrs_keys_dict_encoded() {
+        let test_cases = vec![
+            (
+                // basic dict transform
+                AttributesTransform { 
+                    rename: BTreeMap::from_iter([("a".into(), "AA".into())]), 
+                    delete: BTreeSet::from_iter(["b".into()])
+                },
+                (
+                    // keys column - dict keys
+                    vec![1, 0, 2, 3, 2, 1, 0].into_iter().map(Some).collect::<Vec<_>>(),
+
+                    // keys column - dict values
+                    vec!["a", "b", "c", "d"].into_iter().map(Some).collect::<Vec<_>>(),
+
+                    // attr value str column
+                    vec!["a", "b", "c", "d", "e", "f", "g"].into_iter().map(Some).collect::<Vec<_>>(),
+
+                ),
+                (
+                    vec![0, 1, 2, 1, 0].into_iter().map(Some).collect::<Vec<_>>(),
+                    vec!["AA", "c", "d"].into_iter().map(Some).collect::<Vec<_>>(),
+                    vec!["b", "c", "d", "e", "g"].into_iter().map(Some).collect::<Vec<_>>(),
+                )
+            ),
+            (
+                // test with some nulls
+                AttributesTransform { 
+                    rename: BTreeMap::from_iter([("a".into(), "AA".into())]), 
+                    delete: BTreeSet::from_iter(["b".into()])
+                },
+                (
+                    vec![Some(1), Some(0), None, Some(2), Some(3), None, Some(2), Some(1), None, Some(0)],
+                    vec!["a", "b", "c", "d"].into_iter().map(Some).collect::<Vec<_>>(),
+                    vec![
+                        Some("1"), Some("2"), Some("3"), None, None,
+                        Some("4"), Some("5"), None, Some("6"), None,
+                    ]
+                ),
+                (
+                    vec![Some(0), None, Some(1), Some(2), None, Some(1), None, Some(0)],
+                    vec!["AA", "c", "d"].into_iter().map(Some).collect::<Vec<_>>(),
+                    vec![
+                        Some("2"), Some("3"), None, None,
+                        Some("4"), Some("5"), Some("6"), None,
+                    ]
+                )
+            )
+
+        ];
+
+        for (transform, inputs, expected) in test_cases {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::ATTRIBUTE_KEY,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true
+                ),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Utf8,
+                    true
+                )
+            ]));
+
+            let input = RecordBatch::try_new(schema.clone(), vec![
+                Arc::new(
+                    DictionaryArray::new(
+                        UInt8Array::from_iter(inputs.0),
+                        Arc::new(StringArray::from_iter(inputs.1))
+                    )
+                ),
+                Arc::new(StringArray::from_iter(inputs.2))
+            ]).unwrap();
+
+            let result = transform_attributes(
+                &input, 
+                transform
+            ).unwrap();
+
+            let expected = RecordBatch::try_new(schema.clone(), vec![
+                Arc::new(
+                    DictionaryArray::new(
+                        UInt8Array::from_iter(expected.0),
+                        Arc::new(StringArray::from_iter(expected.1))
+                    )
+                ),
+                Arc::new(StringArray::from_iter(expected.2))
+            ]).unwrap();
+
+            assert_eq!(result, expected)
+        }
+    }
+
     // TODO:
+    // - dict 16
+    // - dict with null values
+    // - dict with null keys
     // - parent ID non-plain encoding handling
-    // - dictionary keys
     // - remove all the empty columns
 }
