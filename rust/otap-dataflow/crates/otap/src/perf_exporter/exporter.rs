@@ -324,10 +324,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     total_received_arrow_records_count += batch.arrow_payloads.len() as u128;
                     // increment counters for otlp signals
                     let batch_received_otlp_signal_count =
-                        match calculate_otlp_signal_count(&mut batch) {
-                            Ok(count) => count,
-                            Err(_) => 0, // Set to 0 if there's an error
-                        };
+                        calculate_otlp_signal_count(&mut batch).unwrap_or_default();
                     received_otlp_signal_count += batch_received_otlp_signal_count;
                     total_received_otlp_signal_count += batch_received_otlp_signal_count as u128;
                 }
@@ -416,7 +413,7 @@ fn calculate_otlp_signal_count(
             ) =>
         {
             let mut consumer = Consumer::default();
-            consumer.consume_bar(batch).and_then(|record_messages| {
+            consumer.consume_bar(batch).map(|record_messages| {
                 let otap_batch = match payload_type {
                     ArrowPayloadType::Spans => {
                         OtapArrowRecords::Traces(from_record_messages(record_messages))
@@ -427,11 +424,11 @@ fn calculate_otlp_signal_count(
                     ArrowPayloadType::UnivariateMetrics => {
                         OtapArrowRecords::Metrics(from_record_messages(record_messages))
                     }
-                    _ => return Ok(0), // Handle all other cases by returning 0 immediately
+                    _ => return 0, // Handle all other cases by returning 0 immediately
                 };
-                Ok(otap_batch
+                otap_batch
                     .get(payload_type)
-                    .map_or(0, |record_batch| record_batch.num_rows()) as u64)
+                    .map_or(0, |record_batch| record_batch.num_rows()) as u64
             })
         }
         // Return 0 for all other types or invalid input
