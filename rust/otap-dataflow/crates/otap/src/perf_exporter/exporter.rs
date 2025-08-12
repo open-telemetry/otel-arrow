@@ -22,20 +22,21 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
-use otap_df_engine::{ExporterFactory, distributed_slice};
+use otap_df_engine::{distributed_slice, ExporterFactory};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
-    CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
-    System, get_current_pid,
+    get_current_pid, CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind,
+    RefreshKind, System,
 };
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
-use otap_df_telemetry::{Registry as TelemetryRegistry, SpscQueue, SimpleCollector, NodeMetricsHandle, PerfExporterMetrics, StaticAttrs};
+use otap_df_telemetry::{NodeMetricsHandle, Registry as TelemetryRegistry, SimpleCollector, SpscQueue, StaticAttrs};
+use otap_df_telemetry::perf_exporter_metrics::PerfExporterMetrics;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -693,7 +694,7 @@ mod tests {
     use crate::grpc::OtapArrowBytes;
     use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
-    use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
+    use crate::perf_exporter::exporter::{PerfExporter, OTAP_PERF_EXPORTER_URN};
     use fluke_hpack::Encoder;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
@@ -703,12 +704,12 @@ mod tests {
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
-    use std::fs::{File, remove_file};
+    use std::fs::{remove_file, File};
     use std::future::Future;
-    use std::io::{BufReader, prelude::*};
+    use std::io::{prelude::*, BufReader};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
 
     const TRACES_BATCH_ID: i64 = 0;
     const LOGS_BATCH_ID: i64 = 1;
