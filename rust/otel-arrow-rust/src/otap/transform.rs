@@ -1501,7 +1501,6 @@ mod test {
     use arrow::datatypes::{
         ArrowDictionaryKeyType, DataType, Field, Schema, UInt8Type, UInt16Type,
     };
-    use arrow::record_batch;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -3076,7 +3075,56 @@ mod test {
         assert_eq!(result, expected);
     }
 
+    #[test]
+    fn test_handle_transport_encoded_parent_ids() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
+            Arc::new(UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(8))),
+            Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "b", "b", "a", "a"])),
+            Arc::new(StringArray::from_iter_values(vec!["1", "1", "2", "2", "3", "3", "2", "2"]))
+        ]).unwrap();
+
+        // If the parent IDs are quasi-delta encoded we expect the plain encoded parent ids to be:
+        // parent_id: 1, 2, 1, 2, 1, 2, 1, 2
+        // value_str: a, a, a, a, b, b, a, a
+        //
+        // if we just deleted where key="b", we have a record batch like:
+        // parent_ids: 1, 1, 1, 1, 1, 1,
+        // keys:       a, a, a, a, a, a,
+        // value_str:  1, 1, 2, 2, 2, 2,
+        //
+        // Which if we assume this is quasi-delta encoded, the decoded plain parent IDs are
+        // 1, 2, 1, 2, 3, 4
+        // (which is not correct!)
+        //
+        // So we remove the quasi-delta encoding and expect parent IDs:
+        // parent_id: 1, 2, 1, 2, 1, 2
+        // value_str: a, a, a, a, a, a
+
+        let expected = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 2, 1, 2])),
+            Arc::new(UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(6))),
+            Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a", "a"])),
+            Arc::new(StringArray::from_iter_values(vec!["1", "1", "2", "2", "2", "2"]))
+        ]).unwrap();
+
+        let result = transform_attributes(&input, AttributesTransform {
+            rename: BTreeMap::from_iter([]),
+            delete: BTreeSet::from_iter(["b".into()]) 
+        }).unwrap();
+
+        assert_eq!(result, expected);
+    }
+
     // TODO:
+    // - dict encoding retains all columns
     // - parent ID non-plain encoding handling
     // - remove all the empty columns
 }
