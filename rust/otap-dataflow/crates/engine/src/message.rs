@@ -75,19 +75,19 @@ impl<Data> Message<Data> {
 
     /// Checks if this message is a data message.
     #[must_use]
-    pub fn is_data(&self) -> bool {
+    pub const fn is_data(&self) -> bool {
         matches!(self, Message::PData(..))
     }
 
     /// Checks if this message is a control message.
     #[must_use]
-    pub fn is_control(&self) -> bool {
+    pub const fn is_control(&self) -> bool {
         matches!(self, Message::Control(..))
     }
 
     /// Checks if this message is a shutdown control message.
     #[must_use]
-    pub fn is_shutdown(&self) -> bool {
+    pub const fn is_shutdown(&self) -> bool {
         matches!(self, Message::Control(NodeControlMsg::Shutdown { .. }))
     }
 }

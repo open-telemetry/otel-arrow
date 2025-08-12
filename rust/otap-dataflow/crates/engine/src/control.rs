@@ -125,7 +125,7 @@ pub trait Controllable {
 impl NodeControlMsg {
     /// Returns `true` if this control message is a shutdown request.
     #[must_use]
-    pub fn is_shutdown(&self) -> bool {
+    pub const fn is_shutdown(&self) -> bool {
         matches!(self, NodeControlMsg::Shutdown { .. })
     }
 }
