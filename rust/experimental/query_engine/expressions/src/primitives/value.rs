@@ -582,6 +582,60 @@ impl Value<'_> {
         }
     }
 
+    pub fn modulus(left: &Value, right: &Value) -> Option<NumericValue> {
+        match (left, right) {
+            (Value::Integer(l), Value::Integer(r)) => {
+                Some(NumericValue::Integer(l.get_value() % r.get_value()))
+            }
+            (Value::Double(l), Value::Double(r)) => {
+                Some(NumericValue::Double(l.get_value() % r.get_value()))
+            }
+            _ => {
+                if Self::values_may_be_double(left, right) {
+                    let left_double = left.convert_to_double()?;
+                    let right_double = right.convert_to_double()?;
+                    Some(NumericValue::Double(left_double % right_double))
+                } else {
+                    let left_integer = left.convert_to_integer()?;
+                    let right_integer = right.convert_to_integer()?;
+                    Some(NumericValue::Integer(left_integer % right_integer))
+                }
+            }
+        }
+    }
+
+    pub fn bin(value: &Value, bin_size: &Value) -> Option<NumericValue> {
+        match (value, bin_size) {
+            (Value::Integer(value), Value::Integer(bin_size)) => {
+                let bin_size = bin_size.get_value();
+                Some(NumericValue::Integer(
+                    (value.get_value() / bin_size) * bin_size,
+                ))
+            }
+            (Value::Double(value), Value::Double(bin_size)) => {
+                let bin_size = bin_size.get_value();
+                Some(NumericValue::Double(
+                    (value.get_value() / bin_size).floor() * bin_size,
+                ))
+            }
+            _ => {
+                if Self::values_may_be_double(value, bin_size) {
+                    let value_double = value.convert_to_double()?;
+                    let bin_size_double = bin_size.convert_to_double()?;
+                    Some(NumericValue::Double(
+                        (value_double / bin_size_double).floor() * bin_size_double,
+                    ))
+                } else {
+                    let value_integer = value.convert_to_integer()?;
+                    let bin_size_integer = bin_size.convert_to_integer()?;
+                    Some(NumericValue::Integer(
+                        (value_integer / bin_size_integer) * bin_size_integer,
+                    ))
+                }
+            }
+        }
+    }
+
     pub fn ceiling(value: &Value) -> Option<i64> {
         if let Value::Double(d) = value {
             Some(d.get_value().ceil() as i64)
@@ -2441,6 +2495,77 @@ mod tests {
     }
 
     #[test]
+    pub fn test_modulus() {
+        let run_test_success = |left: Value, right: Value, expected: Option<NumericValue>| {
+            let actual = Value::modulus(&left, &right);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                10.18,
+            )),
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 3.0)),
+            Some(NumericValue::Double(1.1799999999999997)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 10)),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 3)),
+            Some(NumericValue::Integer(1)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10.18",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "3.0",
+            )),
+            Some(NumericValue::Double(1.1799999999999997)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1e10",
+            )),
+            Some(NumericValue::Double(1.0)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10",
+            )),
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "3")),
+            Some(NumericValue::Integer(1)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
+    }
+
+    #[test]
     pub fn test_ceiling() {
         let run_test_success = |value: Value, expected: Option<i64>| {
             let actual = Value::ceiling(&value);
@@ -2562,5 +2687,91 @@ mod tests {
 
         // Null value
         run_test_success(Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_bin() {
+        let run_test_success = |value: Value, bin_size: Value, expected: Option<NumericValue>| {
+            let actual = Value::bin(&value, &bin_size);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                10018.18,
+            )),
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                100.0,
+            )),
+            Some(NumericValue::Double(10000.0)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                10018,
+            )),
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                100,
+            )),
+            Some(NumericValue::Integer(10000)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10018.18",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "100.0",
+            )),
+            Some(NumericValue::Double(10000.0)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10018",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "100.0",
+            )),
+            Some(NumericValue::Double(10000.0)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10018",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "100",
+            )),
+            Some(NumericValue::Integer(10000)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
     }
 }
