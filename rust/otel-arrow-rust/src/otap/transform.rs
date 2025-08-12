@@ -846,10 +846,8 @@ pub fn transform_attributes(
             #[allow(unsafe_code)]
             let new_key_offsets = unsafe { OffsetBuffer::new_unchecked(offset_scalar_buf) };
 
-
-
             // compute the new null buffer
-            let new_nulls = match keys_arr.nulls(){
+            let new_nulls = match keys_arr.nulls() {
                 Some(current_nulls) => {
                     let mut new_nulls_builder = NullBufferBuilder::new(new_key_offsets.len() - 1);
                     for (start, end) in &keep_ranges {
@@ -897,12 +895,75 @@ pub fn transform_attributes(
             // but based on how we've constructed the batch, this shouldn't happen
             Ok(RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns"))
+        },
+        DataType::Dictionary(k, _) => match *k.clone() {
+            DataType::UInt8 => {
+                let dict_arr = attrs_record_batch
+                    .column(key_column_idx)
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .expect("can downcast dictionary column to dictionary array");
+
+                let values = dict_arr.values();
+                match values.data_type() {
+                    DataType::UInt8 => {
+                        let dict_values_arr = values
+                            .as_any()
+                            .downcast_ref()
+                            .expect("can downcast Utf8 Column to string array");
+
+                        let key_tx_intermediate_result = transform_keys(dict_values_arr, &transform);
+                        
+                        // TODO -- here we run thru the dict keys and for each one check if it is in the
+                        // delete range. IF not, create a new range ... e.g do an efficient version of the opposite
+                        // of what's below here!!
+                        ///
+                        // this is bad and untested and not right ...
+                        let mut deleted_ranges = vec![];
+                        let mut curr_range_start = None;
+                        for i in 0..dict_arr.len() {
+                            // TODO this var name is actually if the sequence should continue?
+                            let mut is_deleted = false;
+                            for range in &key_tx_intermediate_result.deletion_ranges {
+                                if i >= range.0 && i < range.1 {
+                                    if curr_range_start.is_none() {
+                                        curr_range_start = Some(i)
+                                    } else {
+                                        is_deleted = true;
+                                    }
+                                    break
+                                }
+                            }
+
+                            if !is_deleted {
+                                if let Some(s) = curr_range_start {
+                                    deleted_ranges.push((s, i))
+                                }
+                            }
+                        }
+
+                        // let dict_keys = take_ranges_slice(dict_arr.keys(), &keep_ranges);
+
+                        todo!()
+                    },
+                    _ => {
+                        todo!("should return an error here")
+                    }
+                }
+            }
+            _ => {
+                todo!()
+            }
         }
 
         _ => {
             todo!()
         }
     }
+}
+
+fn transform_dictionary_keys() {
+
 }
 
 struct KeysTransformIntermediateResult {
@@ -2618,8 +2679,8 @@ mod test {
         assert_eq!(result, expected);
     }
 
-    // TODO testing
-    // - with nulls
+    // TODO:
     // - parent ID non-plain encoding handling
     // - dictionary keys
+    // - remove all the empty columns
 }
