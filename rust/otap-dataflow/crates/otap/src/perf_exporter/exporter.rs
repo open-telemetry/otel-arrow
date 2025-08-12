@@ -826,7 +826,7 @@ mod tests {
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
-                assert!(exporter_result.is_ok(), "{}", exporter_result.unwrap_err());
+                assert!(exporter_result.is_ok());
 
                 // get a file to read and validate the output
                 // open file
@@ -851,7 +851,7 @@ mod tests {
                 assert!(total_msg_line.contains("- total arrow records received"),);
 
                 let otlp_signal_throughput_line = &lines[4];
-                assert!(otlp_signal_throughput_line.contains("- otlp signal throughput"));
+                assert!(otlp_signal_throughput_line.contains("- otlp signal throughput"),);
 
                 let total_otlp_signal_line = &lines[5];
                 assert!(total_otlp_signal_line.contains("- total otlp signal received"),);
