@@ -961,7 +961,7 @@ pub fn transform_attributes(
                 .collect::<Vec<ArrayRef>>();
 
             println!("columns = {:?}", columns);
-            
+
             // safety: this should only return an error if our schema, or column lengths don't match
             // but based on how we've constructed the batch, this shouldn't happen
             Ok(RecordBatch::try_new(schema, columns)
@@ -1180,10 +1180,9 @@ where
                 keep_ranges.push((s, dict_arr.len()));
             }
 
-
             // build the new dictionary keys array;
             let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
-            
+
             // TODO this is probably fine for now, but eventually we might be able to optimize
             // this further by writing directly to buffer, then taking slices of the null exiting
             // null buffer from the dictionary keys
@@ -1457,7 +1456,6 @@ fn find_matching_key_ranges(
                 // close current range
                 ranges.push((s, i, target_idx))
             }
-
         }
 
         // add the final trailing range

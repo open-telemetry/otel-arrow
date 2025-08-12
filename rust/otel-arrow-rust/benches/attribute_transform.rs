@@ -4,15 +4,17 @@
 //! Benchmarks for functions that transform attributes
 
 use arrow::array::{DictionaryArray, RecordBatch, StringArray, StringBuilder, UInt8Array};
-use arrow::compute::{filter, filter_record_batch};
 use arrow::compute::kernels::cmp::eq;
+use arrow::compute::{filter, filter_record_batch};
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::sync::Arc;
 
-use otel_arrow_rust::otap::transform::{rename_attributes, transform_attributes, AttributesTransform};
+use otel_arrow_rust::otap::transform::{
+    AttributesTransform, rename_attributes, transform_attributes,
+};
 use otel_arrow_rust::schema::consts;
 
 fn generate_attribute_batch(num_rows: usize, key_gen: impl Fn(usize) -> String) -> RecordBatch {
@@ -121,10 +123,13 @@ fn bench_transform_attributes(c: &mut Criterion) {
                     |input| {
                         let result = transform_attributes(
                             input,
-                            &AttributesTransform{
-                                rename: BTreeMap::from_iter([("attr100".into(), "attr_100".into())]),
+                            &AttributesTransform {
+                                rename: BTreeMap::from_iter([(
+                                    "attr100".into(),
+                                    "attr_100".into(),
+                                )]),
                                 delete: BTreeSet::from_iter(["attr50".into()]),
-                            }
+                            },
                         )
                         .expect("expect no errors");
                         _ = black_box(result)
@@ -134,10 +139,14 @@ fn bench_transform_attributes(c: &mut Criterion) {
             },
         );
 
-        
         let dict_input = DictionaryArray::new(
             UInt8Array::from_iter_values((0..single_replace_input.num_rows()).map(|u| u as u8)),
-            Arc::new(single_replace_input.column_by_name(consts::ATTRIBUTE_KEY).unwrap().clone())
+            Arc::new(
+                single_replace_input
+                    .column_by_name(consts::ATTRIBUTE_KEY)
+                    .unwrap()
+                    .clone(),
+            ),
         );
 
         let dict_input = RecordBatch::try_new(
@@ -159,10 +168,13 @@ fn bench_transform_attributes(c: &mut Criterion) {
                     |input| {
                         let result = transform_attributes(
                             input,
-                            &AttributesTransform{
-                                rename: BTreeMap::from_iter([("attr100".into(), "attr_100".into())]),
+                            &AttributesTransform {
+                                rename: BTreeMap::from_iter([(
+                                    "attr100".into(),
+                                    "attr_100".into(),
+                                )]),
                                 delete: BTreeSet::from_iter(["attr50".into()]),
-                            }
+                            },
                         )
                         .expect("expect no errors");
                         _ = black_box(result)
@@ -207,10 +219,13 @@ fn bench_transform_attributes(c: &mut Criterion) {
                     |input| {
                         let result = transform_attributes(
                             input,
-                            &AttributesTransform{
-                                rename: BTreeMap::from_iter([("attr100".into(), "attr_100".into())]),
+                            &AttributesTransform {
+                                rename: BTreeMap::from_iter([(
+                                    "attr100".into(),
+                                    "attr_100".into(),
+                                )]),
                                 delete: BTreeSet::from_iter([]),
-                            }
+                            },
                         )
                         .expect("expect no errors");
                         _ = black_box(result)
@@ -229,10 +244,10 @@ fn bench_transform_attributes(c: &mut Criterion) {
                     |input| {
                         let result = transform_attributes(
                             input,
-                            &AttributesTransform{
+                            &AttributesTransform {
                                 rename: BTreeMap::from_iter([]),
                                 delete: BTreeSet::from_iter(["attr50".into()]),
-                            }
+                            },
                         )
                         .expect("expect no errors");
                         _ = black_box(result)
@@ -242,7 +257,6 @@ fn bench_transform_attributes(c: &mut Criterion) {
             },
         );
     }
-
 
     group.finish();
 }
