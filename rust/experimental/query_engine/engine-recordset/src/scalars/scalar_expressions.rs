@@ -5,7 +5,10 @@ use data_engine_expressions::*;
 use crate::{
     execution_context::*,
     logical_expressions::execute_logical_expression,
-    scalars::{execute_math_scalar_expression, execute_temporal_scalar_expression},
+    scalars::{
+        execute_math_scalar_expression, execute_parse_scalar_expression,
+        execute_temporal_scalar_expression,
+    },
     *,
 };
 
@@ -509,47 +512,7 @@ where
 
             Ok(v)
         }
-        ScalarExpression::ParseJson(p) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, p.get_inner_expression())?;
-
-            let value = inner_value.to_value();
-
-            let v = ResolvedValue::Computed(match value {
-                Value::String(s) => match OwnedValue::from_json(s.get_value()) {
-                    Some(v) => v,
-                    None => {
-                        execution_context.add_diagnostic_if_enabled(
-                            RecordSetEngineDiagnosticLevel::Warn,
-                            scalar_expression,
-                            || "String input could not be parsed as JSON".into(),
-                        );
-                        OwnedValue::Null
-                    }
-                },
-                _ => {
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Warn,
-                        scalar_expression,
-                        || {
-                            format!(
-                                "Input of '{:?}' type could not be parsed as JSON",
-                                value.get_value_type()
-                            )
-                        },
-                    );
-                    OwnedValue::Null
-                }
-            });
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: {v}"),
-            );
-
-            Ok(v)
-        }
+        ScalarExpression::Parse(p) => execute_parse_scalar_expression(execution_context, p),
         ScalarExpression::Temporal(t) => execute_temporal_scalar_expression(execution_context, t),
         ScalarExpression::Math(m) => execute_math_scalar_expression(execution_context, m),
     }
@@ -1924,6 +1887,9 @@ mod tests {
                         panic!("Unexpected ExpressionError")
                     }
                 }
+                _ => {
+                    panic!("Unexpected ExpressionError")
+                }
             }
         }
 
@@ -2029,6 +1995,9 @@ mod tests {
                     } else {
                         panic!("Unexpected ExpressionError")
                     }
+                }
+                _ => {
+                    panic!("Unexpected ExpressionError")
                 }
             }
         }
@@ -2184,6 +2153,9 @@ mod tests {
                         panic!("Unexpected ExpressionError")
                     }
                 }
+                _ => {
+                    panic!("Unexpected ExpressionError")
+                }
             }
         }
 
@@ -2334,30 +2306,5 @@ mod tests {
                 "Array slice index ends at '6' which is beyond the length of '5'".into(),
             ),
         );
-    }
-
-    #[test]
-    pub fn test_execute_parse_json_scalar_expression() {
-        fn run_test_success(input: &str, expected_value: Value) {
-            let expression = ScalarExpression::ParseJson(ParseJsonScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), input),
-                )),
-            ));
-
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
-            assert_eq!(expected_value, actual_value.to_value());
-        }
-
-        run_test_success(
-            "18",
-            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
-        );
-        run_test_success("hello world", Value::Null);
     }
 }
