@@ -23,6 +23,8 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
+use otel_arrow_rust::Consumer;
+use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
 use std::borrow::Cow;
@@ -267,7 +269,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     break;
                 }
                 Message::PData(pdata) => {
-                    let batch = match OtapArrowBytes::try_from(pdata) {
+                    let mut batch = match OtapArrowBytes::try_from(pdata) {
                         Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowTraces(batch)) => batch,
@@ -321,7 +323,10 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     received_arrow_records_count += batch.arrow_payloads.len() as u64;
                     total_received_arrow_records_count += received_arrow_records_count as u128;
                     // increment counters for otlp signals
-                    received_otlp_signal_count += calculate_otlp_signal_count(batch);
+                    let received_otlp_signal_count = match calculate_otlp_signal_count(&mut batch) {
+                        Ok(count) => count,
+                        Err(_) => 0, // Set to 0 if there's an error
+                    };
                     total_received_otlp_signal_count += received_otlp_signal_count as u128;
                 }
                 _ => {
@@ -392,19 +397,44 @@ fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     Ok(Duration::new(secs, nanosecs))
 }
 
-/// calculate number of otlp signals based on arrow payload type
-fn calculate_otlp_signal_count(batch: BatchArrowRecords) -> u64 {
-    batch.arrow_payloads.iter().fold(0, |acc, arrow_payload| {
-        let table_size = if arrow_payload.r#type == ArrowPayloadType::Spans as i32
-            || arrow_payload.r#type == ArrowPayloadType::Logs as i32
-            || arrow_payload.r#type == ArrowPayloadType::UnivariateMetrics as i32
+/// Calculate number of OTLP signals based on Arrow payload type
+fn calculate_otlp_signal_count(
+    batch: &mut BatchArrowRecords,
+) -> Result<u64, otel_arrow_rust::error::Error> {
+    let main_record_type = batch.arrow_payloads[0].r#type;
+
+    // Handle the different ArrowPayloadTypes using a match statement
+    match ArrowPayloadType::try_from(main_record_type) {
+        Ok(payload_type)
+            if matches!(
+                payload_type,
+                ArrowPayloadType::Spans
+                    | ArrowPayloadType::Logs
+                    | ArrowPayloadType::UnivariateMetrics
+            ) =>
         {
-            arrow_payload.record.len() as u64
-        } else {
-            0
-        };
-        acc + table_size
-    })
+            let mut consumer = Consumer::default();
+            consumer.consume_bar(batch).and_then(|record_messages| {
+                let otap_batch = match payload_type {
+                    ArrowPayloadType::Spans => {
+                        OtapArrowRecords::Traces(from_record_messages(record_messages))
+                    }
+                    ArrowPayloadType::Logs => {
+                        OtapArrowRecords::Logs(from_record_messages(record_messages))
+                    }
+                    ArrowPayloadType::UnivariateMetrics => {
+                        OtapArrowRecords::Metrics(from_record_messages(record_messages))
+                    }
+                    _ => return Ok(0), // Handle all other cases by returning 0 immediately
+                };
+                Ok(otap_batch
+                    .get(payload_type)
+                    .map_or(0, |record_batch| record_batch.num_rows()) as u64)
+            })
+        }
+        // Return 0 for all other types or invalid input
+        _ => Ok(0),
+    }
 }
 
 /// takes in the process and system outputs cpu stats via the writer
@@ -796,7 +826,7 @@ mod tests {
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
-                assert!(exporter_result.is_ok());
+                assert!(exporter_result.is_ok(), "{}", exporter_result.unwrap_err());
 
                 // get a file to read and validate the output
                 // open file
@@ -821,7 +851,7 @@ mod tests {
                 assert!(total_msg_line.contains("- total arrow records received"),);
 
                 let otlp_signal_throughput_line = &lines[4];
-                assert!(otlp_signal_throughput_line.contains("- otlp signal throughput"),);
+                assert!(otlp_signal_throughput_line.contains("- otlp signal throughput"));
 
                 let total_otlp_signal_line = &lines[5];
                 assert!(total_otlp_signal_line.contains("- total otlp signal received"),);
