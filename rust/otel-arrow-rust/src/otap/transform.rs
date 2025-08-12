@@ -12,7 +12,7 @@ use arrow::array::{
 use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{and, concat};
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt16Type, UInt8Type};
+use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
 use rand::seq::IndexedRandom;
 use snafu::{OptionExt, ResultExt};
 
@@ -835,6 +835,17 @@ pub fn transform_attributes(
                 imm_result.null_buffer,
             ));
 
+            // TODO we only need to do this if there are any deletes
+            let should_materialize_parent_ids = imm_result.deletion_ranges.len() > 0
+                && schema.column_with_name(consts::PARENT_ID).is_some();
+            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let schema = rb.schema();
+                (rb, schema)
+            } else {
+                (attrs_record_batch.clone(), schema)
+            };
+
             let columns = attrs_record_batch
                 .columns()
                 .iter()
@@ -851,15 +862,13 @@ pub fn transform_attributes(
                 })
                 .collect::<Vec<ArrayRef>>();
 
-            println!("columns = {:?}", columns);
-
             // safety: this should only return an error if our schema, or column lengths don't match
             // but based on how we've constructed the batch, this shouldn't happen
             Ok(RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns"))
         }
         DataType::Dictionary(k, _) => {
-            let (new_dict, keep_ranges) = match *k.clone() {
+            let (new_dict, keep_ranges, no_rows_deleted) = match *k.clone() {
                 DataType::UInt8 => {
                     let dict_arr = attrs_record_batch
                         .column(key_column_idx)
@@ -872,8 +881,17 @@ pub fn transform_attributes(
                         DataType::Utf8 => {
                             let dict_imm_result = transform_dictionary_keys(dict_arr, &transform)?;
                             let new_dict = Arc::new(dict_imm_result.keys_array);
-                            (new_dict as ArrayRef, dict_imm_result.keep_ranges)
 
+                            // check if there are any deletes
+                            let no_rows_deleted = dict_imm_result.keep_ranges.len() == 1
+                                && dict_imm_result.keep_ranges[0].0 == 0
+                                && dict_imm_result.keep_ranges[0].1 == dict_arr.len();
+
+                            (
+                                new_dict as ArrayRef,
+                                dict_imm_result.keep_ranges,
+                                no_rows_deleted,
+                            )
                         }
                         _ => {
                             todo!("should return an error here")
@@ -891,7 +909,17 @@ pub fn transform_attributes(
                         DataType::Utf8 => {
                             let dict_imm_result = transform_dictionary_keys(dict_arr, &transform)?;
                             let new_dict = Arc::new(dict_imm_result.keys_array);
-                            (new_dict as ArrayRef, dict_imm_result.keep_ranges)
+
+                            // check if there are any deletes
+                            let no_rows_deleted = dict_imm_result.keep_ranges.len() == 1
+                                && dict_imm_result.keep_ranges[0].0 == 0
+                                && dict_imm_result.keep_ranges[0].1 == dict_arr.len();
+
+                            (
+                                new_dict as ArrayRef,
+                                dict_imm_result.keep_ranges,
+                                no_rows_deleted,
+                            )
                         }
                         _ => {
                             todo!("should return an error here")
@@ -901,6 +929,19 @@ pub fn transform_attributes(
                 _ => {
                     todo!()
                 }
+            };
+
+            // materialize parent IDs if there are any deleted rows and if the PARENT_ID column
+            // exists (which it should but check is here to be safe)
+            let any_rows_deleted = !no_rows_deleted;
+            let should_materialize_parent_ids =
+                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
+            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
+                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let schema = rb.schema();
+                (rb, schema)
+            } else {
+                (attrs_record_batch.clone(), schema)
             };
 
             let columns = attrs_record_batch
@@ -1094,7 +1135,7 @@ fn transform_dictionary_keys<K>(
     transform: &AttributesTransform,
 ) -> Result<DictionaryKeysTransformIntermediateResult<K>>
 where
-    K: ArrowDictionaryKeyType
+    K: ArrowDictionaryKeyType,
 {
     let dict_values = dict_arr.values();
     match dict_values.data_type() {
@@ -1135,11 +1176,9 @@ where
             }
 
             // build the new dictionary keys array;
-            let count_kept_values =
-                keep_ranges.iter().map(|(start, end)| end - start).sum();
-            let mut new_keys_builder =
-                PrimitiveBuilder::<K>::with_capacity(count_kept_values);
-            
+            let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
+            let mut new_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
+
             // we'll need to adjust the size of the current offsets that have not been deleted
             // based on how many items from the values array were deleted before the dict key.
             // to do this, we'll keep track which deletion ranges come before each key we're
@@ -1154,7 +1193,6 @@ where
                     Some(*sum)
                 })
                 .collect::<Vec<_>>();
-
 
             'arr_loop: for i in 0..dict_arr.len() {
                 if !dict_arr.is_valid(i) {
@@ -1181,9 +1219,11 @@ where
 
                 if let Some(idx) = kept_after_delete_range {
                     let new_key = dict_key - key_offsets[idx];
-                    new_keys_builder.append_value(K::Native::from_usize(new_key).expect("key overflow"));
+                    new_keys_builder
+                        .append_value(K::Native::from_usize(new_key).expect("key overflow"));
                 } else {
-                    new_keys_builder.append_value(K::Native::from_usize(dict_key).expect("Key overflow"));
+                    new_keys_builder
+                        .append_value(K::Native::from_usize(dict_key).expect("Key overflow"));
                 }
             }
 
@@ -1197,19 +1237,15 @@ where
 
             #[allow(unsafe_code)]
             let new_dict = unsafe {
-                DictionaryArray::<K>::new_unchecked(
-                    new_dict_keys,
-                    Arc::new(new_dict_value),
-                )
+                DictionaryArray::<K>::new_unchecked(new_dict_keys, Arc::new(new_dict_value))
             };
 
-
-            Ok(DictionaryKeysTransformIntermediateResult { 
-                keys_array: new_dict, 
+            Ok(DictionaryKeysTransformIntermediateResult {
+                keys_array: new_dict,
                 keep_ranges,
             })
         }
-        _ => todo!()
+        _ => todo!(),
     }
 }
 
@@ -1507,7 +1543,7 @@ mod test {
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
     use crate::otlp::attributes::store::AttributeValueType;
-    use crate::schema::get_field_metadata;
+    use crate::schema::{FieldExt, get_field_metadata};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 
     #[test]
@@ -2602,7 +2638,7 @@ mod test {
         // the basic test just checks that we keep the key & values column. This test simply
         // checks that we retain all the columns
         let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(
@@ -2967,7 +3003,7 @@ mod test {
                 // but technically it's possible
                 AttributesTransform {
                     rename: BTreeMap::from_iter([("a".into(), "AA".into())]),
-                    delete: BTreeSet::from_iter(["b".into()])
+                    delete: BTreeSet::from_iter(["b".into()]),
                 },
                 (
                     vec![0, 1, 2, 3, 0, 1, 2, 3]
@@ -2975,7 +3011,8 @@ mod test {
                         .map(Some)
                         .collect::<Vec<_>>(),
                     vec![Some("a"), Some("b"), None, Some("c")],
-                    vec!["1", "2", "3", "4", "1", "2", "3", "4"].into_iter()
+                    vec!["1", "2", "3", "4", "1", "2", "3", "4"]
+                        .into_iter()
                         .map(Some)
                         .collect::<Vec<_>>(),
                 ),
@@ -2985,11 +3022,12 @@ mod test {
                         .map(Some)
                         .collect::<Vec<_>>(),
                     vec![Some("AA"), None, Some("c")],
-                    vec!["1", "3", "4", "1", "3", "4"].into_iter()
+                    vec!["1", "3", "4", "1", "3", "4"]
+                        .into_iter()
                         .map(Some)
                         .collect::<Vec<_>>(),
                 ),
-            )
+            ),
         ];
 
         for (transform, inputs, expected) in test_cases {
@@ -3044,33 +3082,39 @@ mod test {
         ]));
 
         let input = RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(DictionaryArray::new(
-                        UInt16Array::from_iter(vec![Some(1), Some(0), None, Some(2), Some(3), None]),
-                        Arc::new(StringArray::from_iter_values(vec!["a", "b", "c", "d"])),
-                    )),
-                    Arc::new(StringArray::from_iter_values(vec!["1", "2", "3", "4", "5", "6"])),
-                ],
-            )
-            .unwrap();
+            schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter(vec![Some(1), Some(0), None, Some(2), Some(3), None]),
+                    Arc::new(StringArray::from_iter_values(vec!["a", "b", "c", "d"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "2", "3", "4", "5", "6",
+                ])),
+            ],
+        )
+        .unwrap();
 
-        let result = transform_attributes(&input, AttributesTransform {
-            rename: BTreeMap::from_iter([("c".into(), "CCCCC".into())]),
-            delete: BTreeSet::from_iter(["b".into()]) 
-        }).unwrap();
+        let result = transform_attributes(
+            &input,
+            AttributesTransform {
+                rename: BTreeMap::from_iter([("c".into(), "CCCCC".into())]),
+                delete: BTreeSet::from_iter(["b".into()]),
+            },
+        )
+        .unwrap();
 
         let expected = RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(DictionaryArray::new(
-                        UInt16Array::from_iter(vec![Some(0), None, Some(1), Some(2), None]),
-                        Arc::new(StringArray::from_iter_values(vec!["a", "CCCCC", "d"])),
-                    )),
-                    Arc::new(StringArray::from_iter_values(vec!["2", "3", "4", "5", "6"])),
-                ],
-            )
-            .unwrap();
+            schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter(vec![Some(0), None, Some(1), Some(2), None]),
+                    Arc::new(StringArray::from_iter_values(vec!["a", "CCCCC", "d"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec!["2", "3", "4", "5", "6"])),
+            ],
+        )
+        .unwrap();
 
         assert_eq!(result, expected);
     }
@@ -3078,18 +3122,29 @@ mod test {
     #[test]
     fn test_handle_transport_encoded_parent_ids() {
         let schema = Arc::new(Schema::new(vec![
+            // note: absence of encoding metadata means we assume it's quasi-delta encoded
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
         ]));
 
-        let input = RecordBatch::try_new(schema.clone(), vec![
-            Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
-            Arc::new(UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(8))),
-            Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "b", "b", "a", "a"])),
-            Arc::new(StringArray::from_iter_values(vec!["1", "1", "2", "2", "3", "3", "2", "2"]))
-        ]).unwrap();
+        let input = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(8),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "a", "a", "a", "b", "b", "a", "a",
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "3", "3", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
 
         // If the parent IDs are quasi-delta encoded we expect the plain encoded parent ids to be:
         // parent_id: 1, 2, 1, 2, 1, 2, 1, 2
@@ -3108,17 +3163,236 @@ mod test {
         // parent_id: 1, 2, 1, 2, 1, 2
         // value_str: a, a, a, a, a, a
 
-        let expected = RecordBatch::try_new(schema.clone(), vec![
-            Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 2, 1, 2])),
-            Arc::new(UInt8Array::from_iter_values(std::iter::repeat(AttributeValueType::Str as u8).take(6))),
-            Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a", "a"])),
-            Arc::new(StringArray::from_iter_values(vec!["1", "1", "2", "2", "2", "2"]))
-        ]).unwrap();
+        let expected_schema = Arc::new(Schema::new(vec![
+            // check that the "encoding:plain" metadata will be added to the field metadata
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
 
-        let result = transform_attributes(&input, AttributesTransform {
-            rename: BTreeMap::from_iter([]),
-            delete: BTreeSet::from_iter(["b".into()]) 
-        }).unwrap();
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 2, 1, 2])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(6),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "a", "a", "a", "a", "a",
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            AttributesTransform {
+                rename: BTreeMap::from_iter([]),
+                delete: BTreeSet::from_iter(["b".into()]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_handle_transport_encoded_parent_ids_dict_keys() {
+        // same test as above, but the keys are dict encoded
+        let schema = Arc::new(Schema::new(vec![
+            // note: absence of encoding metadata means we assume it's quasi-delta encoded
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(8),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(vec![0, 0, 0, 0, 1, 1, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(vec!["a", "b"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "3", "3", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let expected_schema = Arc::new(Schema::new(vec![
+            // check that the "encoding:plain" metadata will be added to the field metadata
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 2, 1, 2])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(6),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(vec![0, 0, 0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(vec!["a"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            AttributesTransform {
+                rename: BTreeMap::from_iter([]),
+                delete: BTreeSet::from_iter(["b".into()]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_skip_materialize_parent_ids_if_no_deletes() {
+        // this test is same as above, but there's an optimization that if there are no deletes
+        // then we don't materialize the quasi-delta parent IDs because there being no deletes
+        // means the sequence remains valid
+        let schema = Arc::new(Schema::new(vec![
+            // note: absence of encoding metadata means we assume it's quasi-delta encoded
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(8),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "a", "a", "a", "b", "b", "a", "a",
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "3", "3", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(8),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "a", "a", "a", "BBB", "BBB", "a", "a",
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "3", "3", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            AttributesTransform {
+                rename: BTreeMap::from_iter([("b".into(), "BBB".into())]),
+                delete: BTreeSet::from_iter(["e".into()]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn test_skip_materialize_parent_ids_if_no_deletes_dit_keys() {
+        // same test as above, but the keys are dict encoded
+        let schema = Arc::new(Schema::new(vec![
+            // note: absence of encoding metadata means we assume it's quasi-delta encoded
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(8),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(vec![0, 0, 0, 0, 1, 1, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(vec!["a", "b"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "3", "3", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(
+                    std::iter::repeat(AttributeValueType::Str as u8).take(8),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(vec![0, 0, 0, 0, 1, 1, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(vec!["a", "BBB"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "1", "1", "2", "2", "3", "3", "2", "2",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            AttributesTransform {
+                rename: BTreeMap::from_iter([("b".into(), "BBB".into())]),
+                delete: BTreeSet::from_iter(["e".into()]),
+            },
+        )
+        .unwrap();
 
         assert_eq!(result, expected);
     }
