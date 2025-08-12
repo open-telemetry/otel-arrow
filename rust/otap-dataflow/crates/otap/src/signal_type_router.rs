@@ -75,6 +75,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                 let connected = effect_handler.connected_ports();
                 let has_port = connected.iter().any(|p| p.as_ref() == desired_port);
 
+                // ToDo [LQ] send_message_to should returns a dedicated error when the port is not found so we can avoid to call the `connected.iter().any(...)`.
                 if has_port {
                     effect_handler.send_message_to(desired_port, data).await
                 } else {
