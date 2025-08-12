@@ -25,6 +25,14 @@ use std::sync::Arc;
 /// URN for the SignalTypeRouter processor
 pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router";
 
+/// Well-known out port names for type-based routing
+/// Name of the out port used for trace signals
+pub const PORT_TRACES: &str = "traces";
+/// Name of the out port used for metric signals
+pub const PORT_METRICS: &str = "metrics";
+/// Name of the out port used for log signals
+pub const PORT_LOGS: &str = "logs";
+
 /// Minimal configuration for the SignalTypeRouter processor
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SignalTypeRouterConfig {}
@@ -57,11 +65,22 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                 Ok(())
             }
             Message::PData(data) => {
-                // Reuse engine wiring and node-level default resolution.
-                // - If exactly one out port is connected, it will be used.
-                // - If a default out port is configured, it will be used.
-                // - Otherwise this returns an error (ambiguous wiring), which we propagate.
-                effect_handler.send_message(data).await
+                // Determine desired out port by signal type
+                let desired_port = match data.signal_type() {
+                    otap_df_config::experimental::SignalType::Traces => PORT_TRACES,
+                    otap_df_config::experimental::SignalType::Metrics => PORT_METRICS,
+                    otap_df_config::experimental::SignalType::Logs => PORT_LOGS,
+                };
+
+                let connected = effect_handler.connected_ports();
+                let has_port = connected.iter().any(|p| p.as_ref() == desired_port);
+
+                if has_port {
+                    effect_handler.send_message_to(desired_port, data).await
+                } else {
+                    // No matching named port: fall back to engine default behavior
+                    effect_handler.send_message(data).await
+                }
             }
         }
     }
