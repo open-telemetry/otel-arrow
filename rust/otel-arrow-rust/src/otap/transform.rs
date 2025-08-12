@@ -2963,6 +2963,34 @@ mod test {
                     ],
                 ),
             ),
+            (
+                // test if there's nulls in the dict keys. This would be unusual
+                // but technically it's possible
+                AttributesTransform {
+                    rename: BTreeMap::from_iter([("a".into(), "AA".into())]),
+                    delete: BTreeSet::from_iter(["b".into()])
+                },
+                (
+                    vec![0, 1, 2, 3, 0, 1, 2, 3]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    vec![Some("a"), Some("b"), None, Some("c")],
+                    vec!["1", "2", "3", "4", "1", "2", "3", "4"].into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    vec![0, 1, 2, 0, 1, 2]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    vec![Some("AA"), None, Some("c")],
+                    vec!["1", "3", "4", "1", "3", "4"].into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                ),
+            )
         ];
 
         for (transform, inputs, expected) in test_cases {
@@ -3049,8 +3077,6 @@ mod test {
     }
 
     // TODO:
-    // - dict with null values
-    // - dict with null keys
     // - parent ID non-plain encoding handling
     // - remove all the empty columns
 }
