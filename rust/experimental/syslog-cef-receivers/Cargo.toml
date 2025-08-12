@@ -1,2 +1,0 @@
-[workspace]
-members = ["syslog-receiver", "cef-receiver"]
