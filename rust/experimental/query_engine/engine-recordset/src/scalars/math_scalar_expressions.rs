@@ -11,15 +11,19 @@ where
     'b: 'c,
 {
     let value = match math_scalar_expression {
+        MathScalarExpression::Add(b) => execute_binary_operation(execution_context, b, Value::add)?,
+        MathScalarExpression::Bin(b) => execute_binary_operation(execution_context, b, Value::bin)?,
         MathScalarExpression::Ceiling(u) => {
             execute_unary_operation(execution_context, u, Value::ceiling)?
+        }
+        MathScalarExpression::Divide(b) => {
+            execute_binary_operation(execution_context, b, Value::divide)?
         }
         MathScalarExpression::Floor(u) => {
             execute_unary_operation(execution_context, u, Value::floor)?
         }
-        MathScalarExpression::Add(b) => execute_binary_operation(execution_context, b, Value::add)?,
-        MathScalarExpression::Divide(b) => {
-            execute_binary_operation(execution_context, b, Value::divide)?
+        MathScalarExpression::Modulus(b) => {
+            execute_binary_operation(execution_context, b, Value::modulus)?
         }
         MathScalarExpression::Multiply(b) => {
             execute_binary_operation(execution_context, b, Value::multiply)?
@@ -445,6 +449,167 @@ mod tests {
                         StringScalarExpression::new(QueryLocation::new_fake(), "18"),
                     )),
                     Value::Integer(&IntegerValueStorage::new(0)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.0"),
+                    )),
+                    Value::Null,
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    Value::Null,
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_execute_modulus_and_bin_math_scalar_expression() {
+        fn run_test<F>(build: F, input: Vec<(ScalarExpression, ScalarExpression, Value)>)
+        where
+            F: Fn(BinaryMathmaticalScalarExpression) -> MathScalarExpression,
+        {
+            for (left, right, expected_value) in input {
+                let e = ScalarExpression::Math(build(BinaryMathmaticalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    left,
+                    right,
+                )));
+
+                let mut test = TestExecutionContext::new();
+
+                let execution_context = test.create_execution_context();
+
+                let actual_value = execute_scalar_expression(&execution_context, &e).unwrap();
+                assert_eq!(expected_value, actual_value.to_value());
+            }
+        }
+
+        run_test(
+            MathScalarExpression::Modulus,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 10.18),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 3.0),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(1.1799999999999997)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+                    )),
+                    Value::Integer(&IntegerValueStorage::new(1)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 3.0),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(1.0)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10.18"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "3.0"),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(1.1799999999999997)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "3"),
+                    )),
+                    Value::Integer(&IntegerValueStorage::new(1)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.0"),
+                    )),
+                    Value::Null,
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    Value::Null,
+                ),
+            ],
+        );
+
+        run_test(
+            MathScalarExpression::Bin,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 10018.18),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 100.0),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(10000.0)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10018),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 100),
+                    )),
+                    Value::Integer(&IntegerValueStorage::new(10000)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10018),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 100.0),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(10000.0)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10018.18"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "100.0"),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(10000.0)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10018"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "100"),
+                    )),
+                    Value::Integer(&IntegerValueStorage::new(10000)),
                 ),
                 (
                     ScalarExpression::Static(StaticScalarExpression::String(
