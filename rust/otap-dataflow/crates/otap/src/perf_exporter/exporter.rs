@@ -726,19 +726,19 @@ mod tests {
                 for i in 0..3 {
                     let traces_batch_data =
                         create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
-                            id_offset: 0 * i + 0,
+                            id_offset: 3 * i,
                             num_rows: 5,
                             ..Default::default()
                         });
                     let logs_batch_data =
                         create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                            id_offset: 1 * i + 1,
+                            id_offset: 3 * i + 1,
                             num_rows: 5,
                             ..Default::default()
                         });
                     let metrics_batch_data =
                         create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
-                            id_offset: 2 * i + 2,
+                            id_offset: 3 * i + 2,
                             num_rows: 5,
                             ..Default::default()
                         });
