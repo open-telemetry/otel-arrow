@@ -152,16 +152,7 @@ pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) ->
         headers.push((b"timestamp".to_vec(), timestamp_string.into_bytes()));
     }
 
-    let encoded_headers = if !headers.is_empty() {
-        let mut encoder = Encoder::new();
-        let borrowed_headers: Vec<(&[u8], &[u8])> = headers
-            .iter()
-            .map(|(k, v)| (k.as_slice(), v.as_slice()))
-            .collect();
-        encoder.encode(borrowed_headers)
-    } else {
-        Vec::new()
-    };
+    let encoded_headers = generate_encoded_headers(&options);
 
     BatchArrowRecords {
         batch_id: 0,
@@ -288,10 +279,12 @@ pub fn create_simple_trace_arrow_record_batches(
         }
     }
 
+    let encoded_headers = generate_encoded_headers(&options);
+
     BatchArrowRecords {
         batch_id: 0,
         arrow_payloads,
-        headers: Vec::default(),
+        headers: encoded_headers,
     }
 }
 
@@ -397,11 +390,13 @@ pub fn create_simple_metrics_arrow_record_batches(
         );
     }
 
+    let encoded_headers = generate_encoded_headers(&options);
+
     // Placeholder for metrics data generation logic
     BatchArrowRecords {
         batch_id: 0,
         arrow_payloads,
-        headers: Vec::default(),
+        headers: encoded_headers,
     }
 }
 
@@ -572,6 +567,29 @@ pub fn create_exemplars_record_batch(options: &SimpleDataGenOptions) -> RecordBa
         ],
     )
     .unwrap()
+}
+
+fn generate_encoded_headers(options: &SimpleDataGenOptions) -> Vec<u8> {
+    let mut headers = Vec::new();
+
+    if options.with_timestamp_header {
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let secs = timestamp.as_secs().to_string();
+        let nanos = timestamp.subsec_nanos().to_string();
+        let timestamp_string = format!("{secs}:{nanos}");
+        headers.push((b"timestamp".to_vec(), timestamp_string.into_bytes()));
+    }
+
+    if headers.is_empty() {
+        Vec::new()
+    } else {
+        let mut encoder = Encoder::new();
+        let borrowed_headers: Vec<(&[u8], &[u8])> = headers
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        encoder.encode(borrowed_headers)
+    }
 }
 
 fn serialize(record_batch: &RecordBatch) -> Vec<u8> {

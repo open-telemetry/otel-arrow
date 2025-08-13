@@ -708,7 +708,7 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use std::collections::HashMap;
-    use std::fs::{File, remove_file};
+    use std::fs::File;
     use std::future::Future;
     use std::io::{BufReader, prelude::*};
     use std::sync::Arc;
