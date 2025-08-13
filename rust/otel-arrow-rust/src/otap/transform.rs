@@ -875,10 +875,13 @@ pub fn transform_attributes(
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
 
-            let keys_transform_result = transform_keys(keys_arr, transform);
+            let keys_transform_result = transform_keys(keys_arr, transform)?;
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
-            // TODO we only need to do this if there are any deletes
+            // if there were any deletes, it could cause issues if the parent_ids are using the
+            // transport optimized quasi-delta encoding. This is because subsequent runs of
+            // key-value pairs may be joined deleted segments, meaning the delta encoding will
+            // change. To avoid this, we materialize the parent IDs if there were any deletes
             let any_deletes = keys_transform_result
                 .deletion_ranges
                 .as_ref()
@@ -910,8 +913,6 @@ pub fn transform_attributes(
                     }
                 })
                 .collect::<Result<Vec<ArrayRef>>>()?;
-
-            println!("columns = {:?}", columns);
 
             // safety: this should only return an error if our schema, or column lengths don't match
             // but based on how we've constructed the batch, this shouldn't happen
@@ -962,8 +963,10 @@ pub fn transform_attributes(
                 }
             };
 
-            // materialize parent IDs if there are any deleted rows and if the PARENT_ID column
-            // exists (which it should but check is here to be safe)
+            // if there were any deletes, it could cause issues if the parent_ids are using the
+            // transport optimized quasi-delta encoding. This is because subsequent runs of
+            // key-value pairs may be joined deleted segments, meaning the delta encoding will
+            // change. To avoid this, we materialize the parent IDs if there were any deletes
             let any_rows_deleted = keep_ranges.is_some();
             let should_materialize_parent_ids =
                 any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
@@ -1009,7 +1012,10 @@ struct KeysTransformResult {
     deletion_ranges: Option<Vec<(usize, usize)>>,
 }
 
-fn transform_keys(array: &StringArray, transform: &AttributesTransform) -> KeysTransformResult {
+fn transform_keys(
+    array: &StringArray,
+    transform: &AttributesTransform,
+) -> Result<KeysTransformResult> {
     let len = array.len();
     let values = array.values();
     let offsets = array.offsets();
@@ -1021,11 +1027,13 @@ fn transform_keys(array: &StringArray, transform: &AttributesTransform) -> KeysT
     let replacement_plan = transform
         .rename
         .as_ref()
-        .map(|rename_transform| plan_key_replacements(len, values, offsets, rename_transform));
+        .map(|rename_transform| plan_key_replacements(len, values, offsets, rename_transform))
+        .transpose()?;
     let delete_plan = transform
         .delete
         .as_ref()
-        .map(|delete_transform| plan_key_deletes(len, values, offsets, delete_transform));
+        .map(|delete_transform| plan_key_deletes(len, values, offsets, delete_transform))
+        .transpose()?;
 
     // we're going to pass over both the values and the offsets, taking any ranges that weren't
     // that are unmodified, while either transforming or omitting ranges that were either replaced
@@ -1075,22 +1083,84 @@ fn transform_keys(array: &StringArray, transform: &AttributesTransform) -> KeysT
     new_values.extend_from_slice(&values.slice(last_end_offset));
 
     // next we'll create the new offsets buffer
+    let all_offsets_same_len = replacement_plan
+        .as_ref()
+        .map(|r| r.all_replacements_same_len)
+        .unwrap_or(true);
     let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0);
-    let num_offsets = (array.len() - total_deletions) + 1;
-    let mut new_offsets = MutableBuffer::new(num_offsets * size_of::<i32>());
+    let new_offsets = if all_offsets_same_len && total_deletions == 0 {
+        // if the target and replacement happen to be the same length and there were no deletions, we
+        // can just reuse the existing offsets
+        offsets.clone()
+    } else {
+        let num_offsets = (array.len() - total_deletions) + 1;
+        let mut new_offsets = MutableBuffer::new(num_offsets * size_of::<i32>());
 
-    // for each offset that was not replaced, keep track of how much to adjust it based on how
-    // many values were replaced and the size difference between target and replacement
-    let mut curr_total_offset_adjustment = 0;
+        // for each offset that was not replaced, keep track of how much to adjust it based on how
+        // many values were replaced and the size difference between target and replacement
+        let mut curr_total_offset_adjustment = 0;
 
-    // pointer to the end of the previous range where the values were replaced
-    let mut prev_range_index_end = 0;
+        // pointer to the end of the previous range where the values were replaced
+        let mut prev_range_index_end = 0;
 
-    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges {
-        // copy offsets for values that were not replaced, but add the offset adjustment
+        for (start_idx, end_idx, transform_idx, range_type) in transform_ranges {
+            // copy offsets for values that were not replaced, but add the offset adjustment
+            offsets
+                .inner()
+                .slice(prev_range_index_end, start_idx - prev_range_index_end)
+                .into_iter()
+                .for_each(|offset| {
+                    // safety: we've pre-allocated the new_offsets buffer with enough space for all the
+                    // offsets we'll need. so it's safe to use push_unchecked here. This provides a
+                    // significant performance improvement because we don't have to check that the array
+                    // contains enough capacity reservation for every offset
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        new_offsets.push_unchecked(offset + curr_total_offset_adjustment);
+                    }
+                });
+
+            match range_type {
+                KeyTransformRangeType::Replace => {
+                    // append offsets for values that were replaced, but add the offset adjustment
+                    let replacement_bytes = replacement_plan
+                        .as_ref()
+                        .expect("replacement plan should be initialized")
+                        .replacement_bytes[transform_idx];
+                    let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
+                    for _ in start_idx..end_idx {
+                        new_offsets.push(offset);
+                        offset += replacement_bytes.len() as i32;
+                    }
+
+                    // increment the total offset adjustment by the difference between the lengths of
+                    // the current/replaced value times now many values were replaced.
+                    let val_len_diff = replacement_plan
+                        .as_ref()
+                        .expect("replacement plan should be initialized")
+                        .replacement_byte_len_diffs[transform_idx];
+                    curr_total_offset_adjustment += val_len_diff * (end_idx - start_idx) as i32;
+                }
+                KeyTransformRangeType::Delete => {
+                    // for deleted ranges we don't need to append any offsets to the buffer, so we
+                    // just decrement by how many total bytes were deleted from this range.
+                    let deleted_val_len = delete_plan
+                        .as_ref()
+                        .expect("delete plan should be initialized")
+                        .target_keys[transform_idx]
+                        .len();
+                    curr_total_offset_adjustment -=
+                        (deleted_val_len * (end_idx - start_idx)) as i32;
+                }
+            }
+
+            prev_range_index_end = end_idx
+        }
+
+        // copy any remaining offsets between the last replaced range and the end of the array
         offsets
             .inner()
-            .slice(prev_range_index_end, start_idx - prev_range_index_end)
+            .slice(prev_range_index_end, array.len() - prev_range_index_end)
             .into_iter()
             .for_each(|offset| {
                 // safety: we've pre-allocated the new_offsets buffer with enough space for all the
@@ -1103,60 +1173,24 @@ fn transform_keys(array: &StringArray, transform: &AttributesTransform) -> KeysT
                 }
             });
 
-        match range_type {
-            KeyTransformRangeType::Replace => {
-                // append offsets for values that were replaced, but add the offset adjustment
-                let replacement_bytes = replacement_plan
-                    .as_ref()
-                    .expect("replacement plan should be initialized")
-                    .replacement_bytes[transform_idx];
-                let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
-                for _ in start_idx..end_idx {
-                    new_offsets.push(offset);
-                    offset += replacement_bytes.len() as i32;
-                }
+        // add the final offset
+        new_offsets.push(new_values.len() as i32);
 
-                // increment the total offset adjustment by the difference between the lengths of
-                // the current/replaced value times now many values were replaced.
-                let val_len_diff = replacement_plan
-                    .as_ref()
-                    .expect("replacement plan should be initialized")
-                    .replacement_byte_len_diffs[transform_idx];
-                curr_total_offset_adjustment += val_len_diff * (end_idx - start_idx) as i32;
-            }
-            KeyTransformRangeType::Delete => {
-                // for deleted ranges we don't need to append any offsets to the buffer, so we
-                // just decrement by how many total bytes were deleted from this range.
-                let deleted_val_len = delete_plan
-                    .as_ref()
-                    .expect("delete plan should be initialized")
-                    .target_keys[transform_idx]
-                    .len();
-                curr_total_offset_adjustment -= (deleted_val_len * (end_idx - start_idx)) as i32;
-            }
+        // finally construct the new string array
+        let new_offsets_len = new_offsets.len() / size_of::<i32>();
+        let new_offsets = ScalarBuffer::<i32>::new(new_offsets.into(), 0, new_offsets_len);
+
+        // Calling `new_unchecked` here skips iterating the buffer to ensure that all the values
+        // are monotonically increasing, which saves a lot of time on large batch sizes
+        //
+        // Safety: we've computed the buffer values from the existing offsets, which should already
+        // be monotonically increasing if the passed StringArray was valid (and if not, we've
+        // created a new StringArray no less valid than what was passed)
+        #[allow(unsafe_code)]
+        unsafe {
+            OffsetBuffer::new_unchecked(new_offsets)
         }
-
-        prev_range_index_end = end_idx
-    }
-
-    // copy any remaining offsets between the last replaced range and the end of the array
-    offsets
-        .inner()
-        .slice(prev_range_index_end, array.len() - prev_range_index_end)
-        .into_iter()
-        .for_each(|offset| {
-            // safety: we've pre-allocated the new_offsets buffer with enough space for all the
-            // offsets we'll need. so it's safe to use push_unchecked here. This provides a
-            // significant performance improvement because we don't have to check that the array
-            // contains enough capacity reservation for every offset
-            #[allow(unsafe_code)]
-            unsafe {
-                new_offsets.push_unchecked(offset + curr_total_offset_adjustment);
-            }
-        });
-
-    // add the final offset
-    new_offsets.push(new_values.len() as i32);
+    };
 
     // calculate which ranges from other columns in the dataset should be kept. This will only be
     // `Some` if there were some deletes. Otherwise, this will be `None` which signals to the
@@ -1196,18 +1230,6 @@ fn transform_keys(array: &StringArray, transform: &AttributesTransform) -> KeysT
         }
     });
 
-    // finally construct the new string array
-    let new_offsets_len = new_offsets.len() / size_of::<i32>();
-    let new_offsets = ScalarBuffer::<i32>::new(new_offsets.into(), 0, new_offsets_len);
-    // Calling `new_unchecked` here skips iterating the buffer to ensure that all the values
-    // are monotonically increasing, which saves a lot of time on large batch sizes
-    //
-    // Safety: we've computed the buffer values from the existing offsets, which should already
-    // be monotonically increasing if the passed StringArray was valid (and if not, we've
-    // created a new StringArray no less valid than what was passed)
-    #[allow(unsafe_code)]
-    let new_offsets = unsafe { OffsetBuffer::new_unchecked(new_offsets) };
-
     let new_values = new_values.into();
 
     // Safety: we use unchecked here for better performance because we avoid doing utf8 validation
@@ -1216,7 +1238,7 @@ fn transform_keys(array: &StringArray, transform: &AttributesTransform) -> KeysT
     #[allow(unsafe_code)]
     let new_keys = unsafe { StringArray::new_unchecked(new_offsets, new_values, new_nulls) };
 
-    KeysTransformResult {
+    Ok(KeysTransformResult {
         new_keys,
         keep_ranges,
         deletion_ranges: delete_plan
@@ -1227,7 +1249,7 @@ fn transform_keys(array: &StringArray, transform: &AttributesTransform) -> KeysT
                     .collect::<Vec<_>>()
             })
             .and_then(|d| if d.is_empty() { None } else { Some(d) }),
-    }
+    })
 }
 
 struct DictionaryKeysTransformIntermediateResult<K: ArrowDictionaryKeyType> {
@@ -1250,7 +1272,7 @@ where
                 .as_any()
                 .downcast_ref()
                 .expect("can downcast Utf8 type array to StringArray");
-            let key_transform_result = transform_keys(dict_values, transform);
+            let key_transform_result = transform_keys(dict_values, transform)?;
 
             if key_transform_result.deletion_ranges.is_none() {
                 // here there were no rows deleted from the values array, which means we can reuse
@@ -1458,7 +1480,7 @@ fn plan_key_replacements<'a>(
     values_buf: &'a Buffer,
     offsets: &'a OffsetBuffer<i32>,
     replacements: &'a BTreeMap<String, String>,
-) -> KeyReplacementPlan<'a> {
+) -> Result<KeyReplacementPlan<'a>> {
     let target_bytes = replacements
         .keys()
         .map(|target| target.as_bytes())
@@ -1469,20 +1491,20 @@ fn plan_key_replacements<'a>(
         .map(|replacement| replacement.as_bytes())
         .collect::<Vec<_>>();
 
-    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes);
+    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes)?;
 
     let replacement_byte_len_diffs = (0..replacements.len())
         .map(|i| replacement_bytes[i].len() as i32 - target_bytes[i].len() as i32)
         .collect::<Vec<_>>();
     let all_replacements_same_len = replacement_byte_len_diffs.iter().all(|val| *val == 0);
 
-    KeyReplacementPlan {
+    Ok(KeyReplacementPlan {
         replacement_bytes,
         ranges: target_ranges.ranges,
         counts: target_ranges.counts,
         all_replacements_same_len,
         replacement_byte_len_diffs,
-    }
+    })
 }
 
 pub struct KeyDeletePlan<'a> {
@@ -1500,39 +1522,61 @@ fn plan_key_deletes<'a>(
     values_buf: &'a Buffer,
     offsets: &'a OffsetBuffer<i32>,
     delete_keys: &'a BTreeSet<String>,
-) -> KeyDeletePlan<'a> {
+) -> Result<KeyDeletePlan<'a>> {
     let target_bytes = delete_keys
         .iter()
         .map(|key| key.as_bytes())
         .collect::<Vec<_>>();
 
-    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes);
+    let target_ranges = find_matching_key_ranges(array_len, values_buf, offsets, &target_bytes)?;
 
-    KeyDeletePlan {
+    Ok(KeyDeletePlan {
         target_keys: target_bytes,
         ranges: target_ranges.ranges,
         counts: target_ranges.counts,
         total_deletions: target_ranges.total_matches,
-    }
+    })
 }
 
+// The return type from `find_matching_key_ranges`
 struct TargetRanges {
+    // contiguous ranges in the values buffer that match the target bytes this is keyed like
+    // `(start, end, target_idx)` where target_idx is the index into the slice of `target_bytes`
+    // that was passed to `find_matching_key_ranges`.
+    //
+    // This also be sorted by first element in the tuple (the start index)
     ranges: Vec<(usize, usize, usize)>,
+
+    // count of many occurrences of each of the `target_bytes` were found in the passed values
+    // buffer. This will have the same order as passed `target_bytes`. This can be used to
+    // calculate the size of transformed values buffer.
     counts: Vec<usize>,
+
+    // how many total matches were found. Knowing that there were no matches can be used for
+    // various optimizations when eventually transforming the values buffer.
     total_matches: usize,
 }
 
+// find the contiguous ranges in the values buffer that match the targets in the byte buffer
 fn find_matching_key_ranges(
     array_len: usize,
     values_buf: &Buffer,
     offsets: &OffsetBuffer<i32>,
     target_bytes: &[&[u8]],
-) -> TargetRanges {
+) -> Result<TargetRanges> {
     let mut ranges = Vec::new();
     let mut total_matches = 0;
     let mut counts = vec![0; target_bytes.len()];
 
-    // TODO len needs to be checked somewhere for safety
+    // we're going to access the raw offsets pointer directly while doing this range computation
+    // (see comments below for reasoning), so this check is for safety
+    if offsets.len() < array_len + 1 {
+        return Err(error::UnexpectedRecordBatchStateSnafu {
+            reason: "StringArray offsets has unexpected length",
+        }
+        .build());
+    }
+
     let offset_ptr = offsets.as_ptr();
 
     for target_idx in 0..target_bytes.len() {
@@ -1576,14 +1620,14 @@ fn find_matching_key_ranges(
         }
     }
 
-    // TODO comments blah blah
+    // Sort the ranges to replace by start_index (first element in contained tuple)
     ranges.sort();
 
-    TargetRanges {
+    Ok(TargetRanges {
         ranges,
         counts,
         total_matches,
-    }
+    })
 }
 
 /// calculate the new total length of the keys array's value buffer after applying deletions and/or
@@ -1626,12 +1670,8 @@ where
 {
     let slices: Vec<ArrayRef> = ranges
         .iter()
-        .map(|&(start, end)| {
-            array.slice(start, end - start) // zero-copy view
-        })
+        .map(|&(start, end)| array.slice(start, end - start))
         .collect();
-
-    // TODO can avoid a second vec alloc here?
     let borrowed_slices: Vec<&dyn Array> = slices.iter().map(|arr| arr.as_ref()).collect();
     concat(&borrowed_slices).context(error::WriteRecordBatchSnafu)
 }
