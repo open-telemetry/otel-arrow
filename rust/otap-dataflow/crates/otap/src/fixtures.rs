@@ -142,16 +142,6 @@ pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) ->
         });
     }
 
-    let mut headers = Vec::new();
-    if options.with_timestamp_header {
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let secs = timestamp.as_secs().to_string();
-        let nanos = timestamp.subsec_nanos().to_string();
-        let timestamp_string = format!("{secs}:{nanos}");
-
-        headers.push((b"timestamp".to_vec(), timestamp_string.into_bytes()));
-    }
-
     let encoded_headers = generate_encoded_headers(&options);
 
     BatchArrowRecords {
