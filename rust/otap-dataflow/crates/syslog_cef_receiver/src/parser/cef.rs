@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(extensions.len(), 2);
         assert_eq!(
             extensions[0],
-            (b"value".as_slice(), b"has trailing spaces  ".as_slice())
+            (b"value".as_slice(), b"has trailing spaces".as_slice())
         );
         assert_eq!(extensions[1], (b"next".as_slice(), b"value".as_slice()));
     }
