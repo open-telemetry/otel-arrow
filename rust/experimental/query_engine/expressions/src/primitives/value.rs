@@ -714,6 +714,24 @@ impl Value<'_> {
         }
     }
 
+    pub fn negate(value: &Value) -> Option<NumericValue> {
+        match value {
+            Value::Integer(i) => Some(NumericValue::Integer(-i.get_value())),
+            Value::Double(d) => Some(NumericValue::Double(-d.get_value())),
+            _ => {
+                if let Value::String(l) = value
+                    && l.get_value().contains(['.', 'e'])
+                {
+                    value.convert_to_double().map(|v| NumericValue::Double(-v))
+                } else {
+                    value
+                        .convert_to_integer()
+                        .map(|v| NumericValue::Integer(-v))
+                }
+            }
+        }
+    }
+
     fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
         let mut r = None;
 
@@ -2907,6 +2925,60 @@ mod tests {
         run_test_failure(
             Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(")),
             Some(Value::Null),
+        );
+    }
+
+    #[test]
+    pub fn test_negate() {
+        let run_test_success = |value: Value, expected: Option<NumericValue>| {
+            let actual = Value::negate(&value);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
+            Some(NumericValue::Double(-1.1)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Some(NumericValue::Integer(-42)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.1",
+            )),
+            Some(NumericValue::Double(-1.1)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Some(NumericValue::Integer(-1)),
+        );
+        // String values that cannot be parsed
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, None);
+
+        // Value convertable to int
+        run_test_success(
+            Value::Boolean(&BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+            Some(NumericValue::Integer(-1)),
         );
     }
 }
