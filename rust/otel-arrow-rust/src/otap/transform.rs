@@ -1040,7 +1040,19 @@ fn transform_keys(
     // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
     let transform_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref());
 
-    // TODO there should be an optimization here where we can reuse the same values & offsets ...
+    let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0);
+    let total_replacements = replacement_plan
+        .as_ref()
+        .map(|r| r.total_replacements)
+        .unwrap_or(0);
+    if total_deletions == 0 && total_replacements == 0 {
+        // if no modifications are being made to the array, we can just return the original
+        return Ok(KeysTransformResult {
+            new_keys: array.clone(),
+            keep_ranges: None,
+            deletion_ranges: None,
+        });
+    }
 
     // Next create the new values array
     let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
@@ -1087,7 +1099,6 @@ fn transform_keys(
         .as_ref()
         .map(|r| r.all_replacements_same_len)
         .unwrap_or(true);
-    let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0);
     let new_offsets = if all_offsets_same_len && total_deletions == 0 {
         // if the target and replacement happen to be the same length and there were no deletions, we
         // can just reuse the existing offsets
@@ -1470,6 +1481,7 @@ pub struct KeyReplacementPlan<'a> {
     ranges: Vec<(usize, usize, usize)>,
     counts: Vec<usize>,
     all_replacements_same_len: bool,
+    total_replacements: usize,
     // TODO -- this is only needed to be calculated if all_replacement_same_len is false?
     // should it be lazily calculated ..
     replacement_byte_len_diffs: Vec<i32>,
@@ -1502,6 +1514,7 @@ fn plan_key_replacements<'a>(
         replacement_bytes,
         ranges: target_ranges.ranges,
         counts: target_ranges.counts,
+        total_replacements: target_ranges.total_matches,
         all_replacements_same_len,
         replacement_byte_len_diffs,
     })
