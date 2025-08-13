@@ -41,9 +41,6 @@ pub enum ScalarExpression {
     /// Contains scalar functions for performing mathematical operations.
     Math(MathScalarExpression),
 
-    /// Negate the value returned by the inner scalar expression.
-    Negate(NegateScalarExpression),
-
     /// Contains scalar functions for performing parsing operations.
     Parse(ParseScalarExpression),
 
@@ -81,7 +78,6 @@ impl ScalarExpression {
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
             ScalarExpression::Constant(c) => Ok(Some(c.get_value_type())),
-            ScalarExpression::Negate(n) => n.try_resolve_value_type(pipeline),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(pipeline),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(pipeline),
@@ -110,7 +106,6 @@ impl ScalarExpression {
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
             ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(pipeline))),
-            ScalarExpression::Negate(n) => n.try_resolve_static(pipeline),
             ScalarExpression::Logical(l) => l.try_resolve_static(pipeline),
             ScalarExpression::Coalesce(c) => c.try_resolve_static(pipeline),
             ScalarExpression::Conditional(c) => c.try_resolve_static(pipeline),
@@ -134,7 +129,6 @@ impl Expression for ScalarExpression {
             ScalarExpression::Variable(v) => v.get_query_location(),
             ScalarExpression::Static(s) => s.get_query_location(),
             ScalarExpression::Constant(c) => c.get_query_location(),
-            ScalarExpression::Negate(n) => n.get_query_location(),
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Coalesce(c) => c.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
@@ -155,7 +149,6 @@ impl Expression for ScalarExpression {
             ScalarExpression::Attached(_) => "ScalarExpression(Attached)",
             ScalarExpression::Variable(_) => "ScalarExpression(Variable)",
             ScalarExpression::Static(s) => s.get_name(),
-            ScalarExpression::Negate(_) => "ScalarExpression(Negate)",
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
@@ -454,84 +447,6 @@ impl Expression for CopyConstantScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "CopyConstantScalarExpression"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NegateScalarExpression {
-    query_location: QueryLocation,
-    inner_expression: Box<ScalarExpression>,
-}
-
-impl NegateScalarExpression {
-    pub fn new(
-        query_location: QueryLocation,
-        inner_expression: ScalarExpression,
-    ) -> NegateScalarExpression {
-        Self {
-            query_location,
-            inner_expression: inner_expression.into(),
-        }
-    }
-
-    pub fn get_inner_expression(&self) -> &ScalarExpression {
-        &self.inner_expression
-    }
-
-    pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
-    ) -> Result<Option<ValueType>, ExpressionError> {
-        let s = self.try_resolve_static(pipeline)?;
-        if let Some(s) = s {
-            Ok(Some(s.get_value_type()))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub(crate) fn try_resolve_static(
-        &self,
-        pipeline: &PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
-        if let Some(s) = self.inner_expression.try_resolve_static(pipeline)? {
-            match s.to_value() {
-                Value::Integer(i) => {
-                    return Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            self.query_location.clone(),
-                            -i.get_value(),
-                        )),
-                    )));
-                }
-                Value::Double(d) => {
-                    return Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::Double(DoubleScalarExpression::new(
-                            self.query_location.clone(),
-                            -d.get_value(),
-                        )),
-                    )));
-                }
-                _ => {
-                    return Err(ExpressionError::TypeMismatch(
-                        self.query_location.clone(),
-                        "Negate expression can only be used with integer and double types".into(),
-                    ));
-                }
-            }
-        }
-
-        Ok(None)
-    }
-}
-
-impl Expression for NegateScalarExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        &self.query_location
-    }
-
-    fn get_name(&self) -> &'static str {
-        "NegateScalarExpression"
     }
 }
 
@@ -1295,16 +1210,6 @@ mod tests {
         );
 
         run_test_success(
-            ScalarExpression::Negate(NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                )),
-            )),
-            Some(ValueType::Integer),
-        );
-
-        run_test_success(
             ScalarExpression::Logical(
                 LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -1627,18 +1532,6 @@ mod tests {
         );
 
         run_test_success(
-            ScalarExpression::Negate(NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                )),
-            )),
-            Some(StaticScalarExpression::Integer(
-                IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
-            )),
-        );
-
-        run_test_success(
             ScalarExpression::Logical(
                 LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -1705,87 +1598,6 @@ mod tests {
                 "hello world",
             ))),
         );
-    }
-
-    #[test]
-    pub fn test_negate_try_resolve_static() {
-        let run_test_success =
-            |expression: NegateScalarExpression, expected: Option<StaticScalarExpression>| {
-                let pipeline = Default::default();
-
-                let actual_static = expression
-                    .try_resolve_static(&pipeline)
-                    .unwrap()
-                    .map(|v| v.as_ref().clone());
-
-                assert_eq!(expected, actual_static);
-                if actual_static.is_none() {
-                    assert_eq!(None, expression.try_resolve_value_type(&pipeline).unwrap());
-                } else {
-                    assert_eq!(
-                        ScalarExpression::Static(actual_static.unwrap())
-                            .try_resolve_value_type(&pipeline)
-                            .unwrap(),
-                        expression.try_resolve_value_type(&pipeline).unwrap()
-                    );
-                }
-            };
-
-        let run_test_failure = |expression: NegateScalarExpression| {
-            let pipeline = Default::default();
-
-            assert!(matches!(
-                expression.try_resolve_static(&pipeline).unwrap_err(),
-                ExpressionError::TypeMismatch(_, _)
-            ));
-            assert!(matches!(
-                expression.try_resolve_value_type(&pipeline).unwrap_err(),
-                ExpressionError::TypeMismatch(_, _)
-            ));
-        };
-
-        run_test_success(
-            NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new(),
-                )),
-            ),
-            None,
-        );
-
-        run_test_success(
-            NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                )),
-            ),
-            Some(StaticScalarExpression::Integer(
-                IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
-            )),
-        );
-
-        run_test_success(
-            NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Double(
-                    DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0),
-                )),
-            ),
-            Some(StaticScalarExpression::Double(DoubleScalarExpression::new(
-                QueryLocation::new_fake(),
-                -1.0,
-            ))),
-        );
-
-        run_test_failure(NegateScalarExpression::new(
-            QueryLocation::new_fake(),
-            ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-            )),
-        ));
     }
 
     #[test]
