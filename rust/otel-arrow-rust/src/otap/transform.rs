@@ -606,7 +606,7 @@ pub fn transform_attributes(
                         .downcast_ref::<DictionaryArray<UInt8Type>>()
                         .expect("can downcast dictionary column to dictionary array");
                     let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
-                    let new_dict = Arc::new(dict_imm_result.keys_array);
+                    let new_dict = Arc::new(dict_imm_result.new_keys);
                     (new_dict as ArrayRef, dict_imm_result.keep_ranges)
                 }
                 DataType::UInt16 => {
@@ -616,7 +616,7 @@ pub fn transform_attributes(
                         .downcast_ref::<DictionaryArray<UInt16Type>>()
                         .expect("can downcast dictionary column to dictionary array");
                     let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
-                    let new_dict = Arc::new(dict_imm_result.keys_array);
+                    let new_dict = Arc::new(dict_imm_result.new_keys);
                     (new_dict as ArrayRef, dict_imm_result.keep_ranges)
                 }
                 data_type => {
@@ -680,12 +680,23 @@ pub fn transform_attributes(
     }
 }
 
+/// This will be returned from [`transform_keys`]. It contains the new keys array, as well as extra
+/// context needed to transform the rest of the columns in the attributes record batch.
 struct KeysTransformResult {
     new_keys: StringArray,
+
+    /// Ranges of of the additional columns which should be kept.
+    ///
+    /// This will be `None` if there are no ranges that have been deleted
     keep_ranges: Option<Vec<(usize, usize)>>,
+
+    /// Ranges of the additional columns which should be deleted
+    ///
+    /// This will be `None` if there are no ranges that have been deleted
     deletion_ranges: Option<Vec<(usize, usize)>>,
 }
 
+/// Transform the attributes key array
 fn transform_keys(
     array: &StringArray,
     transform: &AttributesTransform,
@@ -694,8 +705,8 @@ fn transform_keys(
     let values = array.values();
     let offsets = array.offsets();
 
-    // The first step is to call these plan_ functions. These will look into the passed buffers
-    // and return to us a plan for how to reconstruct the transformed attribute keys column. These
+    // The first step is to call these "plan" functions. These will inspect the passed buffers and
+    // return to us a plan for how to reconstruct the transformed attribute keys column. These
     // plans contain information like how many replacements and deletes occurred, and which ranges
     // from the source array were deleted and replaced.
     let replacement_plan = transform
@@ -705,6 +716,7 @@ fn transform_keys(
         .filter(|r| !r.is_empty())
         .map(|r| plan_key_replacements(len, values, offsets, r))
         .transpose()?;
+
     let delete_plan = transform
         .delete
         .as_ref()
@@ -713,16 +725,13 @@ fn transform_keys(
         .map(|d| plan_key_deletes(len, values, offsets, d))
         .transpose()?;
 
-    // we're going to pass over both the values and the offsets, taking any ranges that weren't
-    // that are unmodified, while either transforming or omitting ranges that were either replaced
-    // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
-    let transform_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref());
-
+    // check if we can return early because there are no modifications to be made
     let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0);
     let total_replacements = replacement_plan
         .as_ref()
         .map(|r| r.total_replacements)
         .unwrap_or(0);
+
     if total_deletions == 0 && total_replacements == 0 {
         // if no modifications are being made to the array, we can just return the original
         return Ok(KeysTransformResult {
@@ -732,7 +741,12 @@ fn transform_keys(
         });
     }
 
-    // Next create the new values array
+    // we're going to pass over both the values and the offsets, taking any ranges that weren't
+    // that are unmodified, while either transforming or omitting ranges that were either replaced
+    // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
+    let transform_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref());
+
+    // create buffer to contain the new values
     let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
         values,
         replacement_plan.as_ref(),
@@ -742,6 +756,7 @@ fn transform_keys(
     // keep track pointer to the previous offset that had values replaced
     let mut last_end_offset = 0;
 
+    // iterate over the transform ranges, copying unmodified ranges and replacing renamed keys
     for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().cloned() {
         // directly copy all the bytes of the values that were not replaced
         let start_offset = offsets[start_idx] as usize;
@@ -769,7 +784,7 @@ fn transform_keys(
         last_end_offset = offsets[end_idx] as usize;
     }
 
-    // copy any bytes from the tail of the source buffer
+    // copy any bytes from the tail of the source value buffer
     new_values.extend_from_slice(&values.slice(last_end_offset));
 
     // next we'll create the new offsets buffer
@@ -777,6 +792,7 @@ fn transform_keys(
         .as_ref()
         .map(|r| r.all_replacements_same_len)
         .unwrap_or(true);
+
     let new_offsets = if all_offsets_same_len && total_deletions == 0 {
         // if the target and replacement happen to be the same length and there were no deletions, we
         // can just reuse the existing offsets
@@ -865,7 +881,6 @@ fn transform_keys(
         // add the final offset
         new_offsets.push(new_values.len() as i32);
 
-        // finally construct the new string array
         let new_offsets_len = new_offsets.len() / size_of::<i32>();
         let new_offsets = ScalarBuffer::<i32>::new(new_offsets.into(), 0, new_offsets_len);
 
@@ -881,9 +896,9 @@ fn transform_keys(
         }
     };
 
-    // calculate which ranges from other columns in the dataset should be kept. This will only be
-    // `Some` if there were some deletes. Otherwise, this will be `None` which signals to the
-    // caller that we can keep the other columns in their entirety.
+    // calculate which ranges from other columns in the dataset should be kept. This will be `Some`
+    // if there were some deletes. Otherwise, this will be `None` which signals to the caller that
+    // we can keep the other columns in their entirety.
     let keep_ranges = delete_plan.as_ref().and_then(|d| {
         if d.ranges.is_empty() {
             None
@@ -901,6 +916,7 @@ fn transform_keys(
         }
     });
 
+    // create the new nulls buffer
     let new_nulls = array.nulls().and_then(|nulls| {
         match keep_ranges.as_ref() {
             // keep only slices of the null buffer if some of the values were deleted
@@ -941,15 +957,22 @@ fn transform_keys(
     })
 }
 
-struct DictionaryKeysTransformIntermediateResult<K: ArrowDictionaryKeyType> {
-    keys_array: DictionaryArray<K>,
+/// This will be returned from [`transform_dictionary_keys`]. It contains the new keys array, as
+/// well as extra context needed to transform the rest of the columns in the attributes record
+/// batch.
+struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
+    new_keys: DictionaryArray<K>,
+
+    /// Ranges of of the additional columns which should be kept.
+    ///
+    /// This will be `None` if there are no ranges that have been deleted
     keep_ranges: Option<Vec<(usize, usize)>>,
 }
 
 fn transform_dictionary_keys<K>(
     dict_arr: &DictionaryArray<K>,
     transform: &AttributesTransform,
-) -> Result<DictionaryKeysTransformIntermediateResult<K>>
+) -> Result<DictionaryKeysTransformResult<K>>
 where
     K: ArrowDictionaryKeyType,
 {
@@ -961,9 +984,9 @@ where
             actual: dict_values.data_type().clone(),
         }
     })?;
-    let key_transform_result = transform_keys(dict_values, transform)?;
+    let dict_values_transform_result = transform_keys(dict_values, transform)?;
 
-    if key_transform_result.deletion_ranges.is_none() {
+    if dict_values_transform_result.deletion_ranges.is_none() {
         // here there were no rows deleted from the values array, which means we can reuse
         // the dictionary keys without any transformations
         let new_dict_keys = dict_keys.clone();
@@ -972,21 +995,24 @@ where
         let new_dict = unsafe {
             DictionaryArray::<K>::new_unchecked(
                 new_dict_keys,
-                Arc::new(key_transform_result.new_keys),
+                Arc::new(dict_values_transform_result.new_keys),
             )
         };
 
-        return Ok(DictionaryKeysTransformIntermediateResult {
-            keys_array: new_dict,
+        return Ok(DictionaryKeysTransformResult {
+            new_keys: new_dict,
             keep_ranges: None,
         });
     }
 
     // safety: we've checked in the if statement above whether this is None, and if so have
     // already returned early.
-    let delete_ranges = key_transform_result
+    let delete_ranges = dict_values_transform_result
         .deletion_ranges
         .expect("can unwrap delete ranges");
+    let values_keep_ranges = dict_values_transform_result
+        .keep_ranges
+        .expect("can unwrap keep ranges");
 
     // Since we didn't return early, we'll need to adjust the the current keys that have
     // not been deleted to align with the offsets in the new values array.
@@ -994,27 +1020,52 @@ where
     // first, find the ranges we need to keep for the dictionary keys. This will allow us
     // to know how much space to allocate for the new keys array, and will also give us the
     // ranges we'll need to keep in all other rows in the record batch
-    let mut keep_ranges = vec![];
+    let mut keep_ranges: Vec<(usize, usize)> = vec![];
     let mut curr_range_start = None;
 
-    'arr_loop: for i in 0..dict_arr.len() {
+    for i in 0..dict_arr.len() {
         if dict_keys.is_valid(i) {
             let dict_key: usize = dict_keys.value(i).as_usize();
-
-            for range in &delete_ranges {
+            let mut kept = false;
+            for range in &values_keep_ranges {
                 if dict_key >= range.0 && dict_key < range.1 {
-                    if let Some(s) = curr_range_start.take() {
-                        keep_ranges.push((s, i));
-                    }
-                    continue 'arr_loop;
+                    kept = true;
+                    break;
                 }
+            }
+
+            if !kept {
+                if let Some(s) = curr_range_start.take() {
+                    keep_ranges.push((s, i));
+                }
+                continue;
             }
         }
 
+        // if here, we're keeping this index int he dict keys
         if curr_range_start.is_none() {
             curr_range_start = Some(i)
         }
     }
+
+    // 'arr_loop: for i in 0..dict_arr.len() {
+    //     if dict_keys.is_valid(i) {
+    //         let dict_key: usize = dict_keys.value(i).as_usize();
+
+    //         for range in &delete_ranges {
+    //             if dict_key >= range.0 && dict_key < range.1 {
+    //                 if let Some(s) = curr_range_start.take() {
+    //                     keep_ranges.push((s, i));
+    //                 }
+    //                 continue 'arr_loop;
+    //             }
+    //         }
+    //     }
+
+    //     if curr_range_start.is_none() {
+    //         curr_range_start = Some(i)
+    //     }
+    // }
 
     // add final range
     if let Some(s) = curr_range_start {
@@ -1073,11 +1124,14 @@ where
 
     #[allow(unsafe_code)]
     let new_dict = unsafe {
-        DictionaryArray::<K>::new_unchecked(new_dict_keys, Arc::new(key_transform_result.new_keys))
+        DictionaryArray::<K>::new_unchecked(
+            new_dict_keys,
+            Arc::new(dict_values_transform_result.new_keys),
+        )
     };
 
-    Ok(DictionaryKeysTransformIntermediateResult {
-        keys_array: new_dict,
+    Ok(DictionaryKeysTransformResult {
+        new_keys: new_dict,
         keep_ranges: Some(keep_ranges),
     })
 }
