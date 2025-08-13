@@ -460,7 +460,7 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
 
 /// Specification for transformations to make to a collection of OTel Attributes
 pub struct AttributesTransform {
-    /// map attribute key names where each map key will be renamed to it's corresponding map value
+    /// map of old -> new attribute keys
     pub rename: Option<BTreeMap<String, String>>,
 
     // rows with attribute names in this set will be deleted from the attribute record batch
@@ -468,24 +468,16 @@ pub struct AttributesTransform {
 }
 
 impl AttributesTransform {
-    /// Validates the attribute transform. The current rule is that no key can be duplicated in
-    /// any of the passed values.
-    ///
-    /// This is done to avoid any ambiguity about how to apply the transformation. For example, if
-    /// the following passed
+    /// Validates the attribute transform operation. The current rule is that no key can be
+    /// duplicated in any of the passed values. This is done to avoid any ambiguity about how
+    /// to apply the transformation. For example, if the following passed
     /// ```text
     /// rename: { key1: key2 }
     /// delete: { key1 }
     /// ```
-    /// Only if the rename is applied before the delete, we may end up with `key2` in the result.
-    /// But [`transform_attributes`] makes no guarantees about how this is handled so to avoid
-    /// any undefined behaviour, this example would be invalid.
-    ///
-    /// Similarly, the following would be invalid
-    /// ```text
-    /// rename: { key1: key2, key2: key3 } // invalid because `key2` is present twice
-    /// delete: {}
-    /// ```
+    /// Only if the rename is applied before the delete will we end up with `key2` in the result.
+    /// But [`transform_attributes`] makes no guarantees about how this is handled, so to avoid
+    /// any undefined behaviour we consider this invalid.
     pub fn validate(&self) -> Result<()> {
         let mut all_keys = BTreeSet::new();
 
@@ -524,7 +516,7 @@ impl AttributesTransform {
 /// This function is used to perform bulk transformations on OTel attributes.
 ///
 /// The motivation is to be able to apply multiple transformations at once, effectively minimizing
-/// the number of times we have to produce materialized immutable Arrow records.
+/// the number of times we have to materialize immutable Arrow records.
 ///
 /// Currently the operations supported are:
 /// - rename which replaces a given attribute key
@@ -536,7 +528,6 @@ impl AttributesTransform {
 /// Note that to avoid any ambiguity in how the transformation is applied, this method will
 /// validate the transform. The caller must ensure the supplied transform is valid. See
 /// documentation on [`AttributesTransform::validate`] for more information.
-///
 pub fn transform_attributes(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
@@ -562,18 +553,18 @@ pub fn transform_attributes(
             let keys_transform_result = transform_keys(keys_arr, transform)?;
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
-            // if there were any deletes, it could cause issues if the parent_ids are using the
-            // transport optimized quasi-delta encoding. This is because subsequent runs of
-            // key-value pairs may be joined deleted segments, meaning the delta encoding will
-            // change. To avoid this, we materialize the parent IDs if there were any deletes
-            let any_deletes = keys_transform_result
+            // Possibly remove any delta-encoding on the parent ID column. If there were any
+            // deletes, it could cause issues if the parent_ids are using the transport optimized
+            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
+            // joined deleted segments, meaning the delta encoding will change.
+            let any_rows_deleted = keys_transform_result
                 .deletion_ranges
                 .as_ref()
                 .map(|d| d.len())
                 .unwrap_or(0)
                 > 0;
             let should_materialize_parent_ids =
-                any_deletes && schema.column_with_name(consts::PARENT_ID).is_some();
+                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                 let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
                 let schema = rb.schema();
@@ -582,8 +573,8 @@ pub fn transform_attributes(
                 (attrs_record_batch.clone(), schema)
             };
 
-            // TODO if there are any optional columns that, thanks to deletes that have occurred,
-            // now contain only null or default values, we can remove them here.
+            // TODO if there are any optional columns that now contain only null or default values,
+            //  we should remove them here.
 
             let columns = attrs_record_batch
                 .columns()
@@ -614,18 +605,9 @@ pub fn transform_attributes(
                         .as_any()
                         .downcast_ref::<DictionaryArray<UInt8Type>>()
                         .expect("can downcast dictionary column to dictionary array");
-
-                    let values = dict_arr.values();
-                    match values.data_type() {
-                        DataType::Utf8 => {
-                            let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
-                            let new_dict = Arc::new(dict_imm_result.keys_array);
-                            (new_dict as ArrayRef, dict_imm_result.keep_ranges)
-                        }
-                        _ => {
-                            todo!("should return an error here")
-                        }
-                    }
+                    let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
+                    let new_dict = Arc::new(dict_imm_result.keys_array);
+                    (new_dict as ArrayRef, dict_imm_result.keep_ranges)
                 }
                 DataType::UInt16 => {
                     let dict_arr = attrs_record_batch
@@ -633,27 +615,23 @@ pub fn transform_attributes(
                         .as_any()
                         .downcast_ref::<DictionaryArray<UInt16Type>>()
                         .expect("can downcast dictionary column to dictionary array");
-                    let values = dict_arr.values();
-                    match values.data_type() {
-                        DataType::Utf8 => {
-                            let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
-                            let new_dict = Arc::new(dict_imm_result.keys_array);
-                            (new_dict as ArrayRef, dict_imm_result.keep_ranges)
-                        }
-                        _ => {
-                            todo!("should return an error here")
-                        }
-                    }
+                    let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
+                    let new_dict = Arc::new(dict_imm_result.keys_array);
+                    (new_dict as ArrayRef, dict_imm_result.keep_ranges)
                 }
-                _ => {
-                    todo!()
+                data_type => {
+                    return Err(error::UnsupportedDictionaryKeyTypeSnafu {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: data_type.clone(),
+                    }
+                    .build());
                 }
             };
 
-            // if there were any deletes, it could cause issues if the parent_ids are using the
-            // transport optimized quasi-delta encoding. This is because subsequent runs of
-            // key-value pairs may be joined deleted segments, meaning the delta encoding will
-            // change. To avoid this, we materialize the parent IDs if there were any deletes
+            // Possibly remove any delta-encoding on the parent ID column. If there were any
+            // deletes, it could cause issues if the parent_ids are using the transport optimized
+            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
+            // joined deleted segments, meaning the delta encoding will change.
             let any_rows_deleted = keep_ranges.is_some();
             let should_materialize_parent_ids =
                 any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
@@ -665,8 +643,8 @@ pub fn transform_attributes(
                 (attrs_record_batch.clone(), schema)
             };
 
-            // TODO if there are any optional columns that, thanks to deletes that have occurred,
-            // now contain only null or default values, we can remove them here.
+            // TODO if there are any optional columns that now contain only null or default values,
+            //  we should remove them here.
 
             let columns = attrs_record_batch
                 .columns()
@@ -690,9 +668,15 @@ pub fn transform_attributes(
                 .expect("can build record batch with same schema and columns"))
         }
 
-        _ => {
-            todo!()
+        data_type => Err(error::InvalidListArraySnafu {
+            expect_oneof: vec![
+                DataType::Utf8,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            ],
+            actual: data_type.clone(),
         }
+        .build()),
     }
 }
 
@@ -970,140 +954,132 @@ where
     K: ArrowDictionaryKeyType,
 {
     let dict_values = dict_arr.values();
-    match dict_values.data_type() {
-        DataType::Utf8 => {
-            let dict_keys = dict_arr.keys();
-            let dict_values = dict_values
-                .as_any()
-                .downcast_ref()
-                .expect("can downcast Utf8 type array to StringArray");
-            let key_transform_result = transform_keys(dict_values, transform)?;
-
-            if key_transform_result.deletion_ranges.is_none() {
-                // here there were no rows deleted from the values array, which means we can reuse
-                // the dictionary keys without any transformations
-                let new_dict_keys = dict_keys.clone();
-
-                #[allow(unsafe_code)]
-                let new_dict = unsafe {
-                    DictionaryArray::<K>::new_unchecked(
-                        new_dict_keys,
-                        Arc::new(key_transform_result.new_keys),
-                    )
-                };
-
-                return Ok(DictionaryKeysTransformIntermediateResult {
-                    keys_array: new_dict,
-                    keep_ranges: None,
-                });
-            }
-
-            // safety: we've checked in the if statement above whether this is None, and if so have
-            // already returned early.
-            let delete_ranges = key_transform_result
-                .deletion_ranges
-                .expect("can unwrap delete ranges");
-
-            // Since we didn't return early, we'll need to adjust the the current keys that have
-            // not been deleted to align with the offsets in the new values array.
-
-            // first, find the ranges we need to keep for the dictionary keys. This will allow us
-            // to know how much space to allocate for the new keys array, and will also give us the
-            // ranges we'll need to keep in all other rows in the record batch
-            let mut keep_ranges = vec![];
-            let mut curr_range_start = None;
-
-            'arr_loop: for i in 0..dict_arr.len() {
-                if dict_keys.is_valid(i) {
-                    let dict_key: usize = dict_keys.value(i).as_usize();
-
-                    for range in &delete_ranges {
-                        if dict_key >= range.0 && dict_key < range.1 {
-                            if let Some(s) = curr_range_start.take() {
-                                keep_ranges.push((s, i));
-                            }
-                            continue 'arr_loop;
-                        }
-                    }
-                }
-
-                if curr_range_start.is_none() {
-                    curr_range_start = Some(i)
-                }
-            }
-
-            // add final range
-            if let Some(s) = curr_range_start {
-                keep_ranges.push((s, dict_arr.len()));
-            }
-
-            // build the new dictionary keys array;
-            let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
-
-            // TODO this is probably fine for now, but eventually we might be able to optimize
-            // this further by writing directly to buffer, then taking slices of the null exiting
-            // null buffer from the dictionary keys
-            let mut new_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
-
-            let key_offsets = delete_ranges
-                .iter()
-                .map(|(start, end)| end - start)
-                .scan(0, |sum, len| {
-                    *sum += len;
-                    Some(*sum)
-                })
-                .collect::<Vec<_>>();
-
-            'arr_loop: for i in 0..dict_arr.len() {
-                if !dict_arr.is_valid(i) {
-                    new_keys_builder.append_null();
-                    continue;
-                }
-
-                let dict_key = dict_keys.value(i).as_usize();
-
-                let mut kept_after_delete_range = None;
-                let mut range_idx = 0;
-                for range in &delete_ranges {
-                    if dict_key >= range.0 {
-                        if dict_key < range.1 {
-                            continue 'arr_loop;
-                        } else {
-                            kept_after_delete_range = Some(range_idx);
-                            range_idx += 1;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                if let Some(idx) = kept_after_delete_range {
-                    let new_key = dict_key - key_offsets[idx];
-                    new_keys_builder
-                        .append_value(K::Native::from_usize(new_key).expect("key overflow"));
-                } else {
-                    new_keys_builder
-                        .append_value(K::Native::from_usize(dict_key).expect("Key overflow"));
-                }
-            }
-
-            let new_dict_keys = new_keys_builder.finish();
-
-            #[allow(unsafe_code)]
-            let new_dict = unsafe {
-                DictionaryArray::<K>::new_unchecked(
-                    new_dict_keys,
-                    Arc::new(key_transform_result.new_keys),
-                )
-            };
-
-            Ok(DictionaryKeysTransformIntermediateResult {
-                keys_array: new_dict,
-                keep_ranges: Some(keep_ranges),
-            })
+    let dict_keys = dict_arr.keys();
+    let dict_values = dict_values.as_any().downcast_ref().with_context(|| {
+        error::UnsupportedDictionaryValueTypeSnafu {
+            expect_oneof: vec![DataType::Utf8],
+            actual: dict_values.data_type().clone(),
         }
-        _ => todo!(),
+    })?;
+    let key_transform_result = transform_keys(dict_values, transform)?;
+
+    if key_transform_result.deletion_ranges.is_none() {
+        // here there were no rows deleted from the values array, which means we can reuse
+        // the dictionary keys without any transformations
+        let new_dict_keys = dict_keys.clone();
+
+        #[allow(unsafe_code)]
+        let new_dict = unsafe {
+            DictionaryArray::<K>::new_unchecked(
+                new_dict_keys,
+                Arc::new(key_transform_result.new_keys),
+            )
+        };
+
+        return Ok(DictionaryKeysTransformIntermediateResult {
+            keys_array: new_dict,
+            keep_ranges: None,
+        });
     }
+
+    // safety: we've checked in the if statement above whether this is None, and if so have
+    // already returned early.
+    let delete_ranges = key_transform_result
+        .deletion_ranges
+        .expect("can unwrap delete ranges");
+
+    // Since we didn't return early, we'll need to adjust the the current keys that have
+    // not been deleted to align with the offsets in the new values array.
+
+    // first, find the ranges we need to keep for the dictionary keys. This will allow us
+    // to know how much space to allocate for the new keys array, and will also give us the
+    // ranges we'll need to keep in all other rows in the record batch
+    let mut keep_ranges = vec![];
+    let mut curr_range_start = None;
+
+    'arr_loop: for i in 0..dict_arr.len() {
+        if dict_keys.is_valid(i) {
+            let dict_key: usize = dict_keys.value(i).as_usize();
+
+            for range in &delete_ranges {
+                if dict_key >= range.0 && dict_key < range.1 {
+                    if let Some(s) = curr_range_start.take() {
+                        keep_ranges.push((s, i));
+                    }
+                    continue 'arr_loop;
+                }
+            }
+        }
+
+        if curr_range_start.is_none() {
+            curr_range_start = Some(i)
+        }
+    }
+
+    // add final range
+    if let Some(s) = curr_range_start {
+        keep_ranges.push((s, dict_arr.len()));
+    }
+
+    // build the new dictionary keys array;
+    let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
+
+    // TODO this is probably fine for now, but eventually we might be able to optimize
+    // this further by writing directly to buffer, then taking slices of the null exiting
+    // null buffer from the dictionary keys
+    let mut new_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
+
+    let key_offsets = delete_ranges
+        .iter()
+        .map(|(start, end)| end - start)
+        .scan(0, |sum, len| {
+            *sum += len;
+            Some(*sum)
+        })
+        .collect::<Vec<_>>();
+
+    'arr_loop: for i in 0..dict_arr.len() {
+        if !dict_arr.is_valid(i) {
+            new_keys_builder.append_null();
+            continue;
+        }
+
+        let dict_key = dict_keys.value(i).as_usize();
+
+        let mut kept_after_delete_range = None;
+        let mut range_idx = 0;
+        for range in &delete_ranges {
+            if dict_key >= range.0 {
+                if dict_key < range.1 {
+                    continue 'arr_loop;
+                } else {
+                    kept_after_delete_range = Some(range_idx);
+                    range_idx += 1;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if let Some(idx) = kept_after_delete_range {
+            let new_key = dict_key - key_offsets[idx];
+            new_keys_builder.append_value(K::Native::from_usize(new_key).expect("key overflow"));
+        } else {
+            new_keys_builder.append_value(K::Native::from_usize(dict_key).expect("Key overflow"));
+        }
+    }
+
+    let new_dict_keys = new_keys_builder.finish();
+
+    #[allow(unsafe_code)]
+    let new_dict = unsafe {
+        DictionaryArray::<K>::new_unchecked(new_dict_keys, Arc::new(key_transform_result.new_keys))
+    };
+
+    Ok(DictionaryKeysTransformIntermediateResult {
+        keys_array: new_dict,
+        keep_ranges: Some(keep_ranges),
+    })
 }
 
 #[derive(Clone)]
@@ -3116,7 +3092,4 @@ mod test {
             ));
         }
     }
-
-    // TODO:
-    // - dict encoding retains all columns
 }
