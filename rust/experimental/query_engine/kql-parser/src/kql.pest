@@ -7,7 +7,7 @@
 // - between every repetition (+ or *)
 // Atomics (marked with @) are excluded
 // See https://pest.rs/book/grammars/syntax.html#implicit-whitespace
-WHITESPACE = _{ " " | NEWLINE }
+WHITESPACE = _{ " " | NEWLINE | "\t" }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
 // Tokens
@@ -183,10 +183,8 @@ summarize_expression = {
 	"summarize"
     	~ (aggregate_assignment_expression ~ ("," ~ aggregate_assignment_expression)*)?
         ~ ("by" ~ group_by_expression ~ ("," ~ group_by_expression)*)?
-        ~ ("|" ~ _tabular_whitespace ~ tabular_expressions)*
+        ~ ("|" ~ tabular_expressions)*
 }
-
-_tabular_whitespace = _{ (" " | "\t" | "\n" | "\r\n")* }
 
 tabular_expressions = _{
     extend_expression
@@ -198,7 +196,7 @@ tabular_expressions = _{
 }
 
 tabular_expression = {
-    identifier_literal ~ ("|" ~ _tabular_whitespace ~ tabular_expressions)*
+    identifier_literal ~ ("|" ~ tabular_expressions)*
 }
 
 let_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
