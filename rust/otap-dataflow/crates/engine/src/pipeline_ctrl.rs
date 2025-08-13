@@ -17,6 +17,7 @@ use otap_df_config::NodeId;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
+use otap_df_telemetry::aggregator::MetricsReporter;
 
 /// Manages pipeline control messages such as recurrent and cancelable timers.
 ///
@@ -113,6 +114,8 @@ pub struct PipelineCtrlMsgManager {
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
     telemetry_timers: TimerSet,
+    /// Global metrics reporter.
+    metrics_reporter: MetricsReporter
 }
 
 impl PipelineCtrlMsgManager {
@@ -121,12 +124,14 @@ impl PipelineCtrlMsgManager {
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
         control_senders: HashMap<NodeId, Sender<NodeControlMsg>>,
+        metrics_reporter: MetricsReporter
     ) -> Self {
         Self {
             pipeline_ctrl_msg_receiver,
             control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
+            metrics_reporter
         }
     }
 
@@ -192,9 +197,9 @@ impl PipelineCtrlMsgManager {
 
                     // Fire all due telemetry timers
                     let senders = &self.control_senders;
-                    self.telemetry_timers.fire_due(now, |node_id| {
+            self.telemetry_timers.fire_due(now, |node_id| {
                         if let Some(sender) = senders.get(node_id) {
-                            let _ = futures::executor::block_on(sender.send(NodeControlMsg::CollectTelemetry {}));
+                let _ = futures::executor::block_on(sender.send(NodeControlMsg::CollectTelemetry { metrics_reporter: self.metrics_reporter.clone() }));
                         }
                     });
                 }

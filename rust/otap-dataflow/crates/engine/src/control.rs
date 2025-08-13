@@ -9,6 +9,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
 use std::time::Duration;
+use otap_df_telemetry::aggregator::MetricsReporter;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
@@ -56,7 +57,8 @@ pub enum NodeControlMsg {
     /// This separates metrics collection from the generic TimerTick to allow
     /// fine-grained scheduling of telemetry without conflating it with other periodic tasks.
     CollectTelemetry {
-        // For future usage
+        /// Metrics reporter used to collect telemetry metrics.
+        metrics_reporter: MetricsReporter
     },
 
     /// Requests a graceful shutdown, requiring the node to finish processing messages and

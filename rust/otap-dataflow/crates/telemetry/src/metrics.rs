@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Declaration of all multivariate metrics types used in this system.
+//!
+//! Note: This module will be entirely generated from a telemetry schema and Weaver in the future.
+
+use crate::counter::Counter;
+use crate::descriptor::{MetricsDescriptor, MetricsField, MetricsKind};
+use crate::registry2::MetricsRegistry;
+
+/// Trait for types that can aggregate their metrics into a `MetricsRegistry`.
+pub trait MultivariateMetrics {
+    /// Aggregates the metrics of this type to the provided registry.
+    fn aggregate_into(&self, registry: &mut MetricsRegistry);
+
+    /// Resets all metrics to zero / default.
+    fn zero(&mut self);
+
+    /// Returns the descriptor for this set of metrics.
+    fn descriptor(&self) -> &MetricsDescriptor;
+}
+
+/// Multivariate metrics for receivers.
+#[repr(C, align(64))]
+#[derive(Debug, Default, Clone)]
+pub struct ReceiverMetrics {
+    /// Total bytes received by the receiver.
+    pub bytes_received: Counter<u64>,
+    /// Total messages received by the receiver.
+    pub messages_received: Counter<u64>,
+}
+
+const RECEIVER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
+    name: "receiver_metrics",
+    fields: &[
+        MetricsField {
+            name: "bytes.received",
+            unit: "By",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "messages.received",
+            unit: "{msg}",
+            kind: MetricsKind::Counter,
+        },
+    ],
+};
+
+/// Multivariate metrics for the OTAP PerfExporter node.
+#[repr(C, align(64))]
+#[derive(Debug, Default, Clone)]
+pub struct PerfExporterMetrics {
+    /// Total bytes processed by the perf exporter.
+    pub bytes_total: Counter<u64>,
+    /// Number of pdata messages handled.
+    pub pdata_msgs: Counter<u64>,
+    /// Number of invalid pdata messages
+    pub invalid_pdata_msgs: Counter<u64>,
+    /// Number of logs processed.
+    pub logs: Counter<u64>,
+    /// Number of spans processed.
+    pub spans: Counter<u64>,
+    /// Number of metrics processed.
+    pub metrics: Counter<u64>,
+}
+
+const PERF_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
+    name: "perf_exporter_metrics",
+    fields: &[
+        MetricsField {
+            name: "bytes.total",
+            unit: "By",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "pdata.messages",
+            unit: "{msg}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "logs",
+            unit: "{log}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "spans",
+            unit: "{span}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "metrics",
+            unit: "{metric}",
+            kind: MetricsKind::Counter,
+        },
+    ],
+};
+
+impl MultivariateMetrics for ReceiverMetrics {
+    fn aggregate_into(&self, aggregator: &mut MetricsRegistry) {
+        aggregator.add_receiver_metrics(self);
+    }
+
+    fn zero(&mut self) {
+        self.bytes_received.set(0);
+        self.messages_received.set(0);
+    }
+
+    fn descriptor(&self) -> &MetricsDescriptor {
+        &RECEIVER_METRICS_DESC
+    }
+}
+
+impl MultivariateMetrics for PerfExporterMetrics {
+    fn aggregate_into(&self, aggregator: &mut MetricsRegistry) {
+        aggregator.add_perf_exporter_metrics(self);
+    }
+
+    fn zero(&mut self) {
+        self.bytes_total.set(0);
+        self.pdata_msgs.set(0);
+        self.invalid_pdata_msgs.set(0);
+        self.logs.set(0);
+        self.spans.set(0);
+        self.metrics.set(0);
+    }
+
+    fn descriptor(&self) -> &MetricsDescriptor {
+        &PERF_EXPORTER_METRICS_DESC
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::metrics::PerfExporterMetrics;
+
+    #[test]
+    fn test_perf_exporter_metrics() {
+        let mut metrics = PerfExporterMetrics::default();
+
+        metrics.bytes_total.inc();
+        metrics.logs.add(10);
+        metrics.metrics.inc();
+
+        metrics.logs.inc();
+
+        assert_eq!(metrics.bytes_total.get(), 1);
+        assert_eq!(metrics.logs.get(), 11);
+        assert_eq!(metrics.metrics.get(), 1);
+    }
+}

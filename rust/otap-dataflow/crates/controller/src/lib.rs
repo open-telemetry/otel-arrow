@@ -19,6 +19,8 @@
 use otap_df_config::{pipeline::PipelineConfig, pipeline_group::Quota};
 use otap_df_engine::PipelineFactory;
 use std::thread;
+use tokio::runtime::Builder;
+use otap_df_telemetry::aggregator::{MetricsAggregator, MetricsReporter};
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -42,6 +44,26 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     /// Starts the controller with the given pipeline configuration and quota.
     pub fn run_forever(&self, pipeline: PipelineConfig, quota: Quota) -> Result<(), error::Error> {
+        let (metrics_aggregator, metrics_reporter) = MetricsAggregator::new();
+
+        let metrics_aggr_handle = thread::Builder::new()
+            .name("metrics-aggregator".to_owned())
+            .spawn(move || {
+                let rt = Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create runtime");
+                let local_tasks = tokio::task::LocalSet::new();
+
+                let _task_handle = local_tasks.spawn_local(metrics_aggregator.run_forever());
+                rt.block_on(async {
+                    local_tasks.await;
+                });
+            })
+            .map_err(|e| error::Error::InternalError {
+                message: format!("Failed to spawn metrics aggregator thread: {e}"),
+            })?;
+
         // Get available CPU cores for pinning
         let all_core_ids =
             core_affinity::get_core_ids().ok_or_else(|| error::Error::InternalError {
@@ -69,11 +91,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
             let pipeline_config = pipeline.clone();
             let pipeline_factory = self.pipeline_factory;
+            let metrics_reporter = metrics_reporter.clone();
 
             let handle = thread::Builder::new()
                 .name(format!("pipeline-core-{}", core_id.id))
                 .spawn(move || {
-                    Self::run_pipeline_thread(core_id, pipeline_config, pipeline_factory)
+                    Self::run_pipeline_thread(core_id, pipeline_config, pipeline_factory, metrics_reporter)
                 })
                 .map_err(|e| error::Error::InternalError {
                     message: format!("Failed to spawn thread {thread_id}: {e}"),
@@ -82,7 +105,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             threads.push(handle);
         }
 
-        // Wait for all threads to finish
+        // Drop the original metrics sender so only pipeline threads hold references
+        drop(metrics_reporter);
+
+        // Wait for all pipeline threads to finish
         for (thread_id, handle) in threads.into_iter().enumerate() {
             match handle.join() {
                 Ok(Ok(_)) => {
@@ -102,6 +128,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
+        // All pipeline threads have finished, which means all cloned metrics senders are dropped.
+        // The metrics channel is now closed, so the aggregator thread will exit.
+        // Wait for the metrics aggregator thread to finish.
+        if let Err(e) = metrics_aggr_handle.join() {
+            return Err(error::Error::InternalError {
+                message: format!("Failed to join metrics aggregator thread: {e:?}"),
+            });
+        }
+
         Ok(())
     }
 
@@ -110,6 +145,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         core_id: core_affinity::CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Result<Vec<()>, error::Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
@@ -127,7 +163,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
         runtime_pipeline
-            .run_forever()
+            .run_forever(metrics_reporter)
             .map_err(|e| error::Error::PipelineRuntimeError {
                 source: Box::new(e),
             })

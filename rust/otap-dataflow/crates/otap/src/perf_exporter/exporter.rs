@@ -35,8 +35,8 @@ use sysinfo::{
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
-use otap_df_telemetry::{NodeMetricsHandle, Registry as TelemetryRegistry, SimpleCollector, SpscQueue, StaticAttrs};
-use otap_df_telemetry::perf_exporter_metrics::PerfExporterMetrics;
+use otap_df_telemetry::metrics::PerfExporterMetrics;
+use otap_df_telemetry::descriptor::StaticAttrs;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -70,6 +70,8 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
 pub struct PerfExporter {
     config: Config,
     output: Option<String>,
+
+    metrics: PerfExporterMetrics,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -93,7 +95,7 @@ impl PerfExporter {
     /// creates a perf exporter with the provided config
     #[must_use]
     pub fn new(config: Config, output: Option<String>) -> Self {
-        PerfExporter { config, output }
+        PerfExporter { config, output, metrics: Default::default() }
     }
 
     /// Creates a new PerfExporter from a configuration object
@@ -105,6 +107,7 @@ impl PerfExporter {
                 }
             })?,
             output: None,
+            metrics: Default::default(),
         })
     }
 }
@@ -112,7 +115,7 @@ impl PerfExporter {
 #[async_trait(?Send)]
 impl local::Exporter<OtapPdata> for PerfExporter {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error<OtapPdata>> {
@@ -148,18 +151,14 @@ impl local::Exporter<OtapPdata> for PerfExporter {
             .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
             .await?;
 
-        // Telemetry: setup per-exporter metrics + local SPSC and collector (prototype).
-        let telemetry_registry = TelemetryRegistry::global().clone();
-        let queue = SpscQueue::with_capacity_pow2(64);
-        let (producer, consumer) = queue.split();
-        let collector = SimpleCollector::new(consumer, &telemetry_registry);
+    // Telemetry: setup per-exporter metrics; aggregation happens in the controller.
         let attrs = StaticAttrs {
             pipeline_id: 0, // TODO: inject pipeline id mapping
             core_id: 0,     // TODO: retrieve current core id (sched_getcpu)
             numa_node_id: 0, // TODO: map core->numa
             process_id: process_pid.as_u32(),
         };
-        let mut metrics = NodeMetricsHandle::new_with_attrs(0, PerfExporterMetrics::new(), attrs); // TODO: encode node_id
+        //let mut metrics = NodeMetricsHandle::new_with_attrs(0, PerfExporterMetrics::new(), attrs); // TODO: encode node_id
 
         // Helper function to generate performance report
         let generate_report = async |received_arrow_records_count: u64,
@@ -241,11 +240,8 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
-                Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
-                    // Telemetry: flush metrics snapshot and aggregate.
-                    let _ = producer.push(metrics.flush_snapshot());
-                    let _aggregated = collector.drain();
-                    // We no longer couple report generation to telemetry collection.
+                Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                    _ = metrics_reporter.report(&mut self.metrics).await;
                 }
                 Message::Control(NodeControlMsg::TimerTick { .. }) => {
                     generate_report(
@@ -303,6 +299,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                             // For example, when it is a not supported signal type.
                             invalid_pdata_count += 1;
                             total_received_pdata_batch_count += 1;
+                            self.metrics.invalid_pdata_msgs.inc();
                             continue;
                         }
                     };
@@ -358,10 +355,10 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         else if payload.r#type == ArrowPayloadType::UnivariateMetrics as i32 { per_kind_metrics += n; }
                     }
                     received_otlp_signal_count += per_kind_logs + per_kind_spans + per_kind_metrics;
-                    metrics.metrics.pdata_msgs.inc();
-                    metrics.metrics.logs.add(per_kind_logs);
-                    metrics.metrics.spans.add(per_kind_spans);
-                    metrics.metrics.metrics.add(per_kind_metrics);
+                    self.metrics.pdata_msgs.inc();
+                    self.metrics.logs.add(per_kind_logs);
+                    self.metrics.spans.add(per_kind_spans);
+                    self.metrics.metrics.add(per_kind_metrics);
                     total_received_otlp_signal_count += received_otlp_signal_count as u128;
                 }
                 _ => {
@@ -799,9 +796,6 @@ mod tests {
 
                 // TODO ADD DELAY BETWEEN HERE
                 _ = sleep(Duration::from_millis(5000));
-
-                // trigger dedicated collect telemetry (replaces TimerTick for telemetry)
-                ctx.send_collect_telemetry().await.expect("Failed to send CollectTelemetry");
 
                 // Send shutdown
                 ctx.send_shutdown(Duration::from_millis(200), "test complete")

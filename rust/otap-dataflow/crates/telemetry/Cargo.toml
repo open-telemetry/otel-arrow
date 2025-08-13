@@ -17,3 +17,5 @@ testing = []
 
 [dependencies]
 once_cell = { workspace = true }
+flume = { workspace = true }
+tokio = { version = "1", features = ["sync", "time", "macros"] }

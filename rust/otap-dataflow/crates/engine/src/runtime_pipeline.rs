@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
+use otap_df_telemetry::aggregator::MetricsReporter;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///
@@ -83,7 +84,7 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
 
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
-    pub fn run_forever(self) -> Result<Vec<()>, Error<PData>> {
+    pub fn run_forever(self, metrics_reporter: MetricsReporter) -> Result<Vec<()>, Error<PData>> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let rt = Builder::new_current_thread()
@@ -127,7 +128,7 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
-            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders);
+            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders, metrics_reporter);
             manager.run().await
         }));
 

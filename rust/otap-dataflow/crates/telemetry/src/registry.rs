@@ -5,35 +5,7 @@
 use core::any::TypeId;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-
-/// Enumerates supported metric field kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetricsKind {
-    /// Monotonic counter (u64) aggregated by summation.
-    Counter,
-}
-
-/// Metadata describing a single field inside a metrics struct.
-#[derive(Debug, Clone, Copy)]
-pub struct MetricsField {
-    /// Canonical metric name (e.g., "bytes.rx").
-    pub name: &'static str,
-    /// Unit (e.g., "bytes", "count").
-    pub unit: &'static str,
-    /// Field kind (counter, etc.).
-    pub kind: MetricsKind,
-}
-
-/// Descriptor for an entire metrics struct type.
-#[derive(Debug)]
-pub struct MetricsDescriptor {
-    /// Rust struct identifier.
-    pub struct_name: &'static str,
-    /// Human-friendly group name.
-    pub name: &'static str,
-    /// Ordered field metadata.
-    pub fields: &'static [MetricsField],
-}
+use crate::descriptor::{MetricsDescriptor, MetricsField, StaticAttrs};
 
 /// Opaque identifier for a metrics struct type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,6 +46,7 @@ pub trait Metrics: Sized + 'static {
     fn visit<F: FnMut(&MetricsField, u64)>(&self, f: F);
 }
 
+/// Interior of the global metrics registry guarded by an RwLock.
 #[derive(Default)]
 pub struct RegistryInner {
     by_type: HashMap<MetricsTypeId, &'static MetricsDescriptor>,
@@ -202,15 +175,3 @@ pub struct SimpleSnapshot {
 //  - Collector aggregates directly from raw bytes using descriptor offsets.
 // This eliminates per-field pushes into a Vec and heap allocations.
 
-/// Immutable attributes captured at metrics creation time.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct StaticAttrs {
-    /// Pipeline identifier (numeric mapping if available, 0 means unknown).
-    pub pipeline_id: u32,
-    /// Core identifier (0 means unknown).
-    pub core_id: u16,
-    /// NUMA node identifier (0 means unknown/single node).
-    pub numa_node_id: u16,
-    /// Process identifier.
-    pub process_id: u32,
-}
