@@ -92,15 +92,15 @@ pub(crate) fn parse_replace_string_expression(
     let needle_expression = replace_string_rules.next().unwrap();
     let replacement_expression = replace_string_rules.next().unwrap();
 
-    Ok(ScalarExpression::ReplaceString(
-        ReplaceStringScalarExpression::new(
+    Ok(ScalarExpression::Text(TextScalarExpression::Replace(
+        ReplaceTextScalarExpression::new(
             query_location,
             parse_scalar_expression(haystack_expression, state)?,
             parse_scalar_expression(needle_expression, state)?,
             parse_scalar_expression(replacement_expression, state)?,
             false, // case_insensitive - set to false for KQL
         ),
-    ))
+    )))
 }
 
 #[cfg(test)]
@@ -328,21 +328,23 @@ mod tests {
 
         run_test_success(
             "replace_string(\"A magic trick can turn a cat into a dog\", \"cat\", \"hamster\")",
-            ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "A magic trick can turn a cat into a dog",
-                    ),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
-                )),
-                false, // case_insensitive
+            ScalarExpression::Text(TextScalarExpression::Replace(
+                ReplaceTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "A magic trick can turn a cat into a dog",
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "cat"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hamster"),
+                    )),
+                    false, // case_insensitive
+                ),
             )),
         );
 
