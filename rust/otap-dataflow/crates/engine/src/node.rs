@@ -80,7 +80,7 @@ pub trait NodeWithPDataReceiver<PData>: Node {
 }
 
 /// NodeDefinition is an entry in NodeDefs, indexed by the corresponding Unique assignment.
-pub struct NodeDefinition {
+pub(crate) struct NodeDefinition {
     /// Type of node.
     pub(crate) ntype: NodeType,
     // Node name.
