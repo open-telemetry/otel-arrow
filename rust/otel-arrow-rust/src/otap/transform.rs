@@ -557,12 +557,7 @@ pub fn transform_attributes(
             // deletes, it could cause issues if the parent_ids are using the transport optimized
             // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
             // joined deleted segments, meaning the delta encoding will change.
-            let any_rows_deleted = keys_transform_result
-                .deletion_ranges
-                .as_ref()
-                .map(|d| d.len())
-                .unwrap_or(0)
-                > 0;
+            let any_rows_deleted = keys_transform_result.keep_ranges.is_some();
             let should_materialize_parent_ids =
                 any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
@@ -689,11 +684,6 @@ struct KeysTransformResult {
     ///
     /// This will be `None` if there are no ranges that have been deleted
     keep_ranges: Option<Vec<(usize, usize)>>,
-
-    /// Ranges of the additional columns which should be deleted
-    ///
-    /// This will be `None` if there are no ranges that have been deleted
-    deletion_ranges: Option<Vec<(usize, usize)>>,
 }
 
 /// Transform the attributes key array
@@ -737,7 +727,6 @@ fn transform_keys(
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
             keep_ranges: None,
-            deletion_ranges: None,
         });
     }
 
@@ -946,14 +935,6 @@ fn transform_keys(
     Ok(KeysTransformResult {
         new_keys,
         keep_ranges,
-        deletion_ranges: delete_plan
-            .map(|d| {
-                d.ranges
-                    .iter()
-                    .map(|(start, end, _)| (*start, *end))
-                    .collect::<Vec<_>>()
-            })
-            .and_then(|d| if d.is_empty() { None } else { Some(d) }),
     })
 }
 
@@ -986,7 +967,7 @@ where
     })?;
     let dict_values_transform_result = transform_keys(dict_values, transform)?;
 
-    if dict_values_transform_result.deletion_ranges.is_none() {
+    if dict_values_transform_result.keep_ranges.is_none() {
         // here there were no rows deleted from the values array, which means we can reuse
         // the dictionary keys without any transformations
         let new_dict_keys = dict_keys.clone();
@@ -1007,9 +988,6 @@ where
 
     // safety: we've checked in the if statement above whether this is None, and if so have
     // already returned early.
-    let delete_ranges = dict_values_transform_result
-        .deletion_ranges
-        .expect("can unwrap delete ranges");
     let values_keep_ranges = dict_values_transform_result
         .keep_ranges
         .expect("can unwrap keep ranges");
@@ -1048,25 +1026,6 @@ where
         }
     }
 
-    // 'arr_loop: for i in 0..dict_arr.len() {
-    //     if dict_keys.is_valid(i) {
-    //         let dict_key: usize = dict_keys.value(i).as_usize();
-
-    //         for range in &delete_ranges {
-    //             if dict_key >= range.0 && dict_key < range.1 {
-    //                 if let Some(s) = curr_range_start.take() {
-    //                     keep_ranges.push((s, i));
-    //                 }
-    //                 continue 'arr_loop;
-    //             }
-    //         }
-    //     }
-
-    //     if curr_range_start.is_none() {
-    //         curr_range_start = Some(i)
-    //     }
-    // }
-
     // add final range
     if let Some(s) = curr_range_start {
         keep_ranges.push((s, dict_arr.len()));
@@ -1075,52 +1034,49 @@ where
     // build the new dictionary keys array;
     let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
 
-    // TODO this is probably fine for now, but eventually we might be able to optimize
-    // this further by writing directly to buffer, then taking slices of the null exiting
-    // null buffer from the dictionary keys
-    let mut new_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
+    // TODO using builder is probably fine for now, but eventually we might be able to optimize
+    // this further by writing directly to buffer, then taking slices of the null existing null
+    // buffer from the dictionary keys
+    let mut new_dict_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
 
-    let key_offsets = delete_ranges
+    // build an array of bt how much to adjust the dictionary key
+    let mut prev_offset_end = 0;
+    let mut total_dict_key_offsets = 0;
+    let key_offsets = values_keep_ranges
         .iter()
-        .map(|(start, end)| end - start)
-        .scan(0, |sum, len| {
-            *sum += len;
-            Some(*sum)
+        .map(|(start, end)| {
+            let range_offset = start - prev_offset_end;
+            prev_offset_end = *end;
+            total_dict_key_offsets += range_offset;
+            total_dict_key_offsets
         })
         .collect::<Vec<_>>();
 
-    'arr_loop: for i in 0..dict_arr.len() {
+    for i in 0..dict_arr.len() {
         if !dict_arr.is_valid(i) {
-            new_keys_builder.append_null();
+            new_dict_keys_builder.append_null();
             continue;
         }
 
         let dict_key = dict_keys.value(i).as_usize();
-
-        let mut kept_after_delete_range = None;
+        let mut kept_in_range = None;
         let mut range_idx = 0;
-        for range in &delete_ranges {
-            if dict_key >= range.0 {
-                if dict_key < range.1 {
-                    continue 'arr_loop;
-                } else {
-                    kept_after_delete_range = Some(range_idx);
-                    range_idx += 1;
-                }
-            } else {
+        for range in &values_keep_ranges {
+            if dict_key >= range.0 && dict_key < range.1 {
+                kept_in_range = Some(range_idx);
                 break;
             }
+            range_idx += 1;
         }
 
-        if let Some(idx) = kept_after_delete_range {
-            let new_key = dict_key - key_offsets[idx];
-            new_keys_builder.append_value(K::Native::from_usize(new_key).expect("key overflow"));
-        } else {
-            new_keys_builder.append_value(K::Native::from_usize(dict_key).expect("Key overflow"));
+        if let Some(range_idx) = kept_in_range {
+            let new_dict_key = dict_key - key_offsets[range_idx];
+            new_dict_keys_builder
+                .append_value(K::Native::from_usize(new_dict_key).expect("dict key overflow"));
         }
     }
 
-    let new_dict_keys = new_keys_builder.finish();
+    let new_dict_keys = new_dict_keys_builder.finish();
 
     #[allow(unsafe_code)]
     let new_dict = unsafe {
