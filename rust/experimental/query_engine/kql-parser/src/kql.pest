@@ -7,7 +7,7 @@
 // - between every repetition (+ or *)
 // Atomics (marked with @) are excluded
 // See https://pest.rs/book/grammars/syntax.html#implicit-whitespace
-WHITESPACE = _{ " " | NEWLINE }
+WHITESPACE = _{ " " | NEWLINE | "\t" }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
 // Tokens
