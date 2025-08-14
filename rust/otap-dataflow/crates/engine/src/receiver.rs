@@ -145,7 +145,6 @@ impl<PData> ReceiverWrapper<PData> {
         match self {
             ReceiverWrapper::Local {
                 node,
-                runtime_config,
                 receiver,
                 control_receiver,
                 pdata_senders,
@@ -154,7 +153,7 @@ impl<PData> ReceiverWrapper<PData> {
             } => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
-                        receiver: runtime_config.name.clone(),
+                        receiver: node.name.clone(),
                         error: "The pdata sender must be defined at this stage".to_owned(),
                     });
                 } else {
@@ -172,7 +171,6 @@ impl<PData> ReceiverWrapper<PData> {
             }
             ReceiverWrapper::Shared {
                 node,
-                runtime_config,
                 receiver,
                 control_receiver,
                 pdata_senders,
@@ -181,7 +179,7 @@ impl<PData> ReceiverWrapper<PData> {
             } => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
-                        receiver: runtime_config.name.clone(),
+                        receiver: node.name.clone(),
                         error: "The pdata sender must be defined at this stage".to_owned(),
                     });
                 } else {
@@ -209,14 +207,6 @@ impl<PData> ReceiverWrapper<PData> {
             ReceiverWrapper::Shared { pdata_receiver, .. } => {
                 Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
-        }
-    }
-
-    /// Returns the receiver name.
-    pub fn receiver_name(&self) -> NodeId {
-        match self {
-            ReceiverWrapper::Local { runtime_config, .. } => runtime_config.name.clone(),
-            ReceiverWrapper::Shared { runtime_config, .. } => runtime_config.name.clone(),
         }
     }
 }

@@ -252,14 +252,6 @@ impl<PData> ProcessorWrapper<PData> {
             }
         }
     }
-
-    /// Returns the processor name.
-    pub fn processor_name(&self) -> NodeId {
-        match self {
-            ProcessorWrapper::Local { runtime_config, .. } => runtime_config.name.clone(),
-            ProcessorWrapper::Shared { runtime_config, .. } => runtime_config.name.clone(),
-        }
-    }
 }
 
 #[async_trait::async_trait(?Send)]

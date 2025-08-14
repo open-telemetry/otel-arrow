@@ -242,21 +242,29 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         Fut: Future<Output = ()> + 'static,
     {
         let (node_id, pdata_sender, pdata_receiver) = match &self.receiver {
-            ReceiverWrapper::Local { runtime_config, .. } => {
+            ReceiverWrapper::Local {
+                node,
+                runtime_config,
+                ..
+            } => {
                 let (sender, receiver) = otap_df_channel::mpsc::Channel::new(
                     runtime_config.output_pdata_channel.capacity,
                 );
                 (
-                    runtime_config.name.clone(),
+                    node.name.clone(),
                     Sender::Local(LocalSender::MpscSender(sender)),
                     Receiver::Local(LocalReceiver::MpscReceiver(receiver)),
                 )
             }
-            ReceiverWrapper::Shared { runtime_config, .. } => {
+            ReceiverWrapper::Shared {
+                node,
+                runtime_config,
+                ..
+            } => {
                 let (sender, receiver) =
                     tokio::sync::mpsc::channel(runtime_config.output_pdata_channel.capacity);
                 (
-                    runtime_config.name.clone(),
+                    node.name.clone(),
                     Sender::Shared(SharedSender::MpscSender(sender)),
                     Receiver::Shared(SharedReceiver::MpscReceiver(receiver)),
                 )

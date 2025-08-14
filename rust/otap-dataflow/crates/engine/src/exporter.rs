@@ -34,8 +34,6 @@ pub enum ExporterWrapper<PData> {
         node: NodeUniq,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
-        /// The runtime configuration for the exporter.
-        runtime_config: ExporterConfig,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
         /// The effect handler instance for the exporter.
@@ -53,8 +51,6 @@ pub enum ExporterWrapper<PData> {
         node: NodeUniq,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
-        /// The runtime configuration for the exporter.
-        runtime_config: ExporterConfig,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
         /// The effect handler instance for the exporter.
@@ -98,13 +94,11 @@ impl<PData> ExporterWrapper<PData> {
     where
         E: local::Exporter<PData> + 'static,
     {
-        let runtime_config = config.clone();
         let (control_sender, control_receiver) =
             mpsc::Channel::new(config.control_channel.capacity);
 
         ExporterWrapper::Local {
             node: node.clone(),
-            runtime_config,
             user_config,
             effect_handler: local::EffectHandler::new(node),
             exporter: Box::new(exporter),
@@ -125,13 +119,11 @@ impl<PData> ExporterWrapper<PData> {
     where
         E: shared::Exporter<PData> + 'static,
     {
-        let runtime_config = config.clone();
         let (control_sender, control_receiver) =
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ExporterWrapper::Shared {
             node: node.clone(),
-            runtime_config,
             user_config,
             effect_handler: shared::EffectHandler::new(node),
             exporter: Box::new(exporter),
@@ -190,14 +182,6 @@ impl<PData> ExporterWrapper<PData> {
                 let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
-        }
-    }
-
-    /// Returns the exporter name.
-    pub fn exporter_name(&self) -> NodeId {
-        match self {
-            ExporterWrapper::Local { runtime_config, .. } => runtime_config.name.clone(),
-            ExporterWrapper::Shared { runtime_config, .. } => runtime_config.name.clone(),
         }
     }
 }
