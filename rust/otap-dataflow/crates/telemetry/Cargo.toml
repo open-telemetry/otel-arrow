@@ -18,4 +18,7 @@ testing = []
 [dependencies]
 once_cell = { workspace = true }
 flume = { workspace = true }
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+slotmap = "1.0.7"
+parking_lot = "0.12.4"

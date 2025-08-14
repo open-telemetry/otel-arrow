@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
-use otap_df_telemetry::aggregator::MetricsReporter;
+use otap_df_telemetry::reporter::MetricsReporter;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///
@@ -100,7 +100,7 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
                 .pipeline_settings()
                 .default_pipeline_ctrl_msg_channel_size,
         );
-
+        
         // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.
         for (node_id, exporter) in self.exporters {

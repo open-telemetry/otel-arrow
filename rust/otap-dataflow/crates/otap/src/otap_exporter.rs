@@ -13,7 +13,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ExporterFactory;
+use otap_df_engine::{ExporterFactory, PipelineHandle};
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -46,9 +46,9 @@ pub struct OTAPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            OTAPExporter::from_config(&node_config.config)?,
+            OTAPExporter::from_config(pipeline, &node_config.config)?,
             node_config,
             exporter_config,
         ))
@@ -67,7 +67,7 @@ impl OTAPExporter {
     }
 
     /// Creates a new OTAPExporter from a configuration object
-    pub fn from_config(_config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(pipeline_handle: PipelineHandle, _config: &Value) -> Result<Self, otap_df_config::error::Error> {
         // ToDo: implement config parsing
         Ok(OTAPExporter {
             grpc_endpoint: "127.0.0.1:4317".to_owned(),

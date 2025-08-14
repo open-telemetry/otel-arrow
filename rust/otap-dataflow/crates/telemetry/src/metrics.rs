@@ -4,26 +4,38 @@
 //!
 //! Note: This module will be entirely generated from a telemetry schema and Weaver in the future.
 
+use crate::attributes::NodeStaticAttrs;
 use crate::counter::Counter;
 use crate::descriptor::{MetricsDescriptor, MetricsField, MetricsKind};
-use crate::registry2::MetricsRegistry;
+use crate::error::Error;
+use crate::registry::{MetricsRegistry, MetricsKey, MetricsRegistryHandle};
+
+/// Type representing a snapshot of multivariate metrics.
+pub type MetricsSnapshot = Box<dyn MultivariateMetrics + Send + Sync>;
 
 /// Trait for types that can aggregate their metrics into a `MetricsRegistry`.
 pub trait MultivariateMetrics {
     /// Aggregates the metrics of this type to the provided registry.
-    fn aggregate_into(&self, registry: &mut MetricsRegistry);
+    fn aggregate_into(&self, registry: &mut MetricsRegistryHandle) -> Result<(), Error>;
 
     /// Resets all metrics to zero / default.
     fn zero(&mut self);
 
     /// Returns the descriptor for this set of metrics.
-    fn descriptor(&self) -> &MetricsDescriptor;
+    fn descriptor(&self) -> &'static MetricsDescriptor;
+
+    /// Register the current multivariate metrics into the metrics registry.
+    #[doc(hidden)]
+    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs);
 }
 
 /// Multivariate metrics for receivers.
 #[repr(C, align(64))]
 #[derive(Debug, Default, Clone)]
 pub struct ReceiverMetrics {
+    /// A unique key set at the registration of these metrics.
+    key: Option<MetricsKey>,
+
     /// Total bytes received by the receiver.
     pub bytes_received: Counter<u64>,
     /// Total messages received by the receiver.
@@ -50,6 +62,9 @@ const RECEIVER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
 #[repr(C, align(64))]
 #[derive(Debug, Default, Clone)]
 pub struct PerfExporterMetrics {
+    /// A unique key set at the registration of these metrics.
+    key: Option<MetricsKey>,
+    
     /// Total bytes processed by the perf exporter.
     pub bytes_total: Counter<u64>,
     /// Number of pdata messages handled.
@@ -96,8 +111,15 @@ const PERF_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
 };
 
 impl MultivariateMetrics for ReceiverMetrics {
-    fn aggregate_into(&self, aggregator: &mut MetricsRegistry) {
-        aggregator.add_receiver_metrics(self);
+    fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
+        if let Some(key) = self.key {
+            aggregator.add_receiver_metrics(key, self);
+            Ok(())
+        } else {
+            Err(Error::MetricsNotRegistered{
+                descriptor: self.descriptor()
+            })
+        }
     }
 
     fn zero(&mut self) {
@@ -105,14 +127,26 @@ impl MultivariateMetrics for ReceiverMetrics {
         self.messages_received.set(0);
     }
 
-    fn descriptor(&self) -> &MetricsDescriptor {
+    fn descriptor(&self) -> &'static MetricsDescriptor {
         &RECEIVER_METRICS_DESC
+    }
+
+    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
+        let key = registry.receiver_metrics.insert((ReceiverMetrics::default(), attrs));
+        self.key = Some(key);
     }
 }
 
 impl MultivariateMetrics for PerfExporterMetrics {
-    fn aggregate_into(&self, aggregator: &mut MetricsRegistry) {
-        aggregator.add_perf_exporter_metrics(self);
+    fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
+        if let Some(key) = self.key {
+            aggregator.add_perf_exporter_metrics(key, self);
+            Ok(())
+        } else {
+            Err(Error::MetricsNotRegistered{
+                descriptor: self.descriptor()
+            })
+        }
     }
 
     fn zero(&mut self) {
@@ -124,8 +158,13 @@ impl MultivariateMetrics for PerfExporterMetrics {
         self.metrics.set(0);
     }
 
-    fn descriptor(&self) -> &MetricsDescriptor {
+    fn descriptor(&self) -> &'static MetricsDescriptor {
         &PERF_EXPORTER_METRICS_DESC
+    }
+
+    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
+        let key = registry.perf_exporter_metrics.insert((PerfExporterMetrics::default(), attrs));
+        self.key = Some(key);
     }
 }
 

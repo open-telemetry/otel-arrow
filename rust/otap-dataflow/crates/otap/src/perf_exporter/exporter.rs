@@ -22,7 +22,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
-use otap_df_engine::{distributed_slice, ExporterFactory};
+use otap_df_engine::{distributed_slice, ExporterFactory, PipelineHandle};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -36,7 +36,6 @@ use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
 use otap_df_telemetry::metrics::PerfExporterMetrics;
-use otap_df_telemetry::descriptor::StaticAttrs;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -82,9 +81,9 @@ pub struct PerfExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            PerfExporter::from_config(&node_config.config)?,
+            PerfExporter::from_config(pipeline, &node_config.config)?,
             node_config,
             exporter_config,
         ))
@@ -99,7 +98,9 @@ impl PerfExporter {
     }
 
     /// Creates a new PerfExporter from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(pipeline: PipelineHandle, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let mut metrics = PerfExporterMetrics::default();
+        pipeline.register_metrics(&mut metrics);
         Ok(PerfExporter {
             config: serde_json::from_value(config.clone()).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
@@ -107,7 +108,7 @@ impl PerfExporter {
                 }
             })?,
             output: None,
-            metrics: Default::default(),
+            metrics,
         })
     }
 }
@@ -150,16 +151,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         let _telemetry_timer = effect_handler
             .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
             .await?;
-
-    // Telemetry: setup per-exporter metrics; aggregation happens in the controller.
-        let attrs = StaticAttrs {
-            pipeline_id: 0, // TODO: inject pipeline id mapping
-            core_id: 0,     // TODO: retrieve current core id (sched_getcpu)
-            numa_node_id: 0, // TODO: map core->numa
-            process_id: process_pid.as_u32(),
-        };
-        //let mut metrics = NodeMetricsHandle::new_with_attrs(0, PerfExporterMetrics::new(), attrs); // TODO: encode node_id
-
+        
         // Helper function to generate performance report
         let generate_report = async |received_arrow_records_count: u64,
                                      received_otlp_signal_count: u64,

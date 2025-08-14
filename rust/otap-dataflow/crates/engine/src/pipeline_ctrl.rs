@@ -17,7 +17,7 @@ use otap_df_config::NodeId;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
-use otap_df_telemetry::aggregator::MetricsReporter;
+use otap_df_telemetry::reporter::MetricsReporter;
 
 /// Manages pipeline control messages such as recurrent and cancelable timers.
 ///

@@ -5,6 +5,7 @@
 //! ToDo Gauges, Histograms, etc.
 
 use std::fmt::Debug;
+use std::ops::AddAssign;
 
 #[repr(transparent)]
 /// Single-producer counter storing a numeric value.
@@ -42,6 +43,12 @@ impl Debug for Counter<u64> {
 impl From<u64> for Counter<u64> {
     fn from(value: u64) -> Self {
         Counter(value)
+    }
+}
+
+impl AddAssign<u64> for Counter<u64> {
+    fn add_assign(&mut self, rhs: u64) {
+        self.0 = self.0 + rhs;
     }
 }
 

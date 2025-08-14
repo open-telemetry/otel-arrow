@@ -15,7 +15,7 @@ use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
+use otap_df_engine::{ReceiverFactory, control::NodeControlMsg, PipelineHandle};
 use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, SignalType};
 use otap_df_otlp::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
@@ -42,7 +42,7 @@ pub struct FakeGeneratorReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
             FakeGeneratorReceiver::from_config(&node_config.config)?,
             node_config,

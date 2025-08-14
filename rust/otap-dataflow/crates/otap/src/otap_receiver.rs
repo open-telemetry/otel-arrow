@@ -14,7 +14,7 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
+use otap_df_engine::{PipelineHandle, ReceiverFactory};
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -56,9 +56,9 @@ pub struct OTAPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
-            OTAPReceiver::from_config(&node_config.config)?,
+            OTAPReceiver::from_config(pipeline, &node_config.config)?,
             node_config,
             receiver_config,
         ))
@@ -83,7 +83,7 @@ impl OTAPReceiver {
     }
 
     /// Creates a new OTAPReceiver from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(_pipeline: PipelineHandle, config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),

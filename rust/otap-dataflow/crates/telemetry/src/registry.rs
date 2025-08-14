@@ -1,177 +1,186 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Registry & descriptor types for metrics reflection and aggregation.
+//! Type-safe metrics registry maintaining aggregated telemetry metrics.
+//!
+//! Note: This module will be entirely generated from a telemetry schema and Weaver in the future.
 
-use core::any::TypeId;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use crate::descriptor::{MetricsDescriptor, MetricsField, StaticAttrs};
+use std::fmt::Debug;
+use std::sync::Arc;
+use parking_lot::Mutex;
+use slotmap::{new_key_type, SlotMap};
+use crate::attributes::NodeStaticAttrs;
+use crate::metrics::{MultivariateMetrics, PerfExporterMetrics, ReceiverMetrics};
 
-/// Opaque identifier for a metrics struct type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MetricsTypeId(TypeId);
-impl MetricsTypeId {
-    /// Returns the type id for `T`.
-    pub fn of<T: 'static>() -> Self {
-        Self(TypeId::of::<T>())
-    }
-}
-impl Ord for MetricsTypeId {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
-    }
-}
-impl PartialOrd for MetricsTypeId {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        // Fallback ordering: compare Debug strings (stable within process lifetime).
-        let a = format!("{:?}", self.0);
-        let b = format!("{:?}", other.0);
-        Some(a.cmp(&b))
-    }
+new_key_type! {
+    /// A unique key for identifying a set of metrics in the registry.
+    pub struct MetricsKey;
 }
 
-/// Trait implemented by auto-generated metrics structs.
-pub trait Metrics: Sized + 'static {
-    /// Static descriptor.
-    fn descriptor() -> &'static MetricsDescriptor;
-    /// Stable type identifier.
-    fn type_id() -> MetricsTypeId;
-    /// Resets all fields to zero / default.
-    fn zero(&mut self);
-    /// Copies raw struct bytes into destination (may be no-op in safe mode).
-    fn copy_to_bytes(&self, dst: &mut [u8]);
-    /// Constructs struct from raw bytes (placeholder until snapshot encoding enabled).
-    fn from_bytes(src: &[u8]) -> Self;
-    /// Visits each counter field providing its metadata and current value.
-    fn visit<F: FnMut(&MetricsField, u64)>(&self, f: F);
-}
-
-/// Interior of the global metrics registry guarded by an RwLock.
-#[derive(Default)]
-pub struct RegistryInner {
-    by_type: HashMap<MetricsTypeId, &'static MetricsDescriptor>,
-}
-
-/// Global registry of metrics descriptors.
-#[derive(Clone, Default)]
-pub struct Registry(Arc<RwLock<RegistryInner>>);
-impl Registry {
-    /// Returns the singleton registry instance.
-    pub fn global() -> &'static Registry {
-        static INSTANCE: once_cell::sync::Lazy<Registry> =
-            once_cell::sync::Lazy::new(|| Registry::default());
-        &INSTANCE
-    }
-    /// Registers the descriptor for metrics type `M` (idempotent).
-    pub fn register<M: Metrics>(&self) {
-        let mut g = self.0.write().unwrap();
-        let _ = g
-            .by_type
-            .entry(M::type_id())
-            .or_insert_with(|| M::descriptor());
-    }
-    /// Looks up descriptor by type id.
-    pub fn descriptor(&self, id: MetricsTypeId) -> Option<&'static MetricsDescriptor> {
-        let g = self.0.read().unwrap();
-        g.by_type.get(&id).copied()
-    }
-}
-
-// Snapshot header (packed before raw struct bytes in queues); keep simple for now.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-/// Header describing a flushed metrics snapshot.
-pub struct SnapshotHeader {
-    /// Metrics type.
-    pub type_id: MetricsTypeId,
-    /// Payload size in bytes.
-    pub bytes: u32,
-    /// Compact node identifier (runtime mapping external to telemetry crate).
-    pub node_id: u32,
-}
-
-/// Errors that can occur during a flush operation.
-#[derive(Debug)]
-pub enum FlushError {
-    /// Destination buffer too small to hold serialized metrics struct.
-    BufferTooSmall,
-}
-
-/// Handle owning active metrics instance; flush copies it out & zeroes.
-/// Per-node handle owning the active metrics instance.
-pub struct NodeMetricsHandle<M: Metrics> {
-    /// The live metrics struct being mutated by the node.
-    pub metrics: M,
-    /// Compact identifier of the node.
-    pub node_id: u32,
-    /// Immutable attributes captured at metrics creation time.
-    pub attrs: StaticAttrs,
-}
-
-impl<M: Metrics> NodeMetricsHandle<M> {
-    /// Creates a new handle and registers its descriptor.
-    pub fn new(node_id: u32, metrics: M) -> Self {
-        Self::new_with_attrs(node_id, metrics, StaticAttrs::default())
-    }
-    /// Creates a new handle with static attributes.
-    pub fn new_with_attrs(node_id: u32, metrics: M, attrs: StaticAttrs) -> Self {
-        Registry::global().register::<M>();
-        Self {
-            metrics,
-            node_id,
-            attrs,
-        }
-    }
-    /// Flushes the metrics into the provided buffer and resets them.
-    pub fn flush_into(&mut self, dst: &mut [u8]) -> Result<SnapshotHeader, FlushError> {
-        use core::mem::size_of;
-        let size = size_of::<M>();
-        if dst.len() < size {
-            return Err(FlushError::BufferTooSmall);
-        }
-        self.metrics.copy_to_bytes(dst);
-        self.metrics.zero();
-        Ok(SnapshotHeader {
-            type_id: M::type_id(),
-            bytes: size as u32,
-            node_id: self.node_id,
-        })
-    }
-    /// Produces a simple snapshot materializing all counter values into a vector.
-    ///
-    /// This avoids any `unsafe` raw memory copying for now. A future optimization
-    /// can implement zero-copy / memcpy-based snapshotting (see TODO below).
-    pub fn flush_snapshot(&mut self) -> SimpleSnapshot {
-        let mut values = Vec::new();
-        self.metrics.visit(|_f, v| values.push(v));
-        self.metrics.zero();
-        SimpleSnapshot {
-            header: SnapshotHeader {
-                type_id: M::type_id(),
-                bytes: values.len() as u32 * 8,
-                node_id: self.node_id,
-            },
-            attrs: self.attrs,
-            values,
-        }
-    }
-}
-
-/// Materialized snapshot containing metric values (aligned with descriptor fields order).
+/// A sendable and cloneable handle on a metrics registry.
+///
+/// # Performance Note
+///
+/// The mutexes used here ARE NOT on the hot path of metrics reporting. They are only used:
+/// - when registering new metrics (which is a rare operation compared to reporting metrics),
+/// - or when the consumer of the MPSC channel aggregates the received metrics into the registry
+///   (which is not on the hot path either).
 #[derive(Debug, Clone)]
-pub struct SimpleSnapshot {
-    /// Snapshot header (type, size, node id).
-    pub header: SnapshotHeader,
-    /// Static attributes captured when metrics were created.
-    pub attrs: StaticAttrs,
-    /// Counter values ordered as in descriptor.fields.
-    pub values: Vec<u64>,
+pub struct MetricsRegistryHandle {
+    metric_registry: Arc<Mutex<MetricsRegistry>>,
 }
 
-// TODO(perf): Replace `flush_snapshot` materialization with an optimized path:
-//  - Maintain a ring of pre-allocated raw byte buffers sized to metrics struct.
-//  - On flush, perform a single memcpy of the struct into the next slot, then zero.
-//  - Enqueue (ptr, len, type_id) into an SPSC queue for the collector.
-//  - Collector aggregates directly from raw bytes using descriptor offsets.
-// This eliminates per-field pushes into a Vec and heap allocations.
+/// A metrics registry that maintains aggregated metrics for different set of static attributes.
+///
+#[derive(Debug)]
+pub(crate) struct MetricsRegistry {
+    pub(crate) receiver_metrics: SlotMap<MetricsKey,(ReceiverMetrics, NodeStaticAttrs)>,
+    pub(crate) perf_exporter_metrics: SlotMap<MetricsKey,(PerfExporterMetrics, NodeStaticAttrs)>,
+}
 
+impl MetricsRegistry {
+    fn register<T: MultivariateMetrics + Default + Debug + Send + Sync>(
+        &mut self,
+        metrics: &mut T,
+        attrs: NodeStaticAttrs,
+    ) {
+        metrics.register_into(self, attrs);
+    }
+
+    fn add_receiver_metrics(&mut self, metrics_key: MetricsKey, metrics: &ReceiverMetrics) {
+        if let Some((existing_metrics, _)) = self.receiver_metrics.get_mut(metrics_key) {
+            existing_metrics.bytes_received.add(metrics.bytes_received.get());
+            existing_metrics.messages_received.add(metrics.messages_received.get());
+        } else {
+            // TODO: consider logging missing key
+        }
+    }
+    fn get_receiver_metrics(&self, metrics_key: MetricsKey) -> Option<(ReceiverMetrics, NodeStaticAttrs)> {
+        self.receiver_metrics.get(metrics_key).cloned()
+    }
+
+    // Perf exporter metrics operations
+    fn add_perf_exporter_metrics(&mut self, metrics_key: MetricsKey, metrics: &PerfExporterMetrics) {
+        if let Some((existing_metrics, _)) = self.perf_exporter_metrics.get_mut(metrics_key) {
+            existing_metrics.bytes_total.add(metrics.bytes_total.get());
+            existing_metrics.pdata_msgs.add(metrics.pdata_msgs.get());
+            existing_metrics.invalid_pdata_msgs.add(metrics.invalid_pdata_msgs.get());
+            existing_metrics.logs.add(metrics.logs.get());
+            existing_metrics.spans.add(metrics.spans.get());
+            existing_metrics.metrics.add(metrics.metrics.get());
+        } else {
+            // TODO: consider logging missing key
+        }
+    }
+    fn get_perf_exporter_metrics(&self, metrics_key: MetricsKey) -> Option<(PerfExporterMetrics, NodeStaticAttrs)> {
+        self.perf_exporter_metrics.get(metrics_key).cloned()
+    }
+}
+
+impl MetricsRegistryHandle {
+    /// Creates a new `MetricsRegistry`.
+    pub fn new() -> Self {
+        Self {
+            metric_registry: Arc::new(Mutex::new(MetricsRegistry {
+                receiver_metrics: SlotMap::default(),
+                perf_exporter_metrics: SlotMap::default(),
+            })),
+        }
+    }
+
+    /// Registers a new multivariate metrics instance with the given static attributes.
+    pub fn register<T: MultivariateMetrics + Default + Debug + Send + Sync>(
+        &self,
+        metrics: &mut T,
+        attrs: NodeStaticAttrs,
+    ) {
+        self.metric_registry.lock().register(metrics, attrs);
+    }
+    
+    /// Adds a new set of receiver metrics to the aggregator.
+    pub fn add_receiver_metrics(&self, metrics_key: MetricsKey, metrics: &ReceiverMetrics) {
+        self.metric_registry.lock().add_receiver_metrics(metrics_key, metrics);
+    }
+
+    /// Adds a new set of perf exporter metrics to the aggregator.
+    pub fn add_perf_exporter_metrics(&self, metrics_key: MetricsKey, metrics: &PerfExporterMetrics) {
+        self.metric_registry.lock().add_perf_exporter_metrics(metrics_key, metrics);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::attributes::NodeStaticAttrs;
+    use crate::metrics::{MultivariateMetrics, ReceiverMetrics};
+
+    #[test]
+    fn test_multivariate_metrics_aggregator() -> Result<(), Box<dyn std::error::Error>> {
+        let mut registry = super::MetricsRegistryHandle::new();
+
+        // Declare 2 receivers and 1 perf exporter multivariate metrics
+        let mut otlp_receiver_mvm = ReceiverMetrics::default();
+        registry.register(&mut otlp_receiver_mvm, NodeStaticAttrs {
+            node_id: "otlp_receiver".into(),
+            node_type: "receiver".into(),
+            pipeline_id: "pipeline1".into(),
+            core_id: 0,
+            numa_node_id: 0,
+            process_id: 0,
+        });
+
+        let mut otap_receiver_mvm = ReceiverMetrics::default();
+        registry.register(&mut otap_receiver_mvm, NodeStaticAttrs {
+            node_id: "otap_receiver".into(),
+            node_type: "receiver".into(),
+            pipeline_id: "pipeline1".into(),
+            core_id: 0,
+            numa_node_id: 0,
+            process_id: 0,
+        });
+
+        let mut perf_exporter_mvm = crate::metrics::PerfExporterMetrics::default();
+        registry.register(&mut perf_exporter_mvm, NodeStaticAttrs {
+            node_id: "perf_exporter".into(),
+            node_type: "exporter".into(),
+            pipeline_id: "pipeline1".into(),
+            core_id: 0,
+            numa_node_id: 0,
+            process_id: 0,
+        });
+
+        otlp_receiver_mvm.bytes_received += 100;
+        otlp_receiver_mvm.messages_received += 10;
+        otlp_receiver_mvm.bytes_received += 40;
+        otlp_receiver_mvm.messages_received += 20;
+        otlp_receiver_mvm.aggregate_into(&mut registry)?;
+
+        otap_receiver_mvm.bytes_received += 200;
+        otap_receiver_mvm.messages_received += 20;
+        otap_receiver_mvm.aggregate_into(&mut registry)?;
+
+        otlp_receiver_mvm.bytes_received += 10;
+        otlp_receiver_mvm.messages_received += 50;
+        otlp_receiver_mvm.bytes_received += 70;
+        otlp_receiver_mvm.messages_received += 90;
+        otlp_receiver_mvm.aggregate_into(&mut registry)?;
+
+        perf_exporter_mvm.bytes_total += 500;
+        perf_exporter_mvm.pdata_msgs += 50;
+        perf_exporter_mvm.invalid_pdata_msgs += 40;
+        perf_exporter_mvm.logs += 60;
+        perf_exporter_mvm.spans += 70;
+        perf_exporter_mvm.metrics += 80;
+        perf_exporter_mvm.aggregate_into(&mut registry)?;
+
+        perf_exporter_mvm.bytes_total += 600;
+        perf_exporter_mvm.pdata_msgs += 70;
+        perf_exporter_mvm.invalid_pdata_msgs += 60;
+        perf_exporter_mvm.logs += 80;
+        perf_exporter_mvm.spans += 90;
+        perf_exporter_mvm.metrics += 100;
+        perf_exporter_mvm.aggregate_into(&mut registry)?;
+
+        dbg!(registry);
+        
+        Ok(())
+    }
+}
