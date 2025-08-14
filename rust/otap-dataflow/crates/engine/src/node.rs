@@ -33,6 +33,31 @@ pub trait Node {
     async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
 }
 
+/// NodeUnique consists of NodeId and Unique integer.
+#[derive(Clone, Debug)]
+pub struct NodeUnique {
+    /// A unique integer.
+    pub(crate) id: Unique,
+
+    /// A unique name as defined by otap_df_config.
+    pub name: NodeId,
+}
+
+/// Uniqueness value, presently a u16.
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub struct Unique(u16);
+
+/// Enum to identify the type of a node for registry lookups
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeType {
+    /// Represents a node that acts as a receiver, receiving data from an external source.
+    Receiver,
+    /// Represents a node that processes data, transforming or analyzing it.
+    Processor,
+    /// Represents a node that exports data to an external destination.
+    Exporter,
+}
+
 /// Trait for nodes that can send pdata to a specific port.
 pub trait NodeWithPDataSender<PData>: Node {
     /// Sets the sender for pdata messages on the node.
@@ -120,10 +145,6 @@ impl<PData> NodeDefs<PData> {
     }
 }
 
-/// Uniqueness value
-#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
-pub struct Unique(u16);
-
 impl Unique {
     /// Index of this node in the runtime nodes vector.
     pub(crate) fn index(&self) -> usize {
@@ -138,22 +159,4 @@ impl TryFrom<usize> for Unique {
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         Ok(Self(u16::try_from(value)?))
     }
-}
-
-/// NodeUnique consists of NodeId and Unique integer.
-#[derive(Clone, Debug)]
-pub struct NodeUnique {
-    pub(crate) id: Unique,
-    pub(crate) name: NodeId,
-}
-
-/// Enum to identify the type of a node for registry lookups
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeType {
-    /// Represents a node that acts as a receiver, receiving data from an external source.
-    Receiver,
-    /// Represents a node that processes data, transforming or analyzing it.
-    Processor,
-    /// Represents a node that exports data to an external destination.
-    Exporter,
 }
