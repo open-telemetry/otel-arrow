@@ -6,7 +6,6 @@
 //! Receivers and processors implement the [`NodeWithPDataSender`] trait.
 //! Processors and exporters implement the [`NodeWithPDataReceiver`] trait.
 
-use crate::context::NodeUniq;
 use crate::control::NodeControlMsg;
 use crate::error::Error;
 use crate::message::{Receiver, Sender};
@@ -52,4 +51,64 @@ pub trait NodeWithPDataReceiver<PData>: Node {
         node: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>>;
+}
+
+/// Node is defined ...
+pub struct NodeDefinition {
+    pub(crate) ntype: NodeType,
+    pub(crate) name: NodeId,
+}
+
+/// Uniqueness value
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub struct Unique(u16);
+
+impl Unique {
+    /// Index of this node in the runtime nodes vector.
+    pub(crate) fn index(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl TryFrom<usize> for Unique {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(Self(u16::try_from(value)?))
+    }
+}
+
+/// NodeUniq is a u16 consisting of NodeID plus uniqueness bits.
+#[derive(Clone, Debug)]
+pub struct NodeUniq {
+    pub(crate) id: Unique,
+    pub(crate) name: NodeId,
+}
+
+impl NodeUniq {
+    /// Gets the next unique node identifier. Returns an error when the underlying
+    /// u16 overflows.
+    pub(crate) fn next(
+        name: NodeId,
+        ntype: NodeType,
+        defs: &mut Vec<NodeDefinition>,
+    ) -> Result<NodeUniq, std::num::TryFromIntError> {
+        let uniq = Self {
+            name: name.clone(),
+            id: Unique::try_from(defs.len())?,
+        };
+        defs.push(NodeDefinition { ntype, name: name });
+        Ok(uniq)
+    }
+}
+
+/// Enum to identify the type of a node for registry lookups
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeType {
+    /// Represents a node that acts as a receiver, receiving data from an external source.
+    Receiver,
+    /// Represents a node that processes data, transforming or analyzing it.
+    Processor,
+    /// Represents a node that exports data to an external destination.
+    Exporter,
 }

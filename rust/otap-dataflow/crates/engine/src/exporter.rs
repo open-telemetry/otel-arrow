@@ -7,7 +7,7 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
-use crate::context::NodeUniq;
+use crate::node::NodeUniq;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::exporter as local;

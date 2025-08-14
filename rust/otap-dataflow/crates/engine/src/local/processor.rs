@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::context::NodeUniq;
+use crate::node::NodeUniq;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::local::message::LocalSender;
@@ -205,9 +205,9 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::context::NodeDefinition;
+    use crate::node::NodeDefinition;
     use crate::local::message::LocalSender;
-    use crate::runtime_pipeline::NodeType;
+    use crate::node::NodeType;
     use otap_df_channel::mpsc;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};

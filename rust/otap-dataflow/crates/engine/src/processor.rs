@@ -7,7 +7,7 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
-use crate::context::NodeUniq;
+use crate::node::NodeUniq;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};

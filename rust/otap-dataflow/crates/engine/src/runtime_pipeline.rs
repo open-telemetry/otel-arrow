@@ -3,12 +3,12 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
-use crate::context::{NodeDefinition, NodeUniq, Unique};
 use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node::{NodeDefinition, NodeType, NodeUniq, Unique};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::{ExporterFactory, ProcessorFactory, ReceiverFactory};
@@ -67,17 +67,6 @@ pub(crate) struct HyperEdgeRuntime {
     dispatch_strategy: DispatchStrategy,
 
     pub(crate) destinations: Vec<NodeUniq>,
-}
-
-/// Enum to identify the type of a node for registry lookups
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeType {
-    /// Represents a node that acts as a receiver, receiving data from an external source.
-    Receiver,
-    /// Represents a node that processes data, transforming or analyzing it.
-    Processor,
-    /// Represents a node that exports data to an external destination.
-    Exporter,
 }
 
 impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {

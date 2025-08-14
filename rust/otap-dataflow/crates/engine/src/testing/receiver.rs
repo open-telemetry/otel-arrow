@@ -6,7 +6,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
-use crate::context::NodeUniq;
+use crate::node::NodeUniq;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
@@ -15,7 +15,7 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataSender;
 use crate::receiver::ReceiverWrapper;
-use crate::runtime_pipeline::NodeType;
+use crate::node::NodeType;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;

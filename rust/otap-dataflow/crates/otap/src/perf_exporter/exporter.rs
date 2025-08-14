@@ -17,7 +17,7 @@ use byte_unit::Byte;
 use fluke_hpack::Decoder;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::NodeUniq;
+use otap_df_engine::node::NodeUniq;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;

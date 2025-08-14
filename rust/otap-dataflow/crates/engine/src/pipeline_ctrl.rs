@@ -10,7 +10,7 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::context::Unique;
+use crate::node::Unique;
 use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::message::Sender;
@@ -141,10 +141,10 @@ impl PipelineCtrlMsgManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::NodeUniq;
+    use crate::node::NodeUniq;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
-    use crate::runtime_pipeline::NodeType;
+    use crate::node::NodeType;
     use crate::shared::message::{SharedReceiver, SharedSender};
     use otap_df_config::NodeId;
     use std::collections::HashMap;

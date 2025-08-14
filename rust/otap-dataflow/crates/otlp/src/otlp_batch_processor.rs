@@ -690,7 +690,7 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::Span;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::NodeUniq;
+    use otap_df_engine::node::NodeUniq;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -1816,7 +1816,7 @@ mod integration_tests {
     use crate::proto::opentelemetry::trace::v1::Span;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::NodeUniq;
+    use otap_df_engine::node::NodeUniq;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::local::processor::Processor;
     use otap_df_engine::processor::ProcessorWrapper;

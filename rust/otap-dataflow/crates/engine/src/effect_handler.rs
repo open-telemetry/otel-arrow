@@ -2,7 +2,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::context::{NodeUniq, Unique};
+use crate::node::{NodeUniq, Unique};
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use otap_df_channel::error::SendError;

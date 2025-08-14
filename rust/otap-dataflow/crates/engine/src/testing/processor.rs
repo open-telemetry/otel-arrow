@@ -6,13 +6,13 @@
 //! setup and lifecycle management.
 
 use crate::config::ProcessorConfig;
-use crate::context::NodeUniq;
+use crate::node::NodeUniq;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
-use crate::runtime_pipeline::NodeType;
+use crate::node::NodeType;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use std::fmt::Debug;

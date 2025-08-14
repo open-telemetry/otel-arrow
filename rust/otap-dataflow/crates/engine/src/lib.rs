@@ -4,8 +4,8 @@
 
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
-    context::NodeUniq,
     exporter::ExporterWrapper,
+    node::NodeUniq,
     processor::ProcessorWrapper,
     receiver::ReceiverWrapper,
 };
@@ -14,7 +14,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::{collections::HashMap, sync::OnceLock};
 
-pub mod context;
 pub mod error;
 pub mod exporter;
 pub mod message;

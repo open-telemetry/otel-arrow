@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::NodeUniq;
+use otap_df_engine::node::NodeUniq;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::receiver::ReceiverWrapper;

@@ -4,7 +4,7 @@
 //! Enables management of node behavior, configuration, and lifecycle events, including shutdown,
 //! configuration updates, and timer management.
 
-use crate::context::Unique;
+use crate::node::Unique;
 use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
