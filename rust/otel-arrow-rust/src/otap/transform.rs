@@ -1031,15 +1031,15 @@ where
         keep_ranges.push((s, dict_arr.len()));
     }
 
-    // build the new dictionary keys array;
-    let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
-
+    // build the new dictionary keys
+    //
     // TODO using builder is probably fine for now, but eventually we might be able to optimize
     // this further by writing directly to buffer, then taking slices of the null existing null
     // buffer from the dictionary keys
+    let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
     let mut new_dict_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
 
-    // build an array of bt how much to adjust the dictionary key
+    // build an array of by how much to adjust the dictionary key
     let mut prev_offset_end = 0;
     let mut total_dict_key_offsets = 0;
     let key_offsets = values_keep_ranges
@@ -1060,13 +1060,11 @@ where
 
         let dict_key = dict_keys.value(i).as_usize();
         let mut kept_in_range = None;
-        let mut range_idx = 0;
-        for range in &values_keep_ranges {
+        for (range_idx, range) in values_keep_ranges.iter().enumerate() {
             if dict_key >= range.0 && dict_key < range.1 {
                 kept_in_range = Some(range_idx);
                 break;
             }
-            range_idx += 1;
         }
 
         if let Some(range_idx) = kept_in_range {
@@ -1256,7 +1254,7 @@ fn plan_key_deletes<'a>(
 }
 
 // The return type from `find_matching_key_ranges`
-struct TargetRanges {
+struct KeyTransformTargetRanges {
     // contiguous ranges in the values buffer that match the target bytes this is keyed like
     // `(start, end, target_idx)` where target_idx is the index into the slice of `target_bytes`
     // that was passed to `find_matching_key_ranges`.
@@ -1280,7 +1278,7 @@ fn find_matching_key_ranges(
     values_buf: &Buffer,
     offsets: &OffsetBuffer<i32>,
     target_bytes: &[&[u8]],
-) -> Result<TargetRanges> {
+) -> Result<KeyTransformTargetRanges> {
     let mut ranges = Vec::new();
     let mut total_matches = 0;
     let mut counts = vec![0; target_bytes.len()];
@@ -1340,7 +1338,7 @@ fn find_matching_key_ranges(
     // Sort the ranges to replace by start_index (first element in contained tuple)
     ranges.sort();
 
-    Ok(TargetRanges {
+    Ok(KeyTransformTargetRanges {
         ranges,
         counts,
         total_matches,
