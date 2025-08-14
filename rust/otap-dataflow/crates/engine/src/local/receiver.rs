@@ -274,12 +274,10 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    fn node_defs() -> (NodeUnique, NodeDefs<()>) {
-        let mut node_defs = NodeDefs::new();
-        let node = node_defs
+    fn test_node() -> NodeUnique {
+        NodeDefs::<()>::new()
             .next("recv".into(), NodeType::Receiver)
-            .expect("first");
-        (node, node_defs)
+            .expect("first")
     }
 
     #[tokio::test]
@@ -291,9 +289,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let (node, _) = node_defs();
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(node, senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node(), senders, None, ctrl_tx);
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -312,9 +309,8 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
 
-        let (node, _) = node_defs();
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(node, senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node(), senders, None, ctrl_tx);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -329,9 +325,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let (node, _) = node_defs();
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(node, senders, Some("a".into()), ctrl_tx);
+        let eh = EffectHandler::new(test_node(), senders, Some("a".into()), ctrl_tx);
 
         eh.send_message(11).await.unwrap();
 
@@ -352,9 +347,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let (node, _) = node_defs();
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(node, senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node(), senders, None, ctrl_tx);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -381,9 +375,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let (node, _) = node_defs();
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new(node, senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node(), senders, None, ctrl_tx);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
