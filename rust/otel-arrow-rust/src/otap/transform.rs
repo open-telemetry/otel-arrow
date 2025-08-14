@@ -953,10 +953,12 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
 /// transforms the keys for the dictionary array.
 //
 // TODO: there are optimizations we should be able to make in this method:
-// - when constructing the new dictionary keys, we could use a MutableBuffer and
-//   copy slices of the existing null buffer for the ranges we know we'll keep
-// - when searching for ranges that contain the dictionary key, try if possible
-//   to stop searching before iterating through all ranges
+// - when searching for ranges that contain the dictionary key, try if possible to stop searching
+//   before iterating through all ranges
+// - when constructing the new dictionary keys we could use a MutableBuffer and copy slices of the
+//   existing null buffer for the ranges we know we'll keep
+// - in the same loop, we could probably use a hashmap of dict_key to the adjusted key offset to
+//   speedup the lookup.
 fn transform_dictionary_keys<K>(
     dict_arr: &DictionaryArray<K>,
     transform: &AttributesTransform,
