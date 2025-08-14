@@ -5,6 +5,7 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportTraceServiceRequest {
     #[prost(message, repeated, tag="1")]
+    #[rustfmt::skip]
     pub resource_spans: ::prost::alloc::vec::Vec<super::super::super::trace::v1::ResourceSpans>,
 }
 #[rustfmt::skip]
@@ -13,6 +14,7 @@ pub struct ExportTraceServiceRequest {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportTraceServiceResponse {
     #[prost(message, optional, tag="1")]
+    #[rustfmt::skip]
     pub partial_success: ::core::option::Option<ExportTracePartialSuccess>,
 }
 #[rustfmt::skip]
@@ -21,8 +23,10 @@ pub struct ExportTraceServiceResponse {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportTracePartialSuccess {
     #[prost(int64, tag="1")]
+    #[rustfmt::skip]
     pub rejected_spans: i64,
     #[prost(string, tag="2")]
+    #[rustfmt::skip]
     pub error_message: ::prost::alloc::string::String,
 }
 /// Generated client implementations.

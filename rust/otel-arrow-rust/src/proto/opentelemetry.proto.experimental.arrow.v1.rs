@@ -3,63 +3,100 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchArrowRecords {
     #[prost(int64, tag="1")]
+    #[rustfmt::skip]
     pub batch_id: i64,
     #[prost(message, repeated, tag="2")]
+    #[rustfmt::skip]
     pub arrow_payloads: ::prost::alloc::vec::Vec<ArrowPayload>,
     #[prost(bytes="vec", tag="3")]
+    #[rustfmt::skip]
     pub headers: ::prost::alloc::vec::Vec<u8>,
 }
 #[rustfmt::skip]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ArrowPayload {
     #[prost(string, tag="1")]
+    #[rustfmt::skip]
     pub schema_id: ::prost::alloc::string::String,
     #[prost(enumeration="ArrowPayloadType", tag="2")]
+    #[rustfmt::skip]
     pub r#type: i32,
     #[prost(bytes="vec", tag="3")]
+    #[rustfmt::skip]
     pub record: ::prost::alloc::vec::Vec<u8>,
 }
 #[rustfmt::skip]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchStatus {
     #[prost(int64, tag="1")]
+    #[rustfmt::skip]
     pub batch_id: i64,
     #[prost(enumeration="StatusCode", tag="2")]
+    #[rustfmt::skip]
     pub status_code: i32,
     #[prost(string, tag="3")]
+    #[rustfmt::skip]
     pub status_message: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ArrowPayloadType {
+    #[rustfmt::skip]
     Unknown = 0,
+    #[rustfmt::skip]
     ResourceAttrs = 1,
+    #[rustfmt::skip]
     ScopeAttrs = 2,
+    #[rustfmt::skip]
     UnivariateMetrics = 10,
+    #[rustfmt::skip]
     NumberDataPoints = 11,
+    #[rustfmt::skip]
     SummaryDataPoints = 12,
+    #[rustfmt::skip]
     HistogramDataPoints = 13,
+    #[rustfmt::skip]
     ExpHistogramDataPoints = 14,
+    #[rustfmt::skip]
     NumberDpAttrs = 15,
+    #[rustfmt::skip]
     SummaryDpAttrs = 16,
+    #[rustfmt::skip]
     HistogramDpAttrs = 17,
+    #[rustfmt::skip]
     ExpHistogramDpAttrs = 18,
+    #[rustfmt::skip]
     NumberDpExemplars = 19,
+    #[rustfmt::skip]
     HistogramDpExemplars = 20,
+    #[rustfmt::skip]
     ExpHistogramDpExemplars = 21,
+    #[rustfmt::skip]
     NumberDpExemplarAttrs = 22,
+    #[rustfmt::skip]
     HistogramDpExemplarAttrs = 23,
+    #[rustfmt::skip]
     ExpHistogramDpExemplarAttrs = 24,
+    #[rustfmt::skip]
     MultivariateMetrics = 25,
+    #[rustfmt::skip]
     MetricAttrs = 26,
+    #[rustfmt::skip]
     Logs = 30,
+    #[rustfmt::skip]
     LogAttrs = 31,
+    #[rustfmt::skip]
     Spans = 40,
+    #[rustfmt::skip]
     SpanAttrs = 41,
+    #[rustfmt::skip]
     SpanEvents = 42,
+    #[rustfmt::skip]
     SpanLinks = 43,
+    #[rustfmt::skip]
     SpanEventAttrs = 44,
+    #[rustfmt::skip]
     SpanLinkAttrs = 45,
 }
 impl ArrowPayloadType {
@@ -138,15 +175,25 @@ impl ArrowPayloadType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum StatusCode {
+    #[rustfmt::skip]
     Ok = 0,
+    #[rustfmt::skip]
     Canceled = 1,
+    #[rustfmt::skip]
     InvalidArgument = 3,
+    #[rustfmt::skip]
     DeadlineExceeded = 4,
+    #[rustfmt::skip]
     PermissionDenied = 7,
+    #[rustfmt::skip]
     ResourceExhausted = 8,
+    #[rustfmt::skip]
     Aborted = 10,
+    #[rustfmt::skip]
     Internal = 13,
+    #[rustfmt::skip]
     Unavailable = 14,
+    #[rustfmt::skip]
     Unauthenticated = 16,
 }
 impl StatusCode {

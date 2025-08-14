@@ -5,9 +5,12 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Resource {
     #[prost(message, repeated, tag="1")]
+    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(uint32, tag="2")]
+    #[rustfmt::skip]
     pub dropped_attributes_count: u32,
     #[prost(message, repeated, tag="3")]
+    #[rustfmt::skip]
     pub entity_refs: ::prost::alloc::vec::Vec<super::super::common::v1::EntityRef>,
 }

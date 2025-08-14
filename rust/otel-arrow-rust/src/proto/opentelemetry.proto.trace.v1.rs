@@ -5,6 +5,7 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TracesData {
     #[prost(message, repeated, tag="1")]
+    #[rustfmt::skip]
     pub resource_spans: ::prost::alloc::vec::Vec<ResourceSpans>,
 }
 #[rustfmt::skip]
@@ -13,10 +14,13 @@ pub struct TracesData {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceSpans {
     #[prost(message, optional, tag="1")]
+    #[rustfmt::skip]
     pub resource: ::core::option::Option<super::super::resource::v1::Resource>,
     #[prost(message, repeated, tag="2")]
+    #[rustfmt::skip]
     pub scope_spans: ::prost::alloc::vec::Vec<ScopeSpans>,
     #[prost(string, tag="3")]
+    #[rustfmt::skip]
     pub schema_url: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
@@ -25,10 +29,13 @@ pub struct ResourceSpans {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeSpans {
     #[prost(message, optional, tag="1")]
+    #[rustfmt::skip]
     pub scope: ::core::option::Option<super::super::common::v1::InstrumentationScope>,
     #[prost(message, repeated, tag="2")]
+    #[rustfmt::skip]
     pub spans: ::prost::alloc::vec::Vec<Span>,
     #[prost(string, tag="3")]
+    #[rustfmt::skip]
     pub schema_url: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
@@ -37,36 +44,52 @@ pub struct ScopeSpans {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Span {
     #[prost(bytes="vec", tag="1")]
+    #[rustfmt::skip]
     pub trace_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes="vec", tag="2")]
+    #[rustfmt::skip]
     pub span_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag="3")]
+    #[rustfmt::skip]
     pub trace_state: ::prost::alloc::string::String,
     #[prost(bytes="vec", tag="4")]
+    #[rustfmt::skip]
     pub parent_span_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(fixed32, tag="16")]
+    #[rustfmt::skip]
     pub flags: u32,
     #[prost(string, tag="5")]
+    #[rustfmt::skip]
     pub name: ::prost::alloc::string::String,
     #[prost(enumeration="span::SpanKind", tag="6")]
+    #[rustfmt::skip]
     pub kind: i32,
     #[prost(fixed64, tag="7")]
+    #[rustfmt::skip]
     pub start_time_unix_nano: u64,
     #[prost(fixed64, tag="8")]
+    #[rustfmt::skip]
     pub end_time_unix_nano: u64,
     #[prost(message, repeated, tag="9")]
+    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(uint32, tag="10")]
+    #[rustfmt::skip]
     pub dropped_attributes_count: u32,
     #[prost(message, repeated, tag="11")]
+    #[rustfmt::skip]
     pub events: ::prost::alloc::vec::Vec<span::Event>,
     #[prost(uint32, tag="12")]
+    #[rustfmt::skip]
     pub dropped_events_count: u32,
     #[prost(message, repeated, tag="13")]
+    #[rustfmt::skip]
     pub links: ::prost::alloc::vec::Vec<span::Link>,
     #[prost(uint32, tag="14")]
+    #[rustfmt::skip]
     pub dropped_links_count: u32,
     #[prost(message, optional, tag="15")]
+    #[rustfmt::skip]
     pub status: ::core::option::Option<Status>,
 }
 /// Nested message and enum types in `Span`.
@@ -77,12 +100,16 @@ pub mod span {
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Event {
         #[prost(fixed64, tag="1")]
+        #[rustfmt::skip]
         pub time_unix_nano: u64,
         #[prost(string, tag="2")]
+        #[rustfmt::skip]
         pub name: ::prost::alloc::string::String,
         #[prost(message, repeated, tag="3")]
+        #[rustfmt::skip]
         pub attributes: ::prost::alloc::vec::Vec<super::super::super::common::v1::KeyValue>,
         #[prost(uint32, tag="4")]
+        #[rustfmt::skip]
         pub dropped_attributes_count: u32,
     }
     #[rustfmt::skip]
@@ -91,27 +118,39 @@ pub mod span {
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Link {
         #[prost(bytes="vec", tag="1")]
+        #[rustfmt::skip]
         pub trace_id: ::prost::alloc::vec::Vec<u8>,
         #[prost(bytes="vec", tag="2")]
+        #[rustfmt::skip]
         pub span_id: ::prost::alloc::vec::Vec<u8>,
         #[prost(string, tag="3")]
+        #[rustfmt::skip]
         pub trace_state: ::prost::alloc::string::String,
         #[prost(message, repeated, tag="4")]
+        #[rustfmt::skip]
         pub attributes: ::prost::alloc::vec::Vec<super::super::super::common::v1::KeyValue>,
         #[prost(uint32, tag="5")]
+        #[rustfmt::skip]
         pub dropped_attributes_count: u32,
         #[prost(fixed32, tag="6")]
+        #[rustfmt::skip]
         pub flags: u32,
     }
     #[rustfmt::skip]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
     pub enum SpanKind {
+        #[rustfmt::skip]
         Unspecified = 0,
+        #[rustfmt::skip]
         Internal = 1,
+        #[rustfmt::skip]
         Server = 2,
+        #[rustfmt::skip]
         Client = 3,
+        #[rustfmt::skip]
         Producer = 4,
+        #[rustfmt::skip]
         Consumer = 5,
     }
     impl SpanKind {
@@ -149,8 +188,10 @@ pub mod span {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Status {
     #[prost(string, tag="2")]
+    #[rustfmt::skip]
     pub message: ::prost::alloc::string::String,
     #[prost(enumeration="status::StatusCode", tag="3")]
+    #[rustfmt::skip]
     pub code: i32,
 }
 /// Nested message and enum types in `Status`.
@@ -159,8 +200,11 @@ pub mod status {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
     pub enum StatusCode {
+        #[rustfmt::skip]
         Unset = 0,
+        #[rustfmt::skip]
         Ok = 1,
+        #[rustfmt::skip]
         Error = 2,
     }
     impl StatusCode {
@@ -190,9 +234,13 @@ pub mod status {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SpanFlags {
+    #[rustfmt::skip]
     DoNotUse = 0,
+    #[rustfmt::skip]
     TraceFlagsMask = 255,
+    #[rustfmt::skip]
     ContextHasIsRemoteMask = 256,
+    #[rustfmt::skip]
     ContextIsRemoteMask = 512,
 }
 impl SpanFlags {

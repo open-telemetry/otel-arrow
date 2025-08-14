@@ -5,6 +5,7 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportLogsServiceRequest {
     #[prost(message, repeated, tag="1")]
+    #[rustfmt::skip]
     pub resource_logs: ::prost::alloc::vec::Vec<super::super::super::logs::v1::ResourceLogs>,
 }
 #[rustfmt::skip]
@@ -13,6 +14,7 @@ pub struct ExportLogsServiceRequest {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportLogsServiceResponse {
     #[prost(message, optional, tag="1")]
+    #[rustfmt::skip]
     pub partial_success: ::core::option::Option<ExportLogsPartialSuccess>,
 }
 #[rustfmt::skip]
@@ -21,8 +23,10 @@ pub struct ExportLogsServiceResponse {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportLogsPartialSuccess {
     #[prost(int64, tag="1")]
+    #[rustfmt::skip]
     pub rejected_log_records: i64,
     #[prost(string, tag="2")]
+    #[rustfmt::skip]
     pub error_message: ::prost::alloc::string::String,
 }
 /// Generated client implementations.

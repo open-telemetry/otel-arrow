@@ -5,6 +5,7 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportMetricsServiceRequest {
     #[prost(message, repeated, tag="1")]
+    #[rustfmt::skip]
     pub resource_metrics: ::prost::alloc::vec::Vec<super::super::super::metrics::v1::ResourceMetrics>,
 }
 #[rustfmt::skip]
@@ -13,6 +14,7 @@ pub struct ExportMetricsServiceRequest {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportMetricsServiceResponse {
     #[prost(message, optional, tag="1")]
+    #[rustfmt::skip]
     pub partial_success: ::core::option::Option<ExportMetricsPartialSuccess>,
 }
 #[rustfmt::skip]
@@ -21,8 +23,10 @@ pub struct ExportMetricsServiceResponse {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportMetricsPartialSuccess {
     #[prost(int64, tag="1")]
+    #[rustfmt::skip]
     pub rejected_data_points: i64,
     #[prost(string, tag="2")]
+    #[rustfmt::skip]
     pub error_message: ::prost::alloc::string::String,
 }
 /// Generated client implementations.
