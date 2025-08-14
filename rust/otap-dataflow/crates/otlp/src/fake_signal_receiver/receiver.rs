@@ -846,6 +846,7 @@ mod tests {
         // create our receiver
         let receiver = ReceiverWrapper::local(
             FakeSignalReceiver::new(config),
+            test_runtime.test_node(),
             node_config,
             test_runtime.config(),
         );

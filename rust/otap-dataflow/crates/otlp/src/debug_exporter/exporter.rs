@@ -29,6 +29,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::NodeUniq;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -82,9 +83,10 @@ pub struct DebugExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static DEBUG_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: DEBUG_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node: NodeUniq, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             DebugExporter::from_config(&node_config.config)?,
+            node,
             node_config,
             exporter_config,
         ))
@@ -532,6 +534,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            test_runtime.test_node(),
             node_config,
             test_runtime.config(),
         );
@@ -553,6 +556,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            test_runtime.test_node(),
             node_config,
             test_runtime.config(),
         );
@@ -574,6 +578,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            test_runtime.test_node(),
             node_config,
             test_runtime.config(),
         );

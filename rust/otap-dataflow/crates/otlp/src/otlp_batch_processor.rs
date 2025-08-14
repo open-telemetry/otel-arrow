@@ -690,13 +690,14 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::Span;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::context::NodeUniq;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
     use std::sync::Arc;
 
     /// Wraps a processor in a local test wrapper.
-    fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
+    fn wrap_local<P>(node: NodeUniq, processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
@@ -704,7 +705,7 @@ mod tests {
             _OTLP_BATCH_PROCESSOR_URN,
         ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, node_config, &config)
+        ProcessorWrapper::local(processor, node, node_config, &config)
     }
 
     #[test]
@@ -715,7 +716,7 @@ mod tests {
             send_batch_size: 2, // force batching
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -832,7 +833,7 @@ mod tests {
             send_batch_size: 1, // force a flush after every log record
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -871,11 +872,14 @@ mod tests {
     #[test]
     fn does_not_emit_empty_trace_batches() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 3,
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            runtime.test_node(),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 3,
+                timeout: Duration::from_secs(1),
+            }),
+        );
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -910,7 +914,7 @@ mod tests {
             send_batch_size: 10, // Large, so won't flush by size
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -979,7 +983,7 @@ mod tests {
             send_batch_size: 10, // large, so won't flush by size
             timeout: Duration::from_millis(10),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1020,7 +1024,7 @@ mod tests {
             send_batch_size: 2, // force batching
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1113,7 +1117,7 @@ mod tests {
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1223,7 +1227,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1330,7 +1334,7 @@ mod tests {
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1432,11 +1436,14 @@ mod tests {
     #[test]
     fn handles_empty_input_batch() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 10,
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            runtime.test_node(),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 10,
+                timeout: Duration::from_secs(1),
+            }),
+        );
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1462,11 +1469,14 @@ mod tests {
     #[test]
     fn skips_empty_resource_spans() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 3,
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            runtime.test_node(),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 3,
+                timeout: Duration::from_secs(1),
+            }),
+        );
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1512,7 +1522,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1569,7 +1579,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1624,7 +1634,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1679,7 +1689,7 @@ mod tests {
             send_batch_size: 1, // very small, should flush immediately
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1720,7 +1730,7 @@ mod tests {
             send_batch_size: 1, // very small, should flush immediately
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1761,7 +1771,7 @@ mod tests {
             send_batch_size: 1, // very small, should flush immediately
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(runtime.test_node(), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1806,6 +1816,7 @@ mod integration_tests {
     use crate::proto::opentelemetry::trace::v1::Span;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::context::NodeUniq;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::local::processor::Processor;
     use otap_df_engine::processor::ProcessorWrapper;
@@ -1814,7 +1825,7 @@ mod integration_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
+    fn wrap_local<P>(node: NodeUniq, processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
@@ -1822,7 +1833,7 @@ mod integration_tests {
             _OTLP_BATCH_PROCESSOR_URN,
         ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, node_config, &config)
+        ProcessorWrapper::local(processor, node, node_config, &config)
     }
 
     // Helper: Write string to a file (async version)
@@ -1927,11 +1938,14 @@ mod integration_tests {
         std::fs::write("/tmp/generic_batch_proc_test.json", "").unwrap();
 
         let runtime = otap_df_engine::testing::processor::TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 2, // test splitting
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            runtime.test_node(),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 2, // test splitting
+                timeout: Duration::from_secs(1),
+            }),
+        );
 
         runtime
             .set_processor(wrapper)

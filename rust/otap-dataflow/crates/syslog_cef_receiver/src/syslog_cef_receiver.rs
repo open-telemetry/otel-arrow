@@ -824,6 +824,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(listening_addr),
+            test_runtime.test_node(),
             node_config,
             test_runtime.config(),
         );
@@ -848,7 +849,12 @@ mod tests {
         receiver.protocol = Protocol::Tcp;
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
-        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
+        let receiver_wrapper = ReceiverWrapper::local(
+            receiver,
+            test_runtime.test_node(),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime
@@ -870,7 +876,12 @@ mod tests {
         receiver.protocol = Protocol::Tcp;
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
-        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
+        let receiver_wrapper = ReceiverWrapper::local(
+            receiver,
+            test_runtime.test_node(),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime
