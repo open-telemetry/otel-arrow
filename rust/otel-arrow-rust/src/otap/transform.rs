@@ -991,8 +991,15 @@ where
     let mut keep_ranges: Vec<(usize, usize)> = vec![];
     let mut curr_range_start = None;
 
+    // Pull out the dict's keys null buffer. We'll be accessing this often so keeping it here
+    // avoids having to access it repeatedly on the hot paths below
+    let dict_keys_nulls = dict_keys.nulls();
+
     for i in 0..dict_arr.len() {
-        if dict_keys.is_valid(i) {
+        if dict_keys_nulls
+            .map(|nulls| nulls.is_valid(i))
+            .unwrap_or(true)
+        {
             let dict_key: usize = dict_keys.value(i).as_usize();
             let mut kept = false;
             for range in &values_keep_ranges {
@@ -1050,7 +1057,11 @@ where
         .collect::<Vec<_>>();
 
     for i in 0..dict_arr.len() {
-        if !dict_arr.is_valid(i) {
+        // if !dict_arr.is_valid(i) {
+        if !dict_keys_nulls
+            .map(|nulls| nulls.is_valid(i))
+            .unwrap_or(true)
+        {
             // safety: we've already allocated the correct capacity for this buffer, so we can use
             // push_unchecked here to get better performance by avoiding the buffer capacity check
             // for every value
