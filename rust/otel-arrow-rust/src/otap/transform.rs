@@ -21,6 +21,13 @@ use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
+pub fn add_delta_encoding_to_column<T>(column: &ArrayRef) -> ArrayRef
+where
+    T: ArrowPrimitiveType,
+{
+    todo!()
+}
+
 pub fn remove_delta_encoding<T>(
     record_batch: &RecordBatch,
     column_name: &str,

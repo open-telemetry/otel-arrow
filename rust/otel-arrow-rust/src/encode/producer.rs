@@ -7,15 +7,19 @@
 
 use std::{collections::HashMap, io::Cursor};
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::SchemaRef;
+use arrow::array::{ArrayRef, ArrowPrimitiveType, RecordBatch, UInt32Array};
+use arrow::compute::{SortColumn, SortOptions, lexsort_to_indices, take_record_batch};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::ipc::writer::StreamWriter;
+use arrow::row::{RowConverter, SortField};
 use snafu::ResultExt;
 
 use crate::error::{self, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
+use crate::proto::opentelemetry::metrics::v1::metric::Data;
+use crate::schema::consts;
 
 /// handles serializing the stream of record batches for some payload type
 struct StreamProducer {
@@ -80,8 +84,11 @@ impl Producer {
                 Some(rb) => rb,
                 None => continue,
             };
-            let schema = record_batch.schema();
 
+            // apply any column encodings to optimize transport
+            let record_batch = apply_column_encodings(payload_type, record_batch);
+
+            let schema = record_batch.schema();
             let schema_id = self.schema_id_builder.build_id(&schema);
             let stream_producer = match self.stream_producers.get_mut(schema_id) {
                 None => {
@@ -104,7 +111,7 @@ impl Producer {
                 Some(s) => s,
             };
 
-            let serialized_rb = stream_producer.serialize_batch(record_batch)?;
+            let serialized_rb = stream_producer.serialize_batch(&record_batch)?;
             arrow_payloads.push(ArrowPayload {
                 schema_id: format!("{}", stream_producer.schema_id),
                 r#type: *payload_type as i32,
@@ -127,6 +134,158 @@ impl Producer {
 impl Default for Producer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// specification for encoding that should be applied to the column before it is IPC serialized
+struct ColumnEncoding<'a> {
+    path: &'a str,
+    data_type: DataType,
+    encoding: Encoding,
+}
+
+/// identifier for column encoding
+#[derive(Clone, Copy)]
+enum Encoding {
+    Delta,
+
+    /// this is the transport optimized encoding that is applied to attribute's parent_id column
+    /// where subsequent rows of matching type/key/value will have their parent_id field delta
+    /// encoded
+    AttributeQuasiDelta,
+}
+
+const LOG_RESOURCE_ID_COL: &str = "resource.id";
+const LOG_SCOPE_ID_COL: &str = "scope.id";
+
+fn apply_column_encodings(
+    payload_type: &ArrowPayloadType,
+    record_batch: &RecordBatch,
+) -> RecordBatch {
+    let column_encodings = get_column_encodings(payload_type);
+    if column_encodings.is_empty() {
+        return record_batch.clone();
+    }
+
+    let mut schema = record_batch.schema().as_ref().clone();
+
+    // determine which columns need to be encoded
+    let mut to_apply = vec![];
+    for column_encoding in column_encodings {
+        if !is_encoded(column_encoding.path, &schema, column_encoding.encoding) {
+            to_apply.push(column_encoding);
+        }
+    }
+
+    // nothing to do
+    if to_apply.len() == 0 {
+        return record_batch.clone();
+    }
+
+    // Prepare to apply sorting ...
+    //
+    // Below we should apply the correct sort order before before we delta-encode the columns.
+    // This is because the columns we're applying the encoding to are unsigned integers, so the
+    // delta cannot be negative. If encoding only been applied to some of the columns already,
+    // (this would be unusual) we might need to remove it before we can sort.
+    if to_apply.len() != column_encodings.len() {
+        // TODO
+        todo!()
+    }
+
+    // sort the record batch
+    let columns = record_batch.columns();
+    let mut sort_inputs = vec![];
+    for path in get_sort_columns(payload_type) {
+        if let Some(column) = access_column(path, &schema, columns) {
+            sort_inputs.push(column);
+        }
+    }
+
+    let record_batch = if sort_inputs.len() > 0 {
+        // use row convert to convert to rows
+        // TODO link docs
+        // TODO benchmark against lex_sort_to_indices kernel
+        let sort_fields = sort_inputs
+            .iter()
+            .map(|col| SortField::new(col.data_type().clone()))
+            .collect();
+        let converter = RowConverter::new(sort_fields).unwrap();
+        let rows = converter.convert_columns(&sort_inputs).unwrap();
+
+        let mut sort: Vec<_> = rows.iter().enumerate().collect();
+        sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+        let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
+
+        take_record_batch(record_batch, &indices).unwrap()
+    } else {
+        record_batch.clone()
+    };
+
+    let mut columns = record_batch.columns().to_vec();
+    for column_encoding in column_encodings {
+        if let Some(column) = access_column(column_encoding.path, &schema, &columns) {
+            let new_column = match column_encoding.encoding {
+                Encoding::Delta => apply_delta_encoding(column, &column_encoding.data_type),
+                _ => {
+                    // TODO
+                    todo!()
+                }
+            };
+
+            replace_column(column_encoding.path, new_column, &mut schema, &mut columns);
+            update_field_metadata(column_encoding.path, &mut schema, column_encoding.encoding);
+        }
+    }
+
+    todo!()
+}
+
+fn is_encoded(path: &str, schema: &Schema, encoding: Encoding) -> bool {
+    todo!()
+}
+
+fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
+    todo!();
+}
+
+fn apply_delta_encoding(column: ArrayRef, data_type: &DataType) -> ArrayRef {
+    todo!();
+}
+
+fn replace_column(
+    path: &str,
+    new_column: ArrayRef,
+    schema: &mut Schema,
+    columns: &mut Vec<ArrayRef>,
+) {
+    todo!();
+}
+
+fn update_field_metadata(path: &str, schema: &mut Schema, encoding: Encoding) {
+    todo!();
+}
+
+fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
+    match payload_type {
+        ArrowPayloadType::LogAttrs => {
+            &[
+                // TODO could turn this into a macro
+                ColumnEncoding {
+                    path: consts::ID,
+                    data_type: DataType::UInt16,
+                    encoding: Encoding::Delta,
+                },
+            ]
+        }
+        _ => &[],
+    }
+}
+
+fn get_sort_columns(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
+    match payload_type {
+        ArrowPayload::LogAttrs => &[consts::ID, LOG_RESOURCE_ID_COL, LOG_RESOURCE_ID_COL],
+        _ => &[],
     }
 }
 
