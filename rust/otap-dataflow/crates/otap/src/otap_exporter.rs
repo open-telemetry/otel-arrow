@@ -26,16 +26,23 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
 
-/// Exporter that sends OTAP data via gRPC
-pub struct OTAPExporter {
+/// Configuration for the OTAP Exporter
+#[derive(Debug, Deserialize)]
+pub struct Config {
     grpc_endpoint: String,
     compression_method: Option<CompressionMethod>,
+}
+
+/// Exporter that sends OTAP data via gRPC
+pub struct OTAPExporter {
+    config: Config,
 }
 
 /// Declares the OTAP exporter as a local exporter factory
@@ -56,23 +63,25 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 };
 
 impl OTAPExporter {
-    /// Creates a new OTAP exporter
+    /// Creates a new OTAPExporter
     #[must_use]
-    #[allow(dead_code)]
     pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
         OTAPExporter {
-            grpc_endpoint,
-            compression_method,
+            config: Config {
+                grpc_endpoint,
+                compression_method,
+            },
         }
     }
 
     /// Creates a new OTAPExporter from a configuration object
-    pub fn from_config(_config: &Value) -> Result<Self, otap_df_config::error::Error> {
-        // ToDo: implement config parsing
-        Ok(OTAPExporter {
-            grpc_endpoint: "127.0.0.1:4317".to_owned(),
-            compression_method: None,
-        })
+    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(OTAPExporter { config })
     }
 }
 
@@ -84,30 +93,38 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error<OtapPdata>> {
+        effect_handler
+            .info(&format!(
+                "Exporting OTLP traffic to endpoint: {}",
+                self.config.grpc_endpoint
+            ))
+            .await;
         // start a grpc client and connect to the server
         let mut arrow_metrics_client =
-            ArrowMetricsServiceClient::connect(self.grpc_endpoint.clone())
+            ArrowMetricsServiceClient::connect(self.config.grpc_endpoint.clone())
                 .await
                 .map_err(|error| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     error: error.to_string(),
                 })?;
 
-        let mut arrow_logs_client = ArrowLogsServiceClient::connect(self.grpc_endpoint.clone())
-            .await
-            .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
-                error: error.to_string(),
-            })?;
+        let mut arrow_logs_client =
+            ArrowLogsServiceClient::connect(self.config.grpc_endpoint.clone())
+                .await
+                .map_err(|error| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: error.to_string(),
+                })?;
 
-        let mut arrow_traces_client = ArrowTracesServiceClient::connect(self.grpc_endpoint.clone())
-            .await
-            .map_err(|error| Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
-                error: error.to_string(),
-            })?;
+        let mut arrow_traces_client =
+            ArrowTracesServiceClient::connect(self.config.grpc_endpoint.clone())
+                .await
+                .map_err(|error| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    error: error.to_string(),
+                })?;
 
-        if let Some(compression) = self.compression_method {
+        if let Some(compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
             arrow_logs_client = arrow_logs_client
                 .send_compressed(encoding)
@@ -206,11 +223,13 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_otlp::compression::CompressionMethod;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
+    use serde_json::json;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::net::TcpListener;
@@ -370,5 +389,39 @@ mod tests {
             .run_validation(validation_procedure(receiver));
 
         _ = shutdown_sender.send("Shutdown");
+    }
+
+    #[test]
+    fn test_from_config_success() {
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "compression_method": "Gzip"
+        });
+
+        let exporter = OTAPExporter::from_config(&json_config).expect("Config should be valid");
+
+        assert_eq!(exporter.config.grpc_endpoint, "http://localhost:4317");
+        match exporter.config.compression_method {
+            Some(ref method) => match method {
+                CompressionMethod::Gzip => {} // success
+                other => panic!("Expected Gzip, got {:?}", other),
+            },
+            None => panic!("Expected Some compression method"),
+        }
+    }
+
+    #[test]
+    fn test_from_config_missing_required_field() {
+        let json_config = json!({
+            "compression_method": "Gzip"
+        });
+
+        let result = OTAPExporter::from_config(&json_config);
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            let err_msg = format!("{}", err);
+            assert!(err_msg.contains("missing field `grpc_endpoint`"));
+        }
     }
 }
