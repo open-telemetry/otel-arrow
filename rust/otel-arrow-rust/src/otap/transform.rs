@@ -9,7 +9,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder,
     PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray,
 };
-use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{and, concat};
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
@@ -906,26 +906,9 @@ fn transform_keys(
     });
 
     // create the new nulls buffer
-    let new_nulls = array.nulls().and_then(|nulls| {
-        match keep_ranges.as_ref() {
-            // keep only slices of the null buffer if some of the values were deleted
-            Some(keep_ranges) => {
-                let capacity = new_offsets.len() / size_of::<i32>() - 1;
-                let mut new_nulls_builder = NullBufferBuilder::new(capacity);
-                for (start, end) in keep_ranges {
-                    let nulls_for_range = nulls.slice(*start, end - start);
-                    new_nulls_builder.append_buffer(&nulls_for_range);
-                }
-                new_nulls_builder.finish()
-            }
-
-            // since there's no keep_ranges, we can just copy the current null_buffer
-            None => Some(nulls.clone()),
-        }
-    });
+    let new_nulls = take_null_buffer_ranges(array.nulls(), keep_ranges.as_ref());
 
     let new_values = new_values.into();
-
     // Safety: we use unchecked here for better performance because we avoid doing utf8 validation
     // on the new values buffer. This should be OK because we've copied bytes from the existing
     // array and `replacement` variable, which presumably have also already passed utf8 validation.
@@ -955,8 +938,6 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
 // TODO: there are optimizations we should be able to make in this method:
 // - when searching for ranges that contain the dictionary key, try if possible to stop searching
 //   before iterating through all ranges
-// - when constructing the new dictionary keys we could use a MutableBuffer and copy slices of the
-//   existing null buffer for the ranges we know we'll keep
 // - in the same loop, we could probably use a hashmap of dict_key to the adjusted key offset to
 //   speedup the lookup.
 fn transform_dictionary_keys<K>(
@@ -1015,6 +996,13 @@ where
             let dict_key: usize = dict_keys.value(i).as_usize();
             let mut kept = false;
             for range in &values_keep_ranges {
+                if range.0 > dict_key {
+                    // the ranges are sorted, so we know that if this range is after the dict key
+                    // which we're searching for there's no need to continue iterating
+                    break;
+                }
+
+                // check if dict key is in a range we're keeping
                 if dict_key >= range.0 && dict_key < range.1 {
                     kept = true;
                     break;
@@ -1045,7 +1033,8 @@ where
     // For each range of dictionary values that have been deleted, we need to adjust dict keys
     // pointing to values after these arrays down by the size of the deleted ranges.
     let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
-    let mut new_dict_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
+    let mut new_dict_keys_values_buffer =
+        MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
 
     // build an array of by how much to adjust the dictionary key
     let mut prev_offset_end = 0;
@@ -1062,13 +1051,26 @@ where
 
     for i in 0..dict_arr.len() {
         if !dict_arr.is_valid(i) {
-            new_dict_keys_builder.append_null();
+            // safety: we've already allocated the correct capacity for this buffer, so we can use
+            // push_unchecked here to get better performance by avoiding the buffer capacity check
+            // for every value
+            #[allow(unsafe_code)]
+            unsafe {
+                new_dict_keys_values_buffer.push_unchecked(K::Native::default())
+            };
             continue;
         }
 
         let dict_key = dict_keys.value(i).as_usize();
         let mut kept_in_range = None;
         for (range_idx, range) in values_keep_ranges.iter().enumerate() {
+            if range.0 > dict_key {
+                // the ranges are sorted, so we know that if this range is after the dict key
+                // which we're searching for there's no need to continue iterating
+                break;
+            }
+
+            // check if dict key is in a range we're keeping
             if dict_key >= range.0 && dict_key < range.1 {
                 kept_in_range = Some(range_idx);
                 break;
@@ -1077,12 +1079,23 @@ where
 
         if let Some(range_idx) = kept_in_range {
             let new_dict_key = dict_key - key_offsets[range_idx];
-            new_dict_keys_builder
-                .append_value(K::Native::from_usize(new_dict_key).expect("dict key overflow"));
+            let new_dict_key = K::Native::from_usize(new_dict_key).expect("dict_key_overflow");
+
+            // safety: we've already allocated the correct capacity for this buffer, so we can use
+            // push_unchecked here to get better performance by avoiding the buffer capacity check
+            // for every value
+            #[allow(unsafe_code)]
+            unsafe {
+                new_dict_keys_values_buffer.push_unchecked(new_dict_key)
+            };
         }
     }
 
-    let new_dict_keys = new_dict_keys_builder.finish();
+    let nulls = take_null_buffer_ranges(dict_keys.nulls(), Some(&keep_ranges));
+
+    // let new_dict_keys = new_dict_keys_builder.finish();
+    let new_dict_keys = ScalarBuffer::new(new_dict_keys_values_buffer.into(), 0, count_kept_values);
+    let new_dict_keys = PrimitiveArray::<K>::new(new_dict_keys, nulls);
 
     #[allow(unsafe_code)]
     let new_dict = unsafe {
@@ -1397,6 +1410,29 @@ where
         .collect();
     let borrowed_slices: Vec<&dyn Array> = slices.iter().map(|arr| arr.as_ref()).collect();
     concat(&borrowed_slices).context(error::WriteRecordBatchSnafu)
+}
+
+fn take_null_buffer_ranges(
+    nulls: Option<&NullBuffer>,
+    keep_ranges: Option<&Vec<(usize, usize)>>,
+) -> Option<NullBuffer> {
+    nulls.and_then(|nulls| {
+        match keep_ranges {
+            // keep only slices of the null buffer if some of the values were deleted
+            Some(keep_ranges) => {
+                let capacity = keep_ranges.iter().map(|(start, end)| end - start).sum();
+                let mut new_nulls_builder = NullBufferBuilder::new(capacity);
+                for (start, end) in keep_ranges {
+                    let nulls_for_range = nulls.slice(*start, end - start);
+                    new_nulls_builder.append_buffer(&nulls_for_range);
+                }
+                new_nulls_builder.finish()
+            }
+
+            // since there's no keep_ranges, we can just copy the current null_buffer
+            None => Some(nulls.clone()),
+        }
+    })
 }
 
 #[cfg(test)]
