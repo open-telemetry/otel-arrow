@@ -31,11 +31,11 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::node::NodeUnique;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::local::message::LocalSender;
 use crate::message::Message;
+use crate::node::NodeUnique;
 use async_trait::async_trait;
 use otap_df_config::{NodeId, PortName};
 use std::collections::HashMap;
@@ -205,9 +205,8 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::node::NodeDefinition;
     use crate::local::message::LocalSender;
-    use crate::node::NodeType;
+    use crate::node::{NodeDefs, NodeType};
     use otap_df_channel::mpsc;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
@@ -217,10 +216,11 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    fn node_defs() -> (NodeUnique, Vec<NodeDefinition>) {
-        let mut node_defs = Vec::new();
-        let node =
-            NodeUnique::next("proc".into(), NodeType::Processor, &mut node_defs).expect("first");
+    fn node_defs() -> (NodeUnique, NodeDefs<u64>) {
+        let mut node_defs = NodeDefs::<u64>::new();
+        let node = node_defs
+            .next("proc".into(), NodeType::Processor)
+            .expect("first");
         (node, node_defs)
     }
 
@@ -318,9 +318,10 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let mut node_defs = Vec::new();
-        let node =
-            NodeUnique::next("proc".into(), NodeType::Processor, &mut node_defs).expect("first");
+        let mut node_defs = NodeDefs::<u64>::new();
+        let node = node_defs
+            .next("proc".into(), NodeType::Processor)
+            .expect("first");
 
         let eh = EffectHandler::new(node, senders, None);
 

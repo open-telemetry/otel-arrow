@@ -10,10 +10,10 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::node::Unique;
 use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::message::Sender;
+use crate::node::Unique;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
@@ -141,10 +141,9 @@ impl PipelineCtrlMsgManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::NodeUnique;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
-    use crate::node::NodeType;
+    use crate::node::{NodeDefs, NodeType, NodeUnique};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use otap_df_config::NodeId;
     use std::collections::HashMap;
@@ -169,21 +168,24 @@ mod tests {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
         let mut control_senders = HashMap::new();
         let mut control_receivers = HashMap::new();
-        let mut defs = Vec::new();
-        let mut uniq = Vec::new();
+        let mut node_defs = NodeDefs::<u64>::new();
 
         // Create mock control senders for test nodes
         let node_ids: Vec<NodeId> = vec!["node1".into(), "node2".into(), "node3".into()];
         for node_id in node_ids {
-            let node = NodeUnique::next(node_id, NodeType::Processor, &mut defs).expect("ok");
+            let node = node_defs.next(node_id, NodeType::Processor).expect("ok");
             let (sender, receiver) = create_mock_control_sender();
             let _ = control_senders.insert(node.id, sender);
             let _ = control_receivers.insert(node.id, receiver);
-            uniq.push(node);
         }
 
         let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders);
-        (manager, pipeline_tx, control_receivers, uniq)
+        (
+            manager,
+            pipeline_tx,
+            control_receivers,
+            node_defs.iter().collect(),
+        )
     }
 
     /// Validates the core timer workflow:

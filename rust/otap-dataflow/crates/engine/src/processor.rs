@@ -7,12 +7,12 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
-use crate::node::NodeUnique;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{MessageChannel, Receiver, Sender};
+use crate::node::NodeUnique;
 use crate::node::{Node, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -263,7 +263,7 @@ impl<PData> Node for ProcessorWrapper<PData> {
         }
     }
 
-    fn node_uniq(&self) -> NodeUnique {
+    fn unique(&self) -> NodeUnique {
         match self {
             ProcessorWrapper::Local { node, .. } => node.clone(),
             ProcessorWrapper::Shared { node, .. } => node.clone(),

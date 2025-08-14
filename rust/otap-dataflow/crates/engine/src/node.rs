@@ -12,6 +12,7 @@ use crate::message::{Receiver, Sender};
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{NodeId, PortName};
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// Common trait for nodes in the pipeline.
@@ -22,7 +23,7 @@ pub trait Node {
     fn is_shared(&self) -> bool;
 
     /// Unique identifier.
-    fn node_uniq(&self) -> NodeUnique;
+    fn unique(&self) -> NodeUnique;
 
     /// Returns a reference to the node's user configuration.
     #[must_use]
@@ -53,10 +54,70 @@ pub trait NodeWithPDataReceiver<PData>: Node {
     ) -> Result<(), Error<PData>>;
 }
 
-/// Node is defined ...
+/// NodeDefinition is an entry in NodeDefs, indexed by the corresponding Unique assignment.
 pub struct NodeDefinition {
+    /// Type of node.
     pub(crate) ntype: NodeType,
+    // Node name.
     pub(crate) name: NodeId,
+}
+
+/// NodeDefs is a Unique-indexed set of node definitions.
+pub struct NodeDefs<PData> {
+    /// Entries have an implicit index equal to their Unique value.
+    entries: Vec<NodeDefinition>,
+
+    _data: PhantomData<PData>,
+}
+
+impl<PData> NodeDefs<PData> {
+    /// Create an empty set of node definitions.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            _data: PhantomData,
+        }
+    }
+
+    /// Gets a NodeUnique by the assigned Unique index value,
+    /// consisting of name and type information.
+    pub fn get(&self, u: Unique) -> Option<(NodeUnique, NodeType)> {
+        self.entries.get(u.index()).map(|d| {
+            (
+                NodeUnique {
+                    id: u,
+                    name: d.name.clone(),
+                },
+                d.ntype,
+            )
+        })
+    }
+
+    /// Gets the next unique node identifier. Returns an error when
+    /// the underlying u16 overflows.
+    pub(crate) fn next(
+        &mut self,
+        name: NodeId,
+        ntype: NodeType,
+    ) -> Result<NodeUnique, Error<PData>> {
+        let uniq = NodeUnique {
+            name: name.clone(),
+            id: Unique::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
+        };
+        self.entries.push(NodeDefinition { ntype, name: name });
+        Ok(uniq)
+    }
+
+    /// Returns an iterator over NodeUnique values for this set.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = NodeUnique> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(idx, val)| NodeUnique {
+                name: val.name.clone(),
+                id: Unique::try_from(idx).expect("valid defs"),
+            })
+    }
 }
 
 /// Uniqueness value
@@ -73,33 +134,17 @@ impl Unique {
 impl TryFrom<usize> for Unique {
     type Error = std::num::TryFromIntError;
 
+    /// TryFrom signals an error when the u16 overflows.
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         Ok(Self(u16::try_from(value)?))
     }
 }
 
-/// NodeUnique is a u16 consisting of NodeID plus uniqueness bits.
+/// NodeUnique consists of NodeId and Unique integer.
 #[derive(Clone, Debug)]
 pub struct NodeUnique {
     pub(crate) id: Unique,
     pub(crate) name: NodeId,
-}
-
-impl NodeUnique {
-    /// Gets the next unique node identifier. Returns an error when the underlying
-    /// u16 overflows.
-    pub(crate) fn next(
-        name: NodeId,
-        ntype: NodeType,
-        defs: &mut Vec<NodeDefinition>,
-    ) -> Result<NodeUnique, std::num::TryFromIntError> {
-        let uniq = Self {
-            name: name.clone(),
-            id: Unique::try_from(defs.len())?,
-        };
-        defs.push(NodeDefinition { ntype, name: name });
-        Ok(uniq)
-    }
 }
 
 /// Enum to identify the type of a node for registry lookups

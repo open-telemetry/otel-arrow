@@ -6,16 +6,14 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
-use crate::node::NodeUnique;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
-use crate::node::NodeWithPDataSender;
+use crate::node::{NodeDefs, NodeType, NodeUnique, NodeWithPDataSender};
 use crate::receiver::ReceiverWrapper;
-use crate::node::NodeType;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
@@ -186,8 +184,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
-        let mut node_defs = Vec::new();
-        let node = NodeUnique::next(config.name.clone(), NodeType::Receiver, &mut node_defs)
+        let mut node_defs = NodeDefs::<u64>::new();
+        let node = node_defs
+            .next(config.name.clone(), NodeType::Receiver)
             .expect("valid test config");
 
         Self {

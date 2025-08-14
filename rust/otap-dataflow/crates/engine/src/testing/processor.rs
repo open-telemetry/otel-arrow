@@ -6,13 +6,11 @@
 //! setup and lifecycle management.
 
 use crate::config::ProcessorConfig;
-use crate::node::NodeUnique;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
-use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node::{NodeDefs, NodeType, NodeUnique, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
-use crate::node::NodeType;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use std::fmt::Debug;
@@ -139,8 +137,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
-        let mut node_defs = Vec::new();
-        let node = NodeUnique::next(config.name.clone(), NodeType::Processor, &mut node_defs)
+        let mut node_defs = NodeDefs::<u64>::new();
+        let node = node_defs
+            .next(config.name.clone(), NodeType::Processor)
             .expect("valid test config");
 
         Self {

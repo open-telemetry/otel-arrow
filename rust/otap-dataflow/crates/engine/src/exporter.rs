@@ -7,13 +7,13 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
-use crate::node::NodeUnique;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
 use crate::message::{Receiver, Sender};
+use crate::node::NodeUnique;
 use crate::node::{Node, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -195,7 +195,7 @@ impl<PData> Node for ExporterWrapper<PData> {
         }
     }
 
-    fn node_uniq(&self) -> NodeUnique {
+    fn unique(&self) -> NodeUnique {
         match self {
             ExporterWrapper::Local { node, .. } => node.clone(),
             ExporterWrapper::Shared { node, .. } => node.clone(),

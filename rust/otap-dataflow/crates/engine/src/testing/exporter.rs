@@ -6,7 +6,6 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
-use crate::node::NodeUnique;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
@@ -14,8 +13,7 @@ use crate::error::Error;
 use crate::exporter::ExporterWrapper;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
-use crate::node::NodeWithPDataReceiver;
-use crate::node::NodeType;
+use crate::node::{NodeDefs, NodeType, NodeUnique, NodeWithPDataReceiver};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
@@ -186,8 +184,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
-        let mut node_defs = Vec::new();
-        let node = NodeUnique::next(config.name.clone(), NodeType::Exporter, &mut node_defs)
+        let mut node_defs = NodeDefs::<u64>::new();
+        let node = node_defs
+            .next(config.name.clone(), NodeType::Exporter)
             .expect("valid test config");
 
         Self {

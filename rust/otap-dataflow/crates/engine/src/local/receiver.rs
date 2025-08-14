@@ -31,11 +31,11 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::node::NodeUnique;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::local::message::LocalSender;
+use crate::node::NodeUnique;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::{NodeId, PortName};
@@ -262,10 +262,9 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::node::NodeDefinition;
     use crate::control::pipeline_ctrl_msg_channel;
     use crate::local::message::LocalSender;
-    use crate::node::NodeType;
+    use crate::node::{NodeDefs, NodeType};
     use otap_df_channel::mpsc;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
@@ -275,10 +274,11 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    fn node_defs() -> (NodeUnique, Vec<NodeDefinition>) {
-        let mut node_defs = Vec::new();
-        let node =
-            NodeUnique::next("recv".into(), NodeType::Receiver, &mut node_defs).expect("first");
+    fn node_defs() -> (NodeUnique, NodeDefs<u64>) {
+        let mut node_defs = NodeDefs::new();
+        let node = node_defs
+            .next("recv".into(), NodeType::Receiver)
+            .expect("first");
         (node, node_defs)
     }
 
