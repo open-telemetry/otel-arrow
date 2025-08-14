@@ -1,19 +1,20 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use arrow::array::{
     ArrowPrimitiveType, FixedSizeBinaryArray, PrimitiveArray, RecordBatch, StringArray,
     TimestampNanosecondArray, UInt8Array,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt16Type, UInt32Type};
 use arrow_ipc::writer::StreamWriter;
+use fluke_hpack::Encoder;
 use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
 use otel_arrow_rust::schema::consts::{self, metadata};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct SimpleDataGenOptions {
     pub id_offset: u16,
@@ -22,6 +23,7 @@ pub struct SimpleDataGenOptions {
     pub with_main_record_attrs: bool,
     pub with_resource_attrs: bool,
     pub with_scope_attrs: bool,
+    pub with_timestamp_header: bool,
 
     pub ids_decoded: bool,
 
@@ -63,6 +65,7 @@ impl Default for SimpleDataGenOptions {
             with_main_record_attrs: true,
             with_resource_attrs: true,
             with_scope_attrs: true,
+            with_timestamp_header: true,
             ids_decoded: true,
             traces_options: None,
             metrics_options: None,
@@ -139,10 +142,12 @@ pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) ->
         });
     }
 
+    let encoded_headers = generate_encoded_headers(&options);
+
     BatchArrowRecords {
         batch_id: 0,
         arrow_payloads,
-        headers: Vec::default(),
+        headers: encoded_headers,
     }
 }
 
@@ -264,10 +269,12 @@ pub fn create_simple_trace_arrow_record_batches(
         }
     }
 
+    let encoded_headers = generate_encoded_headers(&options);
+
     BatchArrowRecords {
         batch_id: 0,
         arrow_payloads,
-        headers: Vec::default(),
+        headers: encoded_headers,
     }
 }
 
@@ -373,11 +380,13 @@ pub fn create_simple_metrics_arrow_record_batches(
         );
     }
 
+    let encoded_headers = generate_encoded_headers(&options);
+
     // Placeholder for metrics data generation logic
     BatchArrowRecords {
         batch_id: 0,
         arrow_payloads,
-        headers: Vec::default(),
+        headers: encoded_headers,
     }
 }
 
@@ -548,6 +557,29 @@ pub fn create_exemplars_record_batch(options: &SimpleDataGenOptions) -> RecordBa
         ],
     )
     .unwrap()
+}
+
+fn generate_encoded_headers(options: &SimpleDataGenOptions) -> Vec<u8> {
+    let mut headers = Vec::new();
+
+    if options.with_timestamp_header {
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let secs = timestamp.as_secs().to_string();
+        let nanos = timestamp.subsec_nanos().to_string();
+        let timestamp_string = format!("{secs}:{nanos}");
+        headers.push((b"timestamp".to_vec(), timestamp_string.into_bytes()));
+    }
+
+    if headers.is_empty() {
+        Vec::new()
+    } else {
+        let mut encoder = Encoder::new();
+        let borrowed_headers: Vec<(&[u8], &[u8])> = headers
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        encoder.encode(borrowed_headers)
+    }
 }
 
 fn serialize(record_batch: &RecordBatch) -> Vec<u8> {
