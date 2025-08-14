@@ -17,8 +17,8 @@ pub(crate) struct CefMessage<'a> {
 
 impl CefMessage<'_> {
     /// Parse and iterate over the extensions as key-value pairs
-    pub(crate) fn parse_extensions(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
-        parse_cef_extensions(self.extensions).into_iter()
+    pub(crate) fn parse_extensions(&self) -> CefExtensionsIter<'_> {
+        CefExtensionsIter::new(self.extensions)
     }
 }
 
@@ -105,52 +105,122 @@ pub(super) fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseErro
     })
 }
 
-fn parse_cef_extensions(extensions_bytes: &[u8]) -> Vec<(&[u8], &[u8])> {
-    let mut extensions = Vec::new();
-    let mut key_start = 0;
-    let mut in_value = false;
-    let mut key_end = 0;
-    let mut i = 0;
+/// Iterator for CEF extensions that parses on-demand
+pub(crate) struct CefExtensionsIter<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
 
-    while i < extensions_bytes.len() {
-        let byte = extensions_bytes[i];
+impl<'a> CefExtensionsIter<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+}
 
-        if !in_value && byte == b'=' {
-            key_end = i;
-            in_value = true;
-        } else if in_value && byte == b' ' {
-            // Check if next sequence starts a new key (contains =)
-            let mut j = i + 1;
-            // Skip spaces
-            while j < extensions_bytes.len() && extensions_bytes[j] == b' ' {
-                j += 1;
+impl<'a> Iterator for CefExtensionsIter<'a> {
+    type Item = (&'a [u8], &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.data.len() {
+            return None;
+        }
+
+        // Skip leading spaces
+        while self.pos < self.data.len() && self.data[self.pos] == b' ' {
+            self.pos += 1;
+        }
+
+        if self.pos >= self.data.len() {
+            return None;
+        }
+
+        let key_start = self.pos;
+
+        // Find the '=' separator for the key
+        while self.pos < self.data.len() && self.data[self.pos] != b'=' {
+            self.pos += 1;
+        }
+
+        if self.pos >= self.data.len() {
+            return None;
+        }
+
+        let key_end = self.pos;
+        self.pos += 1; // Skip '='
+
+        if self.pos >= self.data.len() {
+            // Empty value at end
+            return Some((&self.data[key_start..key_end], &[]));
+        }
+
+        let value_start = self.pos;
+        let mut escaped = false;
+
+        // Parse value - handle escaping according to CEF spec
+        while self.pos < self.data.len() {
+            if escaped {
+                // Skip this character, it's escaped
+                escaped = false;
+                self.pos += 1;
+                continue;
             }
 
-            if j < extensions_bytes.len() {
-                let remaining = &extensions_bytes[j..];
-                if remaining.contains(&b'=') {
-                    let key = &extensions_bytes[key_start..key_end];
-                    let value = &extensions_bytes[key_end + 1..i];
-                    extensions.push((key, value));
+            if self.data[self.pos] == b'\\' {
+                // Next character is escaped
+                escaped = true;
+                self.pos += 1;
+                continue;
+            }
 
-                    key_start = j;
-                    i = j;
-                    in_value = false;
-                    continue;
+            // Look for unescaped space that could be a separator
+            if self.data[self.pos] == b' ' {
+                // Peek ahead to see if this is a key=value pattern
+                let mut lookahead = self.pos + 1;
+
+                // Skip spaces
+                while lookahead < self.data.len() && self.data[lookahead] == b' ' {
+                    lookahead += 1;
+                }
+
+                // Check if we have a valid key pattern (alphanumeric followed by =)
+                if lookahead < self.data.len() {
+                    let mut key_end_pos = lookahead;
+                    let mut found_key = false;
+
+                    // A valid key should contain alphanumeric chars and end with =
+                    while key_end_pos < self.data.len() {
+                        let ch = self.data[key_end_pos];
+                        if ch == b'=' && key_end_pos > lookahead {
+                            // Found a valid key pattern
+                            found_key = true;
+                            break;
+                        } else if !ch.is_ascii_alphanumeric() && ch != b'_' && ch != b'-' {
+                            // Not a valid key character
+                            break;
+                        }
+                        key_end_pos += 1;
+                    }
+
+                    if found_key {
+                        // This space is a separator
+                        break;
+                    }
                 }
             }
+
+            self.pos += 1;
         }
-        i += 1;
-    }
 
-    // Add the last key-value pair
-    if in_value && key_end > key_start && key_end < extensions_bytes.len() {
-        let key = &extensions_bytes[key_start..key_end];
-        let value = &extensions_bytes[key_end + 1..];
-        extensions.push((key, value));
-    }
+        let key = &self.data[key_start..key_end];
+        let value = &self.data[value_start..self.pos];
 
-    extensions
+        // Move position to start of next key
+        while self.pos < self.data.len() && self.data[self.pos] == b' ' {
+            self.pos += 1;
+        }
+
+        Some((key, value))
+    }
 }
 
 #[cfg(test)]
@@ -192,5 +262,73 @@ mod tests {
 
         let extensions: Vec<_> = result.parse_extensions().collect();
         assert_eq!(extensions.len(), 0);
+    }
+
+    #[test]
+    fn test_cef_extensions_with_spaces_in_values() {
+        let input = b"CEF:0|V|P|1.0|100|name|10|msg=This is a message with spaces src=10.0.0.1";
+        let result = parse_cef(input).unwrap();
+
+        let extensions: Vec<_> = result.parse_extensions().collect();
+        assert_eq!(extensions.len(), 2);
+        assert_eq!(
+            extensions[0],
+            (
+                b"msg".as_slice(),
+                b"This is a message with spaces".as_slice()
+            )
+        );
+        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+    }
+
+    #[test]
+    fn test_cef_extensions_with_equals_in_values() {
+        let input = b"CEF:0|V|P|1.0|100|name|10|equation=a=b+c src=10.0.0.1";
+        let result = parse_cef(input).unwrap();
+
+        let extensions: Vec<_> = result.parse_extensions().collect();
+        assert_eq!(extensions.len(), 2);
+        assert_eq!(extensions[0], (b"equation".as_slice(), b"a=b+c".as_slice()));
+        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+    }
+
+    #[test]
+    fn test_cef_extensions_empty_value() {
+        let input = b"CEF:0|V|P|1.0|100|name|10|empty= src=10.0.0.1";
+        let result = parse_cef(input).unwrap();
+
+        let extensions: Vec<_> = result.parse_extensions().collect();
+        assert_eq!(extensions.len(), 2);
+        assert_eq!(extensions[0], (b"empty".as_slice(), b"".as_slice()));
+        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
+    }
+
+    #[test]
+    fn test_cef_extensions_trailing_spaces() {
+        let input = b"CEF:0|V|P|1.0|100|name|10|value=has trailing spaces   next=value";
+        let result = parse_cef(input).unwrap();
+
+        let extensions: Vec<_> = result.parse_extensions().collect();
+        assert_eq!(extensions.len(), 2);
+        assert_eq!(
+            extensions[0],
+            (b"value".as_slice(), b"has trailing spaces".as_slice())
+        );
+        assert_eq!(extensions[1], (b"next".as_slice(), b"value".as_slice()));
+    }
+
+    #[test]
+    fn test_cef_extensions_escaped_characters() {
+        let input = b"CEF:0|V|P|1.0|100|name|10|msg=escaped\\=equals src=10.0.0.1";
+        let result = parse_cef(input).unwrap();
+
+        let extensions: Vec<_> = result.parse_extensions().collect();
+        assert_eq!(extensions.len(), 2);
+        // Note: The escaped sequence is preserved in the raw bytes
+        assert_eq!(
+            extensions[0],
+            (b"msg".as_slice(), b"escaped\\=equals".as_slice())
+        );
+        assert_eq!(extensions[1], (b"src".as_slice(), b"10.0.0.1".as_slice()));
     }
 }

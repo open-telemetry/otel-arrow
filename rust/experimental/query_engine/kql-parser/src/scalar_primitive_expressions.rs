@@ -240,8 +240,11 @@ pub(crate) fn parse_accessor_expression(
                         });
                     }
 
-                    value_accessor.push_selector(ScalarExpression::Negate(
-                        NegateScalarExpression::new(negate_location.unwrap(), scalar),
+                    value_accessor.push_selector(ScalarExpression::Math(
+                        MathScalarExpression::Negate(UnaryMathmaticalScalarExpression::new(
+                            negate_location.unwrap(),
+                            scalar,
+                        )),
                     ));
                     negate_location = None;
                 } else {
@@ -1057,17 +1060,19 @@ mod tests {
                         StringScalarExpression::new(QueryLocation::new_fake(), "var"),
                         ValueAccessor::new()
                     )),
-                    ScalarExpression::Negate(NegateScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::Source(SourceScalarExpression::new(
+                    ScalarExpression::Math(MathScalarExpression::Negate(
+                        UnaryMathmaticalScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "neg_attr"
-                                ))
-                            )]),
-                        ))
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "neg_attr"
+                                    ))
+                                )]),
+                            ))
+                        )
                     ))
                 ]
                 .to_vec(),
