@@ -6,7 +6,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ProcessorConfig;
-use crate::context::{NodeDefinition, NodeUniq};
+use crate::context::NodeUniq;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
@@ -111,8 +111,8 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
-    /// nodes defined for the test (typically 1)
-    node_defs: Vec<NodeDefinition>,
+    /// node defined for the test
+    node: NodeUniq,
 
     _pd: PhantomData<PData>,
 }
@@ -139,14 +139,16 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
-        let node_defs = Vec::new();
+        let mut node_defs = Vec::new();
+        let node = NodeUniq::next(config.name.clone(), NodeType::Processor, &mut node_defs)
+            .expect("valid test config");
 
         Self {
             config,
             rt,
             local_tasks,
             counter: CtrlMsgCounters::new(),
-            node_defs,
+            node,
             _pd: PhantomData,
         }
     }
@@ -162,13 +164,8 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns the test node identifier corresponding with config.name.
-    pub fn test_uniq(&mut self) -> NodeUniq {
-        NodeUniq::next(
-            self.config.name.clone(),
-            NodeType::Processor,
-            &mut self.node_defs,
-        )
-        .expect("valid test config")
+    pub fn test_node(&self) -> NodeUniq {
+        self.node.clone()
     }
 
     /// Initializes the test runtime with a processor using a non-sendable effect handler.

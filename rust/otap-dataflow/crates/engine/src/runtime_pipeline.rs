@@ -461,7 +461,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
         let prev_node = receivers.insert(
             node.id,
-            create(node_config, &runtime_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(node.clone(), node_config, &runtime_config)
+                .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ReceiverAlreadyExists {
@@ -488,12 +489,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let create = factory.create;
         let prev_node = nodes.insert(
             node.id,
-            create(&node_config.config, &processor_config)
+            create(node.clone(), &node_config.config, &processor_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ProcessorAlreadyExists {
-                processor: node.name.clone(),
+                processor: node.name,
             });
         }
         Ok(())
@@ -516,11 +517,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let create = factory.create;
         let prev_node = nodes.insert(
             node.id,
-            create(node_config, &exporter_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(node.clone(), node_config, &exporter_config)
+                .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ExporterAlreadyExists {
-                exporter: node.name.clone(),
+                exporter: node.name,
             });
         }
         Ok(())

@@ -564,7 +564,7 @@ mod tests {
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::local(
             TestReceiver::new(test_runtime.counters(), port_tx),
-            test_runtime.test_uniq(),
+            test_runtime.test_node(),
             user_config,
             test_runtime.config(),
         );
@@ -585,7 +585,7 @@ mod tests {
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::shared(
             TestReceiver::new(test_runtime.counters(), port_tx),
-            test_runtime.test_uniq(),
+            test_runtime.test_node(),
             user_config,
             test_runtime.config(),
         );

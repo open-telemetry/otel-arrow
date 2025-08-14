@@ -522,7 +522,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::local(
             TestProcessor::new(test_runtime.counters()),
-            test_runtime.test_uniq(),
+            test_runtime.test_node(),
             user_config,
             test_runtime.config(),
         );
@@ -539,7 +539,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::shared(
             TestProcessor::new(test_runtime.counters()),
-            test_runtime.test_uniq(),
+            test_runtime.test_node(),
             user_config,
             test_runtime.config(),
         );

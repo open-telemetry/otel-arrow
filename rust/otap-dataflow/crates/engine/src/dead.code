@@ -1,0 +1,11 @@
+
+/// MessageId is a u64 consisting of NodeID plus uniqueness bits.
+#[derive(Clone, Debug)]
+pub struct MessageId(u64);
+
+/// Container for contextual information
+#[derive(Clone, Debug)]
+pub struct Context {
+    /// msg_id identifies this message
+    _msg_id: MessageId,
+}

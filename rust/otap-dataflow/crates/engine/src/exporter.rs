@@ -424,7 +424,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::local(
             TestExporter::new(test_runtime.counters()),
-            test_runtime.test_uniq(),
+            test_runtime.test_node(),
             user_config,
             test_runtime.config(),
         );
@@ -441,7 +441,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::shared(
             TestExporter::new(test_runtime.counters()),
-            test_runtime.test_uniq(),
+            test_runtime.test_node(),
             user_config,
             test_runtime.config(),
         );

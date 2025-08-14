@@ -4,6 +4,7 @@
 
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    context::NodeUniq,
     exporter::ExporterWrapper,
     processor::ProcessorWrapper,
     receiver::ReceiverWrapper,
@@ -48,6 +49,7 @@ pub struct ReceiverFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new receiver instance.
     pub create: fn(
+        node: NodeUniq,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
@@ -75,6 +77,7 @@ pub struct ProcessorFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new processor instance.
     pub create: fn(
+        node: NodeUniq,
         config: &Value,
         processor_config: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
@@ -102,6 +105,7 @@ pub struct ExporterFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new exporter instance.
     pub create: fn(
+        node: NodeUniq,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
