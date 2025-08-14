@@ -35,6 +35,9 @@ fn prost_cfg() -> prost_build::Config {
     // Disable prettyplease, otherwise 'cargo fmt' will reformat
     // compared with 'cargo build'.
     cfg.format(false);
+
+    // Add rustfmt::skip attribute to generated files
+    cfg.type_attribute(".", "#[rustfmt::skip]");
     cfg
 }
 
