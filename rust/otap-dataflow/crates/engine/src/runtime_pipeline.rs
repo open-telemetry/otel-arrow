@@ -340,7 +340,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                     node: assignment.source.name.clone(),
                 })?;
             src_node.set_pdata_sender(
-                assignment.source.name.clone(),
+                assignment.source,
                 assignment.port.clone(),
                 assignment.sender,
             )?;
@@ -358,7 +358,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                     .ok_or_else(|| Error::UnknownNode {
                         node: dest.name.clone(),
                     })?;
-                dest_node.set_pdata_receiver(dest.name, receiver)?;
+                dest_node.set_pdata_receiver(dest, receiver)?;
             }
         }
         Ok(pipeline)

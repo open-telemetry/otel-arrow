@@ -238,7 +238,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         exporter
-            .set_pdata_receiver(self.config.name, pdata_rx)
+            .set_pdata_receiver(self.test_node(), pdata_rx)
             .expect("Failed to set PData receiver");
         let run_exporter_handle = self
             .local_tasks

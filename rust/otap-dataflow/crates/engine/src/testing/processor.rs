@@ -188,7 +188,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         };
 
         // Set the output sender for the processor
-        let _ = processor.set_pdata_sender("test_processor".into(), "output".into(), pdata_sender);
+        let _ = processor.set_pdata_sender(self.test_node(), "output".into(), pdata_sender);
         // Set a dummy input receiver (not used in these tests since we call process directly)
         // We need this because prepare_runtime expects both to be set
         let dummy_receiver = match &processor {
@@ -201,7 +201,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 Receiver::Shared(SharedReceiver::MpscReceiver(receiver))
             }
         };
-        let _ = processor.set_pdata_receiver("test_processor".into(), dummy_receiver);
+        let _ = processor.set_pdata_receiver(self.test_node(), dummy_receiver);
 
         TestPhase {
             rt: self.rt,

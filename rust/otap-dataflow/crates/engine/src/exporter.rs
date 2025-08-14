@@ -19,7 +19,6 @@ use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
-use otap_df_config::NodeId;
 use otap_df_config::node::NodeUserConfig;
 use std::sync::Arc;
 
@@ -227,7 +226,7 @@ impl<PData> Node for ExporterWrapper<PData> {
 impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
-        node: NodeId,
+        node: NodeUnique,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, receiver) {
@@ -240,7 +239,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
                 Ok(())
             }
             (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
-                exporter: node.clone(),
+                exporter: node.name.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

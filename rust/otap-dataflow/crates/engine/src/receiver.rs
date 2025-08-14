@@ -18,8 +18,8 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
+use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{NodeId, PortName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -252,7 +252,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
 impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
-        node: NodeId,
+        node: NodeUnique,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
@@ -266,11 +266,11 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 Ok(())
             }
             (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node,
+                processor: node.name.clone(),
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node,
+                processor: node.name.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

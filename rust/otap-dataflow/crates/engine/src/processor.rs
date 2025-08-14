@@ -18,8 +18,8 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
+use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{NodeId, PortName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -313,7 +313,7 @@ impl<PData> Controllable for ProcessorWrapper<PData> {
 impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
-        node: NodeId,
+        node: NodeUnique,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
@@ -327,11 +327,11 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
                 Ok(())
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node.name.clone(),
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node.name.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }
@@ -341,7 +341,7 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
 impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
-        node: NodeId,
+        node: NodeUnique,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, receiver) {
@@ -354,11 +354,11 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
                 Ok(())
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node,
+                processor: node.name.clone(),
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node,
+                processor: node.name.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

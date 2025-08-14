@@ -38,7 +38,7 @@ pub trait NodeWithPDataSender<PData>: Node {
     /// Sets the sender for pdata messages on the node.
     fn set_pdata_sender(
         &mut self,
-        node: NodeId,
+        node: NodeUnique,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>>;
@@ -49,7 +49,7 @@ pub trait NodeWithPDataReceiver<PData>: Node {
     /// Sets the receiver for pdata messages on the node.
     fn set_pdata_receiver(
         &mut self,
-        node: NodeId,
+        node: NodeUnique,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>>;
 }
