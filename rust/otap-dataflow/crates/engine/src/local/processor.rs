@@ -216,8 +216,8 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    fn node_defs() -> (NodeUnique, NodeDefs<u64>) {
-        let mut node_defs = NodeDefs::<u64>::new();
+    fn node_defs() -> (NodeUnique, NodeDefs<()>) {
+        let mut node_defs = NodeDefs::<()>::new();
         let node = node_defs
             .next("proc".into(), NodeType::Processor)
             .expect("first");
@@ -318,7 +318,7 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let mut node_defs = NodeDefs::<u64>::new();
+        let mut node_defs = NodeDefs::<()>::new();
         let node = node_defs
             .next("proc".into(), NodeType::Processor)
             .expect("first");

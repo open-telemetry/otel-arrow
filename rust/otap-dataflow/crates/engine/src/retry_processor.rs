@@ -321,6 +321,7 @@ impl<PData: Clone + Send + 'static> Default for RetryProcessor<PData> {
 mod tests {
     use super::*;
     use crate::local::message::LocalSender;
+    use crate::node::{NodeDefs, NodeType, NodeUnique};
     use otap_df_channel::mpsc;
     use tokio::time::{Duration, sleep};
 
@@ -353,13 +354,19 @@ mod tests {
         }
     }
 
+    fn test_node() -> NodeUnique {
+        NodeDefs::<()>::new()
+            .next("test".into(), NodeType::Processor)
+            .expect("ok")
+    }
+
     #[tokio::test]
     async fn test_process_pdata_message() {
         let mut processor = create_test_processor();
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         let test_data = create_test_data(1);
         let message = Message::PData(test_data.clone());
@@ -383,7 +390,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -415,7 +422,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -450,7 +457,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -484,7 +491,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         // Add a message and NACK it
         let test_data = create_test_data(1);
@@ -532,7 +539,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         // Fill the queue
         for i in 1..=2 {
@@ -564,7 +571,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         // Add a message
         let test_data = create_test_data(1);
@@ -615,7 +622,7 @@ mod tests {
         let (sender, receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         // Add multiple messages and NACK them
         for i in 1..=3 {
@@ -667,7 +674,7 @@ mod tests {
         let (sender, _receiver) = create_test_channel(10);
         let mut senders_map = HashMap::new();
         let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-        let mut effect_handler = EffectHandler::new("test".into(), senders_map, None);
+        let mut effect_handler = EffectHandler::new(test_node(), senders_map, None);
 
         let new_config = RetryConfig {
             max_retries: 5,

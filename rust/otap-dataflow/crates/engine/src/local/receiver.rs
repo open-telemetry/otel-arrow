@@ -274,7 +274,7 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    fn node_defs() -> (NodeUnique, NodeDefs<u64>) {
+    fn node_defs() -> (NodeUnique, NodeDefs<()>) {
         let mut node_defs = NodeDefs::new();
         let node = node_defs
             .next("recv".into(), NodeType::Receiver)

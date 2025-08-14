@@ -168,7 +168,7 @@ mod tests {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
         let mut control_senders = HashMap::new();
         let mut control_receivers = HashMap::new();
-        let mut node_defs = NodeDefs::<u64>::new();
+        let mut node_defs = NodeDefs::<()>::new();
 
         // Create mock control senders for test nodes
         let node_ids: Vec<NodeId> = vec!["node1".into(), "node2".into(), "node3".into()];

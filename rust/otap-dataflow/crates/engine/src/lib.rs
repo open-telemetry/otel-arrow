@@ -26,6 +26,7 @@ mod effect_handler;
 pub mod local;
 pub mod node;
 pub mod pipeline_ctrl;
+pub mod retry_processor;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
