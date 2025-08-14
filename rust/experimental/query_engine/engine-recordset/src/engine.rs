@@ -7,7 +7,7 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::ExecutionContext,
+    execution_context::*,
     logical_expressions::execute_logical_expression,
     summary::{summary_data_expression::execute_summary_data_expression, *},
     transform::transform_expressions::execute_transform_expression,
@@ -88,6 +88,7 @@ impl RecordSetEngine {
 pub struct RecordSetEngineBatch<'a, 'b, 'c, TRecord: Record> {
     pipeline: &'a PipelineExpression,
     engine: &'b RecordSetEngine,
+    variables: RecordSetEngineVariables<'static>,
     summaries: Summaries,
     included_records: Vec<RecordSetEngineRecord<'a, 'c, TRecord>>,
 }
@@ -104,6 +105,7 @@ where
         Self {
             engine,
             pipeline,
+            variables: RecordSetEngineVariables::new(),
             summaries: Summaries::new(engine.summary_cardinality_limit),
             included_records: Vec::new(),
         }
@@ -146,6 +148,7 @@ where
         let execution_context = ExecutionContext::new(
             diagnostic_level,
             self.pipeline,
+            &self.variables,
             &self.summaries,
             attached_records,
             record,

@@ -17,13 +17,14 @@ where
     summaries: &'b Summaries,
     attached_records: Option<&'b dyn AttachedRecords>,
     record: RefCell<TRecord>,
-    variables: RefCell<MapValueStorage<OwnedValue>>,
+    variables: RecordSetEngineVariables<'b>,
 }
 
 impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord> {
     pub fn new(
         diagnostic_level: RecordSetEngineDiagnosticLevel,
         pipeline: &'a PipelineExpression,
+        variables: &'b RecordSetEngineVariables<'b>,
         summaries: &'b Summaries,
         attached_records: Option<&'b dyn AttachedRecords>,
         record: TRecord,
@@ -34,7 +35,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
             pipeline,
             attached_records,
             record: RefCell::new(record),
-            variables: RefCell::new(MapValueStorage::new(HashMap::new())),
+            variables: RecordSetEngineVariables::new_with_parent(variables),
             summaries,
         }
     }
@@ -81,7 +82,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         &self.record
     }
 
-    pub fn get_variables(&self) -> &RefCell<MapValueStorage<OwnedValue>> {
+    pub fn get_variables(&self) -> &RecordSetEngineVariables<'b> {
         &self.variables
     }
 
@@ -98,9 +99,32 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
     }
 }
 
+pub(crate) struct RecordSetEngineVariables<'a> {
+    parent: Option<&'a RecordSetEngineVariables<'a>>,
+    variables: RefCell<MapValueStorage<OwnedValue>>
+}
+
+impl<'a> RecordSetEngineVariables<'a> {
+    pub fn new() -> Self {
+        Self::create(None)
+    }
+
+    pub fn new_with_parent(parent: &'a RecordSetEngineVariables<'a>) -> Self {
+        Self::create(Some(parent))
+    }
+
+    fn create(parent: Option<&'a RecordSetEngineVariables<'a>>) -> Self {
+        Self {
+            parent,
+            variables: RefCell::new(MapValueStorage::new(HashMap::new())),
+        }
+    }
+}
+
 #[cfg(test)]
 pub struct TestExecutionContext {
     pipeline: PipelineExpression,
+    variables: RecordSetEngineVariables<'static>,
     summaries: Summaries,
     attached_records: Option<TestAttachedRecords>,
     record: Option<TestRecord>,
@@ -111,6 +135,7 @@ impl TestExecutionContext {
     pub fn new() -> TestExecutionContext {
         Self {
             pipeline: Default::default(),
+            variables: RecordSetEngineVariables::new(),
             summaries: Summaries::new(8192),
             attached_records: None,
             record: Some(Default::default()),
@@ -139,6 +164,7 @@ impl TestExecutionContext {
         ExecutionContext::new(
             RecordSetEngineDiagnosticLevel::Verbose,
             &self.pipeline,
+            &self.variables,
             &self.summaries,
             self.attached_records
                 .as_ref()
