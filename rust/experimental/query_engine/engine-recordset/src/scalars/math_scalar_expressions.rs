@@ -13,20 +13,23 @@ where
     let value = match math_scalar_expression {
         MathScalarExpression::Add(b) => execute_binary_operation(execution_context, b, Value::add)?,
         MathScalarExpression::Bin(b) => execute_binary_operation(execution_context, b, Value::bin)?,
-        MathScalarExpression::Ceiling(u) => {
-            execute_unary_operation(execution_context, u, Value::ceiling)?
-        }
+        MathScalarExpression::Ceiling(u) => execute_unary_operation(execution_context, u, |v| {
+            Value::ceiling(v).map(NumericValue::Integer)
+        })?,
         MathScalarExpression::Divide(b) => {
             execute_binary_operation(execution_context, b, Value::divide)?
         }
-        MathScalarExpression::Floor(u) => {
-            execute_unary_operation(execution_context, u, Value::floor)?
-        }
+        MathScalarExpression::Floor(u) => execute_unary_operation(execution_context, u, |v| {
+            Value::floor(v).map(NumericValue::Integer)
+        })?,
         MathScalarExpression::Modulus(b) => {
             execute_binary_operation(execution_context, b, Value::modulus)?
         }
         MathScalarExpression::Multiply(b) => {
             execute_binary_operation(execution_context, b, Value::multiply)?
+        }
+        MathScalarExpression::Negate(n) => {
+            execute_unary_operation(execution_context, n, Value::negate)?
         }
         MathScalarExpression::Subtract(b) => {
             execute_binary_operation(execution_context, b, Value::subtract)?
@@ -48,15 +51,20 @@ fn execute_unary_operation<'a, 'b, TRecord: Record, F>(
     op: F,
 ) -> Result<ResolvedValue<'b>, ExpressionError>
 where
-    F: FnOnce(&Value) -> Option<i64>,
+    F: FnOnce(&Value) -> Option<NumericValue>,
 {
     let value =
         execute_scalar_expression(execution_context, unary_expression.get_value_expression())?;
 
     match (op)(&value.to_value()) {
-        Some(i) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
-            IntegerValueStorage::new(i),
-        ))),
+        Some(i) => match i {
+            NumericValue::Integer(i) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
+                IntegerValueStorage::new(i),
+            ))),
+            NumericValue::Double(d) => Ok(ResolvedValue::Computed(OwnedValue::Double(
+                DoubleValueStorage::new(d),
+            ))),
+        },
         None => Ok(ResolvedValue::Computed(OwnedValue::Null)),
     }
 }
@@ -92,7 +100,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_execute_ceiling_and_floor_math_scalar_expression() {
+    fn test_execute_ceiling_floor_negate_math_scalar_expression() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, Value)>)
         where
             F: Fn(UnaryMathmaticalScalarExpression) -> MathScalarExpression,
@@ -168,6 +176,54 @@ mod tests {
                         NullScalarExpression::new(QueryLocation::new_fake()),
                     )),
                     Value::Null,
+                ),
+            ],
+        );
+
+        run_test(
+            MathScalarExpression::Negate,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(-1.1)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                    Value::Integer(&IntegerValueStorage::new(-1)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.1"),
+                    )),
+                    Value::Double(&DoubleValueStorage::new(-1.1)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1"),
+                    )),
+                    Value::Integer(&IntegerValueStorage::new(-1)),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    Value::Null,
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    Value::Null,
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    Value::Integer(&IntegerValueStorage::new(-1)),
                 ),
             ],
         );
