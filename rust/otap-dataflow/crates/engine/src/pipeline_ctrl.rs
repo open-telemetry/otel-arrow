@@ -141,7 +141,7 @@ impl PipelineCtrlMsgManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::NodeUniq;
+    use crate::node::NodeUnique;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
     use crate::node::NodeType;
@@ -164,7 +164,7 @@ mod tests {
         PipelineCtrlMsgManager,
         crate::control::PipelineCtrlMsgSender,
         HashMap<Unique, Receiver<NodeControlMsg>>,
-        Vec<NodeUniq>,
+        Vec<NodeUnique>,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
         let mut control_senders = HashMap::new();
@@ -175,7 +175,7 @@ mod tests {
         // Create mock control senders for test nodes
         let node_ids: Vec<NodeId> = vec!["node1".into(), "node2".into(), "node3".into()];
         for node_id in node_ids {
-            let node = NodeUniq::next(node_id, NodeType::Processor, &mut defs).expect("ok");
+            let node = NodeUnique::next(node_id, NodeType::Processor, &mut defs).expect("ok");
             let (sender, receiver) = create_mock_control_sender();
             let _ = control_senders.insert(node.id, sender);
             let _ = control_receivers.insert(node.id, receiver);

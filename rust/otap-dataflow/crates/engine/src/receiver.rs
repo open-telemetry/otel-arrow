@@ -7,7 +7,7 @@
 //! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
-use crate::node::NodeUniq;
+use crate::node::NodeUnique;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -31,7 +31,7 @@ pub enum ReceiverWrapper<PData> {
     /// A receiver with a `!Send` implementation.
     Local {
         /// Unique node identifier.
-        node: NodeUniq,
+        node: NodeUnique,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -50,7 +50,7 @@ pub enum ReceiverWrapper<PData> {
     /// A receiver with a `Send` implementation.
     Shared {
         /// Unique node identifier.
-        node: NodeUniq,
+        node: NodeUnique,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -90,7 +90,7 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn local<R>(
         receiver: R,
-        node: NodeUniq,
+        node: NodeUnique,
         user_config: Arc<NodeUserConfig>,
         config: &ReceiverConfig,
     ) -> Self
@@ -115,7 +115,7 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn shared<R>(
         receiver: R,
-        node: NodeUniq,
+        node: NodeUnique,
         user_config: Arc<NodeUserConfig>,
         config: &ReceiverConfig,
     ) -> Self
@@ -220,7 +220,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
         }
     }
 
-    fn node_uniq(&self) -> NodeUniq {
+    fn node_uniq(&self) -> NodeUnique {
         match self {
             ReceiverWrapper::Local { node, .. } => node.clone(),
             ReceiverWrapper::Shared { node, .. } => node.clone(),

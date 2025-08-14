@@ -24,7 +24,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::node::NodeUniq;
+use otap_df_engine::node::NodeUnique;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -62,7 +62,7 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTLP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |node: NodeUniq, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node: NodeUnique, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTLPReceiver::from_config(&node_config.config)?,
             node,

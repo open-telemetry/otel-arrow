@@ -9,7 +9,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::node::NodeUniq;
+use otap_df_engine::node::NodeUnique;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -41,7 +41,7 @@ pub struct OTLPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |node: NodeUniq, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node: NodeUnique, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTLPExporter::from_config(&node_config.config)?,
             node,

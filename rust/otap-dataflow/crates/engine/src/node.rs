@@ -22,7 +22,7 @@ pub trait Node {
     fn is_shared(&self) -> bool;
 
     /// Unique identifier.
-    fn node_uniq(&self) -> NodeUniq;
+    fn node_uniq(&self) -> NodeUnique;
 
     /// Returns a reference to the node's user configuration.
     #[must_use]
@@ -78,21 +78,21 @@ impl TryFrom<usize> for Unique {
     }
 }
 
-/// NodeUniq is a u16 consisting of NodeID plus uniqueness bits.
+/// NodeUnique is a u16 consisting of NodeID plus uniqueness bits.
 #[derive(Clone, Debug)]
-pub struct NodeUniq {
+pub struct NodeUnique {
     pub(crate) id: Unique,
     pub(crate) name: NodeId,
 }
 
-impl NodeUniq {
+impl NodeUnique {
     /// Gets the next unique node identifier. Returns an error when the underlying
     /// u16 overflows.
     pub(crate) fn next(
         name: NodeId,
         ntype: NodeType,
         defs: &mut Vec<NodeDefinition>,
-    ) -> Result<NodeUniq, std::num::TryFromIntError> {
+    ) -> Result<NodeUnique, std::num::TryFromIntError> {
         let uniq = Self {
             name: name.clone(),
             id: Unique::try_from(defs.len())?,

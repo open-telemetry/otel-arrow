@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::node::NodeUniq;
+use crate::node::NodeUnique;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
@@ -132,7 +132,7 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
     #[must_use]
     pub fn new(
-        node: NodeUniq,
+        node: NodeUnique,
         msg_senders: HashMap<PortName, LocalSender<PData>>,
         default_port: Option<PortName>,
         node_request_sender: PipelineCtrlMsgSender,
@@ -275,10 +275,10 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    fn node_defs() -> (NodeUniq, Vec<NodeDefinition>) {
+    fn node_defs() -> (NodeUnique, Vec<NodeDefinition>) {
         let mut node_defs = Vec::new();
         let node =
-            NodeUniq::next("recv".into(), NodeType::Receiver, &mut node_defs).expect("first");
+            NodeUnique::next("recv".into(), NodeType::Receiver, &mut node_defs).expect("first");
         (node, node_defs)
     }
 

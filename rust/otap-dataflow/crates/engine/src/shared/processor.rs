@@ -30,7 +30,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::node::NodeUniq;
+use crate::node::NodeUnique;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
@@ -98,7 +98,7 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given processor name and pdata sender.
     #[must_use]
     pub fn new(
-        node: NodeUniq,
+        node: NodeUnique,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
     ) -> Self {

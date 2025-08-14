@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::node::NodeUniq;
+use crate::node::NodeUnique;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::local::message::LocalSender;
@@ -99,7 +99,7 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
     pub fn new(
-        node: NodeUniq,
+        node: NodeUnique,
         msg_senders: HashMap<PortName, LocalSender<PData>>,
         default_port: Option<PortName>,
     ) -> Self {
@@ -217,10 +217,10 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    fn node_defs() -> (NodeUniq, Vec<NodeDefinition>) {
+    fn node_defs() -> (NodeUnique, Vec<NodeDefinition>) {
         let mut node_defs = Vec::new();
         let node =
-            NodeUniq::next("proc".into(), NodeType::Processor, &mut node_defs).expect("first");
+            NodeUnique::next("proc".into(), NodeType::Processor, &mut node_defs).expect("first");
         (node, node_defs)
     }
 
@@ -320,7 +320,7 @@ mod tests {
 
         let mut node_defs = Vec::new();
         let node =
-            NodeUniq::next("proc".into(), NodeType::Processor, &mut node_defs).expect("first");
+            NodeUnique::next("proc".into(), NodeType::Processor, &mut node_defs).expect("first");
 
         let eh = EffectHandler::new(node, senders, None);
 

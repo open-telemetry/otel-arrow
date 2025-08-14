@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeWithPDataReceiver, NodeWithPDataSender};
-use crate::node::{NodeDefinition, NodeType, NodeUniq, Unique};
+use crate::node::{NodeDefinition, NodeType, NodeUnique, Unique};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::{ExporterFactory, ProcessorFactory, ReceiverFactory};
@@ -58,7 +58,7 @@ pub struct RuntimePipeline<PData: Debug> {
 /// Represents a hyper-edge in the runtime graph, corresponding to a source node's output port,
 /// its dispatch strategy, and the set of destination node ids connected to that port.
 pub(crate) struct HyperEdgeRuntime {
-    pub(crate) source: NodeUniq,
+    pub(crate) source: NodeUnique,
 
     // ToDo(LQ): Use port name for telemetry and debugging purposes.
     pub(crate) port: PortName,
@@ -66,7 +66,7 @@ pub(crate) struct HyperEdgeRuntime {
     #[allow(dead_code)]
     dispatch_strategy: DispatchStrategy,
 
-    pub(crate) destinations: Vec<NodeUniq>,
+    pub(crate) destinations: Vec<NodeUnique>,
 }
 
 impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
@@ -237,21 +237,21 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 otap_df_config::node::NodeKind::Receiver => Self::create_receiver(
                     factory,
                     &mut receivers,
-                    NodeUniq::next(node_id.clone(), NodeType::Receiver, &mut nodes)
+                    NodeUnique::next(node_id.clone(), NodeType::Receiver, &mut nodes)
                         .map_err(|_| Error::TooManyNodes {})?,
                     node_config.clone(),
                 )?,
                 otap_df_config::node::NodeKind::Processor => Self::create_processor(
                     factory,
                     &mut processors,
-                    NodeUniq::next(node_id.clone(), NodeType::Processor, &mut nodes)
+                    NodeUnique::next(node_id.clone(), NodeType::Processor, &mut nodes)
                         .map_err(|_| Error::TooManyNodes {})?,
                     node_config.clone(),
                 )?,
                 otap_df_config::node::NodeKind::Exporter => Self::create_exporter(
                     factory,
                     &mut exporters,
-                    NodeUniq::next(node_id.clone(), NodeType::Exporter, &mut nodes)
+                    NodeUnique::next(node_id.clone(), NodeType::Exporter, &mut nodes)
                         .map_err(|_| Error::TooManyNodes {})?,
                     node_config.clone(),
                 )?,
@@ -268,10 +268,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
         // First pass: collect all channel assignments to avoid multiple mutable borrows
         struct ChannelAssignment<PData> {
-            source: NodeUniq,
+            source: NodeUnique,
             port: PortName,
             sender: Sender<PData>,
-            destinations: Vec<(NodeUniq, Receiver<PData>)>,
+            destinations: Vec<(NodeUnique, Receiver<PData>)>,
         }
         let mut assignments = Vec::new();
         for hyper_edge in pipeline.collect_hyper_edges_runtime()? {
@@ -436,7 +436,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     fn create_receiver(
         factory: &PipelineFactory<PData>,
         receivers: &mut HashMap<Unique, ReceiverWrapper<PData>>,
-        node: NodeUniq,
+        node: NodeUnique,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = factory
@@ -465,7 +465,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     fn create_processor(
         factory: &PipelineFactory<PData>,
         nodes: &mut HashMap<Unique, ProcessorWrapper<PData>>,
-        node: NodeUniq,
+        node: NodeUnique,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = factory
@@ -493,7 +493,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     fn create_exporter(
         factory: &PipelineFactory<PData>,
         nodes: &mut HashMap<Unique, ExporterWrapper<PData>>,
-        node: NodeUniq,
+        node: NodeUnique,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = factory

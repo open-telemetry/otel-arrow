@@ -7,7 +7,7 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
-use crate::node::NodeUniq;
+use crate::node::NodeUnique;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::exporter as local;
@@ -31,7 +31,7 @@ pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
         /// Unique identifier for the node.
-        node: NodeUniq,
+        node: NodeUnique,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -48,7 +48,7 @@ pub enum ExporterWrapper<PData> {
     /// An exporter with a `Send` implementation.
     Shared {
         /// Unique identifier for the node.
-        node: NodeUniq,
+        node: NodeUnique,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -87,7 +87,7 @@ impl<PData> ExporterWrapper<PData> {
     /// implementation).
     pub fn local<E>(
         exporter: E,
-        node: NodeUniq,
+        node: NodeUnique,
         user_config: Arc<NodeUserConfig>,
         config: &ExporterConfig,
     ) -> Self
@@ -112,7 +112,7 @@ impl<PData> ExporterWrapper<PData> {
     /// implementation).
     pub fn shared<E>(
         exporter: E,
-        node: NodeUniq,
+        node: NodeUnique,
         user_config: Arc<NodeUserConfig>,
         config: &ExporterConfig,
     ) -> Self
@@ -195,7 +195,7 @@ impl<PData> Node for ExporterWrapper<PData> {
         }
     }
 
-    fn node_uniq(&self) -> NodeUniq {
+    fn node_uniq(&self) -> NodeUnique {
         match self {
             ExporterWrapper::Local { node, .. } => node.clone(),
             ExporterWrapper::Shared { node, .. } => node.clone(),

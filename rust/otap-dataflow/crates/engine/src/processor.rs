@@ -7,7 +7,7 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
-use crate::node::NodeUniq;
+use crate::node::NodeUnique;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -32,7 +32,7 @@ pub enum ProcessorWrapper<PData> {
     /// A processor with a `!Send` implementation.
     Local {
         /// Unique node identifier.
-        node: NodeUniq,
+        node: NodeUnique,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -51,7 +51,7 @@ pub enum ProcessorWrapper<PData> {
     /// A processor with a `Send` implementation.
     Shared {
         /// Unique node identifier.
-        node: NodeUniq,
+        node: NodeUnique,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -99,7 +99,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn local<P>(
         processor: P,
-        node: NodeUniq,
+        node: NodeUnique,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -125,7 +125,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn shared<P>(
         processor: P,
-        node: NodeUniq,
+        node: NodeUnique,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -263,7 +263,7 @@ impl<PData> Node for ProcessorWrapper<PData> {
         }
     }
 
-    fn node_uniq(&self) -> NodeUniq {
+    fn node_uniq(&self) -> NodeUnique {
         match self {
             ProcessorWrapper::Local { node, .. } => node.clone(),
             ProcessorWrapper::Shared { node, .. } => node.clone(),

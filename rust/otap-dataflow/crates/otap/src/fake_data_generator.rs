@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::node::NodeUniq;
+use otap_df_engine::node::NodeUnique;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -43,7 +43,7 @@ pub struct FakeGeneratorReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
-    create: |node: NodeUniq, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node: NodeUnique, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
             FakeGeneratorReceiver::from_config(&node_config.config)?,
             node,

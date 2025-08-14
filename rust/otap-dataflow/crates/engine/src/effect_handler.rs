@@ -2,7 +2,7 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::node::{NodeUniq, Unique};
+use crate::node::{NodeUnique, Unique};
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use otap_df_channel::error::SendError;
@@ -17,14 +17,14 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
-    pub(crate) node: NodeUniq,
+    pub(crate) node: NodeUnique,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender>,
 }
 
 impl EffectHandlerCore {
     /// Creates a new EffectHandlerCore with node_id.
-    pub(crate) fn new(node: NodeUniq) -> Self {
+    pub(crate) fn new(node: NodeUnique) -> Self {
         Self {
             node,
             pipeline_ctrl_msg_sender: None,

@@ -14,7 +14,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::node::NodeUniq;
+use otap_df_engine::node::NodeUnique;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -90,7 +90,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 
 /// Factory function to create a SignalTypeRouter processor
 pub fn create_signal_type_router(
-    node: NodeUniq,
+    node: NodeUnique,
     config: &Value,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
@@ -119,7 +119,7 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |node: NodeUniq, config: &Value, proc_cfg: &ProcessorConfig| {
+    create: |node: NodeUnique, config: &Value, proc_cfg: &ProcessorConfig| {
         create_signal_type_router(node, config, proc_cfg)
     },
 };

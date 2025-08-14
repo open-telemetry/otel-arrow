@@ -6,7 +6,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
-use crate::node::NodeUniq;
+use crate::node::NodeUnique;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
@@ -135,7 +135,7 @@ pub struct TestRuntime<PData> {
     local_tasks: LocalSet,
 
     /// node defined for the test
-    node: NodeUniq,
+    node: NodeUnique,
 
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
@@ -187,7 +187,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
         let mut node_defs = Vec::new();
-        let node = NodeUniq::next(config.name.clone(), NodeType::Exporter, &mut node_defs)
+        let node = NodeUnique::next(config.name.clone(), NodeType::Exporter, &mut node_defs)
             .expect("valid test config");
 
         Self {
@@ -211,7 +211,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns the test node identifier corresponding with config.name.
-    pub fn test_node(&self) -> NodeUniq {
+    pub fn test_node(&self) -> NodeUnique {
         self.node.clone()
     }
 
