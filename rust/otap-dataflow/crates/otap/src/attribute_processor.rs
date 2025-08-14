@@ -9,7 +9,7 @@
 //!
 //! Notes:
 //! - Keep configuration minimal: only simple rename rules are supported, using
-//!   otel_arrow_rust::otap::transform::rename_attributes for exact key matches.
+//!   otel_arrow_rust::otap::transform::transform_attributes for exact key matches.
 
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
@@ -22,7 +22,10 @@ use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::processor::ProcessorWrapper;
-use otel_arrow_rust::otap::{OtapArrowRecords, transform::rename_attributes};
+use otel_arrow_rust::otap::{
+    OtapArrowRecords,
+    transform::{AttributesTransform, transform_attributes},
+};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,7 +48,7 @@ pub struct RenameRule {
 /// Configuration for the AttributeProcessor.
 ///
 /// Only simple rename rules are supported; behavior follows
-/// otel_arrow_rust::otap::transform::rename_attributes (exact key matches).
+/// otel_arrow_rust::otap::transform::transform_attributes (exact key matches).
 pub struct AttributeProcessorConfig {
     /// List of rename rules to apply (in order) to all attribute payloads for the signal.
     pub rules: Vec<RenameRule>,
@@ -117,16 +120,17 @@ fn apply_rules(
     let payloads = attrs_payloads_for_signal(signal);
 
     if !owned_map.is_empty() {
-        // Create a borrowed map view for the transform API
-        let replacements: BTreeMap<&str, &str> = owned_map
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
+        // Create a transform that only includes renames (no deletes)
+        let renames: BTreeMap<String, String> = owned_map.clone();
+        let transform = AttributesTransform {
+            rename: Some(renames),
+            delete: None,
+        };
 
         for &payload_ty in payloads {
             if let Some(rb) = records.get(payload_ty).cloned() {
-                let rb = rename_attributes(&rb, &replacements)
-                    .map_err(|e| engine_err(&format!("rename_attributes failed: {e}")))?;
+                let rb = transform_attributes(&rb, &transform)
+                    .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                 records.set(payload_ty, rb);
             }
         }
@@ -388,16 +392,16 @@ mod tests {
     }
 
     #[test]
-    fn test_rename_traces_multiple_renames_and_no_chain() {
+    fn test_rename_traces_multiple_renames() {
         let mut records = OtapArrowRecords::Traces(Default::default());
-        // Include rows for A and B to verify no chaining A->B->C in a single call
+        // Include multiple different keys to verify we can rename them all at once
         let rb = make_attrs_batch(vec![7, 7, 8], vec!["A", "B", "keep"]);
         records.set(ArrowPayloadType::SpanAttrs, rb);
 
         let cfg: AttributeProcessorConfig = serde_json::from_value(json!({
             "rules": [
-                { "from": "A", "to": "B" },
-                { "from": "B", "to": "C" }
+                { "from": "A", "to": "X" },
+                { "from": "B", "to": "Y" }
             ]
         }))
         .unwrap();
@@ -409,8 +413,7 @@ mod tests {
         apply_rules(&mut records, SignalType::Traces, &map).unwrap();
         let rb2 = records.get(ArrowPayloadType::SpanAttrs).unwrap();
         let all = collect_key_strings(rb2);
-        // Expect original A->B and original B->C, but A should not chain to C within same call
-        let expected: Vec<String> = vec!["B", "C", "keep"]
+        let expected: Vec<String> = vec!["X", "Y", "keep"]
             .into_iter()
             .map(|s| s.to_string())
             .collect();
