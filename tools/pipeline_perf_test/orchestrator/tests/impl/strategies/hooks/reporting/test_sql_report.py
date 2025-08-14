@@ -5,18 +5,24 @@ import tempfile
 import yaml
 
 from lib.impl.strategies.hooks.reporting.sql_report import (
-    SQLReportConfig, SQLReportDetails,
-    QueryConfig, ResultTable, LoadTableConfig,
-    SQLReportHook, WriteTableConfig, TableIOConfig
+    SQLReportConfig,
+    SQLReportDetails,
+    QueryConfig,
+    ResultTable,
+    LoadTableConfig,
+    SQLReportHook,
+    WriteTableConfig,
+    TableIOConfig,
 )
+
 
 def test_valid_config_with_inline_report_config():
     config = SQLReportConfig(
         name="inline_test",
         report_config=SQLReportDetails(
             queries=[QueryConfig(name="q1", sql="SELECT 1")],
-            result_tables=[ResultTable(name="result")]
-        )
+            result_tables=[ResultTable(name="result")],
+        ),
     )
     assert config.report_config is not None
     assert config.report_config_file is None
@@ -52,6 +58,7 @@ def test_invalid_config_raises_error_when_missing_both():
 
     assert "Either 'report_config' or 'report_config_file'" in str(exc_info.value)
 
+
 def test_table_io_config_requires_path_or_template():
     with pytest.raises(ValidationError) as exc_info:
         LoadTableConfig(format="csv")
@@ -69,13 +76,11 @@ def test_both_inline_and_file_report_config(tmp_path):
 
     inline_config = SQLReportDetails(
         queries=[QueryConfig(name="inline", sql="SELECT 42")],
-        result_tables=[ResultTable(name="inline_result")]
+        result_tables=[ResultTable(name="inline_result")],
     )
 
     config = SQLReportConfig(
-        name="dual_config",
-        report_config=inline_config,
-        report_config_file=config_path
+        name="dual_config", report_config=inline_config, report_config_file=config_path
     )
 
     hook = SQLReportHook(config)
@@ -85,8 +90,7 @@ def test_both_inline_and_file_report_config(tmp_path):
 
 def test_report_config_file_not_found():
     config = SQLReportConfig(
-        name="bad_path",
-        report_config_file=Path("non_existent.yaml")
+        name="bad_path", report_config_file=Path("non_existent.yaml")
     )
     with pytest.raises(FileNotFoundError):
         hook = SQLReportHook(config)
@@ -107,11 +111,13 @@ def test_missing_result_tables_should_error():
         name="missing_result_tables",
         report_config=SQLReportDetails(
             queries=[QueryConfig(name="q1", sql="SELECT 1")],
-            result_tables=[ResultTable(name="doesnt_exist")]
-        )
+            result_tables=[ResultTable(name="doesnt_exist")],
+        ),
     )
     hook = SQLReportHook(config)
-    with pytest.raises(AttributeError):  # because .result_tables is None and expected as list
+    with pytest.raises(
+        AttributeError
+    ):  # because .result_tables is None and expected as list
         hook._build_result_dataframes()
 
 
@@ -131,16 +137,19 @@ def test_load_table_with_default_ddl_on_no_match(monkeypatch):
     dummy_config = LoadTableConfig(
         path_template="no/match/*.csv",
         format="csv",
-        default_ddl="CREATE TABLE dummy (id INTEGER);"
+        default_ddl="CREATE TABLE dummy (id INTEGER);",
     )
-    hook = SQLReportHook(SQLReportConfig(
-        name="ddl_fallback",
-        report_config=SQLReportDetails(load_tables={"dummy": dummy_config})
-    ))
+    hook = SQLReportHook(
+        SQLReportConfig(
+            name="ddl_fallback",
+            report_config=SQLReportDetails(load_tables={"dummy": dummy_config}),
+        )
+    )
     hook.conn = hook.conn or __import__("duckdb").connect()
 
     class DummyLogger:
-        def debug(self, *args, **kwargs): pass
+        def debug(self, *args, **kwargs):
+            pass
 
     report = type("FakeReport", (), {"metadata": {}})
     hook._load_external_tables(DummyLogger(), report)  # Should not raise
@@ -148,17 +157,19 @@ def test_load_table_with_default_ddl_on_no_match(monkeypatch):
 
 def test_load_table_missing_and_no_ddl_raises(tmp_path):
     dummy_config = LoadTableConfig(
-        path_template=str(tmp_path / "nothing.csv"),
-        format="csv"
+        path_template=str(tmp_path / "nothing.csv"), format="csv"
     )
     config = SQLReportConfig(
         name="missing_file",
-        report_config=SQLReportDetails(load_tables={"missing": dummy_config})
+        report_config=SQLReportDetails(load_tables={"missing": dummy_config}),
     )
     hook = SQLReportHook(config)
     hook.conn = __import__("duckdb").connect()
+
     class DummyLogger:
-        def debug(self, *args, **kwargs): pass
+        def debug(self, *args, **kwargs):
+            pass
+
     report = type("FakeReport", (), {"metadata": {}})
     with pytest.raises(FileNotFoundError):
         hook._load_external_tables(DummyLogger(), report)
@@ -169,8 +180,8 @@ def test_query_fails_due_to_invalid_sql():
         name="bad_sql",
         report_config=SQLReportDetails(
             queries=[QueryConfig(name="fail", sql="SELECT * FROM non_existent")],
-            result_tables=[ResultTable(name="non_existent")]
-        )
+            result_tables=[ResultTable(name="non_existent")],
+        ),
     )
     hook = SQLReportHook(config)
     hook.conn = __import__("duckdb").connect()
