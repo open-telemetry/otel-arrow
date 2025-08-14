@@ -950,6 +950,13 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     keep_ranges: Option<Vec<(usize, usize)>>,
 }
 
+/// transforms the keys for the dictionary array.
+//
+// TODO: there are optimizations we should be able to make in this method:
+// - when constructing the new dictionary keys, we could use a MutableBuffer and
+//   copy slices of the existing null buffer for the ranges we know we'll keep
+// - when searching for ranges that contain the dictionary key, try if possible
+//   to stop searching before iterating through all ranges
 fn transform_dictionary_keys<K>(
     dict_arr: &DictionaryArray<K>,
     transform: &AttributesTransform,
@@ -1031,11 +1038,10 @@ where
         keep_ranges.push((s, dict_arr.len()));
     }
 
-    // build the new dictionary keys
+    // Build the new dictionary keys.
     //
-    // TODO using builder is probably fine for now, but eventually we might be able to optimize
-    // this further by writing directly to buffer, then taking slices of the null existing null
-    // buffer from the dictionary keys
+    // For each range of dictionary values that have been deleted, we need to adjust dict keys
+    // pointing to values after these arrays down by the size of the deleted ranges.
     let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
     let mut new_dict_keys_builder = PrimitiveBuilder::<K>::with_capacity(count_kept_values);
 
