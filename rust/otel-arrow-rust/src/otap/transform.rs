@@ -1110,55 +1110,8 @@ where
         }
     }
 
-    // for i in 0..dict_arr.len() {
-    //     // if !dict_arr.is_valid(i) {
-    //     if !dict_keys_nulls
-    //         .map(|nulls| nulls.is_valid(i))
-    //         .unwrap_or(true)
-    //     {
-    //         // safety: we've already allocated the correct capacity for this buffer, so we can use
-    //         // push_unchecked here to get better performance by avoiding the buffer capacity check
-    //         // for every value
-    //         #[allow(unsafe_code)]
-    //         unsafe {
-    //             new_dict_keys_values_buffer.push_unchecked(K::Native::default())
-    //         };
-    //         continue;
-    //     }
-
-    //     let dict_key = dict_keys.value(i).as_usize();
-    //     let mut kept_in_range = None;
-    //     for (range_idx, range) in values_keep_ranges.iter().enumerate() {
-    //         if range.0 > dict_key {
-    //             // the ranges are sorted, so we know that if this range is after the dict key
-    //             // which we're searching for there's no need to continue iterating
-    //             break;
-    //         }
-
-    //         // check if dict key is in a range we're keeping
-    //         if dict_key >= range.0 && dict_key < range.1 {
-    //             kept_in_range = Some(range_idx);
-    //             break;
-    //         }
-    //     }
-
-    //     if let Some(range_idx) = kept_in_range {
-    //         let new_dict_key = dict_key - key_offsets[range_idx];
-    //         let new_dict_key = K::Native::from_usize(new_dict_key).expect("dict_key_overflow");
-
-    //         // safety: we've already allocated the correct capacity for this buffer, so we can use
-    //         // push_unchecked here to get better performance by avoiding the buffer capacity check
-    //         // for every value
-    //         #[allow(unsafe_code)]
-    //         unsafe {
-    //             new_dict_keys_values_buffer.push_unchecked(new_dict_key)
-    //         };
-    //     }
-    // }
-
     let nulls = take_null_buffer_ranges(dict_keys.nulls(), Some(&keep_ranges));
 
-    // let new_dict_keys = new_dict_keys_builder.finish();
     let new_dict_keys = ScalarBuffer::new(new_dict_keys_values_buffer.into(), 0, count_kept_values);
     let new_dict_keys = PrimitiveArray::<K>::new(new_dict_keys, nulls);
 
