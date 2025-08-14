@@ -184,7 +184,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
-        let node = NodeDefs::<()>::new()
+        let node = NodeDefs::<()>::default()
             .next(config.name.clone(), NodeType::Exporter)
             .expect("valid test config");
 

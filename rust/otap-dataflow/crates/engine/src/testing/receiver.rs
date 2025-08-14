@@ -184,7 +184,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
-        let node = NodeDefs::<()>::new()
+        let node = NodeDefs::<()>::default()
             .next(config.name.clone(), NodeType::Receiver)
             .expect("valid test config");
 

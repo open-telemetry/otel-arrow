@@ -95,17 +95,19 @@ pub struct NodeDefs<PData> {
     _data: PhantomData<PData>,
 }
 
-impl<PData> NodeDefs<PData> {
-    /// Create an empty set of node definitions.
-    pub fn new() -> Self {
+impl<PData> Default for NodeDefs<PData> {
+    fn default() -> Self {
         Self {
             entries: Vec::new(),
             _data: PhantomData,
         }
     }
+}
 
+impl<PData> NodeDefs<PData> {
     /// Gets a NodeUnique by the assigned Unique index value,
     /// consisting of name and type information.
+    #[must_use]
     pub fn get(&self, u: Unique) -> Option<(NodeUnique, NodeType)> {
         self.entries.get(u.index()).map(|d| {
             (
@@ -129,7 +131,7 @@ impl<PData> NodeDefs<PData> {
             name: name.clone(),
             id: Unique::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
         };
-        self.entries.push(NodeDefinition { ntype, name: name });
+        self.entries.push(NodeDefinition { ntype, name });
         Ok(uniq)
     }
 
@@ -158,5 +160,68 @@ impl TryFrom<usize> for Unique {
     /// TryFrom signals an error when the u16 overflows.
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         Ok(Self(u16::try_from(value)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::NodeId;
+
+    #[test]
+    fn test_too_many_nodes_error() {
+        let mut node_defs: NodeDefs<()> = NodeDefs::new();
+        let node_id = NodeId::try_from("test_node").expect("valid node id");
+        const LIMIT: usize = u16::MAX as usize + 1;
+        for i in 0..=LIMIT {
+            let result = node_defs.next(node_id.clone(), NodeType::Processor);
+
+            if i == LIMIT {
+                // This should fail with TooManyNodes error
+                eprintln!("LOOK {:?}", result);
+                assert!(matches!(result, Err(Error::TooManyNodes {})));
+                break;
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn test_node_defs_basic_operations() {
+        let mut node_defs: NodeDefs<()> = NodeDefs::new();
+        let node_id = NodeId::try_from("test_node").expect("valid node id");
+
+        // Test creating a few nodes
+        let node1 = node_defs.next(node_id.clone(), NodeType::Receiver).unwrap();
+        let node2 = node_defs
+            .next(node_id.clone(), NodeType::Processor)
+            .unwrap();
+        let node3 = node_defs.next(node_id.clone(), NodeType::Exporter).unwrap();
+
+        // Verify unique IDs are assigned sequentially
+        assert_eq!(node1.id.0, 0);
+        assert_eq!(node2.id.0, 1);
+        assert_eq!(node3.id.0, 2);
+
+        // Test get function
+        let (retrieved_node1, node1_type) = node_defs.get(node1.id).unwrap();
+        assert_eq!(retrieved_node1.name, node_id);
+        assert_eq!(node1_type, NodeType::Receiver);
+
+        let (retrieved_node2, node2_type) = node_defs.get(node2.id).unwrap();
+        assert_eq!(retrieved_node2.name, node_id);
+        assert_eq!(node2_type, NodeType::Processor);
+
+        let (retrieved_node3, node3_type) = node_defs.get(node3.id).unwrap();
+        assert_eq!(retrieved_node3.name, node_id);
+        assert_eq!(node3_type, NodeType::Exporter);
+
+        // Test iterator
+        let nodes: Vec<_> = node_defs.iter().collect();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].id.0, 0);
+        assert_eq!(nodes[1].id.0, 1);
+        assert_eq!(nodes[2].id.0, 2);
     }
 }

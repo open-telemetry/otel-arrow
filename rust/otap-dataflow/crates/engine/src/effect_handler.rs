@@ -2,9 +2,9 @@
 
 //! Common foundation of all effect handlers.
 
-use crate::node::{NodeUnique, Unique};
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
+use crate::node::{NodeUnique, Unique};
 use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
 use std::borrow::Cow;

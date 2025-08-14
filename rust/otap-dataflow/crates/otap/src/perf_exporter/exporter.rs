@@ -17,12 +17,12 @@ use byte_unit::Byte;
 use fluke_hpack::Decoder;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::node::NodeUnique;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::node::NodeUnique;
 use otap_df_engine::{ExporterFactory, distributed_slice};
 use otel_arrow_rust::Consumer;
 use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
@@ -81,7 +81,9 @@ pub struct PerfExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
-    create: |node: NodeUnique, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node: NodeUnique,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             PerfExporter::from_config(&node_config.config)?,
             node,

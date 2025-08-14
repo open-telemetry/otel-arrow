@@ -137,7 +137,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
-        let node = NodeDefs::<()>::new()
+        let node = NodeDefs::<()>::default()
             .next(config.name.clone(), NodeType::Processor)
             .expect("valid test config");
 

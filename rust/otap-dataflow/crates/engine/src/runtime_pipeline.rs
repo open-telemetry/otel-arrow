@@ -229,7 +229,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let mut receivers = HashMap::new();
         let mut processors = HashMap::new();
         let mut exporters = HashMap::new();
-        let mut nodes = NodeDefs::new();
+        let mut nodes = NodeDefs::default();
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
@@ -621,6 +621,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// - Assign channels to the source nodes and their destination nodes based on the previous
     ///   analysis.
     pub fn build(&self, config: PipelineConfig) -> Result<RuntimePipeline<PData>, Error<PData>> {
-        RuntimePipeline::build(&self, config)
+        RuntimePipeline::build(self, config)
     }
 }

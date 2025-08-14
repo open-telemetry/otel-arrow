@@ -32,10 +32,10 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::node::NodeUnique;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
+use crate::node::NodeUnique;
 use async_trait::async_trait;
 use otap_df_config::NodeId;
 use std::marker::PhantomData;
