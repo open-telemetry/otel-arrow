@@ -577,7 +577,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, vec};
+    use std::collections::HashMap;
 
     use super::*;
 
