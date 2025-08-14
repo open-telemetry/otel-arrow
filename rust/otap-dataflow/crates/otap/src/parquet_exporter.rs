@@ -205,7 +205,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use datagen::SimpleDataGenOptions;
+    use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
@@ -214,7 +214,7 @@ mod test {
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
 
-    pub mod datagen;
+    use crate::fixtures;
 
     fn logs_scenario(
         num_rows: usize,
@@ -223,7 +223,7 @@ mod test {
         move |ctx| {
             Box::pin(async move {
                 let otap_batch = OtapArrowBytes::ArrowLogs(
-                    datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                    fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                         num_rows,
                         ..Default::default()
                     }),
@@ -442,7 +442,7 @@ mod test {
 
         let num_rows = 100;
         let otap_batch = OtapArrowBytes::ArrowTraces(
-            datagen::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
+            fixtures::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
                 num_rows,
                 traces_options: Some(Default::default()),
                 ..Default::default()
@@ -502,7 +502,7 @@ mod test {
 
         let num_rows = 100;
         let otap_batch = OtapArrowBytes::ArrowMetrics(
-            datagen::create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
+            fixtures::create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
                 num_rows,
                 metrics_options: Some(Default::default()),
                 ..Default::default()

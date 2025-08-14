@@ -5,7 +5,11 @@ use data_engine_expressions::*;
 use crate::{
     execution_context::*,
     logical_expressions::execute_logical_expression,
-    scalars::{execute_math_scalar_expression, execute_temporal_scalar_expression},
+    scalars::{
+        execute_convert_scalar_expression, execute_math_scalar_expression,
+        execute_parse_scalar_expression, execute_temporal_scalar_expression,
+        execute_text_scalar_expression,
+    },
     *,
 };
 
@@ -162,33 +166,6 @@ where
                 Ok(ResolvedValue::Value(value))
             }
         },
-        ScalarExpression::Negate(n) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, n.get_inner_expression())?;
-
-            let v = match inner_value.to_value() {
-                Value::Integer(i) => ResolvedValue::Computed(OwnedValue::Integer(
-                    IntegerValueStorage::new(-i.get_value()),
-                )),
-                Value::Double(d) => ResolvedValue::Computed(OwnedValue::Double(
-                    DoubleValueStorage::new(-d.get_value()),
-                )),
-                _ => {
-                    return Err(ExpressionError::TypeMismatch(
-                        n.get_query_location().clone(),
-                        "Negate expression can only be used with integer and double types".into(),
-                    ));
-                }
-            };
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: '{v}'"),
-            );
-
-            Ok(v)
-        }
         ScalarExpression::Logical(l) => {
             let value = execute_logical_expression(execution_context, l)?;
 
@@ -271,126 +248,7 @@ where
 
             Ok(inner_value)
         }
-        ScalarExpression::Convert(c) => {
-            let value = match c {
-                ConvertScalarExpression::Boolean(c) => {
-                    let inner_value =
-                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-                    let value = inner_value.to_value();
-
-                    if let Some(b) = value.convert_to_bool() {
-                        ResolvedValue::Computed(OwnedValue::Boolean(BooleanValueStorage::new(b)))
-                    } else {
-                        execution_context.add_diagnostic_if_enabled(
-                            RecordSetEngineDiagnosticLevel::Warn,
-                            scalar_expression,
-                            || {
-                                format!(
-                                    "Input of '{:?}' type could not be converted into a bool",
-                                    value.get_value_type()
-                                )
-                            },
-                        );
-
-                        ResolvedValue::Computed(OwnedValue::Null)
-                    }
-                }
-                ConvertScalarExpression::DateTime(c) => {
-                    let inner_value =
-                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-                    let value = inner_value.to_value();
-
-                    if let Some(d) = value.convert_to_datetime() {
-                        ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
-                    } else {
-                        execution_context.add_diagnostic_if_enabled(
-                            RecordSetEngineDiagnosticLevel::Warn,
-                            scalar_expression,
-                            || {
-                                format!(
-                                    "Input of '{:?}' type could not be converted into a DateTime",
-                                    value.get_value_type()
-                                )
-                            },
-                        );
-                        ResolvedValue::Computed(OwnedValue::Null)
-                    }
-                }
-                ConvertScalarExpression::Double(c) => {
-                    let inner_value =
-                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-                    let value = inner_value.to_value();
-
-                    if let Some(d) = value.convert_to_double() {
-                        ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
-                    } else {
-                        execution_context.add_diagnostic_if_enabled(
-                            RecordSetEngineDiagnosticLevel::Warn,
-                            scalar_expression,
-                            || {
-                                format!(
-                                    "Input of '{:?}' type could not be converted into a double",
-                                    value.get_value_type()
-                                )
-                            },
-                        );
-                        ResolvedValue::Computed(OwnedValue::Null)
-                    }
-                }
-                ConvertScalarExpression::Integer(c) => {
-                    let inner_value =
-                        execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-                    let value = inner_value.to_value();
-
-                    if let Some(i) = value.convert_to_integer() {
-                        ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
-                    } else {
-                        execution_context.add_diagnostic_if_enabled(
-                            RecordSetEngineDiagnosticLevel::Warn,
-                            scalar_expression,
-                            || {
-                                format!(
-                                    "Input of '{:?}' type could not be converted into an integer",
-                                    value.get_value_type()
-                                )
-                            },
-                        );
-                        ResolvedValue::Computed(OwnedValue::Null)
-                    }
-                }
-                ConvertScalarExpression::String(c) => {
-                    let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
-                    let value_type = v.get_value_type();
-                    if value_type == ValueType::String {
-                        v
-                    } else if value_type == ValueType::Null {
-                        ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
-                            "".into(),
-                        )))
-                    } else {
-                        let mut string_value = None;
-                        v.to_value().convert_to_string(&mut |s| {
-                            string_value = Some(StringValueStorage::new(s.into()))
-                        });
-                        ResolvedValue::Computed(OwnedValue::String(
-                            string_value.expect("Inner value did not return a string"),
-                        ))
-                    }
-                }
-            };
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: '{value}'"),
-            );
-
-            Ok(value)
-        }
+        ScalarExpression::Convert(c) => execute_convert_scalar_expression(execution_context, c),
         ScalarExpression::Length(l) => {
             let inner_value =
                 execute_scalar_expression(execution_context, l.get_inner_expression())?;
@@ -406,33 +264,6 @@ where
                     IntegerValueStorage::new(m.len() as i64),
                 )),
                 _ => ResolvedValue::Computed(OwnedValue::Null),
-            };
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: '{v}'"),
-            );
-
-            Ok(v)
-        }
-        ScalarExpression::ReplaceString(r) => {
-            let haystack_value =
-                execute_scalar_expression(execution_context, r.get_haystack_expression())?;
-            let needle_value =
-                execute_scalar_expression(execution_context, r.get_needle_expression())?;
-            let replacement_value =
-                execute_scalar_expression(execution_context, r.get_replacement_expression())?;
-
-            let v = if let Some(result) = Value::replace_matches(
-                &haystack_value.to_value(),
-                &needle_value.to_value(),
-                &replacement_value.to_value(),
-                r.get_case_insensitive(),
-            ) {
-                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(result)))
-            } else {
-                ResolvedValue::Computed(OwnedValue::Null)
             };
 
             execution_context.add_diagnostic_if_enabled(
@@ -509,48 +340,9 @@ where
 
             Ok(v)
         }
-        ScalarExpression::ParseJson(p) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, p.get_inner_expression())?;
-
-            let value = inner_value.to_value();
-
-            let v = ResolvedValue::Computed(match value {
-                Value::String(s) => match OwnedValue::from_json(s.get_value()) {
-                    Some(v) => v,
-                    None => {
-                        execution_context.add_diagnostic_if_enabled(
-                            RecordSetEngineDiagnosticLevel::Warn,
-                            scalar_expression,
-                            || "String input could not be parsed as JSON".into(),
-                        );
-                        OwnedValue::Null
-                    }
-                },
-                _ => {
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Warn,
-                        scalar_expression,
-                        || {
-                            format!(
-                                "Input of '{:?}' type could not be parsed as JSON",
-                                value.get_value_type()
-                            )
-                        },
-                    );
-                    OwnedValue::Null
-                }
-            });
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: {v}"),
-            );
-
-            Ok(v)
-        }
+        ScalarExpression::Parse(p) => execute_parse_scalar_expression(execution_context, p),
         ScalarExpression::Temporal(t) => execute_temporal_scalar_expression(execution_context, t),
+        ScalarExpression::Text(t) => execute_text_scalar_expression(execution_context, t),
         ScalarExpression::Math(m) => execute_math_scalar_expression(execution_context, m),
     }
 }
@@ -767,8 +559,6 @@ fn select_from_value<'a, 'b, TRecord: Record>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-
-    use chrono::{TimeZone, Utc};
 
     use super::*;
 
@@ -1044,39 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_negate_scalar_expression() {
-        let run_test = |scalar_expression, expected_value: Value| {
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
-
-            assert_eq!(expected_value, value.to_value());
-        };
-
-        run_test(
-            ScalarExpression::Negate(NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
-                )),
-            )),
-            Value::Integer(&IntegerValueStorage::new(-18)),
-        );
-
-        run_test(
-            ScalarExpression::Negate(NegateScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Double(
-                    DoubleScalarExpression::new(QueryLocation::new_fake(), 18.18),
-                )),
-            )),
-            Value::Double(&DoubleValueStorage::new(-18.18)),
-        );
-    }
-
-    #[test]
     fn test_execute_logical_scalar_expression() {
         let run_test = |scalar_expression, expected_value: Value| {
             let mut test = TestExecutionContext::new();
@@ -1204,238 +961,6 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_convert_scalar_expression() {
-        fn run_test<F>(build: F, input: Vec<(ScalarExpression, Value)>)
-        where
-            F: Fn(ConversionScalarExpression) -> ConvertScalarExpression,
-        {
-            for (inner, expected) in input {
-                let e = ScalarExpression::Convert(build(ConversionScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    inner,
-                )));
-
-                let mut test = TestExecutionContext::new();
-
-                let execution_context = test.create_execution_context();
-
-                let actual = execute_scalar_expression(&execution_context, &e).unwrap();
-                assert_eq!(expected, actual.to_value());
-            }
-        }
-
-        run_test(
-            ConvertScalarExpression::Boolean,
-            vec![
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Boolean(
-                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-                    )),
-                    Value::Boolean(&BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(QueryLocation::new_fake(), 18.0),
-                    )),
-                    Value::Boolean(&BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
-                    )),
-                    Value::Boolean(&BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "true"),
-                    )),
-                    Value::Boolean(&BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::DateTime(
-                        DateTimeScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            Utc.timestamp_nanos(1).into(),
-                        ),
-                    )),
-                    Value::Boolean(&BooleanScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        true,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "value"),
-                    )),
-                    Value::Null,
-                ),
-            ],
-        );
-
-        run_test(
-            ConvertScalarExpression::Double,
-            vec![
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Boolean(
-                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-                    )),
-                    Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(QueryLocation::new_fake(), 18.0),
-                    )),
-                    Value::Double(&DoubleScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        18.0,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
-                    )),
-                    Value::Double(&DoubleScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        18.0,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "18.0"),
-                    )),
-                    Value::Double(&DoubleScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        18.0,
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::DateTime(
-                        DateTimeScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            Utc.timestamp_nanos(1).into(),
-                        ),
-                    )),
-                    Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "value"),
-                    )),
-                    Value::Null,
-                ),
-            ],
-        );
-
-        run_test(
-            ConvertScalarExpression::Integer,
-            vec![
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Boolean(
-                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-                    )),
-                    Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(QueryLocation::new_fake(), 18.0),
-                    )),
-                    Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
-                    )),
-                    Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "18"),
-                    )),
-                    Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::DateTime(
-                        DateTimeScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            Utc.timestamp_nanos(1).into(),
-                        ),
-                    )),
-                    Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "value"),
-                    )),
-                    Value::Null,
-                ),
-            ],
-        );
-
-        run_test(
-            ConvertScalarExpression::String,
-            vec![
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Boolean(
-                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-                    )),
-                    Value::String(&StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "true",
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(QueryLocation::new_fake(), 18.18),
-                    )),
-                    Value::String(&StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "18.18",
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 18),
-                    )),
-                    Value::String(&StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "18",
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::DateTime(
-                        DateTimeScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            Utc.timestamp_nanos(1).into(),
-                        ),
-                    )),
-                    Value::String(&StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "1970-01-01T00:00:00.000000001Z",
-                    )),
-                ),
-                (
-                    ScalarExpression::Static(StaticScalarExpression::Null(
-                        NullScalarExpression::new(QueryLocation::new_fake()),
-                    )),
-                    Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "")),
-                ),
-            ],
-        );
-    }
-
-    #[test]
     fn test_execute_length_scalar_expression() {
         fn run_test(input: Vec<(ScalarExpression, Value)>) {
             for (inner, expected) in input {
@@ -1507,303 +1032,6 @@ mod tests {
                 Value::Null,
             ),
         ]);
-    }
-
-    #[test]
-    fn test_execute_replace_string_scalar_expression() {
-        fn run_test(
-            haystack: ScalarExpression,
-            needle: ScalarExpression,
-            replacement: ScalarExpression,
-            expected: Value,
-        ) {
-            let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-                QueryLocation::new_fake(),
-                haystack,
-                needle,
-                replacement,
-                false, // case_insensitive
-            ));
-
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let actual = execute_scalar_expression(&execution_context, &e).unwrap();
-            assert_eq!(expected, actual.to_value());
-        }
-
-        // Basic string replacement
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "A magic trick can turn a cat into a dog",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "cat",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hamster",
-            ))),
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "A magic trick can turn a hamster into a dog",
-            )),
-        );
-
-        // Multiple matches
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello world hello",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hi",
-            ))),
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hi world hi",
-            )),
-        );
-
-        // No matches
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "no matches here",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "xyz",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "abc",
-            ))),
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "no matches here",
-            )),
-        );
-
-        // Invalid input type
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::Boolean(
-                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-            )),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "search",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "replace",
-            ))),
-            Value::Null,
-        );
-    }
-
-    #[test]
-    fn test_execute_replace_string_scalar_expression_with_regex() {
-        use regex::Regex;
-
-        fn run_test(
-            haystack: ScalarExpression,
-            needle: ScalarExpression,
-            replacement: ScalarExpression,
-            expected: Value,
-        ) {
-            let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-                QueryLocation::new_fake(),
-                haystack,
-                needle,
-                replacement,
-                false, // case_insensitive
-            ));
-
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let actual = execute_scalar_expression(&execution_context, &e).unwrap();
-            assert_eq!(expected, actual.to_value());
-        }
-
-        // Simple regex replacement
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello world 123",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
-                QueryLocation::new_fake(),
-                Regex::new(r"\d+").unwrap(),
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "XXX",
-            ))),
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello world XXX",
-            )),
-        );
-
-        // Regex with capture groups
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "2023-12-25",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
-                QueryLocation::new_fake(),
-                Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap(),
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "$3/$2/$1",
-            ))),
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "25/12/2023",
-            )),
-        );
-
-        // Multiple matches
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "cat cat dog cat",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
-                QueryLocation::new_fake(),
-                Regex::new(r"cat").unwrap(),
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hamster",
-            ))),
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hamster hamster dog hamster",
-            )),
-        );
-
-        // Regex with no matches
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello world",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::Regex(RegexScalarExpression::new(
-                QueryLocation::new_fake(),
-                Regex::new(r"\d+").unwrap(),
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "XXX",
-            ))),
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello world",
-            )),
-        );
-    }
-
-    #[test]
-    fn test_execute_replace_string_scalar_expression_case_insensitive() {
-        fn run_test(
-            haystack: ScalarExpression,
-            needle: ScalarExpression,
-            replacement: ScalarExpression,
-            case_insensitive: bool,
-            expected: Value,
-        ) {
-            let e = ScalarExpression::ReplaceString(ReplaceStringScalarExpression::new(
-                QueryLocation::new_fake(),
-                haystack,
-                needle,
-                replacement,
-                case_insensitive,
-            ));
-
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let actual = execute_scalar_expression(&execution_context, &e).unwrap();
-            assert_eq!(expected, actual.to_value());
-        }
-
-        // Case-sensitive replacement (default)
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "Hello World",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hi",
-            ))),
-            false,
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "Hello World", // No replacement because "hello" != "Hello"
-            )),
-        );
-
-        // Case-insensitive replacement
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "Hello World",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hello",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hi",
-            ))),
-            true,
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "hi World", // "Hello" replaced with "hi"
-            )),
-        );
-
-        // Case-insensitive with multiple matches
-        run_test(
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "CAT cat Cat",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "cat",
-            ))),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "dog",
-            ))),
-            true,
-            Value::String(&StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "dog dog dog", // All variants of "cat" replaced
-            )),
-        );
     }
 
     #[test]
@@ -1924,6 +1152,9 @@ mod tests {
                         panic!("Unexpected ExpressionError")
                     }
                 }
+                _ => {
+                    panic!("Unexpected ExpressionError")
+                }
             }
         }
 
@@ -2029,6 +1260,9 @@ mod tests {
                     } else {
                         panic!("Unexpected ExpressionError")
                     }
+                }
+                _ => {
+                    panic!("Unexpected ExpressionError")
                 }
             }
         }
@@ -2184,6 +1418,9 @@ mod tests {
                         panic!("Unexpected ExpressionError")
                     }
                 }
+                _ => {
+                    panic!("Unexpected ExpressionError")
+                }
             }
         }
 
@@ -2334,30 +1571,5 @@ mod tests {
                 "Array slice index ends at '6' which is beyond the length of '5'".into(),
             ),
         );
-    }
-
-    #[test]
-    pub fn test_execute_parse_json_scalar_expression() {
-        fn run_test_success(input: &str, expected_value: Value) {
-            let expression = ScalarExpression::ParseJson(ParseJsonScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), input),
-                )),
-            ));
-
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
-            assert_eq!(expected_value, actual_value.to_value());
-        }
-
-        run_test_success(
-            "18",
-            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
-        );
-        run_test_success("hello world", Value::Null);
     }
 }
