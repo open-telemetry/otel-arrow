@@ -63,15 +63,16 @@ fn generate_dict_keys_attribute_batch(
 fn bench_transform_attributes(c: &mut Criterion) {
     let mut group = c.benchmark_group("transform_attributes_dict_keys");
     for (num_keys, num_rows) in [
-        (128, 512),  // 128 keys, 512 rows, 4 rows/key
-        (128, 1536), // 128 keys, 1536 rows, 24 rows/key
-        (128, 8192), // 128 keys, 8192 rows, 128 rows/key
+        (32, 128),  // 128 keys, 128 rows, 4 rows/key
+        (32, 1536), // 128 keys, 1536 rows, 48 rows/key
+        (32, 8192), // 128 keys, 8192 rows, 256 rows/key
     ] {
         let rows_per_key = num_rows / num_keys;
         let dict_transform_input =
             generate_dict_keys_attribute_batch(num_keys, |i| format!("attr{i}"), rows_per_key);
 
-        let benchmark_id_param = format!("keys={num_keys},rows={num_rows}");
+        let benchmark_id_param =
+            format!("keys={num_keys},rows={num_rows},rows_per_key={rows_per_key}");
 
         let _ = group.bench_with_input(
             BenchmarkId::new("single_replace_no_deletes", &benchmark_id_param),
@@ -148,13 +149,15 @@ fn bench_transform_attributes(c: &mut Criterion) {
     group.finish();
 
     let mut group = c.benchmark_group("transform_attributes_native_keys");
-    for size in [128, 1536, 8192] {
+    for num_rows in [128, 1536, 8192] {
         // this will generate a batch that replaces a contiguous block of attributes, to simulate
         // if attrs key was not dictionary encoded and the batch was sorted by key
         let block_transform_input =
-            generate_native_keys_attr_batch(size, |i| format!("attr{}", i / 20));
+            generate_native_keys_attr_batch(num_rows, |i| format!("attr{}", i / 20));
+        let benchmark_id_param = format!("rows={num_rows}");
+
         let _ = group.bench_with_input(
-            BenchmarkId::new("block_replace_no_delete", size),
+            BenchmarkId::new("block_replace_no_delete", &benchmark_id_param),
             &block_transform_input,
             |b, input| {
                 b.iter_batched(
@@ -178,7 +181,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             },
         );
         let _ = group.bench_with_input(
-            BenchmarkId::new("no_replace_block_delete", size),
+            BenchmarkId::new("no_replace_block_delete", &benchmark_id_param),
             &block_transform_input,
             |b, input| {
                 b.iter_batched(
@@ -199,7 +202,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             },
         );
         let _ = group.bench_with_input(
-            BenchmarkId::new("block_replace_block_delete", size),
+            BenchmarkId::new("block_replace_block_delete", &benchmark_id_param),
             &block_transform_input,
             |b, input| {
                 b.iter_batched(
@@ -227,9 +230,9 @@ fn bench_transform_attributes(c: &mut Criterion) {
         // attrs key was not dictionary encoded and the batch was not sorted by key. This could
         // happen when we encode OTAP from OTLP, where the attributes end up sorted by parent ID
         let multi_non_contiguous_input =
-            generate_native_keys_attr_batch(size, |i| format!("attr{}", i % 20));
+            generate_native_keys_attr_batch(num_rows, |i| format!("attr{}", i % 20));
         let _ = group.bench_with_input(
-            BenchmarkId::new("many_non_contiguous_replace_no_delete", size),
+            BenchmarkId::new("many_non_contiguous_replace_no_delete", &benchmark_id_param),
             &multi_non_contiguous_input,
             |b, input| {
                 b.iter_batched(
@@ -254,7 +257,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         );
 
         let _ = group.bench_with_input(
-            BenchmarkId::new("no_replace_many_non_contiguous_delete", size),
+            BenchmarkId::new("no_replace_many_non_contiguous_delete", &benchmark_id_param),
             &multi_non_contiguous_input,
             |b, input| {
                 b.iter_batched(
@@ -276,7 +279,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         );
 
         let _ = group.bench_with_input(
-            BenchmarkId::new("many_contiguous_replace_and_delete", size),
+            BenchmarkId::new("many_contiguous_replace_and_delete", &benchmark_id_param),
             &multi_non_contiguous_input,
             |b, input| {
                 b.iter_batched(
