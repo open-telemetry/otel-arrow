@@ -136,6 +136,9 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Invalid attribute transform: {}", reason))]
+    InvalidAttributeTransform { reason: String },
+
     #[snafu(display("Unsupported parent id type. Expected u16 or u32, got: {}", actual))]
     UnsupportedParentIdType {
         actual: DataType,
