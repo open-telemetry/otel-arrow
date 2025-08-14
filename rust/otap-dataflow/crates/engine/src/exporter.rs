@@ -7,6 +7,7 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
+use crate::context::NodeUniq;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::exporter as local;
@@ -29,8 +30,12 @@ use std::sync::Arc;
 pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
+        /// Unique identifier for the node.
+        node: NodeUniq,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
+        /// The runtime configuration for the exporter.
+        runtime_config: ExporterConfig,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
         /// The effect handler instance for the exporter.
@@ -44,8 +49,12 @@ pub enum ExporterWrapper<PData> {
     },
     /// An exporter with a `Send` implementation.
     Shared {
+        /// Unique identifier for the node.
+        node: NodeUniq,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
+        /// The runtime configuration for the exporter.
+        runtime_config: ExporterConfig,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
         /// The effect handler instance for the exporter.
@@ -80,16 +89,24 @@ impl<PData> Controllable for ExporterWrapper<PData> {
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new local `ExporterWrapper` with the given exporter and configuration (!Send
     /// implementation).
-    pub fn local<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
+    pub fn local<E>(
+        exporter: E,
+        node: NodeUniq,
+        user_config: Arc<NodeUserConfig>,
+        config: &ExporterConfig,
+    ) -> Self
     where
         E: local::Exporter<PData> + 'static,
     {
+        let runtime_config = config.clone();
         let (control_sender, control_receiver) =
             mpsc::Channel::new(config.control_channel.capacity);
 
         ExporterWrapper::Local {
+            node: node.clone(),
+            runtime_config,
             user_config,
-            effect_handler: local::EffectHandler::new(config.name.clone()),
+            effect_handler: local::EffectHandler::new(node),
             exporter: Box::new(exporter),
             control_sender: LocalSender::MpscSender(control_sender),
             control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
@@ -99,16 +116,24 @@ impl<PData> ExporterWrapper<PData> {
 
     /// Creates a new shared `ExporterWrapper` with the given exporter and configuration (Send
     /// implementation).
-    pub fn shared<E>(exporter: E, user_config: Arc<NodeUserConfig>, config: &ExporterConfig) -> Self
+    pub fn shared<E>(
+        exporter: E,
+        node: NodeUniq,
+        user_config: Arc<NodeUserConfig>,
+        config: &ExporterConfig,
+    ) -> Self
     where
         E: shared::Exporter<PData> + 'static,
     {
+        let runtime_config = config.clone();
         let (control_sender, control_receiver) =
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ExporterWrapper::Shared {
+            node: node.clone(),
+            runtime_config,
             user_config,
-            effect_handler: shared::EffectHandler::new(config.name.clone()),
+            effect_handler: shared::EffectHandler::new(node),
             exporter: Box::new(exporter),
             control_sender: SharedSender::MpscSender(control_sender),
             control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
@@ -167,6 +192,14 @@ impl<PData> ExporterWrapper<PData> {
             }
         }
     }
+
+    /// Returns the exporter name.
+    pub fn exporter_name(&self) -> NodeId {
+        match self {
+            ExporterWrapper::Local { runtime_config, .. } => runtime_config.name.clone(),
+            ExporterWrapper::Shared { runtime_config, .. } => runtime_config.name.clone(),
+        }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -175,6 +208,13 @@ impl<PData> Node for ExporterWrapper<PData> {
         match self {
             ExporterWrapper::Local { .. } => false,
             ExporterWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn node_uniq(&self) -> NodeUniq {
+        match self {
+            ExporterWrapper::Local { node, .. } => node.clone(),
+            ExporterWrapper::Shared { node, .. } => node.clone(),
         }
     }
 
@@ -203,7 +243,7 @@ impl<PData> Node for ExporterWrapper<PData> {
 impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
-        node_id: NodeId,
+        node: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, receiver) {
@@ -216,7 +256,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
                 Ok(())
             }
             (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
-                exporter: node_id,
+                exporter: node.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }
@@ -384,6 +424,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::local(
             TestExporter::new(test_runtime.counters()),
+            test_runtime.test_uniq(),
             user_config,
             test_runtime.config(),
         );
@@ -400,6 +441,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::shared(
             TestExporter::new(test_runtime.counters()),
+            test_runtime.test_uniq(),
             user_config,
             test_runtime.config(),
         );

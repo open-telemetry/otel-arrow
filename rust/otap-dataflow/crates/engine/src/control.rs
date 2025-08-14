@@ -4,10 +4,10 @@
 //! Enables management of node behavior, configuration, and lifecycle events, including shutdown,
 //! configuration updates, and timer management.
 
+use crate::context::Unique;
 use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
 use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
@@ -70,14 +70,14 @@ pub enum PipelineControlMsg {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
-        node_id: NodeId,
+        node_id: Unique,
         /// Duration of the timer interval.
         duration: Duration,
     },
     /// Requests cancellation of a periodic timer for the specified node.
     CancelTimer {
         /// Identifier of the node for which the timer is being canceled.
-        node_id: NodeId,
+        node_id: Unique,
     },
     /// Requests shutdown of the node request manager.
     Shutdown,

@@ -10,10 +10,10 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
+use crate::context::Unique;
 use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::message::Sender;
-use otap_df_config::NodeId;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
@@ -32,15 +32,15 @@ pub struct PipelineCtrlMsgManager {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
     /// Allows sending control messages back to nodes.
-    control_senders: HashMap<NodeId, Sender<NodeControlMsg>>,
+    control_senders: HashMap<Unique, Sender<NodeControlMsg>>,
     /// Min-heap of (Instant, NodeId) for timer expirations.
-    timers: BinaryHeap<Reverse<(Instant, NodeId)>>,
+    timers: BinaryHeap<Reverse<(Instant, Unique)>>,
     /// Set of NodeIds with canceled timers, so we can skip them when they pop.
-    canceled: HashSet<NodeId>,
+    canceled: HashSet<Unique>,
     /// Maps NodeId to the currently scheduled expiration Instant, to avoid firing outdated timers.
-    timer_map: HashMap<NodeId, Instant>,
+    timer_map: HashMap<Unique, Instant>,
     /// Maps NodeId to the timer duration, for recurring timers.
-    durations: HashMap<NodeId, std::time::Duration>,
+    durations: HashMap<Unique, std::time::Duration>,
 }
 
 impl PipelineCtrlMsgManager {
@@ -48,7 +48,7 @@ impl PipelineCtrlMsgManager {
     #[must_use]
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
-        control_senders: HashMap<NodeId, Sender<NodeControlMsg>>,
+        control_senders: HashMap<Unique, Sender<NodeControlMsg>>,
     ) -> Self {
         Self {
             pipeline_ctrl_msg_receiver,
@@ -80,14 +80,14 @@ impl PipelineCtrlMsgManager {
                         PipelineControlMsg::StartTimer { node_id, duration } => {
                             // Schedule a new timer for this node.
                             let when = Instant::now() + duration;
-                            self.timers.push(Reverse((when, node_id.clone())));
-                            let _ = self.timer_map.insert(node_id.clone(), when);
-                            let _ = self.durations.insert(node_id.clone(), duration);
+                            self.timers.push(Reverse((when, node_id)));
+                            let _ = self.timer_map.insert(node_id, when);
+                            let _ = self.durations.insert(node_id, duration);
                             let _ = self.canceled.remove(&node_id); // Un-cancel if previously canceled.
                         }
                         PipelineControlMsg::CancelTimer { node_id } => {
                             // Mark the timer as canceled and remove from maps.
-                            let _ = self.canceled.insert(node_id.clone());
+                            let _ = self.canceled.insert(node_id);
                             let _ = self.timer_map.remove(&node_id);
                             let _ = self.durations.remove(&node_id);
                         }
@@ -114,14 +114,14 @@ impl PipelineCtrlMsgManager {
                                     if let Some(sender) = self.control_senders.get(&node_id) {
                                         let _ = sender.send(NodeControlMsg::TimerTick {}).await;
                                     } else {
-                                        return Err(Error::InternalError {message: format!("No control sender for node: {node_id}")});
+                                        return Err(Error::InternalError {message: format!("No control sender for node: {node_id:?}")});
                                     }
 
                                     // Schedule next recurrence if still not canceled
                                     if let Some(&duration) = self.durations.get(&node_id) {
                                         let next_when = Instant::now() + duration;
-                                        self.timers.push(Reverse((next_when, node_id.clone())));
-                                        let _ = self.timer_map.insert(node_id.clone(), next_when);
+                                        self.timers.push(Reverse((next_when, node_id)));
+                                        let _ = self.timer_map.insert(node_id, next_when);
                                     }
                                 }
                             }
@@ -171,7 +171,7 @@ mod tests {
         let node_ids: Vec<NodeId> = vec!["node1".into(), "node2".into(), "node3".into()];
         for node_id in node_ids {
             let (sender, receiver) = create_mock_control_sender();
-            let _ = control_senders.insert(node_id.clone(), sender);
+            let _ = control_senders.insert(node_id, sender);
             let _ = control_receivers.insert(node_id, receiver);
         }
 
@@ -201,7 +201,7 @@ mod tests {
 
                 // Send StartTimer message to schedule a recurring timer
                 let start_msg = PipelineControlMsg::StartTimer {
-                    node_id: node_id.clone(),
+                    node_id: node_id,
                     duration,
                 };
                 pipeline_tx.send(start_msg).await.unwrap();
@@ -261,15 +261,13 @@ mod tests {
 
                 // Schedule a timer
                 let start_msg = PipelineControlMsg::StartTimer {
-                    node_id: node_id.clone(),
+                    node_id: node_id,
                     duration,
                 };
                 pipeline_tx.send(start_msg).await.unwrap();
 
                 // Immediately cancel the timer before it expires
-                let cancel_msg = PipelineControlMsg::CancelTimer {
-                    node_id: node_id.clone(),
-                };
+                let cancel_msg = PipelineControlMsg::CancelTimer { node_id: node_id };
                 pipeline_tx.send(cancel_msg).await.unwrap();
 
                 // Wait and verify no TimerTick is received (timeout expected)
@@ -407,7 +405,7 @@ mod tests {
 
                 // Schedule initial timer
                 let start_msg1 = PipelineControlMsg::StartTimer {
-                    node_id: node_id.clone(),
+                    node_id: node_id,
                     duration: first_duration,
                 };
                 pipeline_tx.send(start_msg1).await.unwrap();
@@ -415,7 +413,7 @@ mod tests {
                 // Wait a bit, then replace with a shorter timer
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 let start_msg2 = PipelineControlMsg::StartTimer {
-                    node_id: node_id.clone(),
+                    node_id: node_id,
                     duration: second_duration,
                 };
                 pipeline_tx.send(start_msg2).await.unwrap();
@@ -498,7 +496,7 @@ mod tests {
 
                 // Send StartTimer for node with no control sender
                 let start_msg = PipelineControlMsg::StartTimer {
-                    node_id: node_id.clone(),
+                    node_id: node_id,
                     duration,
                 };
                 pipeline_tx.send(start_msg).await.unwrap();

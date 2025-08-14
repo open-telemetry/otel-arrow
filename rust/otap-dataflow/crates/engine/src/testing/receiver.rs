@@ -6,6 +6,7 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
+use crate::context::{NodeDefinition, NodeUniq};
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
@@ -14,6 +15,7 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataSender;
 use crate::receiver::ReceiverWrapper;
+use crate::runtime_pipeline::NodeType;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
@@ -134,6 +136,9 @@ pub struct TestRuntime<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
+    /// nodes defined for the test (typically 1)
+    node_defs: Vec<NodeDefinition>,
+
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
@@ -181,12 +186,14 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
+        let node_defs = Vec::new();
 
         Self {
             config,
             rt,
             local_tasks,
             counter: CtrlMsgCounters::new(),
+            node_defs,
             _pd: PhantomData,
         }
     }
@@ -199,6 +206,16 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the message counter.
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counter.clone()
+    }
+
+    /// Returns the test node identifier corresponding with config.name.
+    pub fn test_uniq(&mut self) -> NodeUniq {
+        NodeUniq::next(
+            self.config.name.clone(),
+            NodeType::Receiver,
+            &mut self.node_defs,
+        )
+        .expect("valid test config")
     }
 
     /// Sets the receiver for the test runtime and returns a test phase.

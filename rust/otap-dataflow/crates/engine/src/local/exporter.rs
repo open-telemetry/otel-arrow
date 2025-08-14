@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::context::NodeUniq;
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
@@ -94,7 +95,7 @@ pub struct EffectHandler<PData> {
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
     #[must_use]
-    pub fn new(node_id: NodeId) -> Self {
+    pub fn new(node_id: NodeUniq) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id),
             _pd: PhantomData,

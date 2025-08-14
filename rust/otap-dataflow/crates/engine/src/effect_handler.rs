@@ -2,6 +2,7 @@
 
 //! Common foundation of all effect handlers.
 
+use crate::context::{NodeUniq, Unique};
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use otap_df_channel::error::SendError;
@@ -16,16 +17,16 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
-    pub(crate) node_id: NodeId,
+    pub(crate) node: NodeUniq,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender>,
 }
 
 impl EffectHandlerCore {
     /// Creates a new EffectHandlerCore with node_id.
-    pub(crate) fn new(node_id: NodeId) -> Self {
+    pub(crate) fn new(node: NodeUniq) -> Self {
         Self {
-            node_id,
+            node,
             pipeline_ctrl_msg_sender: None,
         }
     }
@@ -37,10 +38,10 @@ impl EffectHandlerCore {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
     }
 
-    /// Returns the id of the node associated with this effect handler.
+    /// Returns the name of the node associated with this effect handler.
     #[must_use]
     pub(crate) fn node_id(&self) -> NodeId {
-        self.node_id.clone()
+        self.node.name.clone()
     }
 
     /// Print an info message to stdout.
@@ -162,14 +163,14 @@ impl EffectHandlerCore {
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::StartTimer {
-                node_id: self.node_id.clone(),
+                node_id: self.node.id,
                 duration,
             })
             .await
             .map_err(Error::PipelineControlMsgError)?;
 
         Ok(TimerCancelHandle {
-            node_id: self.node_id.clone(),
+            node_id: self.node.id,
             pipeline_ctrl_msg_sender,
         })
     }
@@ -177,7 +178,7 @@ impl EffectHandlerCore {
 
 /// Handle to cancel a running timer.
 pub struct TimerCancelHandle {
-    node_id: NodeId,
+    node_id: Unique,
     pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
 }
 

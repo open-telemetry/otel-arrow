@@ -31,6 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
+use crate::context::NodeUniq;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
@@ -102,12 +103,12 @@ impl<PData> EffectHandler<PData> {
     /// when it uses components that are `Send`.
     #[must_use]
     pub fn new(
-        node_id: NodeId,
+        node: NodeUniq,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id);
+        let mut core = EffectHandlerCore::new(node);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
 
         // Determine and cache the default sender

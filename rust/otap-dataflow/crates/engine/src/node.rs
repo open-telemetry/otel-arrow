@@ -6,6 +6,7 @@
 //! Receivers and processors implement the [`NodeWithPDataSender`] trait.
 //! Processors and exporters implement the [`NodeWithPDataReceiver`] trait.
 
+use crate::context::NodeUniq;
 use crate::control::NodeControlMsg;
 use crate::error::Error;
 use crate::message::{Receiver, Sender};
@@ -21,6 +22,9 @@ pub trait Node {
     #[must_use]
     fn is_shared(&self) -> bool;
 
+    /// Unique identifier.
+    fn node_uniq(&self) -> NodeUniq;
+
     /// Returns a reference to the node's user configuration.
     #[must_use]
     fn user_config(&self) -> Arc<NodeUserConfig>;
@@ -34,8 +38,8 @@ pub trait NodeWithPDataSender<PData>: Node {
     /// Sets the sender for pdata messages on the node.
     fn set_pdata_sender(
         &mut self,
-        node_id: NodeId,
-        _port: PortName,
+        node: NodeId,
+        port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>>;
 }
@@ -45,7 +49,7 @@ pub trait NodeWithPDataReceiver<PData>: Node {
     /// Sets the receiver for pdata messages on the node.
     fn set_pdata_receiver(
         &mut self,
-        node_id: NodeId,
+        node: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>>;
 }

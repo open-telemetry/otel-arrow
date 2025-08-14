@@ -7,6 +7,7 @@
 //! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
+use crate::context::NodeUniq;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -29,6 +30,8 @@ use std::sync::Arc;
 pub enum ReceiverWrapper<PData> {
     /// A receiver with a `!Send` implementation.
     Local {
+        /// Unique node identifier.
+        node: NodeUniq,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -46,6 +49,8 @@ pub enum ReceiverWrapper<PData> {
     },
     /// A receiver with a `Send` implementation.
     Shared {
+        /// Unique node identifier.
+        node: NodeUniq,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -83,7 +88,12 @@ impl<PData> Controllable for ReceiverWrapper<PData> {
 
 impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
-    pub fn local<R>(receiver: R, user_config: Arc<NodeUserConfig>, config: &ReceiverConfig) -> Self
+    pub fn local<R>(
+        receiver: R,
+        node: NodeUniq,
+        user_config: Arc<NodeUserConfig>,
+        config: &ReceiverConfig,
+    ) -> Self
     where
         R: local::Receiver<PData> + 'static,
     {
@@ -91,6 +101,7 @@ impl<PData> ReceiverWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ReceiverWrapper::Local {
+            node,
             user_config,
             runtime_config: config.clone(),
             receiver: Box::new(receiver),
@@ -102,7 +113,12 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
-    pub fn shared<R>(receiver: R, user_config: Arc<NodeUserConfig>, config: &ReceiverConfig) -> Self
+    pub fn shared<R>(
+        receiver: R,
+        node: NodeUniq,
+        user_config: Arc<NodeUserConfig>,
+        config: &ReceiverConfig,
+    ) -> Self
     where
         R: shared::Receiver<PData> + 'static,
     {
@@ -110,6 +126,7 @@ impl<PData> ReceiverWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ReceiverWrapper::Shared {
+            node,
             user_config,
             runtime_config: config.clone(),
             receiver: Box::new(receiver),
@@ -127,6 +144,7 @@ impl<PData> ReceiverWrapper<PData> {
     ) -> Result<(), Error<PData>> {
         match self {
             ReceiverWrapper::Local {
+                node,
                 runtime_config,
                 receiver,
                 control_receiver,
@@ -145,7 +163,7 @@ impl<PData> ReceiverWrapper<PData> {
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
                 let effect_handler = local::EffectHandler::new(
-                    runtime_config.name.clone(),
+                    node,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
@@ -153,6 +171,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
+                node,
                 runtime_config,
                 receiver,
                 control_receiver,
@@ -171,7 +190,7 @@ impl<PData> ReceiverWrapper<PData> {
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
                 let effect_handler = shared::EffectHandler::new(
-                    runtime_config.name.clone(),
+                    node,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
@@ -192,6 +211,14 @@ impl<PData> ReceiverWrapper<PData> {
             }
         }
     }
+
+    /// Returns the receiver name.
+    pub fn receiver_name(&self) -> NodeId {
+        match self {
+            ReceiverWrapper::Local { runtime_config, .. } => runtime_config.name.clone(),
+            ReceiverWrapper::Shared { runtime_config, .. } => runtime_config.name.clone(),
+        }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -200,6 +227,13 @@ impl<PData> Node for ReceiverWrapper<PData> {
         match self {
             ReceiverWrapper::Local { .. } => false,
             ReceiverWrapper::Shared { .. } => true,
+        }
+    }
+
+    fn node_uniq(&self) -> NodeUniq {
+        match self {
+            ReceiverWrapper::Local { node, .. } => node.clone(),
+            ReceiverWrapper::Shared { node, .. } => node.clone(),
         }
     }
 
@@ -228,7 +262,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
 impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
-        node_id: NodeId,
+        node: NodeId,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
@@ -242,11 +276,11 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 Ok(())
             }
             (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
+                processor: node,
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
+                processor: node,
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }
@@ -530,6 +564,7 @@ mod tests {
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::local(
             TestReceiver::new(test_runtime.counters(), port_tx),
+            test_runtime.test_uniq(),
             user_config,
             test_runtime.config(),
         );
@@ -550,6 +585,7 @@ mod tests {
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::shared(
             TestReceiver::new(test_runtime.counters(), port_tx),
+            test_runtime.test_uniq(),
             user_config,
             test_runtime.config(),
         );

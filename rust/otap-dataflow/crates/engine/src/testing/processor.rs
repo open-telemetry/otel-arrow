@@ -6,11 +6,13 @@
 //! setup and lifecycle management.
 
 use crate::config::ProcessorConfig;
+use crate::context::{NodeDefinition, NodeUniq};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
+use crate::runtime_pipeline::NodeType;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use std::fmt::Debug;
@@ -109,6 +111,9 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
+    /// nodes defined for the test (typically 1)
+    node_defs: Vec<NodeDefinition>,
+
     _pd: PhantomData<PData>,
 }
 
@@ -134,12 +139,14 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
+        let node_defs = Vec::new();
 
         Self {
             config,
             rt,
             local_tasks,
             counter: CtrlMsgCounters::new(),
+            node_defs,
             _pd: PhantomData,
         }
     }
@@ -152,6 +159,16 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the message counter.
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counter.clone()
+    }
+
+    /// Returns the test node identifier corresponding with config.name.
+    pub fn test_uniq(&mut self) -> NodeUniq {
+        NodeUniq::next(
+            self.config.name.clone(),
+            NodeType::Processor,
+            &mut self.node_defs,
+        )
+        .expect("valid test config")
     }
 
     /// Initializes the test runtime with a processor using a non-sendable effect handler.

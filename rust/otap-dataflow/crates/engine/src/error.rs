@@ -145,10 +145,10 @@ pub enum Error<T> {
     },
 
     /// Unknown node.
-    #[error("Unknown node `{node_id}`")]
+    #[error("Unknown node `{node}`")]
     UnknownNode {
         /// The id of the unknown node.
-        node_id: NodeId,
+        node: NodeId,
     },
 
     /// Pdata receiver is not supported for receiver nodes. Receiver nodes only support
@@ -194,4 +194,8 @@ pub enum Error<T> {
         /// An internal error message.
         message: String,
     },
+
+    /// Too many nodes are configured.
+    #[error("Too many nodes defined")]
+    TooManyNodes {},
 }
