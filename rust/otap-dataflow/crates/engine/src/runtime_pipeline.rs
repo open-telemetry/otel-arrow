@@ -7,8 +7,9 @@ use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
-use crate::node::{Node, NodeWithPDataReceiver, NodeWithPDataSender};
-use crate::node::{NodeDefs, NodeType, NodeUnique, Unique};
+use crate::node::{
+    Node, NodeDefs, NodeType, NodeUnique, NodeWithPDataReceiver, NodeWithPDataSender, Unique,
+};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::{ExporterFactory, ProcessorFactory, ReceiverFactory};
