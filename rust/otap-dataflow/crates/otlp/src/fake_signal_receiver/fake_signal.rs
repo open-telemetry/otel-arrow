@@ -24,109 +24,85 @@ use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
 
 /// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]
-pub fn fake_otlp_traces(
-    resource_count: usize,
-    scope_count: usize,
-    message_count: usize,
-    registry: &ResolvedRegistry,
-) -> TracesData {
+pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> TracesData {
     let mut resources: Vec<ResourceSpans> = vec![];
 
-    for _ in 0..resource_count {
-        let mut scopes: Vec<ScopeSpans> = vec![];
-        for _ in 0..scope_count {
-            scopes.push(
-                ScopeSpans::build(
-                    InstrumentationScope::build(get_scope_name())
-                        .version(get_scope_version())
-                        .finish(),
-                )
-                .spans(spans(registry, message_count))
-                .finish(),
-            );
-        }
+    let mut scopes: Vec<ScopeSpans> = vec![];
 
-        resources.push(
-            ResourceSpans::build(Resource::default())
-                .scope_spans(scopes)
+    scopes.push(
+        ScopeSpans::build(
+            InstrumentationScope::build(get_scope_name())
+                .version(get_scope_version())
                 .finish(),
-        );
-    }
+        )
+        .spans(spans(signal_count, registry))
+        .finish(),
+    );
+
+    resources.push(
+        ResourceSpans::build(Resource::default())
+            .scope_spans(scopes)
+            .finish(),
+    );
 
     TracesData::new(resources)
 }
 
 /// Generates LogsData with the specified resource/scope count and defined events (structured logs) in the registry
 #[must_use]
-pub fn fake_otlp_logs(
-    resource_count: usize,
-    scope_count: usize,
-    message_count: usize,
-    registry: &ResolvedRegistry,
-) -> LogsData {
+pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsData {
     let mut resources: Vec<ResourceLogs> = vec![];
 
-    for _ in 0..resource_count {
-        let mut scopes: Vec<ScopeLogs> = vec![];
-        for _ in 0..scope_count {
-            scopes.push(
-                ScopeLogs::build(
-                    InstrumentationScope::build(get_scope_name())
-                        .version(get_scope_version())
-                        .finish(),
-                )
-                .log_records(logs(registry, message_count))
-                .finish(),
-            );
-        }
+    let mut scopes: Vec<ScopeLogs> = vec![];
 
-        resources.push(
-            ResourceLogs::build(Resource::default())
-                .scope_logs(scopes)
+    scopes.push(
+        ScopeLogs::build(
+            InstrumentationScope::build(get_scope_name())
+                .version(get_scope_version())
                 .finish(),
-        );
-    }
+        )
+        .log_records(logs(signal_count, registry))
+        .finish(),
+    );
+
+    resources.push(
+        ResourceLogs::build(Resource::default())
+            .scope_logs(scopes)
+            .finish(),
+    );
 
     LogsData::new(resources)
 }
 
 /// Generates MetricsData with the specified resource/scope count and defined metrics in the registry
 #[must_use]
-pub fn fake_otlp_metrics(
-    resource_count: usize,
-    scope_count: usize,
-    message_count: usize,
-    registry: &ResolvedRegistry,
-) -> MetricsData {
+pub fn fake_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> MetricsData {
     let mut resources: Vec<ResourceMetrics> = vec![];
 
-    for _ in 0..resource_count {
-        let mut scopes: Vec<ScopeMetrics> = vec![];
-        for _ in 0..scope_count {
-            scopes.push(
-                ScopeMetrics::build(
-                    InstrumentationScope::build(get_scope_name())
-                        .version(get_scope_version())
-                        .finish(),
-                )
-                .metrics(metrics(registry, message_count))
-                .finish(),
-            );
-        }
+    let mut scopes: Vec<ScopeMetrics> = vec![];
 
-        resources.push(
-            ResourceMetrics::build(Resource::default())
-                .scope_metrics(scopes)
+    scopes.push(
+        ScopeMetrics::build(
+            InstrumentationScope::build(get_scope_name())
+                .version(get_scope_version())
                 .finish(),
-        );
-    }
+        )
+        .metrics(metrics(signal_count, registry))
+        .finish(),
+    );
+
+    resources.push(
+        ResourceMetrics::build(Resource::default())
+            .scope_metrics(scopes)
+            .finish(),
+    );
 
     MetricsData::new(resources)
 }
 
 /// generate each span defined in the resolved registry
 #[must_use]
-fn spans(registry: &ResolvedRegistry, message_count: usize) -> Vec<Span> {
+fn spans(signal_count: usize, registry: &ResolvedRegistry) -> Vec<Span> {
     // Emit each span to the OTLP receiver.
     let mut spans = vec![];
     for group in registry
@@ -134,7 +110,7 @@ fn spans(registry: &ResolvedRegistry, message_count: usize) -> Vec<Span> {
         .iter()
         .filter(|g| g.r#type == GroupType::Span)
         .cycle()
-        .take(message_count)
+        .take(signal_count)
     {
         let start_time = current_time();
         // todo add random delay (configurable via annotations?)
@@ -165,7 +141,7 @@ fn spans(registry: &ResolvedRegistry, message_count: usize) -> Vec<Span> {
 
 /// generate each metric defined in the resolved registry
 #[must_use]
-fn metrics(registry: &ResolvedRegistry, message_count: usize) -> Vec<Metric> {
+fn metrics(signal_count: usize, registry: &ResolvedRegistry) -> Vec<Metric> {
     let mut metrics = vec![];
 
     for group in registry
@@ -173,7 +149,7 @@ fn metrics(registry: &ResolvedRegistry, message_count: usize) -> Vec<Metric> {
         .iter()
         .filter(|g| g.r#type == GroupType::Metric)
         .cycle()
-        .take(message_count)
+        .take(signal_count)
     {
         if let Some(instrument) = &group.instrument {
             let metric_name = group.metric_name.clone().unwrap_or("".to_owned());
@@ -262,14 +238,14 @@ fn metrics(registry: &ResolvedRegistry, message_count: usize) -> Vec<Metric> {
 
 /// generate each span defined in the resolved registry
 #[must_use]
-fn logs(registry: &ResolvedRegistry, message_count: usize) -> Vec<LogRecord> {
+fn logs(signal_count: usize, registry: &ResolvedRegistry) -> Vec<LogRecord> {
     let mut log_records = vec![];
     for group in registry
         .groups
         .iter()
         .filter(|g| g.r#type == GroupType::Event)
         .cycle()
-        .take(message_count)
+        .take(signal_count)
     {
         // events are structured logs
         let timestamp = current_time();

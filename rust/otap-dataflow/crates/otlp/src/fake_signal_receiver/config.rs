@@ -8,7 +8,12 @@ use otel_arrow_rust::proto::opentelemetry::{
 };
 use serde::{Deserialize, Serialize};
 
+use weaver_common::result::WResult;
+use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_forge::registry::ResolvedRegistry;
+use weaver_resolver::SchemaResolver;
+use weaver_semconv::registry::SemConvRegistry;
+use weaver_semconv::registry_repo::RegistryRepo;
 
 /// Temp pdata
 #[derive(Clone, Debug)]
@@ -25,44 +30,30 @@ pub enum OTLPSignal {
 pub struct Config {
     // Configuration of the traffic to generate
     traffic_config: TrafficConfig,
-
-    resolved_registry: ResolvedRegistry,
+    #[serde(default = "default_registry_path")]
+    registry_path: VirtualDirectoryPath,
 }
 
 /// Configuration to describe the traffic being sent
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TrafficConfig {
-    #[serde(default = "default_messages_per_second")]
-    messages_per_second: usize,
-    #[serde(default = "default_load")]
-    metric_load: Option<LoadConfig>,
-    #[serde(default = "default_load")]
-    trace_load: Option<LoadConfig>,
-    #[serde(default = "default_load")]
-    log_load: Option<LoadConfig>,
-}
-
-/// Configuration to describe how large the data should be
-#[derive(Clone, Deserialize, Serialize)]
-pub struct LoadConfig {
-    // number of messages produced
-    #[serde(default = "default_message_count")]
-    messages_per_scope: usize,
-    // number of scope produced
-    #[serde(default = "default_scope_count")]
-    scopes_per_resource: usize,
-    // number of resources produced
-    #[serde(default = "default_resource_count")]
-    resources_per_request: usize,
+    #[serde(default = "default_signals_per_second")]
+    signals_per_second: usize,
+    #[serde(default = "default_weight")]
+    metric_weight: u32,
+    #[serde(default = "default_weight")]
+    trace_weight: u32,
+    #[serde(default = "default_weight")]
+    log_weight: u32,
 }
 
 impl Config {
     /// Create a new config given a name and a vector of scenario steps
     #[must_use]
-    pub fn new(traffic_config: TrafficConfig, resolved_registry: ResolvedRegistry) -> Self {
+    pub fn new(traffic_config: TrafficConfig, registry_path: VirtualDirectoryPath) -> Self {
         Self {
             traffic_config,
-            resolved_registry,
+            registry_path,
         }
     }
     /// Provide a reference to the vector of scenario steps
@@ -72,8 +63,38 @@ impl Config {
     }
     /// Provide a reference to the ResolvedRegistry
     #[must_use]
-    pub fn get_registry(&self) -> &ResolvedRegistry {
-        &self.resolved_registry
+    pub fn get_registry(&self) -> Result<ResolvedRegistry, String> {
+        let registry_repo =
+            RegistryRepo::try_new("main", &self.registry_path).map_err(|err| err.to_string())?;
+
+        // Load the semantic convention specs
+        let semconv_specs = match SchemaResolver::load_semconv_specs(&registry_repo, true, false) {
+            WResult::Ok(semconv_specs) => semconv_specs,
+            WResult::OkWithNFEs(semconv_specs, _) => semconv_specs,
+            WResult::FatalErr(err) => return Err(err.to_string()),
+        };
+
+        // Resolve the main registry
+        let mut registry = SemConvRegistry::from_semconv_specs(&registry_repo, semconv_specs)
+            .map_err(|err| err.to_string())?;
+        // Resolve the semantic convention specifications.
+        // If there are any resolution errors, they should be captured into the ongoing list of
+        // diagnostic messages and returned immediately because there is no point in continuing
+        // as the resolution is a prerequisite for the next stages.
+        let resolved_schema =
+            match SchemaResolver::resolve_semantic_convention_registry(&mut registry, true) {
+                WResult::Ok(resolved_schema) => resolved_schema,
+                WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                WResult::FatalErr(err) => return Err(err.to_string()),
+            };
+
+        let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
+            &resolved_schema.registry,
+            resolved_schema.catalog(),
+        )
+        .map_err(|err| err.to_string())?;
+
+        Ok(resolved_registry)
     }
 }
 
@@ -81,120 +102,54 @@ impl TrafficConfig {
     /// create a new traffic config which describes the output traffic of the receiver
     #[must_use]
     pub fn new(
-        messages_per_second: usize,
-        metric_load: Option<LoadConfig>,
-        trace_load: Option<LoadConfig>,
-        log_load: Option<LoadConfig>,
+        signals_per_second: usize,
+        metric_weight: u32,
+        trace_weight: u32,
+        log_weight: u32,
     ) -> Self {
         Self {
-            messages_per_second,
-            metric_load,
-            trace_load,
-            log_load,
+            signals_per_second,
+            metric_weight,
+            trace_weight,
+            log_weight,
         }
     }
 
     /// return the specified message rate
     #[must_use]
     pub fn get_message_rate(&self) -> usize {
-        self.messages_per_second
+        self.signals_per_second
     }
 
     /// get the config describing how big the metric signal is
     #[must_use]
-    pub fn get_metric_load(&self) -> Option<LoadConfig> {
-        self.metric_load.clone()
-    }
+    pub fn calculate_signal_count(&self) -> (usize, usize, usize) {
+        // ToDo: Handle case where the total signal count don't add up the the signals being sent per second
+        let total_weight: f32 = (self.trace_weight + self.metric_weight + self.log_weight) as f32;
 
-    /// get the config describing how big the trace signal is
-    #[must_use]
-    pub fn get_trace_load(&self) -> Option<LoadConfig> {
-        self.trace_load.clone()
-    }
+        let metric_percent: f32 = self.metric_weight as f32 / total_weight;
+        let trace_percent: f32 = self.trace_weight as f32 / total_weight;
+        let log_percent: f32 = self.log_weight as f32 / total_weight;
 
-    /// get the config describing how big the log signal is
-    #[must_use]
-    pub fn get_log_load(&self) -> Option<LoadConfig> {
-        self.log_load.clone()
-    }
-
-    /// calculate the total message load from all signals
-    #[must_use]
-    pub fn get_total_message_size(&self) -> usize {
-        let mut total_message = 0;
-
-        if let Some(load) = &self.metric_load {
-            total_message += load.calculate_total_message_size();
-        }
-
-        if let Some(load) = &self.trace_load {
-            total_message += load.calculate_total_message_size();
-        }
-
-        if let Some(load) = &self.log_load {
-            total_message += load.calculate_total_message_size();
-        }
-
-        total_message
+        let metric_count: usize = (metric_percent * self.signals_per_second as f32) as usize;
+        let trace_count: usize = (trace_percent * self.signals_per_second as f32) as usize;
+        let log_count: usize = (log_percent * self.signals_per_second as f32) as usize;
+        (metric_count, trace_count, log_count)
     }
 }
 
-impl LoadConfig {
-    /// create a new confg defining the size of the request load
-    #[must_use]
-    pub fn new(
-        resources_per_request: usize,
-        scopes_per_resource: usize,
-        messages_per_scope: usize,
-    ) -> Self {
-        Self {
-            resources_per_request,
-            scopes_per_resource,
-            messages_per_scope,
-        }
-    }
-
-    /// get the number of resources to generate
-    #[must_use]
-    pub fn get_resources(&self) -> usize {
-        self.resources_per_request
-    }
-
-    /// get the number of scopes to generate per resource
-    #[must_use]
-    pub fn get_scopes(&self) -> usize {
-        self.scopes_per_resource
-    }
-
-    /// get the number of messages to generate per scope
-    #[must_use]
-    pub fn get_messages(&self) -> usize {
-        self.messages_per_scope
-    }
-
-    /// calculate the total messages that will be sent with a signal load
-    #[must_use]
-    pub fn calculate_total_message_size(&self) -> usize {
-        self.resources_per_request * self.scopes_per_resource * self.messages_per_scope
-    }
-}
-
-fn default_messages_per_second() -> usize {
+fn default_signals_per_second() -> usize {
     30
 }
 
-fn default_message_count() -> usize {
-    10
+fn default_weight() -> u32 {
+    0
 }
 
-fn default_resource_count() -> usize {
-    1
-}
-
-fn default_scope_count() -> usize {
-    1
-}
-
-fn default_load() -> Option<LoadConfig> {
-    None
+fn default_registry_path() -> VirtualDirectoryPath {
+    VirtualDirectoryPath::GitRepo {
+        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+        sub_folder: Some("model".to_owned()),
+        refspec: None,
+    }
 }
