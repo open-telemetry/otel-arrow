@@ -35,13 +35,13 @@ fn generate_native_keys_attr_batch(
 }
 
 fn generate_dict_keys_attribute_batch(
-    num_rows: usize,
+    num_keys: usize,
     key_gen: impl Fn(usize) -> String,
     rows_per_key: usize,
 ) -> RecordBatch {
     let mut keys_dict_values_arr = StringBuilder::new();
     let mut keys_dict_keys_arr = PrimitiveBuilder::<UInt16Type>::new();
-    for i in 0..num_rows {
+    for i in 0..num_keys {
         let attr_key = key_gen(i);
         keys_dict_values_arr.append_value(attr_key);
         keys_dict_keys_arr.append_value_n(i as u16, rows_per_key);
@@ -62,12 +62,19 @@ fn generate_dict_keys_attribute_batch(
 
 fn bench_transform_attributes(c: &mut Criterion) {
     let mut group = c.benchmark_group("transform_attributes_dict_keys");
-    for size in [128, 1536, 8092] {
+    for (num_keys, num_rows) in [
+        (128, 512),  // 128 keys, 512 rows, 4 rows/key
+        (128, 1536), // 128 keys, 1536 rows, 24 rows/key
+        (128, 8192), // 128 keys, 8192 rows, 128 rows/key
+    ] {
+        let rows_per_key = num_rows / num_keys;
         let dict_transform_input =
-            generate_dict_keys_attribute_batch(size, |i| format!("attr{i}"), 20);
+            generate_dict_keys_attribute_batch(num_keys, |i| format!("attr{i}"), rows_per_key);
+
+        let benchmark_id_param = format!("keys={num_keys},rows={num_rows}");
 
         let _ = group.bench_with_input(
-            BenchmarkId::new("single_replace_no_deletes", size),
+            BenchmarkId::new("single_replace_no_deletes", &benchmark_id_param),
             &dict_transform_input,
             |b, input| {
                 b.iter_batched(
@@ -92,7 +99,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         );
 
         let _ = group.bench_with_input(
-            BenchmarkId::new("single_replace_single_delete", size),
+            BenchmarkId::new("single_replace_single_delete", &benchmark_id_param),
             &dict_transform_input,
             |b, input| {
                 b.iter_batched(
@@ -116,7 +123,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             },
         );
         let _ = group.bench_with_input(
-            BenchmarkId::new("no_replace_single_delete", size),
+            BenchmarkId::new("no_replace_single_delete", &benchmark_id_param),
             &dict_transform_input,
             |b, input| {
                 b.iter_batched(
@@ -141,7 +148,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
     group.finish();
 
     let mut group = c.benchmark_group("transform_attributes_native_keys");
-    for size in [128, 1536, 8092] {
+    for size in [128, 1536, 8192] {
         // this will generate a batch that replaces a contiguous block of attributes, to simulate
         // if attrs key was not dictionary encoded and the batch was sorted by key
         let block_transform_input =
