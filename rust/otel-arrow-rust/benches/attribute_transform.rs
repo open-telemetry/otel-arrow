@@ -63,9 +63,12 @@ fn generate_dict_keys_attribute_batch(
 fn bench_transform_attributes(c: &mut Criterion) {
     let mut group = c.benchmark_group("transform_attributes_dict_keys");
     for (num_keys, num_rows) in [
-        (32, 128),  // 128 keys, 128 rows, 4 rows/key
-        (32, 1536), // 128 keys, 1536 rows, 48 rows/key
-        (32, 8192), // 128 keys, 8192 rows, 256 rows/key
+        (32, 128),   // 32 keys, 128 rows, 4 rows/key
+        (32, 1536),  // 32 keys, 1536 rows, 48 rows/key
+        (32, 8192),  // 2 keys, 8192 rows, 256 rows/key
+        (128, 128),  // 128 keys, 128 rows, 1 rows/key
+        (128, 1536), // 128 keys, 1536 rows, 12 rows/key
+        (128, 8192), // 128 keys, 8192 rows, 64 rows/key
     ] {
         let rows_per_key = num_rows / num_keys;
         let dict_transform_input =
@@ -85,8 +88,8 @@ fn bench_transform_attributes(c: &mut Criterion) {
                             input,
                             &AttributesTransform {
                                 rename: Some(BTreeMap::from_iter([(
-                                    "attr100".into(),
-                                    "attr_100".into(),
+                                    "attr24".into(),
+                                    "attr_24".into(),
                                 )])),
                                 delete: None,
                             },
@@ -110,10 +113,10 @@ fn bench_transform_attributes(c: &mut Criterion) {
                             input,
                             &AttributesTransform {
                                 rename: Some(BTreeMap::from_iter([(
-                                    "attr100".into(),
-                                    "attr_100".into(),
+                                    "attr24".into(),
+                                    "attr_24".into(),
                                 )])),
-                                delete: Some(BTreeSet::from_iter(["attr80".into()])),
+                                delete: Some(BTreeSet::from_iter(["attr15".into()])),
                             },
                         )
                         .expect("expect no errors");
@@ -134,7 +137,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
                             input,
                             &AttributesTransform {
                                 rename: None,
-                                delete: Some(BTreeSet::from_iter(["attr80".into()])),
+                                delete: Some(BTreeSet::from_iter(["attr15".into()])),
                             },
                         )
                         .expect("expect no errors");
