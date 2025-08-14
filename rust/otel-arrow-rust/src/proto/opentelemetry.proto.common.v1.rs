@@ -5,7 +5,6 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AnyValue {
     #[prost(oneof="any_value::Value", tags="1, 2, 3, 4, 5, 6, 7")]
-    #[rustfmt::skip]
     pub value: ::core::option::Option<any_value::Value>,
 }
 /// Nested message and enum types in `AnyValue`.
@@ -14,25 +13,18 @@ pub mod any_value {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Value {
         #[prost(string, tag="1")]
-        #[rustfmt::skip]
         StringValue(::prost::alloc::string::String),
         #[prost(bool, tag="2")]
-        #[rustfmt::skip]
         BoolValue(bool),
         #[prost(int64, tag="3")]
-        #[rustfmt::skip]
         IntValue(i64),
         #[prost(double, tag="4")]
-        #[rustfmt::skip]
         DoubleValue(f64),
         #[prost(message, tag="5")]
-        #[rustfmt::skip]
         ArrayValue(super::ArrayValue),
         #[prost(message, tag="6")]
-        #[rustfmt::skip]
         KvlistValue(super::KeyValueList),
         #[prost(bytes, tag="7")]
-        #[rustfmt::skip]
         BytesValue(::prost::alloc::vec::Vec<u8>),
     }
 }
@@ -42,7 +34,6 @@ pub mod any_value {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ArrayValue {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub values: ::prost::alloc::vec::Vec<AnyValue>,
 }
 #[rustfmt::skip]
@@ -51,7 +42,6 @@ pub struct ArrayValue {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KeyValueList {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub values: ::prost::alloc::vec::Vec<KeyValue>,
 }
 #[rustfmt::skip]
@@ -60,10 +50,8 @@ pub struct KeyValueList {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KeyValue {
     #[prost(string, tag="1")]
-    #[rustfmt::skip]
     pub key: ::prost::alloc::string::String,
     #[prost(message, optional, tag="2")]
-    #[rustfmt::skip]
     pub value: ::core::option::Option<AnyValue>,
 }
 #[rustfmt::skip]
@@ -72,16 +60,12 @@ pub struct KeyValue {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InstrumentationScope {
     #[prost(string, tag="1")]
-    #[rustfmt::skip]
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
-    #[rustfmt::skip]
     pub version: ::prost::alloc::string::String,
     #[prost(message, repeated, tag="3")]
-    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<KeyValue>,
     #[prost(uint32, tag="4")]
-    #[rustfmt::skip]
     pub dropped_attributes_count: u32,
 }
 #[rustfmt::skip]
@@ -90,15 +74,11 @@ pub struct InstrumentationScope {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EntityRef {
     #[prost(string, tag="1")]
-    #[rustfmt::skip]
     pub schema_url: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
-    #[rustfmt::skip]
     pub r#type: ::prost::alloc::string::String,
     #[prost(string, repeated, tag="3")]
-    #[rustfmt::skip]
     pub id_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(string, repeated, tag="4")]
-    #[rustfmt::skip]
     pub description_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }

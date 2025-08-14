@@ -5,7 +5,6 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MetricsData {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub resource_metrics: ::prost::alloc::vec::Vec<ResourceMetrics>,
 }
 #[rustfmt::skip]
@@ -14,13 +13,10 @@ pub struct MetricsData {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceMetrics {
     #[prost(message, optional, tag="1")]
-    #[rustfmt::skip]
     pub resource: ::core::option::Option<super::super::resource::v1::Resource>,
     #[prost(message, repeated, tag="2")]
-    #[rustfmt::skip]
     pub scope_metrics: ::prost::alloc::vec::Vec<ScopeMetrics>,
     #[prost(string, tag="3")]
-    #[rustfmt::skip]
     pub schema_url: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
@@ -29,13 +25,10 @@ pub struct ResourceMetrics {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeMetrics {
     #[prost(message, optional, tag="1")]
-    #[rustfmt::skip]
     pub scope: ::core::option::Option<super::super::common::v1::InstrumentationScope>,
     #[prost(message, repeated, tag="2")]
-    #[rustfmt::skip]
     pub metrics: ::prost::alloc::vec::Vec<Metric>,
     #[prost(string, tag="3")]
-    #[rustfmt::skip]
     pub schema_url: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
@@ -44,19 +37,14 @@ pub struct ScopeMetrics {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Metric {
     #[prost(string, tag="1")]
-    #[rustfmt::skip]
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
-    #[rustfmt::skip]
     pub description: ::prost::alloc::string::String,
     #[prost(string, tag="3")]
-    #[rustfmt::skip]
     pub unit: ::prost::alloc::string::String,
     #[prost(message, repeated, tag="12")]
-    #[rustfmt::skip]
     pub metadata: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(oneof="metric::Data", tags="5, 7, 9, 10, 11")]
-    #[rustfmt::skip]
     pub data: ::core::option::Option<metric::Data>,
 }
 /// Nested message and enum types in `Metric`.
@@ -65,19 +53,14 @@ pub mod metric {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Data {
         #[prost(message, tag="5")]
-        #[rustfmt::skip]
         Gauge(super::Gauge),
         #[prost(message, tag="7")]
-        #[rustfmt::skip]
         Sum(super::Sum),
         #[prost(message, tag="9")]
-        #[rustfmt::skip]
         Histogram(super::Histogram),
         #[prost(message, tag="10")]
-        #[rustfmt::skip]
         ExponentialHistogram(super::ExponentialHistogram),
         #[prost(message, tag="11")]
-        #[rustfmt::skip]
         Summary(super::Summary),
     }
 }
@@ -87,7 +70,6 @@ pub mod metric {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Gauge {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub data_points: ::prost::alloc::vec::Vec<NumberDataPoint>,
 }
 #[rustfmt::skip]
@@ -96,13 +78,10 @@ pub struct Gauge {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Sum {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub data_points: ::prost::alloc::vec::Vec<NumberDataPoint>,
     #[prost(enumeration="AggregationTemporality", tag="2")]
-    #[rustfmt::skip]
     pub aggregation_temporality: i32,
     #[prost(bool, tag="3")]
-    #[rustfmt::skip]
     pub is_monotonic: bool,
 }
 #[rustfmt::skip]
@@ -111,10 +90,8 @@ pub struct Sum {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Histogram {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub data_points: ::prost::alloc::vec::Vec<HistogramDataPoint>,
     #[prost(enumeration="AggregationTemporality", tag="2")]
-    #[rustfmt::skip]
     pub aggregation_temporality: i32,
 }
 #[rustfmt::skip]
@@ -123,10 +100,8 @@ pub struct Histogram {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExponentialHistogram {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub data_points: ::prost::alloc::vec::Vec<ExponentialHistogramDataPoint>,
     #[prost(enumeration="AggregationTemporality", tag="2")]
-    #[rustfmt::skip]
     pub aggregation_temporality: i32,
 }
 #[rustfmt::skip]
@@ -135,7 +110,6 @@ pub struct ExponentialHistogram {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Summary {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub data_points: ::prost::alloc::vec::Vec<SummaryDataPoint>,
 }
 #[rustfmt::skip]
@@ -144,22 +118,16 @@ pub struct Summary {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NumberDataPoint {
     #[prost(message, repeated, tag="7")]
-    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(fixed64, tag="2")]
-    #[rustfmt::skip]
     pub start_time_unix_nano: u64,
     #[prost(fixed64, tag="3")]
-    #[rustfmt::skip]
     pub time_unix_nano: u64,
     #[prost(message, repeated, tag="5")]
-    #[rustfmt::skip]
     pub exemplars: ::prost::alloc::vec::Vec<Exemplar>,
     #[prost(uint32, tag="8")]
-    #[rustfmt::skip]
     pub flags: u32,
     #[prost(oneof="number_data_point::Value", tags="4, 6")]
-    #[rustfmt::skip]
     pub value: ::core::option::Option<number_data_point::Value>,
 }
 /// Nested message and enum types in `NumberDataPoint`.
@@ -168,10 +136,8 @@ pub mod number_data_point {
     #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum Value {
         #[prost(double, tag="4")]
-        #[rustfmt::skip]
         AsDouble(f64),
         #[prost(sfixed64, tag="6")]
-        #[rustfmt::skip]
         AsInt(i64),
     }
 }
@@ -181,37 +147,26 @@ pub mod number_data_point {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HistogramDataPoint {
     #[prost(message, repeated, tag="9")]
-    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(fixed64, tag="2")]
-    #[rustfmt::skip]
     pub start_time_unix_nano: u64,
     #[prost(fixed64, tag="3")]
-    #[rustfmt::skip]
     pub time_unix_nano: u64,
     #[prost(fixed64, tag="4")]
-    #[rustfmt::skip]
     pub count: u64,
     #[prost(double, optional, tag="5")]
-    #[rustfmt::skip]
     pub sum: ::core::option::Option<f64>,
     #[prost(fixed64, repeated, tag="6")]
-    #[rustfmt::skip]
     pub bucket_counts: ::prost::alloc::vec::Vec<u64>,
     #[prost(double, repeated, tag="7")]
-    #[rustfmt::skip]
     pub explicit_bounds: ::prost::alloc::vec::Vec<f64>,
     #[prost(message, repeated, tag="8")]
-    #[rustfmt::skip]
     pub exemplars: ::prost::alloc::vec::Vec<Exemplar>,
     #[prost(uint32, tag="10")]
-    #[rustfmt::skip]
     pub flags: u32,
     #[prost(double, optional, tag="11")]
-    #[rustfmt::skip]
     pub min: ::core::option::Option<f64>,
     #[prost(double, optional, tag="12")]
-    #[rustfmt::skip]
     pub max: ::core::option::Option<f64>,
 }
 #[rustfmt::skip]
@@ -220,46 +175,32 @@ pub struct HistogramDataPoint {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExponentialHistogramDataPoint {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(fixed64, tag="2")]
-    #[rustfmt::skip]
     pub start_time_unix_nano: u64,
     #[prost(fixed64, tag="3")]
-    #[rustfmt::skip]
     pub time_unix_nano: u64,
     #[prost(fixed64, tag="4")]
-    #[rustfmt::skip]
     pub count: u64,
     #[prost(double, optional, tag="5")]
-    #[rustfmt::skip]
     pub sum: ::core::option::Option<f64>,
     #[prost(sint32, tag="6")]
-    #[rustfmt::skip]
     pub scale: i32,
     #[prost(fixed64, tag="7")]
-    #[rustfmt::skip]
     pub zero_count: u64,
     #[prost(message, optional, tag="8")]
-    #[rustfmt::skip]
     pub positive: ::core::option::Option<exponential_histogram_data_point::Buckets>,
     #[prost(message, optional, tag="9")]
-    #[rustfmt::skip]
     pub negative: ::core::option::Option<exponential_histogram_data_point::Buckets>,
     #[prost(uint32, tag="10")]
-    #[rustfmt::skip]
     pub flags: u32,
     #[prost(message, repeated, tag="11")]
-    #[rustfmt::skip]
     pub exemplars: ::prost::alloc::vec::Vec<Exemplar>,
     #[prost(double, optional, tag="12")]
-    #[rustfmt::skip]
     pub min: ::core::option::Option<f64>,
     #[prost(double, optional, tag="13")]
-    #[rustfmt::skip]
     pub max: ::core::option::Option<f64>,
     #[prost(double, tag="14")]
-    #[rustfmt::skip]
     pub zero_threshold: f64,
 }
 /// Nested message and enum types in `ExponentialHistogramDataPoint`.
@@ -270,10 +211,8 @@ pub mod exponential_histogram_data_point {
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Buckets {
         #[prost(sint32, tag="1")]
-        #[rustfmt::skip]
         pub offset: i32,
         #[prost(uint64, repeated, tag="2")]
-        #[rustfmt::skip]
         pub bucket_counts: ::prost::alloc::vec::Vec<u64>,
     }
 }
@@ -283,25 +222,18 @@ pub mod exponential_histogram_data_point {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SummaryDataPoint {
     #[prost(message, repeated, tag="7")]
-    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(fixed64, tag="2")]
-    #[rustfmt::skip]
     pub start_time_unix_nano: u64,
     #[prost(fixed64, tag="3")]
-    #[rustfmt::skip]
     pub time_unix_nano: u64,
     #[prost(fixed64, tag="4")]
-    #[rustfmt::skip]
     pub count: u64,
     #[prost(double, tag="5")]
-    #[rustfmt::skip]
     pub sum: f64,
     #[prost(message, repeated, tag="6")]
-    #[rustfmt::skip]
     pub quantile_values: ::prost::alloc::vec::Vec<summary_data_point::ValueAtQuantile>,
     #[prost(uint32, tag="8")]
-    #[rustfmt::skip]
     pub flags: u32,
 }
 /// Nested message and enum types in `SummaryDataPoint`.
@@ -312,10 +244,8 @@ pub mod summary_data_point {
     #[derive(Clone, Copy, PartialEq, ::prost::Message)]
     pub struct ValueAtQuantile {
         #[prost(double, tag="1")]
-        #[rustfmt::skip]
         pub quantile: f64,
         #[prost(double, tag="2")]
-        #[rustfmt::skip]
         pub value: f64,
     }
 }
@@ -325,19 +255,14 @@ pub mod summary_data_point {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Exemplar {
     #[prost(message, repeated, tag="7")]
-    #[rustfmt::skip]
     pub filtered_attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(fixed64, tag="2")]
-    #[rustfmt::skip]
     pub time_unix_nano: u64,
     #[prost(bytes="vec", tag="4")]
-    #[rustfmt::skip]
     pub span_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes="vec", tag="5")]
-    #[rustfmt::skip]
     pub trace_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(oneof="exemplar::Value", tags="3, 6")]
-    #[rustfmt::skip]
     pub value: ::core::option::Option<exemplar::Value>,
 }
 /// Nested message and enum types in `Exemplar`.
@@ -346,10 +271,8 @@ pub mod exemplar {
     #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum Value {
         #[prost(double, tag="3")]
-        #[rustfmt::skip]
         AsDouble(f64),
         #[prost(sfixed64, tag="6")]
-        #[rustfmt::skip]
         AsInt(i64),
     }
 }
@@ -357,11 +280,8 @@ pub mod exemplar {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum AggregationTemporality {
-    #[rustfmt::skip]
     Unspecified = 0,
-    #[rustfmt::skip]
     Delta = 1,
-    #[rustfmt::skip]
     Cumulative = 2,
 }
 impl AggregationTemporality {
@@ -390,9 +310,7 @@ impl AggregationTemporality {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum DataPointFlags {
-    #[rustfmt::skip]
     DoNotUse = 0,
-    #[rustfmt::skip]
     NoRecordedValueMask = 1,
 }
 impl DataPointFlags {

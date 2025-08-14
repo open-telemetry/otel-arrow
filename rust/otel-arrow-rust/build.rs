@@ -38,8 +38,7 @@ fn prost_cfg() -> prost_build::Config {
 
     // Add rustfmt::skip attribute to generated files
     cfg.type_attribute(".", "#[rustfmt::skip]");
-    cfg.field_attribute(".", "#[rustfmt::skip]");
-    
+
     cfg
 }
 

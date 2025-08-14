@@ -5,7 +5,6 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogsData {
     #[prost(message, repeated, tag="1")]
-    #[rustfmt::skip]
     pub resource_logs: ::prost::alloc::vec::Vec<ResourceLogs>,
 }
 #[rustfmt::skip]
@@ -14,13 +13,10 @@ pub struct LogsData {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceLogs {
     #[prost(message, optional, tag="1")]
-    #[rustfmt::skip]
     pub resource: ::core::option::Option<super::super::resource::v1::Resource>,
     #[prost(message, repeated, tag="2")]
-    #[rustfmt::skip]
     pub scope_logs: ::prost::alloc::vec::Vec<ScopeLogs>,
     #[prost(string, tag="3")]
-    #[rustfmt::skip]
     pub schema_url: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
@@ -29,13 +25,10 @@ pub struct ResourceLogs {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeLogs {
     #[prost(message, optional, tag="1")]
-    #[rustfmt::skip]
     pub scope: ::core::option::Option<super::super::common::v1::InstrumentationScope>,
     #[prost(message, repeated, tag="2")]
-    #[rustfmt::skip]
     pub log_records: ::prost::alloc::vec::Vec<LogRecord>,
     #[prost(string, tag="3")]
-    #[rustfmt::skip]
     pub schema_url: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
@@ -44,92 +37,56 @@ pub struct ScopeLogs {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogRecord {
     #[prost(fixed64, tag="1")]
-    #[rustfmt::skip]
     pub time_unix_nano: u64,
     #[prost(fixed64, tag="11")]
-    #[rustfmt::skip]
     pub observed_time_unix_nano: u64,
     #[prost(enumeration="SeverityNumber", tag="2")]
-    #[rustfmt::skip]
     pub severity_number: i32,
     #[prost(string, tag="3")]
-    #[rustfmt::skip]
     pub severity_text: ::prost::alloc::string::String,
     #[prost(message, optional, tag="5")]
-    #[rustfmt::skip]
     pub body: ::core::option::Option<super::super::common::v1::AnyValue>,
     #[prost(message, repeated, tag="6")]
-    #[rustfmt::skip]
     pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(uint32, tag="7")]
-    #[rustfmt::skip]
     pub dropped_attributes_count: u32,
     #[prost(fixed32, tag="8")]
-    #[rustfmt::skip]
     pub flags: u32,
     #[prost(bytes="vec", tag="9")]
-    #[rustfmt::skip]
     pub trace_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes="vec", tag="10")]
-    #[rustfmt::skip]
     pub span_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag="12")]
-    #[rustfmt::skip]
     pub event_name: ::prost::alloc::string::String,
 }
 #[rustfmt::skip]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SeverityNumber {
-    #[rustfmt::skip]
     Unspecified = 0,
-    #[rustfmt::skip]
     Trace = 1,
-    #[rustfmt::skip]
     Trace2 = 2,
-    #[rustfmt::skip]
     Trace3 = 3,
-    #[rustfmt::skip]
     Trace4 = 4,
-    #[rustfmt::skip]
     Debug = 5,
-    #[rustfmt::skip]
     Debug2 = 6,
-    #[rustfmt::skip]
     Debug3 = 7,
-    #[rustfmt::skip]
     Debug4 = 8,
-    #[rustfmt::skip]
     Info = 9,
-    #[rustfmt::skip]
     Info2 = 10,
-    #[rustfmt::skip]
     Info3 = 11,
-    #[rustfmt::skip]
     Info4 = 12,
-    #[rustfmt::skip]
     Warn = 13,
-    #[rustfmt::skip]
     Warn2 = 14,
-    #[rustfmt::skip]
     Warn3 = 15,
-    #[rustfmt::skip]
     Warn4 = 16,
-    #[rustfmt::skip]
     Error = 17,
-    #[rustfmt::skip]
     Error2 = 18,
-    #[rustfmt::skip]
     Error3 = 19,
-    #[rustfmt::skip]
     Error4 = 20,
-    #[rustfmt::skip]
     Fatal = 21,
-    #[rustfmt::skip]
     Fatal2 = 22,
-    #[rustfmt::skip]
     Fatal3 = 23,
-    #[rustfmt::skip]
     Fatal4 = 24,
 }
 impl SeverityNumber {
@@ -202,9 +159,7 @@ impl SeverityNumber {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum LogRecordFlags {
-    #[rustfmt::skip]
     DoNotUse = 0,
-    #[rustfmt::skip]
     TraceFlagsMask = 255,
 }
 impl LogRecordFlags {
