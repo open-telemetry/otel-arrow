@@ -24,6 +24,11 @@ impl MetricsReporter {
         &mut self,
         metrics: &mut M,
     ) {
+        if !metrics.has_non_zero() {
+            // If there are no non-zero metrics, we do not send anything.
+            return;
+        }
+        
         let snapshot = metrics.clone();
         if let Err(e) = self
             .metrics_sender

@@ -15,21 +15,26 @@ pub type MetricsSnapshot = Box<dyn MultivariateMetrics + Send + Sync>;
 
 /// Trait for types that can aggregate their metrics into a `MetricsRegistry`.
 pub trait MultivariateMetrics {
+    /// Register the current multivariate metrics into the metrics registry.
+    #[doc(hidden)]
+    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs);
+
+    /// Returns the descriptor for this set of metrics.
+    fn descriptor(&self) -> &'static MetricsDescriptor;
+
+    /// Iterate over (descriptor_field, current_value) pairs in defined order.
+    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_>;
+
     /// Aggregates the metrics of this type to the provided registry.
     fn aggregate_into(&self, registry: &mut MetricsRegistryHandle) -> Result<(), Error>;
 
     /// Resets all metrics to zero / default.
     fn zero(&mut self);
 
-    /// Returns the descriptor for this set of metrics.
-    fn descriptor(&self) -> &'static MetricsDescriptor;
-
-    /// Register the current multivariate metrics into the metrics registry.
-    #[doc(hidden)]
-    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs);
-
-    /// Iterate over (descriptor_field, current_value) pairs in defined order.
-    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_>;
+    /// Returns true if at least one metric has a non-zero value.
+    fn has_non_zero(&self) -> bool {
+        self.field_values().any(|(_, v)| v != 0)
+    }
 }
 
 /// Multivariate metrics for receivers.
@@ -191,11 +196,12 @@ impl MultivariateMetrics for PerfExporterMetrics {
 
 #[cfg(test)]
 mod tests {
-    use crate::metrics::PerfExporterMetrics;
+    use crate::metrics::{PerfExporterMetrics, ReceiverMetrics, MultivariateMetrics};
 
     #[test]
     fn test_perf_exporter_metrics() {
         let mut metrics = PerfExporterMetrics::default();
+        assert!(!metrics.has_non_zero());
 
         metrics.bytes_total.inc();
         metrics.logs.add(10);
@@ -203,8 +209,22 @@ mod tests {
 
         metrics.logs.inc();
 
+        assert!(metrics.has_non_zero());
         assert_eq!(metrics.bytes_total.get(), 1);
         assert_eq!(metrics.logs.get(), 11);
         assert_eq!(metrics.metrics.get(), 1);
+
+        metrics.zero();
+        assert!(!metrics.has_non_zero());
+    }
+
+    #[test]
+    fn test_receiver_metrics_has_non_zero() {
+        let mut metrics = ReceiverMetrics::default();
+        assert!(!metrics.has_non_zero());
+        metrics.bytes_received.add(5);
+        assert!(metrics.has_non_zero());
+        metrics.zero();
+        assert!(!metrics.has_non_zero());
     }
 }

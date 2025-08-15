@@ -43,12 +43,11 @@ impl MetricsCollector {
     pub async fn run_collection_loop(mut self) -> Result<(), Error> {
         let mut timer = interval(Duration::from_secs(10));
         let reporter = LineProtocolPipeline;
-        
+
         loop {
             tokio::select! {
                 // ToDo need to be moved into a CollectorExporter
                 _ = timer.tick() => {
-                    println!("Collecting metrics... {}", self.registry.len());
                     self.registry.for_each_metrics(|m, attrs| {
                         // Ignore individual report errors for now; could log.
                         let _ = reporter.report(m, attrs.clone());

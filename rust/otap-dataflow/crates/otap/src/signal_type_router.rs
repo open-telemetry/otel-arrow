@@ -21,6 +21,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use otap_df_engine::context::PipelineContext;
 
 /// URN for the SignalTypeRouter processor
 pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router";
@@ -116,7 +117,7 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |config: &Value, proc_cfg: &ProcessorConfig| {
+    create: |_pipeline: PipelineContext, config: &Value, proc_cfg: &ProcessorConfig| {
         create_signal_type_router(config, proc_cfg)
     },
 };
