@@ -9,8 +9,10 @@
 //! for example, transmitting OTAP data via gRPC.
 
 use arrow::{
-    array::{ArrayRef, RecordBatch, StructArray},
+    array::{ArrayRef, RecordBatch, StructArray, UInt32Array},
+    compute::take_record_batch,
     datatypes::{DataType, Field, Schema},
+    row::{RowConverter, SortField},
 };
 
 use crate::{
@@ -50,21 +52,9 @@ struct ColumnEncoding<'a> {
 
 impl<'a> ColumnEncoding<'a> {
     /// access the column associated with this [`ColumnEncoding`]
+    // TODO - possibly refactor? This might not need to be a member of this struct
     fn access_column(&self, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
-        // handle special case of accessing either the resource ID or scope ID which are nested
-        // within a struct
-        if let Some(struct_col_name) = self.struct_column_name() {
-            let struct_col_idx = schema.index_of(struct_col_name).ok()?;
-            let struct_col = columns
-                .get(struct_col_idx)?
-                .as_any()
-                .downcast_ref::<StructArray>()?;
-            return struct_col.column_by_name(consts::ID).cloned();
-        }
-
-        // otherwise just return column by nname
-        let column_idx = schema.index_of(self.path).ok()?;
-        columns.get(column_idx).cloned()
+        access_column(self.path, schema, columns)
     }
 
     /// checks if the column associated with this [`ColumnEncoding`] has already had the column
@@ -77,7 +67,7 @@ impl<'a> ColumnEncoding<'a> {
     ///
     /// returns `None` if the field associated with `self.path` isn't found in passed schema
     fn is_column_encoded(&self, schema: &Schema) -> Option<bool> {
-        let field = if let Some(struct_col_name) = self.struct_column_name() {
+        let field = if let Some(struct_col_name) = struct_column_name(self.path) {
             // get the ID field out of the struct column
             let struct_col = schema.field_with_name(struct_col_name).ok()?;
             if let DataType::Struct(fields) = struct_col.data_type() {
@@ -101,20 +91,38 @@ impl<'a> ColumnEncoding<'a> {
 
         Some(is_encoded)
     }
+}
 
-    /// if configured to encode the ID column in the nested resource/scope struct array, this
-    /// helper function simply returns the name of the struct column, and otherwise returns `None`
-    fn struct_column_name(&self) -> Option<&'static str> {
-        if self.path == RESOURCE_ID_COL_PATH {
-            return Some(consts::RESOURCE);
-        }
-
-        if self.path == SCOPE_ID_COL_PATH {
-            return Some(consts::SCOPE);
-        }
-
-        None
+/// access the column associated for the possibly nested path
+fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
+    // handle special case of accessing either the resource ID or scope ID which are nested
+    // within a struct
+    if let Some(struct_col_name) = struct_column_name(path) {
+        let struct_col_idx = schema.index_of(struct_col_name).ok()?;
+        let struct_col = columns
+            .get(struct_col_idx)?
+            .as_any()
+            .downcast_ref::<StructArray>()?;
+        return struct_col.column_by_name(consts::ID).cloned();
     }
+
+    // otherwise just return column by nname
+    let column_idx = schema.index_of(path).ok()?;
+    columns.get(column_idx).cloned()
+}
+
+/// if configured to encode the ID column in the nested resource/scope struct array, this
+/// helper function simply returns the name of the struct column, and otherwise returns `None`
+fn struct_column_name(path: &str) -> Option<&'static str> {
+    if path == RESOURCE_ID_COL_PATH {
+        return Some(consts::RESOURCE);
+    }
+
+    if path == SCOPE_ID_COL_PATH {
+        return Some(consts::SCOPE);
+    }
+
+    None
 }
 
 /// helper for initializing [`ColumnEncoding`] as it will be initialized many times in the function
@@ -139,6 +147,58 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
             col_encoding!(SCOPE_ID_COL_PATH, UInt16, Delta),
         ],
         _ => &[],
+    }
+}
+
+/// returns the list of columns that the OTAP record batch of this payload type should be sorted by
+/// before applying any column encodings
+fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
+    match payload_type {
+        ArrowPayloadType::LogAttrs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],
+        _ => &[],
+    }
+}
+
+/// sort the record batch with this payload type by columns that will hopefully give us the best
+/// compression ratio
+// TODO bench this ...
+fn sort_record_batch(
+    payload_type: &ArrowPayloadType,
+    record_batch: &RecordBatch,
+) -> Result<RecordBatch> {
+    let sort_columns_paths = get_sort_column_paths(payload_type);
+    // TODO, here maybe we should check if this is empty?
+
+    let schema = record_batch.schema_ref();
+    let mut sort_inputs = vec![];
+    let columns = record_batch.columns();
+    for path in sort_columns_paths {
+        if let Some(column) = access_column(path, &schema, columns) {
+            sort_inputs.push(column)
+        }
+    }
+
+    // TODO, here if sort_inputs.len() == 1, we could probably skip the row conversion and just use
+    // the sort_to_indices kernel
+
+    if sort_inputs.len() > 0 {
+        // use row converter to convert the rows. For multi-column sort, it is faster to use the
+        // row model for sorting. See here for more discussion:
+        // https://arrow.apache.org/blog/2022/11/07/multi-column-sorts-in-arrow-rust-part-1/
+
+        let sort_fields = sort_inputs
+            .iter()
+            .map(|col| SortField::new(col.data_type().clone()))
+            .collect();
+        let converter = RowConverter::new(sort_fields).unwrap();
+        let rows = converter.convert_columns(&sort_inputs).unwrap();
+
+        let mut sort: Vec<_> = rows.iter().enumerate().collect();
+        sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+        let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
+        Ok(take_record_batch(record_batch, &indices).unwrap())
+    } else {
+        Ok(record_batch.clone())
     }
 }
 
@@ -172,6 +232,17 @@ pub fn apply_column_encodings(
         // nothing to do
         return Ok(record_batch.clone());
     }
+
+    if to_apply.len() != column_encodings.len() {
+        // TODO handle this ...
+        //
+        // this would be a weird situation where only some of the columns are encoded and others aren't.
+        // if we need to sort the record batch to do the encoding, this will not end well ....
+    }
+
+    // sort record batch before applying the encoding. This will give us the best compression ratio
+    // for columns which may have many repeated sequences of the same value
+    let record_batch = sort_record_batch(payload_type, record_batch)?;
 
     todo!();
 }
@@ -334,6 +405,22 @@ mod test {
         assert!(!column_encoding.is_column_encoded(&schema).unwrap());
         column_encoding.path = SCOPE_ID_COL_PATH;
         assert!(column_encoding.is_column_encoded(&schema).unwrap());
+    }
+
+    #[test]
+    fn test_sort_columns_multi_column() {}
+
+    #[test]
+    fn test_sort_columns_none_present() {
+        // test that we handle the case when sorting the columns where none of the columns we're
+        // planning to sort by are present
+        todo!()
+    }
+
+    #[test]
+    fn test_sort_columns_single_column() {
+        // TODO
+        todo!()
     }
 
     #[test]
