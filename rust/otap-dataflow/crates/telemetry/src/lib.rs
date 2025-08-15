@@ -7,7 +7,6 @@
 
 use crate::registry::MetricsRegistryHandle;
 
-pub mod old_registry;
 pub mod registry;
 pub mod metrics;
 pub mod collector;
@@ -16,12 +15,13 @@ mod descriptor;
 pub mod attributes;
 pub mod reporter;
 mod error;
+pub(crate) mod pipeline;
 
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {
     /// The metrics registry that holds all registered metrics.
     registry: MetricsRegistryHandle,
-    
+
     /// The metrics collector that aggregates metrics.
     collector: collector::MetricsCollector,
 
@@ -40,17 +40,17 @@ impl MetricsSystem {
             reporter,
         }
     }
-    
+
     /// Returns a handle to the metrics registry.
     pub fn registry(&self) -> MetricsRegistryHandle {
         self.registry.clone()
     }
-    
+
     /// Returns a handle to the metrics reporter.
     pub fn reporter(&self) -> reporter::MetricsReporter {
         self.reporter.clone()
     }
-    
+
     /// Returns a handle to the metrics collector.
     pub async fn run_collection_loop(self) -> Result<(), error::Error> {
         self.collector.run_collection_loop().await

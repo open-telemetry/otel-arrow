@@ -2,10 +2,11 @@
 
 //! Collector task for internal metrics.
 
-use crate::metrics::{MetricsSnapshot, MultivariateMetrics};
-use crate::registry::{MetricsKey, MetricsRegistryHandle};
+use crate::metrics::MetricsSnapshot;
+use crate::registry::MetricsRegistryHandle;
 use tokio::time::{interval, Duration};
 use crate::error::Error;
+use crate::pipeline::{LineProtocolPipeline, MetricsPipeline};
 use crate::reporter::MetricsReporter;
 
 /// Metrics collector.
@@ -41,12 +42,17 @@ impl MetricsCollector {
     /// The collection runs indefinitely until the metrics channel is closed.
     pub async fn run_collection_loop(mut self) -> Result<(), Error> {
         let mut timer = interval(Duration::from_secs(10));
-
+        let reporter = LineProtocolPipeline;
+        
         loop {
             tokio::select! {
                 // ToDo need to be moved into a CollectorExporter
                 _ = timer.tick() => {
-                    println!("{:#?}", self.registry);
+                    println!("Collecting metrics... {}", self.registry.len());
+                    self.registry.for_each_metrics(|m, attrs| {
+                        // Ignore individual report errors for now; could log.
+                        let _ = reporter.report(m, attrs.clone());
+                    });
                 }
                 result = self.metrics_receiver.recv_async() => {
                     match result {

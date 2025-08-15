@@ -27,6 +27,9 @@ pub trait MultivariateMetrics {
     /// Register the current multivariate metrics into the metrics registry.
     #[doc(hidden)]
     fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs);
+
+    /// Iterate over (descriptor_field, current_value) pairs in defined order.
+    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_>;
 }
 
 /// Multivariate metrics for receivers.
@@ -64,7 +67,7 @@ const RECEIVER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
 pub struct PerfExporterMetrics {
     /// A unique key set at the registration of these metrics.
     key: Option<MetricsKey>,
-    
+
     /// Total bytes processed by the perf exporter.
     pub bytes_total: Counter<u64>,
     /// Number of pdata messages handled.
@@ -135,6 +138,12 @@ impl MultivariateMetrics for ReceiverMetrics {
         let key = registry.receiver_metrics.insert((ReceiverMetrics::default(), attrs));
         self.key = Some(key);
     }
+
+    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_> {
+        let desc = self.descriptor();
+        let values = [self.bytes_received.get(), self.messages_received.get()];
+        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f,v)| (f, v)))
+    }
 }
 
 impl MultivariateMetrics for PerfExporterMetrics {
@@ -165,6 +174,18 @@ impl MultivariateMetrics for PerfExporterMetrics {
     fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
         let key = registry.perf_exporter_metrics.insert((PerfExporterMetrics::default(), attrs));
         self.key = Some(key);
+    }
+
+    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_> {
+        let desc = self.descriptor();
+        let values = [
+            self.bytes_total.get(),
+            self.pdata_msgs.get(),
+            self.logs.get(),
+            self.spans.get(),
+            self.metrics.get(),
+        ];
+        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f,v)| (f, v)))
     }
 }
 

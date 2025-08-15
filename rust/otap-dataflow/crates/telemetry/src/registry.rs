@@ -54,9 +54,6 @@ impl MetricsRegistry {
             // TODO: consider logging missing key
         }
     }
-    fn get_receiver_metrics(&self, metrics_key: MetricsKey) -> Option<(ReceiverMetrics, NodeStaticAttrs)> {
-        self.receiver_metrics.get(metrics_key).cloned()
-    }
 
     // Perf exporter metrics operations
     fn add_perf_exporter_metrics(&mut self, metrics_key: MetricsKey, metrics: &PerfExporterMetrics) {
@@ -71,8 +68,17 @@ impl MetricsRegistry {
             // TODO: consider logging missing key
         }
     }
-    fn get_perf_exporter_metrics(&self, metrics_key: MetricsKey) -> Option<(PerfExporterMetrics, NodeStaticAttrs)> {
-        self.perf_exporter_metrics.get(metrics_key).cloned()
+
+    /// Iterate over all registered metrics (all concrete types) exposing them as trait objects with their static attrs.
+    pub(crate) fn iter_metrics(&self) -> impl Iterator<Item = (&dyn MultivariateMetrics, &NodeStaticAttrs)> {
+        let recv_iter = self.receiver_metrics.values().map(|(m, attrs)| (m as &dyn MultivariateMetrics, attrs));
+        let perf_iter = self.perf_exporter_metrics.values().map(|(m, attrs)| (m as &dyn MultivariateMetrics, attrs));
+        recv_iter.chain(perf_iter)
+    }
+
+    /// Returns the total number of registered metrics sets.
+    pub(crate) fn len(&self) -> usize {
+        self.receiver_metrics.len() + self.perf_exporter_metrics.len()
     }
 }
 
@@ -95,7 +101,7 @@ impl MetricsRegistryHandle {
     ) {
         self.metric_registry.lock().register(metrics, attrs);
     }
-    
+
     /// Adds a new set of receiver metrics to the aggregator.
     pub fn add_receiver_metrics(&self, metrics_key: MetricsKey, metrics: &ReceiverMetrics) {
         self.metric_registry.lock().add_receiver_metrics(metrics_key, metrics);
@@ -104,6 +110,24 @@ impl MetricsRegistryHandle {
     /// Adds a new set of perf exporter metrics to the aggregator.
     pub fn add_perf_exporter_metrics(&self, metrics_key: MetricsKey, metrics: &PerfExporterMetrics) {
         self.metric_registry.lock().add_perf_exporter_metrics(metrics_key, metrics);
+    }
+
+    /// Iterate over all registered metrics invoking the provided closure.
+    /// The closure receives a `&dyn MultivariateMetrics` and a `&NodeStaticAttrs`.
+    /// Note: The closure must not attempt to register new metrics to avoid deadlocks.
+    pub fn for_each_metrics<F>(&self, mut f: F)
+    where
+        F: FnMut(&dyn MultivariateMetrics, &NodeStaticAttrs),
+    {
+        let reg = self.metric_registry.lock();
+        for (m, attrs) in reg.iter_metrics() {
+            f(m, attrs);
+        }
+    }
+
+    /// Returns the total number of registered metrics sets.
+    pub fn len(&self) -> usize {
+        self.metric_registry.lock().len()
     }
 }
 
@@ -179,8 +203,13 @@ mod tests {
         perf_exporter_mvm.metrics += 100;
         perf_exporter_mvm.aggregate_into(&mut registry)?;
 
-        dbg!(registry);
-        
+        // Previous dbg!(registry) moved the handle; borrow instead.
+        dbg!(&registry);
+
+        // Validate iterator exposes all 3 metrics sets.
+        let inner = registry.metric_registry.lock();
+        let count = inner.iter_metrics().count();
+        assert_eq!(count, 3);
         Ok(())
     }
 }
