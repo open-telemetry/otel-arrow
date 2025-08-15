@@ -263,7 +263,19 @@ where
                 Value::Map(m) => ResolvedValue::Computed(OwnedValue::Integer(
                     IntegerValueStorage::new(m.len() as i64),
                 )),
-                _ => ResolvedValue::Computed(OwnedValue::Null),
+                value => {
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        l,
+                        || {
+                            format!(
+                                "Cannot calculate the length of '{:?}' input",
+                                value.get_value_type()
+                            )
+                        },
+                    );
+                    ResolvedValue::Computed(OwnedValue::Null)
+                }
             };
 
             execution_context.add_diagnostic_if_enabled(
@@ -328,7 +340,14 @@ where
                             )),
                         )
                     }
-                    Err(_) => ResolvedValue::Computed(OwnedValue::Null),
+                    Err(e) => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            s,
+                            || format!("Cannot take a slice of '{:?}' input", e.get_value_type()),
+                        );
+                        ResolvedValue::Computed(OwnedValue::Null)
+                    }
                 },
             };
 

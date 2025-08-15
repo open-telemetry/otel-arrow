@@ -27,6 +27,18 @@ where
             ) {
                 ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(result)))
             } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    r,
+                    || {
+                        format!(
+                            "Cannot replace text in '{:?}' haystack using '{:?}' needle and '{:?}' replacement",
+                            haystack_value.get_value_type(),
+                            needle_value.get_value_type(),
+                            replacement_value.get_value_type()
+                        )
+                    },
+                );
                 ResolvedValue::Computed(OwnedValue::Null)
             };
 
