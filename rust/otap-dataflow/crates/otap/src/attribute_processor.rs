@@ -2,14 +2,30 @@
 
 //! Attribute processor for OTAP pipelines.
 //!
-//! This processor applies attribute rename rules to OTAP Arrow payloads across
-//! logs, metrics, and traces. It operates only on OTAP variants (OtapArrowRecords
-//! and OtapArrowBytes). OTLP bytes are passed through unchanged in this first
-//! version.
+//! This processor provides attribute transformations for telemetry data, supporting
+//! the OpenTelemetry Collector's attributes processor configuration format. It operates
+//! on OTAP Arrow payloads (OtapArrowRecords and OtapArrowBytes) and can convert OTLP
+//! bytes to OTAP for processing.
 //!
-//! Notes:
-//! - Keep configuration minimal: only simple rename rules are supported, using
-//!   otel_arrow_rust::otap::transform::transform_attributes for exact key matches.
+//! Currently supports a subset of the collector's operations:
+//! - `update` with `value`: Renames an attribute by changing its key
+//! - `delete`: Removes an attribute by key
+//!
+//! Other operations (`insert`, `upsert`, `hash`, `extract`, `convert`) are accepted in
+//! configuration but not yet implemented.
+//!
+//! Example configuration (YAML):
+//! ```yaml
+//! actions:
+//!   - key: "http.method"
+//!     action: "update"
+//!     value: "rpc.method"    # Renames http.method to rpc.method
+//!   - key: "db.statement"
+//!     action: "delete"       # Removes db.statement attribute
+//! ```
+//!
+//! Implementation uses otel_arrow_rust::otap::transform::transform_attributes for
+//! efficient batch processing of Arrow record batches.
 
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
@@ -29,47 +45,130 @@ use otel_arrow_rust::otap::{
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// URN for the AttributeProcessor
 pub const ATTRIBUTE_PROCESSOR_URN: &str = "urn:otap:processor:attribute_processor";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// A single rename rule specifying the source and destination attribute key.
-pub struct RenameRule {
-    /// The exact attribute key to replace (matched exactly, case-sensitive).
-    pub from: String,
-    /// The replacement attribute key.
-    pub to: String,
+/// Action types supported by the attributes processor.
+pub enum ActionType {
+    /// Insert a new attribute with the specified value.
+    /// Currently not implemented.
+    #[serde(rename = "insert")]
+    Insert,
+    /// Update the value of an existing attribute or rename it if value is provided.
+    /// Currently only supports renaming via the value field.
+    #[serde(rename = "update")]
+    Update,
+    /// Insert a new attribute or update an existing one.
+    /// Currently not implemented.
+    #[serde(rename = "upsert")]
+    Upsert,
+    /// Delete an attribute by key.
+    #[serde(rename = "delete")]
+    Delete,
+    /// Hash the value of an attribute.
+    /// Currently not implemented.
+    #[serde(rename = "hash")]
+    Hash,
+    /// Extract a value from an attribute using a regex pattern.
+    /// Currently not implemented.
+    #[serde(rename = "extract")]
+    Extract,
+    /// Convert an attribute's value to a different type.
+    /// Currently not implemented.
+    #[serde(rename = "convert")]
+    Convert,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// An action to perform on attributes.
+pub struct Action {
+    /// The attribute key to act on.
+    pub key: String,
+    /// The type of action to perform.
+    pub action: ActionType,
+    /// Optional value to use in the action.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Optional source attribute key for extract operations.
+    #[serde(default)]
+    pub from_attribute: Option<String>,
+    /// Optional regex pattern for extract operations.
+    #[serde(default)]
+    pub pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 /// Configuration for the AttributeProcessor.
 ///
-/// Only simple rename rules are supported; behavior follows
-/// otel_arrow_rust::otap::transform::transform_attributes (exact key matches).
+/// Accepts configuration in the same format as the OpenTelemetry Collector's attributes processor.
+/// Currently supports a subset of operations that can be implemented via
+/// otel_arrow_rust::otap::transform::transform_attributes:
+/// - update: Implemented as rename when value is provided
+/// - delete: Remove attributes by key
+///
+/// Other operations (insert, upsert, hash, extract, convert) are accepted in configuration
+/// but not yet implemented.
 pub struct AttributeProcessorConfig {
-    /// List of rename rules to apply (in order) to all attribute payloads for the signal.
-    pub rules: Vec<RenameRule>,
-    // No extra configuration beyond simple renames for now.
+    /// List of actions to apply in order.
+    #[serde(default)]
+    pub actions: Vec<Action>,
 }
 
-/// Processor that applies rename rules to OTAP attribute batches.
+/// Processor that applies attribute transformations to OTAP attribute batches.
+///
+/// Implements the OpenTelemetry Collector's attributes processor functionality using
+/// efficient Arrow operations. Supports `update` (rename) and `delete` operations
+/// across all attribute types (resource, scope, and signal-specific attributes)
+/// for logs, metrics, and traces telemetry.
 pub struct AttributeProcessor {
-    // Precomputed rename map to avoid rebuilding per message
-    renames: BTreeMap<String, String>,
+    // Pre-computed transform to avoid rebuilding per message
+    transform: AttributesTransform,
 }
 
 impl AttributeProcessor {
     /// Create a new AttributeProcessor with the given configuration.
+    ///
+    /// Transforms the Go collector-style configuration into the operations
+    /// supported by the underlying Arrow attribute transform API.
     #[must_use]
     pub fn new(config: AttributeProcessorConfig) -> Self {
-        let mut renames: BTreeMap<String, String> = BTreeMap::new();
-        for rule in &config.rules {
-            let _ = renames.insert(rule.from.clone(), rule.to.clone());
+        let mut renames = BTreeMap::new();
+        let mut deletes = BTreeSet::new();
+
+        for action in config.actions {
+            match action.action {
+                ActionType::Delete => {
+                    let _ = deletes.insert(action.key);
+                }
+                ActionType::Update => {
+                    // For update actions with a value, treat as rename
+                    if let Some(new_value) = action.value {
+                        let _ = renames.insert(action.key, new_value);
+                    }
+                }
+                // Other actions not yet supported
+                _ => {}
+            }
         }
-        Self { renames }
+
+        Self {
+            transform: AttributesTransform {
+                rename: if renames.is_empty() {
+                    None
+                } else {
+                    Some(renames)
+                },
+                delete: if deletes.is_empty() {
+                    None
+                } else {
+                    Some(deletes)
+                },
+            },
+        }
     }
 }
 
@@ -88,7 +187,7 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
 
                 match pdata {
                     OtapPdata::OtapArrowRecords(ref mut records) => {
-                        apply_rules(records, signal, &self.renames)?;
+                        apply_transform(records, signal, &self.transform)?;
                         effect_handler.send_message(pdata).await
                     }
                     OtapPdata::OtapArrowBytes(_) => {
@@ -96,14 +195,19 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
                         let signal_ty = pdata.signal_type();
                         let records: OtapArrowRecords = pdata.clone().try_into()?;
                         let mut records_mut = records;
-                        apply_rules(&mut records_mut, signal_ty, &self.renames)?;
+                        apply_transform(&mut records_mut, signal_ty, &self.transform)?;
                         let bytes: crate::grpc::OtapArrowBytes = records_mut.try_into()?;
                         let pdata_back: OtapPdata = bytes.into();
                         effect_handler.send_message(pdata_back).await
                     }
-                    OtapPdata::OtlpBytes(_) => {
-                        // OTAP-only for now: pass through unchanged
-                        effect_handler.send_message(pdata).await
+                    OtapPdata::OtlpBytes(otlp_bytes) => {
+                        // Convert to OTAP, apply transform, convert back
+                        let records: OtapArrowRecords = otlp_bytes.try_into()?;
+                        let mut records_mut = records;
+                        apply_transform(&mut records_mut, signal, &self.transform)?;
+                        let bytes: crate::pdata::OtlpProtoBytes = records_mut.try_into()?;
+                        let pdata_back = OtapPdata::OtlpBytes(bytes);
+                        effect_handler.send_message(pdata_back).await
                     }
                 }
             }
@@ -112,24 +216,18 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
 }
 
 #[allow(clippy::result_large_err)]
-fn apply_rules(
+fn apply_transform(
     records: &mut OtapArrowRecords,
     signal: SignalType,
-    owned_map: &BTreeMap<String, String>,
+    transform: &AttributesTransform,
 ) -> Result<(), EngineError<OtapPdata>> {
     let payloads = attrs_payloads_for_signal(signal);
 
-    if !owned_map.is_empty() {
-        // Create a transform that only includes renames (no deletes)
-        let renames: BTreeMap<String, String> = owned_map.clone();
-        let transform = AttributesTransform {
-            rename: Some(renames),
-            delete: None,
-        };
-
+    // Only apply if we have transforms to apply
+    if transform.rename.is_some() || transform.delete.is_some() {
         for &payload_ty in payloads {
             if let Some(rb) = records.get(payload_ty).cloned() {
-                let rb = transform_attributes(&rb, &transform)
+                let rb = transform_attributes(&rb, transform)
                     .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                 records.set(payload_ty, rb);
             }
@@ -169,7 +267,10 @@ fn engine_err(msg: &str) -> EngineError<OtapPdata> {
     }
 }
 
-/// Factory function to create an AttributeProcessor
+/// Factory function to create an AttributeProcessor.
+///
+/// Accepts configuration in OpenTelemetry Collector attributes processor format.
+/// See the module documentation for configuration examples and supported operations.
 pub fn create_attribute_processor(
     config: &Value,
     processor_config: &ProcessorConfig,
@@ -203,7 +304,7 @@ pub static ATTRIBUTE_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPda
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, DictionaryArray, Int64Array, StringArray, UInt8Array, UInt16Array};
+    use arrow::array::{Array, DictionaryArray, StringArray, UInt8Array, UInt16Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -217,15 +318,22 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    fn make_attrs_batch(parent_ids: Vec<i64>, keys: Vec<&str>) -> RecordBatch {
+    fn make_attrs_batch(parent_ids: Vec<u16>, keys: Vec<&str>) -> RecordBatch {
         assert_eq!(parent_ids.len(), keys.len());
-        let pid_arr = Int64Array::from(parent_ids);
+        let len = keys.len();
+        let pid_arr = UInt16Array::from(parent_ids);
         let key_arr = StringArray::from(keys);
+        let type_arr = UInt8Array::from(vec![0u8; len]);
         let schema = Arc::new(Schema::new(vec![
-            Field::new("parent_id", DataType::Int64, false),
+            Field::new("parent_id", DataType::UInt16, false),
             Field::new("key", DataType::Utf8, false),
+            Field::new("type", DataType::UInt8, false),
         ]));
-        RecordBatch::try_new(schema, vec![Arc::new(pid_arr), Arc::new(key_arr)]).unwrap()
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(pid_arr), Arc::new(key_arr), Arc::new(type_arr)],
+        )
+        .unwrap()
     }
 
     fn collect_key_strings(rb: &RecordBatch) -> Vec<String> {
@@ -304,13 +412,17 @@ mod tests {
         let pdata = OtapPdata::OtlpBytes(crate::pdata::OtlpProtoBytes::ExportLogsRequest(bytes));
         let mut otap_records: OtapArrowRecords = pdata.clone().try_into().unwrap();
 
-        let config = json!({ "rules": [ { "from": "http.method", "to": "rpc.method" } ] });
-        let cfg: AttributeProcessorConfig = serde_json::from_value(config).unwrap();
-        let mut map = BTreeMap::new();
-        for r in cfg.rules {
-            let _ = map.insert(r.from, r.to);
-        }
-        apply_rules(&mut otap_records, SignalType::Logs, &map).unwrap();
+        let config = json!({
+            "actions": [
+                {
+                    "key": "http.method",
+                    "action": "update",
+                    "value": "rpc.method"
+                }
+            ]
+        });
+        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        apply_transform(&mut otap_records, SignalType::Logs, &processor.transform).unwrap();
 
         if let Some(rb) = otap_records.get(ArrowPayloadType::LogAttrs) {
             let all_keys = collect_key_strings(rb);
@@ -346,17 +458,21 @@ mod tests {
         let mut otap_records: OtapArrowRecords = pdata.clone().try_into().unwrap();
 
         let config = json!({
-            "rules": [
-                { "from": "http.method", "to": "rpc.method" },
-                { "from": "user_agent", "to": "http.user_agent" }
+            "actions": [
+                {
+                    "key": "http.method",
+                    "action": "update",
+                    "value": "rpc.method"
+                },
+                {
+                    "key": "user_agent",
+                    "action": "update",
+                    "value": "http.user_agent"
+                }
             ]
         });
-        let cfg: AttributeProcessorConfig = serde_json::from_value(config).unwrap();
-        let mut map = BTreeMap::new();
-        for r in cfg.rules {
-            let _ = map.insert(r.from, r.to);
-        }
-        apply_rules(&mut otap_records, SignalType::Logs, &map).unwrap();
+        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        apply_transform(&mut otap_records, SignalType::Logs, &processor.transform).unwrap();
 
         if let Some(rb) = otap_records.get(ArrowPayloadType::LogAttrs) {
             let all = collect_key_strings(rb);
@@ -371,19 +487,21 @@ mod tests {
     #[test]
     fn test_rename_metrics_attrs_basic() {
         let mut records = OtapArrowRecords::Metrics(Default::default());
-        let rb = make_attrs_batch(vec![0, 1], vec!["http.method", "keep.me"]);
+        let rb = make_attrs_batch(vec![0u16, 1u16], vec!["http.method", "keep.me"]);
         records.set(ArrowPayloadType::MetricAttrs, rb);
 
-        let cfg: AttributeProcessorConfig = serde_json::from_value(json!({
-            "rules": [ { "from": "http.method", "to": "rpc.method" } ]
-        }))
-        .unwrap();
+        let config = json!({
+            "actions": [
+                {
+                    "key": "http.method",
+                    "action": "update",
+                    "value": "rpc.method"
+                }
+            ]
+        });
+        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        apply_transform(&mut records, SignalType::Metrics, &processor.transform).unwrap();
 
-        let mut map = BTreeMap::new();
-        for r in cfg.rules {
-            let _ = map.insert(r.from, r.to);
-        }
-        apply_rules(&mut records, SignalType::Metrics, &map).unwrap();
         let rb2 = records.get(ArrowPayloadType::MetricAttrs).unwrap();
         let key_idx = rb2.schema().index_of("key").unwrap();
         let keys = arrow::array::as_string_array(rb2.column(key_idx));
@@ -395,22 +513,26 @@ mod tests {
     fn test_rename_traces_multiple_renames() {
         let mut records = OtapArrowRecords::Traces(Default::default());
         // Include multiple different keys to verify we can rename them all at once
-        let rb = make_attrs_batch(vec![7, 7, 8], vec!["A", "B", "keep"]);
+        let rb = make_attrs_batch(vec![7u16, 7u16, 8u16], vec!["A", "B", "keep"]);
         records.set(ArrowPayloadType::SpanAttrs, rb);
 
-        let cfg: AttributeProcessorConfig = serde_json::from_value(json!({
-            "rules": [
-                { "from": "A", "to": "X" },
-                { "from": "B", "to": "Y" }
+        let config = json!({
+            "actions": [
+                {
+                    "key": "A",
+                    "action": "update",
+                    "value": "X"
+                },
+                {
+                    "key": "B",
+                    "action": "update",
+                    "value": "Y"
+                }
             ]
-        }))
-        .unwrap();
+        });
+        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        apply_transform(&mut records, SignalType::Traces, &processor.transform).unwrap();
 
-        let mut map = BTreeMap::new();
-        for r in cfg.rules {
-            let _ = map.insert(r.from, r.to);
-        }
-        apply_rules(&mut records, SignalType::Traces, &map).unwrap();
         let rb2 = records.get(ArrowPayloadType::SpanAttrs).unwrap();
         let all = collect_key_strings(rb2);
         let expected: Vec<String> = vec!["X", "Y", "keep"]
@@ -421,21 +543,77 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_attrs() {
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        let rb = make_attrs_batch(
+            vec![1u16, 2u16, 3u16],
+            vec!["http.method", "secret", "user.id"],
+        );
+        records.set(ArrowPayloadType::LogAttrs, rb);
+
+        let config = json!({
+            "actions": [
+                {
+                    "key": "secret",
+                    "action": "delete"
+                }
+            ]
+        });
+        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        apply_transform(&mut records, SignalType::Logs, &processor.transform).unwrap();
+
+        let rb2 = records.get(ArrowPayloadType::LogAttrs).unwrap();
+        let all = collect_key_strings(rb2);
+        assert_eq!(all, vec!["http.method", "user.id"]);
+    }
+
+    #[test]
+    fn test_unsupported_actions() {
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        let rb = make_attrs_batch(vec![1u16, 2u16], vec!["http.method", "keep.me"]);
+        records.set(ArrowPayloadType::LogAttrs, rb);
+
+        let config = json!({
+            "actions": [
+                {
+                    "key": "http.method",
+                    "action": "insert",
+                    "value": "GET"
+                },
+                {
+                    "key": "http.method",
+                    "action": "update",
+                    "value": "rpc.method"
+                }
+            ]
+        });
+        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        apply_transform(&mut records, SignalType::Logs, &processor.transform).unwrap();
+
+        // Verify only the update action was applied
+        let rb2 = records.get(ArrowPayloadType::LogAttrs).unwrap();
+        let all = collect_key_strings(rb2);
+        assert_eq!(all, vec!["rpc.method", "keep.me"]);
+    }
+
+    #[test]
     fn test_rename_traces_span_attrs_basic() {
         let mut records = OtapArrowRecords::Traces(Default::default());
-        let rb = make_attrs_batch(vec![7, 8], vec!["old.key", "other"]);
+        let rb = make_attrs_batch(vec![7u16, 8u16], vec!["old.key", "other"]);
         records.set(ArrowPayloadType::SpanAttrs, rb);
 
-        let cfg: AttributeProcessorConfig = serde_json::from_value(json!({
-            "rules": [ { "from": "old.key", "to": "new.key" } ]
-        }))
-        .unwrap();
+        let config = json!({
+            "actions": [
+                {
+                    "key": "old.key",
+                    "action": "update",
+                    "value": "new.key"
+                }
+            ]
+        });
+        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        apply_transform(&mut records, SignalType::Traces, &processor.transform).unwrap();
 
-        let mut map = BTreeMap::new();
-        for r in cfg.rules {
-            let _ = map.insert(r.from, r.to);
-        }
-        apply_rules(&mut records, SignalType::Traces, &map).unwrap();
         let rb2 = records.get(ArrowPayloadType::SpanAttrs).unwrap();
         let key_idx = rb2.schema().index_of("key").unwrap();
         let keys = arrow::array::as_string_array(rb2.column(key_idx));
