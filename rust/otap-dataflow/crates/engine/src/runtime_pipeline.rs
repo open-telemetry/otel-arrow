@@ -221,7 +221,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Sends a node control message to the specified node.
     pub async fn send_node_control_message(
         &self,
-        node_id: NodeId,
+        node_id: &NodeId,
         ctrl_msg: NodeControlMsg,
     ) -> Result<(), Error<PData>> {
         match self.nodes.get(node_id.index) {
@@ -249,7 +249,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 }
             }
             .map_err(|e| Error::NodeControlMsgSendError {
-                node: node_id,
+                node: node_id.clone(),
                 error: e,
             }),
             None => Err(Error::InternalError {
