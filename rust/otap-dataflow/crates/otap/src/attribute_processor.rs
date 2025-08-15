@@ -130,12 +130,22 @@ pub struct AttributeProcessor {
 }
 
 impl AttributeProcessor {
-    /// Create a new AttributeProcessor with the given configuration.
+    /// Creates a new AttributeProcessor from configuration.
     ///
     /// Transforms the Go collector-style configuration into the operations
     /// supported by the underlying Arrow attribute transform API.
+    #[must_use = "AttributeProcessor creation may fail and return a ConfigError"]
+    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
+        let cfg: AttributeProcessorConfig =
+            serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("Failed to parse AttributeProcessor configuration: {e}"),
+            })?;
+        Ok(Self::new(cfg))
+    }
+
+    /// Creates a new AttributeProcessor with the given parsed configuration.
     #[must_use]
-    pub fn new(config: AttributeProcessorConfig) -> Self {
+    fn new(config: AttributeProcessorConfig) -> Self {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
 
@@ -275,16 +285,11 @@ pub fn create_attribute_processor(
     config: &Value,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let cfg: AttributeProcessorConfig =
-        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("Failed to parse AttributeProcessor configuration: {e}"),
-        })?;
-
     let user_config = Arc::new(NodeUserConfig::new_processor_config(
         ATTRIBUTE_PROCESSOR_URN,
     ));
     Ok(ProcessorWrapper::local(
-        AttributeProcessor::new(cfg),
+        AttributeProcessor::from_config(config)?,
         user_config,
         processor_config,
     ))
@@ -421,7 +426,7 @@ mod tests {
                 }
             ]
         });
-        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        let processor = AttributeProcessor::from_config(&config).unwrap();
         apply_transform(&mut otap_records, SignalType::Logs, &processor.transform).unwrap();
 
         if let Some(rb) = otap_records.get(ArrowPayloadType::LogAttrs) {
@@ -471,7 +476,7 @@ mod tests {
                 }
             ]
         });
-        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        let processor = AttributeProcessor::from_config(&config).unwrap();
         apply_transform(&mut otap_records, SignalType::Logs, &processor.transform).unwrap();
 
         if let Some(rb) = otap_records.get(ArrowPayloadType::LogAttrs) {
@@ -499,7 +504,7 @@ mod tests {
                 }
             ]
         });
-        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        let processor = AttributeProcessor::from_config(&config).unwrap();
         apply_transform(&mut records, SignalType::Metrics, &processor.transform).unwrap();
 
         let rb2 = records.get(ArrowPayloadType::MetricAttrs).unwrap();
@@ -530,7 +535,7 @@ mod tests {
                 }
             ]
         });
-        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        let processor = AttributeProcessor::from_config(&config).unwrap();
         apply_transform(&mut records, SignalType::Traces, &processor.transform).unwrap();
 
         let rb2 = records.get(ArrowPayloadType::SpanAttrs).unwrap();
@@ -559,7 +564,7 @@ mod tests {
                 }
             ]
         });
-        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        let processor = AttributeProcessor::from_config(&config).unwrap();
         apply_transform(&mut records, SignalType::Logs, &processor.transform).unwrap();
 
         let rb2 = records.get(ArrowPayloadType::LogAttrs).unwrap();
@@ -587,7 +592,7 @@ mod tests {
                 }
             ]
         });
-        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        let processor = AttributeProcessor::from_config(&config).unwrap();
         apply_transform(&mut records, SignalType::Logs, &processor.transform).unwrap();
 
         // Verify only the update action was applied
@@ -611,7 +616,7 @@ mod tests {
                 }
             ]
         });
-        let processor = AttributeProcessor::new(serde_json::from_value(config).unwrap());
+        let processor = AttributeProcessor::from_config(&config).unwrap();
         apply_transform(&mut records, SignalType::Traces, &processor.transform).unwrap();
 
         let rb2 = records.get(ArrowPayloadType::SpanAttrs).unwrap();
