@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Display, Write},
-    time::SystemTime,
 };
 
 use data_engine_expressions::*;
@@ -247,10 +246,6 @@ pub trait RecordSet<TRecord: Record>: Debug {
 }
 
 pub trait Record: MapValueMut + AsStaticValue {
-    fn get_timestamp(&self) -> Option<SystemTime>;
-
-    fn get_observed_timestamp(&self) -> Option<SystemTime>;
-
     fn get_diagnostic_level(&self) -> Option<RecordSetEngineDiagnosticLevel>;
 }
 
