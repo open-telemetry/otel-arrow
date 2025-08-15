@@ -154,30 +154,6 @@ impl TryFrom<usize> for NodeIndex {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use otap_df_config::NodeId;
-
-    #[test]
-    fn test_too_many_nodes_error() {
-        let mut node_defs: NodeDefs<(), ()> = NodeDefs::default();
-        let node_id = NodeId::try_from("test_node").expect("valid node id");
-        const LIMIT: usize = u16::MAX as usize + 1;
-        for i in 0..=LIMIT {
-            let result = node_defs.next(node_id.clone(), NodeType::Processor, ());
-
-            if i == LIMIT {
-                // This should fail with TooManyNodes error
-                assert!(matches!(result, Err(Error::TooManyNodes {})));
-                break;
-            } else {
-                assert!(result.is_ok());
-            }
-        }
-    }
-}
-
 impl NodeId {
     pub(crate) fn build(index: NodeIndex, name: NodeName) -> NodeId {
         NodeId { index, name }
@@ -187,5 +163,28 @@ impl NodeId {
 impl std::fmt::Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_too_many_nodes_error() {
+        let mut node_defs: NodeDefs<(), ()> = NodeDefs::default();
+        let name: NodeName = "test_node".into();
+        const LIMIT: usize = u16::MAX as usize + 1;
+        for i in 0..=LIMIT {
+            let result = node_defs.next(name.clone(), NodeType::Processor, ());
+
+            if i == LIMIT {
+                // This should fail with TooManyNodes error
+                assert!(matches!(result, Err(Error::TooManyNodes {})));
+                break;
+            } else {
+                assert!(result.is_ok());
+            }
+        }
     }
 }

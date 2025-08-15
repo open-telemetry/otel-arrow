@@ -194,7 +194,7 @@ mod tests {
             .run_until(async {
                 let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
 
-                let node = nodes.get(0).expect("ok");
+                let node = nodes.first().expect("ok");
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background using spawn_local (not Send)
@@ -254,7 +254,7 @@ mod tests {
             .run_until(async {
                 let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
 
-                let node = nodes.get(0).expect("ok");
+                let node = nodes.first().expect("ok");
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background
@@ -302,7 +302,7 @@ mod tests {
         local.run_until(async {
             let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
 
-            let node1 = nodes.get(0).expect("ok");
+            let node1 = nodes.first().expect("ok");
             let node2 = nodes.get(1).expect("ok");
             let duration1 = Duration::from_millis(80);  // Shorter - should fire first
             let duration2 = Duration::from_millis(120); // Longer - should fire second
@@ -398,7 +398,7 @@ mod tests {
             .run_until(async {
                 let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
 
-		let node = nodes.get(0).expect("ok");
+		let node = nodes.first().expect("ok");
                 let first_duration = Duration::from_millis(150); // Original (longer)
                 let second_duration = Duration::from_millis(80); // Replacement (shorter)
 
@@ -533,7 +533,7 @@ mod tests {
             let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
 
             // Use different durations to test timer ordering
-            let node1 = nodes.get(0).expect("ok");
+            let node1 = nodes.first().expect("ok");
             let node2 = nodes.get(1).expect("ok");
             let node3 = nodes.get(2).expect("ok");
 
@@ -693,7 +693,7 @@ mod tests {
     async fn test_timer_heap_ordering() {
         let (mut manager, _pipeline_tx, _control_receivers, nodes) = setup_test_manager();
 
-        let node1 = nodes.get(0).expect("ok");
+        let node1 = nodes.first().expect("ok");
         let node2 = nodes.get(1).expect("ok");
         let node3 = nodes.get(2).expect("ok");
 
