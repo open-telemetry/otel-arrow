@@ -39,7 +39,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
-use otap_df_engine::node::NodeUnique;
+use otap_df_engine::node::NodeId;
 use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
@@ -64,9 +64,7 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |node: NodeUnique,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             ParquetExporter::from_config(&node_config.config)?,
             node,

@@ -13,7 +13,7 @@
 use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::message::Sender;
-use crate::node::Unique;
+use crate::node::Index;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
@@ -32,15 +32,15 @@ pub struct PipelineCtrlMsgManager {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
     /// Allows sending control messages back to nodes.
-    control_senders: HashMap<Unique, Sender<NodeControlMsg>>,
+    control_senders: HashMap<Index, Sender<NodeControlMsg>>,
     /// Min-heap of (Instant, NodeId) for timer expirations.
-    timers: BinaryHeap<Reverse<(Instant, Unique)>>,
+    timers: BinaryHeap<Reverse<(Instant, Index)>>,
     /// Set of NodeIds with canceled timers, so we can skip them when they pop.
-    canceled: HashSet<Unique>,
+    canceled: HashSet<Index>,
     /// Maps NodeId to the currently scheduled expiration Instant, to avoid firing outdated timers.
-    timer_map: HashMap<Unique, Instant>,
+    timer_map: HashMap<Index, Instant>,
     /// Maps NodeId to the timer duration, for recurring timers.
-    durations: HashMap<Unique, std::time::Duration>,
+    durations: HashMap<Index, std::time::Duration>,
 }
 
 impl PipelineCtrlMsgManager {
@@ -48,7 +48,7 @@ impl PipelineCtrlMsgManager {
     #[must_use]
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
-        control_senders: HashMap<Unique, Sender<NodeControlMsg>>,
+        control_senders: HashMap<Index, Sender<NodeControlMsg>>,
     ) -> Self {
         Self {
             pipeline_ctrl_msg_receiver,
@@ -143,7 +143,7 @@ mod tests {
     use super::*;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
-    use crate::node::NodeUnique;
+    use crate::node::NodeId;
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
     use std::collections::HashMap;
@@ -162,8 +162,8 @@ mod tests {
     fn setup_test_manager() -> (
         PipelineCtrlMsgManager,
         crate::control::PipelineCtrlMsgSender,
-        HashMap<Unique, Receiver<NodeControlMsg>>,
-        Vec<NodeUnique>,
+        HashMap<Index, Receiver<NodeControlMsg>>,
+        Vec<NodeId>,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
         let mut control_senders = HashMap::new();
@@ -497,7 +497,7 @@ mod tests {
 
                 // Send StartTimer for node with no control sender
                 let start_msg = PipelineControlMsg::StartTimer {
-                    node_id: Unique::try_from(1234).expect("ok"),
+                    node_id: Index::try_from(1234).expect("ok"),
                     duration,
                 };
                 pipeline_tx.send(start_msg).await.unwrap();

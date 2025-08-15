@@ -10,10 +10,12 @@ use crate::control::NodeControlMsg;
 use crate::error::Error;
 use crate::message::{Receiver, Sender};
 use otap_df_channel::error::SendError;
+use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{NodeId, PortName};
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+pub use otap_df_config::NodeId as NodeName;
 
 /// Common trait for nodes in the pipeline.
 #[async_trait::async_trait(?Send)]
@@ -22,8 +24,8 @@ pub trait Node {
     #[must_use]
     fn is_shared(&self) -> bool;
 
-    /// Unique identifier.
-    fn unique(&self) -> NodeUnique;
+    /// Node identifier.
+    fn node_id(&self) -> NodeId;
 
     /// Returns a reference to the node's user configuration.
     #[must_use]
@@ -33,19 +35,19 @@ pub trait Node {
     async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
 }
 
-/// NodeUnique consists of NodeId and Unique integer.
+/// NodeId consists of NodeId and Index integer.
 #[derive(Clone, Debug)]
-pub struct NodeUnique {
+pub struct NodeId {
     /// A unique integer.
-    pub(crate) id: Unique,
+    pub(crate) index: Index,
 
     /// A unique name as defined by otap_df_config.
-    pub name: NodeId,
+    pub name: NodeName,
 }
 
-/// Uniqueness value, presently a u16.
+/// Indexness value, presently a u16.
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
-pub struct Unique(u16);
+pub struct Index(u16);
 
 /// Enum to identify the type of a node for registry lookups
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +65,7 @@ pub trait NodeWithPDataSender<PData>: Node {
     /// Sets the sender for pdata messages on the node.
     fn set_pdata_sender(
         &mut self,
-        node: NodeUnique,
+        node: NodeId,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>>;
@@ -74,28 +76,30 @@ pub trait NodeWithPDataReceiver<PData>: Node {
     /// Sets the receiver for pdata messages on the node.
     fn set_pdata_receiver(
         &mut self,
-        node: NodeUnique,
+        node: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>>;
 }
 
-/// NodeDefinition is an entry in NodeDefs, indexed by the corresponding Unique assignment.
-pub(crate) struct NodeDefinition {
+/// NodeDefinition is an entry in NodeDefs, indexed by the corresponding Index assignment.
+pub(crate) struct NodeDefinition<Inner> {
     /// Type of node.
     pub(crate) ntype: NodeType,
     // Node name.
-    pub(crate) name: NodeId,
+    pub(crate) name: NodeName,
+    /// Inner data.
+    pub(crate) inner: Inner,
 }
 
-/// NodeDefs is a Unique-indexed set of node definitions.
-pub struct NodeDefs<PData> {
-    /// Entries have an implicit index equal to their Unique value.
-    entries: Vec<NodeDefinition>,
+/// NodeDefs is a Index-indexed set of node definitions.
+pub struct NodeDefs<PData, Inner> {
+    /// Entries have an implicit index equal to their Index value.
+    entries: Vec<NodeDefinition<Inner>>,
 
     _data: PhantomData<PData>,
 }
 
-impl<PData> Default for NodeDefs<PData> {
+impl<PData, Inner> Default for NodeDefs<PData, Inner> {
     fn default() -> Self {
         Self {
             entries: Vec::new(),
@@ -104,53 +108,44 @@ impl<PData> Default for NodeDefs<PData> {
     }
 }
 
-impl<PData> NodeDefs<PData> {
-    /// Gets a NodeUnique by the assigned Unique index value,
-    /// consisting of name and type information.
+impl<PData, Inner> NodeDefs<PData, Inner> {
+    /// Gets a the node definition
     #[must_use]
-    pub fn get(&self, u: Unique) -> Option<(NodeUnique, NodeType)> {
-        self.entries.get(u.index()).map(|d| {
-            (
-                NodeUnique {
-                    id: u,
-                    name: d.name.clone(),
-                },
-                d.ntype,
-            )
-        })
+    pub fn get(&self, index: Index) -> Option<&NodeDefinition<Inner>> {
+        self.entries.get(index.0 as usize)
     }
 
     /// Gets the next unique node identifier. Returns an error when
     /// the underlying u16 overflows.
-    pub fn next(&mut self, name: NodeId, ntype: NodeType) -> Result<NodeUnique, Error<PData>> {
-        let uniq = NodeUnique {
-            name: name.clone(),
-            id: Unique::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
-        };
-        self.entries.push(NodeDefinition { ntype, name });
+    pub fn next(
+        &mut self,
+        name: NodeName,
+        ntype: NodeType,
+        inner: Inner,
+    ) -> Result<NodeId, Error<PData>> {
+        let uniq = NodeId::build(
+            Index::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
+            name.clone(),
+        );
+        self.entries.push(NodeDefinition { ntype, name, inner });
         Ok(uniq)
     }
 
-    /// Returns an iterator over NodeUnique values for this set.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = NodeUnique> {
-        self.entries
-            .iter()
-            .enumerate()
-            .map(|(idx, val)| NodeUnique {
-                name: val.name.clone(),
-                id: Unique::try_from(idx).expect("valid defs"),
-            })
-    }
+    // Returns an iterator over NodeId values for this set.
+    // pub(crate) fn iter(&self) -> impl Iterator<Item = (NodeId, &NodeDefinition<Inner>)> {
+    //     self.entries.iter().enumerate().map(|(idx, val)| {
+    //         (
+    //             NodeId {
+    //                 name: val.name.clone(),
+    //                 index: Index::try_from(idx).expect("enumerated"),
+    //             },
+    //             val,
+    //         )
+    //     })
+    // }
 }
 
-impl Unique {
-    /// Index of this node in the runtime nodes vector.
-    pub(crate) fn index(&self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl TryFrom<usize> for Unique {
+impl TryFrom<usize> for Index {
     type Error = std::num::TryFromIntError;
 
     /// TryFrom signals an error when the u16 overflows.
@@ -174,7 +169,6 @@ mod tests {
 
             if i == LIMIT {
                 // This should fail with TooManyNodes error
-                eprintln!("LOOK {:?}", result);
                 assert!(matches!(result, Err(Error::TooManyNodes {})));
                 break;
             } else {
@@ -219,5 +213,18 @@ mod tests {
         assert_eq!(nodes[0].id.0, 0);
         assert_eq!(nodes[1].id.0, 1);
         assert_eq!(nodes[2].id.0, 2);
+    }
+}
+
+impl NodeId {
+    pub(crate) fn invalid(idx: Index) -> NodeId {
+        Self::build(idx, "invalid".into())
+    }
+
+    fn build(idx: Index, name: NodeName) -> NodeId {
+        NodeId {
+            index: idx,
+            name: name,
+        }
     }
 }

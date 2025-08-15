@@ -34,11 +34,11 @@
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
-use crate::node::NodeUnique;
+use crate::node::{NodeId, NodeName};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use otap_df_config::{NodeId, PortName};
+use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -103,7 +103,7 @@ impl<PData> EffectHandler<PData> {
     /// when it uses components that are `Send`.
     #[must_use]
     pub fn new(
-        node: NodeUnique,
+        node: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
@@ -129,8 +129,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_id(&self) -> NodeId {
-        self.core.node_id()
+    pub fn receiver_id(&self) -> NodeName {
+        self.core.node_id().name
     }
 
     /// Returns the list of connected out ports for this receiver.

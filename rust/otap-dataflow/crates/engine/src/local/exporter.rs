@@ -35,9 +35,8 @@
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
-use crate::node::NodeUnique;
+use crate::node::{NodeId, NodeName};
 use async_trait::async_trait;
-use otap_df_config::NodeId;
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -95,7 +94,7 @@ pub struct EffectHandler<PData> {
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
     #[must_use]
-    pub fn new(node_id: NodeUnique) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id),
             _pd: PhantomData,
@@ -104,8 +103,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns the id of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_id(&self) -> NodeId {
-        self.core.node_id()
+    pub fn exporter_id(&self) -> NodeName {
+        self.core.node_id().name
     }
 
     /// Print an info message to stdout.

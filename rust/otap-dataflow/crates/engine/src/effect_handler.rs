@@ -4,9 +4,8 @@
 
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
-use crate::node::{NodeUnique, Unique};
+use crate::node::{Index, NodeId};
 use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -17,14 +16,14 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
-    pub(crate) node: NodeUnique,
+    pub(crate) node: NodeId,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender>,
 }
 
 impl EffectHandlerCore {
     /// Creates a new EffectHandlerCore with node_id.
-    pub(crate) fn new(node: NodeUnique) -> Self {
+    pub(crate) fn new(node: NodeId) -> Self {
         Self {
             node,
             pipeline_ctrl_msg_sender: None,
@@ -41,7 +40,7 @@ impl EffectHandlerCore {
     /// Returns the name of the node associated with this effect handler.
     #[must_use]
     pub(crate) fn node_id(&self) -> NodeId {
-        self.node.name.clone()
+        self.node.clone()
     }
 
     /// Print an info message to stdout.
@@ -163,14 +162,14 @@ impl EffectHandlerCore {
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::StartTimer {
-                node_id: self.node.id,
+                node_id: self.node.index,
                 duration,
             })
             .await
             .map_err(Error::PipelineControlMsgError)?;
 
         Ok(TimerCancelHandle {
-            node_id: self.node.id,
+            node_id: self.node.index,
             pipeline_ctrl_msg_sender,
         })
     }
@@ -178,7 +177,7 @@ impl EffectHandlerCore {
 
 /// Handle to cancel a running timer.
 pub struct TimerCancelHandle {
-    node_id: Unique,
+    node_id: Index,
     pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
 }
 

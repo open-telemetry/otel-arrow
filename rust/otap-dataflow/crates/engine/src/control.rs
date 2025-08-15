@@ -5,7 +5,7 @@
 //! configuration updates, and timer management.
 
 use crate::message::Sender;
-use crate::node::Unique;
+use crate::node::Index;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use std::time::Duration;
@@ -19,7 +19,7 @@ pub enum NodeControlMsg {
     ///
     /// Typically used for confirming successful delivery or processing.
     Ack {
-        /// Unique identifier of the message being acknowledged.
+        /// Index identifier of the message being acknowledged.
         id: u64,
     },
 
@@ -28,7 +28,7 @@ pub enum NodeControlMsg {
     /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
     /// unavailability, or other conditions preventing successful processing.
     Nack {
-        /// Unique identifier of the message not being acknowledged.
+        /// Index identifier of the message not being acknowledged.
         id: u64,
         /// Human-readable reason for the NACK.
         reason: String,
@@ -70,14 +70,14 @@ pub enum PipelineControlMsg {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
-        node_id: Unique,
+        node_id: Index,
         /// Duration of the timer interval.
         duration: Duration,
     },
     /// Requests cancellation of a periodic timer for the specified node.
     CancelTimer {
         /// Identifier of the node for which the timer is being canceled.
-        node_id: Unique,
+        node_id: Index,
     },
     /// Requests shutdown of the node request manager.
     Shutdown,
@@ -92,7 +92,10 @@ pub trait Controllable {
     /// Sends a control message to the node asynchronously.
     ///
     /// Returns an error if the message could not be delivered.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
+    async fn send_node_control_msg(
+        &self,
+        msg: NodeControlMsg,
+    ) -> Result<(), SendError<NodeControlMsg>>;
 
     /// Returns the sender for control messages to this node.
     ///

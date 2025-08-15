@@ -14,7 +14,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
-use otap_df_engine::node::NodeUnique;
+use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -41,9 +41,7 @@ pub struct OTLPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |node: NodeUnique,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTLPExporter::from_config(&node_config.config)?,
             node,

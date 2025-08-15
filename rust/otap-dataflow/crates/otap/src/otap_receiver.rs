@@ -18,7 +18,7 @@ use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::node::NodeUnique;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
@@ -57,9 +57,7 @@ pub struct OTAPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
-    create: |node: NodeUnique,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTAPReceiver::from_config(&node_config.config)?,
             node,

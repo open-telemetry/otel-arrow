@@ -691,13 +691,13 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::node::NodeUnique;
+    use otap_df_engine::node::NodeId;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::{processor::TestRuntime, test_node};
     use std::sync::Arc;
 
     /// Wraps a processor in a local test wrapper.
-    fn wrap_local<P>(node: NodeUnique, processor: P) -> ProcessorWrapper<OTLPData>
+    fn wrap_local<P>(node: NodeId, processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
@@ -1818,7 +1818,7 @@ mod integration_tests {
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::local::processor::Processor;
-    use otap_df_engine::node::NodeUnique;
+    use otap_df_engine::node::NodeId;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::test_node;
     use std::fs::OpenOptions;
@@ -1826,7 +1826,7 @@ mod integration_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn wrap_local<P>(node: NodeUnique, processor: P) -> ProcessorWrapper<OTLPData>
+    fn wrap_local<P>(node: NodeId, processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {

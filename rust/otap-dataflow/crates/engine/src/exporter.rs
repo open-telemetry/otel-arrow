@@ -13,7 +13,7 @@ use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
 use crate::message::{Receiver, Sender};
-use crate::node::{Node, NodeUnique, NodeWithPDataReceiver};
+use crate::node::{Node, NodeId, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
@@ -28,8 +28,8 @@ use std::sync::Arc;
 pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
-        /// Unique identifier for the node.
-        node: NodeUnique,
+        /// Index identifier for the node.
+        node: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -45,8 +45,8 @@ pub enum ExporterWrapper<PData> {
     },
     /// An exporter with a `Send` implementation.
     Shared {
-        /// Unique identifier for the node.
-        node: NodeUnique,
+        /// Index identifier for the node.
+        node: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -65,7 +65,10 @@ pub enum ExporterWrapper<PData> {
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable for ExporterWrapper<PData> {
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_node_control_msg(
+        &self,
+        msg: NodeControlMsg,
+    ) -> Result<(), SendError<NodeControlMsg>> {
         self.control_sender().send(msg).await
     }
 
@@ -85,7 +88,7 @@ impl<PData> ExporterWrapper<PData> {
     /// implementation).
     pub fn local<E>(
         exporter: E,
-        node: NodeUnique,
+        node: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExporterConfig,
     ) -> Self
@@ -110,7 +113,7 @@ impl<PData> ExporterWrapper<PData> {
     /// implementation).
     pub fn shared<E>(
         exporter: E,
-        node: NodeUnique,
+        node: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExporterConfig,
     ) -> Self
@@ -193,7 +196,7 @@ impl<PData> Node for ExporterWrapper<PData> {
         }
     }
 
-    fn unique(&self) -> NodeUnique {
+    fn node_id(&self) -> NodeId {
         match self {
             ExporterWrapper::Local { node, .. } => node.clone(),
             ExporterWrapper::Shared { node, .. } => node.clone(),
@@ -225,7 +228,7 @@ impl<PData> Node for ExporterWrapper<PData> {
 impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
-        node: NodeUnique,
+        node: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, receiver) {

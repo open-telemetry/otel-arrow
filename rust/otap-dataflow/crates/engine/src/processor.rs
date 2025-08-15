@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{MessageChannel, Receiver, Sender};
-use crate::node::{Node, NodeUnique, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use otap_df_channel::error::SendError;
@@ -30,8 +30,8 @@ use std::sync::Arc;
 pub enum ProcessorWrapper<PData> {
     /// A processor with a `!Send` implementation.
     Local {
-        /// Unique node identifier.
-        node: NodeUnique,
+        /// Index node identifier.
+        node: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -49,8 +49,8 @@ pub enum ProcessorWrapper<PData> {
     },
     /// A processor with a `Send` implementation.
     Shared {
-        /// Unique node identifier.
-        node: NodeUnique,
+        /// Index node identifier.
+        node: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -98,7 +98,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn local<P>(
         processor: P,
-        node: NodeUnique,
+        node: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -124,7 +124,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn shared<P>(
         processor: P,
-        node: NodeUnique,
+        node: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -262,7 +262,7 @@ impl<PData> Node for ProcessorWrapper<PData> {
         }
     }
 
-    fn unique(&self) -> NodeUnique {
+    fn node_id(&self) -> NodeId {
         match self {
             ProcessorWrapper::Local { node, .. } => node.clone(),
             ProcessorWrapper::Shared { node, .. } => node.clone(),
@@ -294,7 +294,10 @@ impl<PData> Node for ProcessorWrapper<PData> {
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable for ProcessorWrapper<PData> {
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_node_control_msg(
+        &self,
+        msg: NodeControlMsg,
+    ) -> Result<(), SendError<NodeControlMsg>> {
         self.control_sender().send(msg).await
     }
 
@@ -312,7 +315,7 @@ impl<PData> Controllable for ProcessorWrapper<PData> {
 impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
-        node: NodeUnique,
+        node: NodeId,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
@@ -340,7 +343,7 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
 impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
-        node: NodeUnique,
+        node: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, receiver) {

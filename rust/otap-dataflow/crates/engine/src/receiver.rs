@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
-use crate::node::{Node, NodeUnique, NodeWithPDataSender};
+use crate::node::{Node, NodeId, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
 use otap_df_channel::error::SendError;
@@ -29,8 +29,8 @@ use std::sync::Arc;
 pub enum ReceiverWrapper<PData> {
     /// A receiver with a `!Send` implementation.
     Local {
-        /// Unique node identifier.
-        node: NodeUnique,
+        /// Index node identifier.
+        node: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -48,8 +48,8 @@ pub enum ReceiverWrapper<PData> {
     },
     /// A receiver with a `Send` implementation.
     Shared {
-        /// Unique node identifier.
-        node: NodeUnique,
+        /// Index node identifier.
+        node: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -70,7 +70,10 @@ pub enum ReceiverWrapper<PData> {
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable for ReceiverWrapper<PData> {
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_node_control_msg(
+        &self,
+        msg: NodeControlMsg,
+    ) -> Result<(), SendError<NodeControlMsg>> {
         self.control_sender().send(msg).await
     }
 
@@ -89,7 +92,7 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn local<R>(
         receiver: R,
-        node: NodeUnique,
+        node: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ReceiverConfig,
     ) -> Self
@@ -114,7 +117,7 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn shared<R>(
         receiver: R,
-        node: NodeUnique,
+        node: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ReceiverConfig,
     ) -> Self
@@ -219,7 +222,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
         }
     }
 
-    fn unique(&self) -> NodeUnique {
+    fn node_id(&self) -> NodeId {
         match self {
             ReceiverWrapper::Local { node, .. } => node.clone(),
             ReceiverWrapper::Shared { node, .. } => node.clone(),
@@ -251,7 +254,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
 impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
-        node: NodeUnique,
+        node: NodeId,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
