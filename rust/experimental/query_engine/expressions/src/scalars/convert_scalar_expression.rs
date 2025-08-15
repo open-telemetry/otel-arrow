@@ -19,6 +19,13 @@ pub enum ConvertScalarExpression {
 }
 
 impl ConvertScalarExpression {
+    pub(crate) fn is_always_convertable_to_numeric(value_type: &ValueType) -> bool {
+        matches!(
+            value_type,
+            ValueType::DateTime | ValueType::Boolean | ValueType::Integer | ValueType::Double
+        )
+    }
+
     pub(crate) fn try_resolve_value_type(
         &self,
         pipeline: &PipelineExpression,
@@ -26,45 +33,33 @@ impl ConvertScalarExpression {
         match self {
             ConvertScalarExpression::Boolean(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(
-                        ValueType::DateTime
-                        | ValueType::Boolean
-                        | ValueType::Integer
-                        | ValueType::Double,
-                    ) => Ok(Some(ValueType::Boolean)),
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
+                        Ok(Some(ValueType::Boolean))
+                    }
                     _ => Ok(None),
                 }
             }
             ConvertScalarExpression::DateTime(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(
-                        ValueType::DateTime
-                        | ValueType::Boolean
-                        | ValueType::Integer
-                        | ValueType::Double,
-                    ) => Ok(Some(ValueType::DateTime)),
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
+                        Ok(Some(ValueType::DateTime))
+                    }
                     _ => Ok(None),
                 }
             }
             ConvertScalarExpression::Double(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(
-                        ValueType::DateTime
-                        | ValueType::Boolean
-                        | ValueType::Integer
-                        | ValueType::Double,
-                    ) => Ok(Some(ValueType::Double)),
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
+                        Ok(Some(ValueType::Double))
+                    }
                     _ => Ok(None),
                 }
             }
             ConvertScalarExpression::Integer(c) => {
                 match c.get_inner_expression().try_resolve_value_type(pipeline)? {
-                    Some(
-                        ValueType::DateTime
-                        | ValueType::Boolean
-                        | ValueType::Integer
-                        | ValueType::Double,
-                    ) => Ok(Some(ValueType::Integer)),
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
+                        Ok(Some(ValueType::Integer))
+                    }
                     _ => Ok(None),
                 }
             }
@@ -82,57 +77,81 @@ impl ConvertScalarExpression {
     {
         match self {
             ConvertScalarExpression::Boolean(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)?
-                    && let Some(b) = v.to_value().convert_to_bool()
-                {
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                            c.query_location.clone(),
-                            b,
-                        )),
-                    )))
+                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                    if let Some(b) = v.to_value().convert_to_bool() {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                c.query_location.clone(),
+                                b,
+                            )),
+                        )))
+                    } else {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                c.query_location.clone(),
+                            )),
+                        )))
+                    }
                 } else {
                     Ok(None)
                 }
             }
             ConvertScalarExpression::DateTime(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)?
-                    && let Some(d) = v.to_value().convert_to_datetime()
-                {
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
-                            c.query_location.clone(),
-                            d,
-                        )),
-                    )))
+                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                    if let Some(d) = v.to_value().convert_to_datetime() {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                                c.query_location.clone(),
+                                d,
+                            )),
+                        )))
+                    } else {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                c.query_location.clone(),
+                            )),
+                        )))
+                    }
                 } else {
                     Ok(None)
                 }
             }
             ConvertScalarExpression::Double(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)?
-                    && let Some(d) = v.to_value().convert_to_double()
-                {
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::Double(DoubleScalarExpression::new(
-                            c.query_location.clone(),
-                            d,
-                        )),
-                    )))
+                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                    if let Some(d) = v.to_value().convert_to_double() {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Double(DoubleScalarExpression::new(
+                                c.query_location.clone(),
+                                d,
+                            )),
+                        )))
+                    } else {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                c.query_location.clone(),
+                            )),
+                        )))
+                    }
                 } else {
                     Ok(None)
                 }
             }
             ConvertScalarExpression::Integer(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)?
-                    && let Some(i) = v.to_value().convert_to_integer()
-                {
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            c.query_location.clone(),
-                            i,
-                        )),
-                    )))
+                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                    if let Some(i) = v.to_value().convert_to_integer() {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                                c.query_location.clone(),
+                                i,
+                            )),
+                        )))
+                    } else {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                c.query_location.clone(),
+                            )),
+                        )))
+                    }
                 } else {
                     Ok(None)
                 }
@@ -291,6 +310,36 @@ mod tests {
                         true,
                     ))),
                 ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+            ],
+        );
+
+        run_test(
+            ConvertScalarExpression::DateTime,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "8/8/2025"),
+                    )),
+                    None,
+                    Some(Value::DateTime(&DateTimeScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        date_utils::create_utc(2025, 8, 8, 0, 0, 0, 0),
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
             ],
         );
 
@@ -337,6 +386,13 @@ mod tests {
                         18.18,
                     ))),
                 ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
             ],
         );
 
@@ -382,6 +438,13 @@ mod tests {
                         QueryLocation::new_fake(),
                         18,
                     ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
                 ),
             ],
         );

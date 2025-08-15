@@ -21,7 +21,7 @@ use crate::{
         dictionary::DictionaryOptions,
     },
     otlp::attributes::store::AttributeValueType,
-    schema::consts,
+    schema::{FieldExt, consts},
 };
 
 /// Record batch builder for logs
@@ -213,7 +213,9 @@ impl LogsRecordBatchBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -730,7 +732,9 @@ impl ResourceBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -858,7 +862,9 @@ impl ScopeBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
+            );
             columns.push(array);
         }
 

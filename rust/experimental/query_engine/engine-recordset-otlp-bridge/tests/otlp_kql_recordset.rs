@@ -81,6 +81,129 @@ fn test_project_away() {
 }
 
 #[test]
+fn test_summarize_count_only() {
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new()),
+        ),
+    );
+
+    let query = "source | summarize Count = count()";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.len(), 1);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 2);
+
+    let summary = results.summaries.first().unwrap();
+
+    assert_eq!(
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        summary.summary_id
+    );
+
+    assert!(summary.group_by_values.is_empty());
+    assert_eq!(summary.aggregation_values.len(), 1);
+
+    let (key, value) = summary.aggregation_values.iter().next().unwrap();
+
+    assert_eq!("Count", key.as_ref());
+
+    if let SummaryAggregation::Count(v) = value {
+        assert_eq!(2, *v);
+    } else {
+        panic!()
+    }
+}
+
+#[test]
+fn test_summarize_count_and_group_by() {
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::StringValue(StringValueStorage::new("hello world".into())),
+                )))
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::StringValue(StringValueStorage::new("hello world".into())),
+                )))
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::StringValue(StringValueStorage::new("goodbye world".into())),
+                ))),
+        ),
+    );
+
+    let query = "source | summarize Count = count() by Body";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.len(), 2);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let mut summaries = results.summaries;
+    summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
+
+    assert_summary(
+        &summaries[0],
+        "33072fa213f92249f89e47b5c5a3959191dd8a72662068a2d44f5e66d579e09c",
+        "goodbye world",
+        1,
+    );
+
+    assert_summary(
+        &summaries[1],
+        "daa898d673bd24e7a11ff9724e4f549c88eaa763d12da08762fcb73e8337a37f",
+        "hello world",
+        2,
+    );
+
+    fn assert_summary(summary: &RecordSetEngineSummary, sumary_id: &str, body: &str, count: usize) {
+        assert_eq!(sumary_id, summary.summary_id);
+
+        assert_eq!(summary.group_by_values.len(), 1);
+
+        let (key, value) = &summary.group_by_values[0];
+
+        assert_eq!("Body", key.as_ref());
+
+        assert_eq!(
+            OwnedValue::String(StringValueStorage::new(body.into())).to_value(),
+            value.to_value()
+        );
+
+        assert_eq!(summary.aggregation_values.len(), 1);
+
+        let (key, value) = summary.aggregation_values.iter().next().unwrap();
+
+        assert_eq!("Count", key.as_ref());
+
+        if let SummaryAggregation::Count(v) = value {
+            assert_eq!(count, *v);
+        } else {
+            panic!()
+        }
+    }
+}
+
+#[test]
 fn test_strlen_function() {
     let log = LogRecord::new()
         .with_event_name("hello world".into())
@@ -150,7 +273,7 @@ fn test_replace_string_function() {
     );
 
     let query = r#"source
- | extend 
+ | extend
      modified_name = replace_string(EventName, "cat", "hamster"),
      modified_text = replace_string(text, "hello", "hi")"#;
 
