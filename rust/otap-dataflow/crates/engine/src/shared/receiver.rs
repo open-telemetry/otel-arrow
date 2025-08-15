@@ -34,7 +34,7 @@
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
-use crate::node::{NodeId, NodeName};
+use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
@@ -129,8 +129,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_id(&self) -> NodeName {
-        self.core.node_id().name
+    pub fn receiver_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Returns the list of connected out ports for this receiver.

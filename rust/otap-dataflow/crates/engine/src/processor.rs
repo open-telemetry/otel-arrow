@@ -154,7 +154,6 @@ impl<PData> ProcessorWrapper<PData> {
             ProcessorWrapper::Local {
                 node,
                 processor,
-                runtime_config,
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
@@ -164,7 +163,7 @@ impl<PData> ProcessorWrapper<PData> {
                 let message_channel = MessageChannel::new(
                     Receiver::Local(control_receiver),
                     Receiver::Local(pdata_receiver.ok_or_else(|| Error::ProcessorError {
-                        processor: runtime_config.name.clone(),
+                        processor: node.clone(),
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                     })?),
                 );
@@ -179,7 +178,6 @@ impl<PData> ProcessorWrapper<PData> {
             ProcessorWrapper::Shared {
                 node,
                 processor,
-                runtime_config,
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
@@ -189,7 +187,7 @@ impl<PData> ProcessorWrapper<PData> {
                 let message_channel = MessageChannel::new(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
-                        processor: runtime_config.name.clone(),
+                        processor: node.clone(),
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                     })?),
                 );
@@ -329,11 +327,11 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
                 Ok(())
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node.name.clone(),
+                processor: node.clone(),
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node.name.clone(),
+                processor: node.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }
@@ -356,11 +354,11 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
                 Ok(())
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node.name.clone(),
+                processor: node.clone(),
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node.name.clone(),
+                processor: node.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

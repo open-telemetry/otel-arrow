@@ -241,7 +241,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
                 Ok(())
             }
             (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
-                exporter: node.name.clone(),
+                exporter: node.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

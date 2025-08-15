@@ -275,7 +275,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 }
             }
             .map_err(|e| Error::NodeControlMsgSendError {
-                node: ndef.name.clone(),
+                node: NodeId::build(index, ndef.name.clone()),
                 error: e,
             }),
             None => Err(Error::InternalError {
@@ -508,7 +508,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             },
         )?;
         if names.insert(name.clone(), node_id.clone()).is_some() {
-            return Err(Error::ReceiverAlreadyExists { receiver: name });
+            return Err(Error::ReceiverAlreadyExists { receiver: node_id });
         }
 
         receivers.push(
@@ -544,7 +544,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             },
         )?;
         if names.insert(name.clone(), node_id.clone()).is_some() {
-            return Err(Error::ProcessorAlreadyExists { processor: name });
+            return Err(Error::ProcessorAlreadyExists { processor: node_id });
         }
         processors.push(
             create(node_id, &node_config.config, &processor_config)
@@ -581,7 +581,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         )?;
 
         if names.insert(name.clone(), node_id.clone()).is_some() {
-            return Err(Error::ExporterAlreadyExists { exporter: name });
+            return Err(Error::ExporterAlreadyExists { exporter: node_id });
         }
         exporters.push(
             create(node_id, node_config, &exporter_config)

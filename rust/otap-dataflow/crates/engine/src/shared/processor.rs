@@ -33,7 +33,7 @@
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
-use crate::node::{NodeId, NodeName};
+use crate::node::NodeId;
 use crate::shared::message::SharedSender;
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -122,8 +122,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns the id of the processor associated with this handler.
     #[must_use]
-    pub fn processor_id(&self) -> NodeName {
-        self.core.node_id().name
+    pub fn processor_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Returns the list of connected out ports for this processor.

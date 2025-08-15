@@ -179,15 +179,16 @@ mod tests {
 }
 
 impl NodeId {
-    #[cfg(test)]
-    pub(crate) fn invalid(idx: Index) -> NodeId {
-        Self::build(idx, "invalid".into())
-    }
-
-    fn build(idx: Index, name: NodeName) -> NodeId {
+    pub(crate) fn build(idx: Index, name: NodeName) -> NodeId {
         NodeId {
             index: idx,
             name: name,
         }
+    }
+}
+
+impl std::fmt::Display for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
     }
 }

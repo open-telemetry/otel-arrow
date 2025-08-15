@@ -155,7 +155,7 @@ impl<PData> ReceiverWrapper<PData> {
             } => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
-                        receiver: node.name.clone(),
+                        receiver: node.clone(),
                         error: "The pdata sender must be defined at this stage".to_owned(),
                     });
                 } else {
@@ -181,7 +181,7 @@ impl<PData> ReceiverWrapper<PData> {
             } => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
-                        receiver: node.name.clone(),
+                        receiver: node.clone(),
                         error: "The pdata sender must be defined at this stage".to_owned(),
                     });
                 } else {
@@ -268,11 +268,11 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 Ok(())
             }
             (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node.name.clone(),
+                processor: node.clone(),
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node.name.clone(),
+                processor: node.clone(),
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

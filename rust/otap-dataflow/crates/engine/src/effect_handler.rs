@@ -6,7 +6,6 @@ use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::{Index, NodeId};
 use otap_df_channel::error::SendError;
-use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
@@ -68,12 +67,11 @@ impl EffectHandlerCore {
     pub(crate) fn tcp_listener<PData>(
         &self,
         addr: SocketAddr,
-        receiver_name: impl Into<Cow<'static, str>>,
+        receiver_id: NodeId,
     ) -> Result<TcpListener, Error<PData>> {
-        let node_name: Cow<'static, str> = receiver_name.into();
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
-            node: node_name.clone(),
+            node: receiver_id.clone(),
             error,
         };
 
@@ -117,12 +115,11 @@ impl EffectHandlerCore {
     pub(crate) fn udp_socket<PData>(
         &self,
         addr: SocketAddr,
-        receiver_name: impl Into<Cow<'static, str>>,
+        receiver_id: NodeId,
     ) -> Result<UdpSocket, Error<PData>> {
-        let node_name: Cow<'static, str> = receiver_name.into();
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
-            node: node_name.clone(),
+            node: receiver_id.clone(),
             error,
         };
 

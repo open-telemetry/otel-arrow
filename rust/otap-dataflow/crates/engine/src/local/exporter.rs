@@ -35,7 +35,7 @@
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
-use crate::node::{NodeId, NodeName};
+use crate::node::NodeId;
 use async_trait::async_trait;
 use std::marker::PhantomData;
 use std::time::Duration;
@@ -103,8 +103,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns the id of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_id(&self) -> NodeName {
-        self.core.node_id().name
+    pub fn exporter_id(&self) -> NodeId {
+        self.core.node_id()
     }
 
     /// Print an info message to stdout.

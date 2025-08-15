@@ -6,6 +6,7 @@
 //! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
 use crate::control::{NodeControlMsg, PipelineControlMsg};
+use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use otap_df_config::{NodeId as NodeName, PortName, Urn};
 use std::borrow::Cow;
@@ -33,7 +34,7 @@ pub enum Error<T> {
     #[error("A node control message send error occurred in node {node}: {error}")]
     NodeControlMsgSendError {
         /// The name of the node that encountered the error.
-        node: NodeName,
+        node: NodeId,
 
         /// The error that occurred.
         error: SendError<NodeControlMsg>,
@@ -43,7 +44,7 @@ pub enum Error<T> {
     #[error("Invalid hyper-edge in node {source} with out port {out_port}: {error}")]
     InvalidHyperEdge {
         /// The name of the node that contains the invalid hyper-edge.
-        r#source: NodeName,
+        r#source: NodeId,
 
         /// The invalid out port.
         out_port: PortName,
@@ -56,7 +57,7 @@ pub enum Error<T> {
     #[error("An IO error occurred in node {node}: {error}")]
     IoError {
         /// The name of the node that encountered the error.
-        node: NodeName,
+        node: NodeId,
 
         /// The error that occurred.
         error: std::io::Error,
@@ -66,14 +67,14 @@ pub enum Error<T> {
     #[error("The receiver `{receiver}` already exists")]
     ReceiverAlreadyExists {
         /// The name of the receiver that already exists.
-        receiver: NodeName,
+        receiver: NodeId,
     },
 
     /// A wrapper for the receiver errors.
     #[error("A receiver error occurred in node {receiver}: {error}")]
     ReceiverError {
         /// The name of the receiver that encountered the error.
-        receiver: NodeName,
+        receiver: NodeId,
 
         /// The error that occurred.
         /// ToDo We probably need to use a more specific error type here (JSON Node?).
@@ -91,14 +92,14 @@ pub enum Error<T> {
     #[error("The processor `{processor}` already exists")]
     ProcessorAlreadyExists {
         /// The name of the processor that already exists.
-        processor: NodeName,
+        processor: NodeId,
     },
 
     /// A wrapper for the processor errors.
     #[error("A processor error occurred in node {processor}: {error}")]
     ProcessorError {
         /// The name of the processor that encountered the error.
-        processor: NodeName,
+        processor: NodeId,
 
         /// The error that occurred.
         /// ToDo We probably need to use a more specific error type here (JSON Node?).
@@ -116,14 +117,14 @@ pub enum Error<T> {
     #[error("The exporter `{exporter}` already exists")]
     ExporterAlreadyExists {
         /// The name of the exporter that already exists.
-        exporter: NodeName,
+        exporter: NodeId,
     },
 
     /// A wrapper for the exporter errors.
     #[error("An exporter error occurred in node {exporter}: {error}")]
     ExporterError {
         /// The name of the exporter that encountered the error.
-        exporter: NodeName,
+        exporter: NodeId,
 
         /// The error that occurred.
         /// ToDo We probably need to use a more specific error type here (JSON Node?).
@@ -147,7 +148,7 @@ pub enum Error<T> {
     /// Unknown node.
     #[error("Unknown node `{node}`")]
     UnknownNode {
-        /// The id of the unknown node.
+        /// The name of the unknown node.
         node: NodeName,
     },
 
@@ -165,7 +166,7 @@ pub enum Error<T> {
     #[error("SPMC shared channels are not yet supported. Source: {source_id}, Port: {port_name}")]
     SpmcSharedNotSupported {
         /// The id of the source node.
-        source_id: NodeName,
+        source_id: NodeId,
         /// The name of the port.
         port_name: PortName,
     },
