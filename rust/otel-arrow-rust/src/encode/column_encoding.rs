@@ -8,10 +8,12 @@
 //! The motivation behind adding these encodings to the columns is for better compression when,
 //! for example, transmitting OTAP data via gRPC.
 
+use std::ops::AddAssign;
+
 use arrow::{
-    array::{ArrayRef, RecordBatch, StructArray, UInt32Array},
+    array::{ArrayRef, ArrowPrimitiveType, RecordBatch, StructArray, UInt32Array},
     compute::take_record_batch,
-    datatypes::{DataType, Field, Schema},
+    datatypes::{DataType, Field, Schema, UInt16Type},
     row::{RowConverter, SortField},
 };
 
@@ -154,7 +156,7 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
 /// before applying any column encodings
 fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
     match payload_type {
-        ArrowPayloadType::LogAttrs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],
+        ArrowPayloadType::Logs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],
         _ => &[],
     }
 }
@@ -202,6 +204,26 @@ fn sort_record_batch(
     }
 }
 
+struct EncodedColumnResult<T: ArrowPrimitiveType> {
+    new_column: ArrayRef,
+    remapping: Vec<(T::Native, T::Native)>,
+}
+
+///
+fn create_new_delta_encoded_column_from<T>(column: ArrayRef) -> Result<EncodedColumnResult<T>>
+where
+    T: ArrowPrimitiveType,
+    <T as ArrowPrimitiveType>::Native: From<u8> + AddAssign,
+{
+    let mut curr_id: T::Native = T::Native::default();
+    let one = T::Native::from(1u8);
+
+    // TODO need to check if column has at least one value
+    // TODO we can do nothing if the column contains only one value?
+
+    todo!()
+}
+
 /// apply transport-optimized encodings to the record batch's columns
 pub fn apply_column_encodings(
     payload_type: &ArrowPayloadType,
@@ -235,7 +257,6 @@ pub fn apply_column_encodings(
 
     if to_apply.len() != column_encodings.len() {
         // TODO handle this ...
-        //
         // this would be a weird situation where only some of the columns are encoded and others aren't.
         // if we need to sort the record batch to do the encoding, this will not end well ....
     }
@@ -243,6 +264,14 @@ pub fn apply_column_encodings(
     // sort record batch before applying the encoding. This will give us the best compression ratio
     // for columns which may have many repeated sequences of the same value
     let record_batch = sort_record_batch(payload_type, record_batch)?;
+
+    let schema = record_batch.schema();
+    let columns = record_batch.columns();
+
+    for column_encoding in to_apply {
+        let column = column_encoding.access_column(&schema, columns).unwrap();
+        let r = create_new_delta_encoded_column_from::<UInt16Type>(column);
+    }
 
     todo!();
 }
@@ -252,9 +281,10 @@ mod test {
     use std::sync::Arc;
 
     use arrow::{
-        array::{StringArray, StructArray, UInt8Array, UInt16Array},
+        array::{FixedSizeBinaryArray, StringArray, StructArray, UInt8Array, UInt16Array},
         datatypes::{Field, Fields},
     };
+    use arrow_ipc::FixedSizeBinary;
 
     use crate::{encode::column_encoding, schema::FieldExt};
 
@@ -408,7 +438,56 @@ mod test {
     }
 
     #[test]
-    fn test_sort_columns_multi_column() {}
+    fn test_sort_columns_multi_column() {
+        let input_data = vec![(2, 1, 1), (2, 0, 1), (2, 1, 0)];
+
+        let expected_data = vec![(2, 0, 1), (2, 1, 0), (2, 1, 1)];
+
+        fn to_batch(data: Vec<(u16, u16, u128)>) -> RecordBatch {
+            let struct_fields: Fields = vec![Field::new(consts::ID, DataType::UInt16, true)].into();
+
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+            ]));
+            let resource_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.0));
+            let scope_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.1));
+            let trace_ids =
+                FixedSizeBinaryArray::try_from_iter(data.iter().map(|d| u128::to_be_bytes(d.2)))
+                    .unwrap();
+
+            // TODO -- test sorting w/ nulls
+
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    // resource
+                    Arc::new(StructArray::new(
+                        struct_fields.clone(),
+                        vec![Arc::new(resource_ids)],
+                        None,
+                    )),
+                    Arc::new(StructArray::new(
+                        struct_fields.clone(),
+                        vec![Arc::new(scope_ids)],
+                        None,
+                    )),
+                    Arc::new(trace_ids),
+                ],
+            )
+            .unwrap()
+        }
+
+        let result = sort_record_batch(&ArrowPayloadType::Logs, &to_batch(input_data)).unwrap();
+        let expected = to_batch(expected_data);
+
+        assert_eq!(result, expected);
+    }
 
     #[test]
     fn test_sort_columns_none_present() {
