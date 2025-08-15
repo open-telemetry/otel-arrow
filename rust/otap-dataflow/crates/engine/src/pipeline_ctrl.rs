@@ -173,8 +173,8 @@ mod tests {
         let nodes = test_nodes(vec!["node1", "node2", "node3"]);
         for node in &nodes {
             let (sender, receiver) = create_mock_control_sender();
-            let _ = control_senders.insert(node.id, sender);
-            let _ = control_receivers.insert(node.id, receiver);
+            let _ = control_senders.insert(node.index, sender);
+            let _ = control_receivers.insert(node.index, receiver);
         }
 
         let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders);
@@ -203,13 +203,13 @@ mod tests {
 
                 // Send StartTimer message to schedule a recurring timer
                 let start_msg = PipelineControlMsg::StartTimer {
-                    node_id: node.id,
+                    node_id: node.index,
                     duration,
                 };
                 pipeline_tx.send(start_msg).await.unwrap();
 
                 // Wait for the timer to expire and verify TimerTick delivery
-                let mut receiver = control_receivers.remove(&node.id).unwrap();
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
                 let tick_result =
                     timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
 
@@ -263,17 +263,19 @@ mod tests {
 
                 // Schedule a timer
                 let start_msg = PipelineControlMsg::StartTimer {
-                    node_id: node.id,
+                    node_id: node.index,
                     duration,
                 };
                 pipeline_tx.send(start_msg).await.unwrap();
 
                 // Immediately cancel the timer before it expires
-                let cancel_msg = PipelineControlMsg::CancelTimer { node_id: node.id };
+                let cancel_msg = PipelineControlMsg::CancelTimer {
+                    node_id: node.index,
+                };
                 pipeline_tx.send(cancel_msg).await.unwrap();
 
                 // Wait and verify no TimerTick is received (timeout expected)
-                let mut receiver = control_receivers.remove(&node.id).unwrap();
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
                 let tick_result =
                     timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
 
@@ -312,11 +314,11 @@ mod tests {
 
             // Schedule timers for both nodes
             let start_msg1 = PipelineControlMsg::StartTimer {
-                node_id: node1.id,
+                node_id: node1.index,
                 duration: duration1,
             };
             let start_msg2 = PipelineControlMsg::StartTimer {
-                node_id: node2.id,
+                node_id: node2.index,
                 duration: duration2,
             };
 
@@ -324,8 +326,8 @@ mod tests {
             pipeline_tx.send(start_msg2).await.unwrap();
 
             // Extract receivers for both nodes
-            let mut receiver1 = control_receivers.remove(&node1.id).unwrap();
-            let mut receiver2 = control_receivers.remove(&node2.id).unwrap();
+            let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
+            let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
 
             // Use select! to handle whichever timer fires first, with overall timeout
             let mut node1_received = false;
@@ -407,7 +409,7 @@ mod tests {
 
                 // Schedule initial timer
                 let start_msg1 = PipelineControlMsg::StartTimer {
-                    node_id: node.id,
+                    node_id: node.index,
                     duration: first_duration,
                 };
                 pipeline_tx.send(start_msg1).await.unwrap();
@@ -415,13 +417,13 @@ mod tests {
                 // Wait a bit, then replace with a shorter timer
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 let start_msg2 = PipelineControlMsg::StartTimer {
-                    node_id: node.id,
+                    node_id: node.index,
                     duration: second_duration,
                 };
                 pipeline_tx.send(start_msg2).await.unwrap();
 
                 // Measure timing to verify the replacement worked
-                let mut receiver = control_receivers.remove(&node.id).unwrap();
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
                 let start_time = Instant::now();
 
                 let tick_result =
@@ -542,15 +544,15 @@ mod tests {
 
             // Send timers in non-chronological order to test priority queue
             let start_msg1 = PipelineControlMsg::StartTimer {
-                node_id: node1.id,
+                node_id: node1.index,
                 duration: Duration::from_millis(120), // Should fire third
             };
             let start_msg2 = PipelineControlMsg::StartTimer {
-                node_id: node2.id,
+                node_id: node2.index,
                 duration: Duration::from_millis(60),  // Should fire first
             };
             let start_msg3 = PipelineControlMsg::StartTimer {
-                node_id: node3.id,
+                node_id: node3.index,
                 duration: Duration::from_millis(90),  // Should fire second
             };
 
@@ -558,9 +560,9 @@ mod tests {
             pipeline_tx.send(start_msg2).await.unwrap();
             pipeline_tx.send(start_msg3).await.unwrap();
 
-            let mut receiver1 = control_receivers.remove(&node1.id).unwrap();
-            let mut receiver2 = control_receivers.remove(&node2.id).unwrap();
-            let mut receiver3 = control_receivers.remove(&node3.id).unwrap();
+            let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
+            let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
+            let mut receiver3 = control_receivers.remove(&node3.index).unwrap();
 
             // Track which timers have fired and in what order
             let mut node1_received = false;
@@ -577,7 +579,7 @@ mod tests {
                         match result1 {
                             Ok(NodeControlMsg::TimerTick {}) => {
                                 node1_received = true;
-                                firing_order.push((node1.id, start_time.elapsed()));
+                                firing_order.push((node1.index, start_time.elapsed()));
                                 // Verify node1 fired within expected timeframe (should be ~120ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
@@ -593,7 +595,7 @@ mod tests {
                         match result2 {
                             Ok(NodeControlMsg::TimerTick {}) => {
                                 node2_received = true;
-                                firing_order.push((node2.id, start_time.elapsed()));
+                                firing_order.push((node2.index, start_time.elapsed()));
                                 // Verify node2 fired within expected timeframe (should be ~60ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(40) && elapsed <= Duration::from_millis(100),
@@ -609,7 +611,7 @@ mod tests {
                         match result3 {
                             Ok(NodeControlMsg::TimerTick {}) => {
                                 node3_received = true;
-                                firing_order.push((node3.id, start_time.elapsed()));
+                                firing_order.push((node3.index, start_time.elapsed()));
                                 // Verify node3 fired within expected timeframe (should be ~90ms)
                                 let elapsed = start_time.elapsed();
                                 assert!(elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
@@ -637,9 +639,9 @@ mod tests {
             firing_order.sort_by_key(|&(_, elapsed)| elapsed);
 
             assert_eq!(firing_order.len(), 3, "Should have received exactly 3 timer events");
-            assert_eq!(firing_order[0].0, node2.id, "Node2 (60ms) should fire first");
-            assert_eq!(firing_order[1].0, node3.id, "Node3 (90ms) should fire second");
-            assert_eq!(firing_order[2].0, node1.id, "Node1 (120ms) should fire third");
+            assert_eq!(firing_order[0].0, node2.index, "Node2 (60ms) should fire first");
+            assert_eq!(firing_order[1].0, node3.index, "Node3 (90ms) should fire second");
+            assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
 
             // Clean shutdown
             let _ = pipeline_tx.send(PipelineControlMsg::Shutdown).await;
@@ -701,9 +703,9 @@ mod tests {
         let when3 = now + Duration::from_millis(200); // Middle
 
         // Add timers in non-chronological order to test heap behavior
-        manager.timers.push(Reverse((when1, node1.id)));
-        manager.timers.push(Reverse((when2, node2.id)));
-        manager.timers.push(Reverse((when3, node3.id)));
+        manager.timers.push(Reverse((when1, node1.index)));
+        manager.timers.push(Reverse((when2, node2.index)));
+        manager.timers.push(Reverse((when3, node3.index)));
 
         // Verify heap maintains correct size
         assert_eq!(manager.timers.len(), 3, "All timers should be in the heap");
@@ -712,7 +714,7 @@ mod tests {
         if let Some(Reverse((first_when, first_node))) = manager.timers.pop() {
             assert_eq!(first_when, when2, "Earliest timer should be popped first");
             assert_eq!(
-                first_node, node2.id,
+                first_node, node2.index,
                 "Correct node should be associated with earliest timer"
             );
         }
@@ -720,7 +722,7 @@ mod tests {
         if let Some(Reverse((second_when, second_node))) = manager.timers.pop() {
             assert_eq!(second_when, when3, "Middle timer should be popped second");
             assert_eq!(
-                second_node, node3.id,
+                second_node, node3.index,
                 "Correct node should be associated with middle timer"
             );
         }
@@ -728,7 +730,7 @@ mod tests {
         if let Some(Reverse((third_when, third_node))) = manager.timers.pop() {
             assert_eq!(third_when, when1, "Latest timer should be popped last");
             assert_eq!(
-                third_node, node1.id,
+                third_node, node1.index,
                 "Correct node should be associated with latest timer"
             );
         }

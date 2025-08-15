@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::{
-    Index, Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender,
+    Index, Node, NodeDefs, NodeId, NodeName, NodeType, NodeWithPDataReceiver, NodeWithPDataSender,
 };
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -64,16 +64,17 @@ struct PipeNode {
 
 /// Represents a hyper-edge in the runtime graph, corresponding to a source node's output port,
 /// its dispatch strategy, and the set of destination node ids connected to that port.
-pub(crate) struct HyperEdgeRuntime {
-    pub(crate) source: NodeId,
+struct HyperEdgeRuntime {
+    source: NodeId,
 
     // ToDo(LQ): Use port name for telemetry and debugging purposes.
-    pub(crate) port: PortName,
+    port: PortName,
 
     #[allow(dead_code)]
     dispatch_strategy: DispatchStrategy,
 
-    pub(crate) destinations: Vec<NodeId>,
+    // names are from the configuration, not yet resolved
+    destinations: Vec<NodeName>,
 }
 
 impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
@@ -206,7 +207,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a mutable NodeWithPDataSender reference (processors and receivers).
     #[must_use]
-    pub fn get_mut_sender(&self, node: Index) -> Option<&mut dyn NodeWithPDataSender<PData>> {
+    pub fn get_mut_sender(&mut self, node: Index) -> Option<&mut dyn NodeWithPDataSender<PData>> {
         let ndef = self.nodes.get(node)?;
 
         match ndef.ntype {
@@ -224,7 +225,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a mutable NodeWithPDataReceiver reference (processors and exporters).
     #[must_use]
-    pub fn get_mut_receiver(&self, node: Index) -> Option<&mut dyn NodeWithPDataReceiver<PData>> {
+    pub fn get_mut_receiver(
+        &mut self,
+        node: Index,
+    ) -> Option<&mut dyn NodeWithPDataReceiver<PData>> {
         let ndef = self.nodes.get(node)?;
 
         match ndef.ntype {
@@ -288,46 +292,37 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
+        let mut receiver_names = HashMap::new();
+        let mut processor_names = HashMap::new();
+        let mut exporter_names = HashMap::new();
         let mut nodes = NodeDefs::default();
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
-        for (node_id, node_config) in config.node_iter() {
+        for (name, node_config) in config.node_iter() {
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => Self::create_receiver(
                     factory,
+                    &mut receiver_names,
+                    &mut nodes,
                     &mut receivers,
-                    nodes.next(
-                        node_id.clone(),
-                        NodeType::Receiver,
-                        PipeNode {
-                            index: receivers.len(),
-                        },
-                    )?,
+                    name.clone(),
                     node_config.clone(),
                 )?,
                 otap_df_config::node::NodeKind::Processor => Self::create_processor(
                     factory,
+                    &mut processor_names,
+                    &mut nodes,
                     &mut processors,
-                    nodes.next(
-                        node_id.clone(),
-                        NodeType::Processor,
-                        PipeNode {
-                            index: processors.len(),
-                        },
-                    )?,
+                    name.clone(),
                     node_config.clone(),
                 )?,
                 otap_df_config::node::NodeKind::Exporter => Self::create_exporter(
                     factory,
+                    &mut exporter_names,
+                    &mut nodes,
                     &mut exporters,
-                    nodes.next(
-                        node_id.clone(),
-                        NodeType::Exporter,
-                        PipeNode {
-                            index: exporters.len(),
-                        },
-                    )?,
+                    name.clone(),
                     node_config.clone(),
                 )?,
                 otap_df_config::node::NodeKind::ProcessorChain => {
@@ -349,7 +344,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             destinations: Vec<(NodeId, Receiver<PData>)>,
         }
         let mut assignments = Vec::new();
-        for hyper_edge in pipeline.collect_hyper_edges_runtime()? {
+        for hyper_edge in
+            Self::collect_hyper_edges_runtime(&pipeline.receivers, &pipeline.processors)
+        {
             // Get source node
             let src_node =
                 pipeline
@@ -361,27 +358,30 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             // Get destination nodes: note the order of dest_nodes matches hyper_edge.destinations
             // and preserved by select_channel_type(). The zip() below depends on both of these.
             let mut dest_nodes = Vec::with_capacity(hyper_edge.destinations.len());
-            for node in &hyper_edge.destinations {
-                let node = pipeline
-                    .get_node(node.index)
-                    .ok_or_else(|| Error::UnknownNode {
-                        node: node.name.clone(),
-                    })?;
+            for name in &hyper_edge.destinations {
+                let node = processor_names
+                    .get(name)
+                    .map(|id| pipeline.get_node(id.index).expect("ok"))
+                    .or_else(|| {
+                        exporter_names
+                            .get(name)
+                            .map(|id| pipeline.get_node(id.index).expect("ok"))
+                    })
+                    .ok_or_else(|| Error::UnknownNode { node: name.clone() })?;
                 dest_nodes.push(node);
             }
 
             // Select channel type
             let (pdata_sender, pdata_receivers) = Self::select_channel_type(
                 src_node,
-                dest_nodes,
+                &dest_nodes,
                 NonZeroUsize::new(1000).expect("Buffer size must be non-zero"),
             )?;
 
             // Prepare assignments
-            let destinations = hyper_edge
-                .destinations
-                .iter()
-                .cloned()
+            let destinations = dest_nodes
+                .into_iter()
+                .map(|n| n.node_id())
                 .zip(pdata_receivers.into_iter())
                 .collect();
             assignments.push(ChannelAssignment {
@@ -428,7 +428,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// ToDo (LQ): Support dispatch strategies.
     fn select_channel_type(
         src_node: &dyn Node,
-        dest_nodes: Vec<&dyn Node>,
+        dest_nodes: &Vec<&dyn Node>,
         buffer_size: NonZeroUsize,
     ) -> Result<(Sender<PData>, Vec<Receiver<PData>>), Error<PData>> {
         let source_is_shared = src_node.is_shared();
@@ -485,8 +485,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Creates a receiver node and adds it to the list of runtime nodes.
     fn create_receiver(
         factory: &PipelineFactory<PData>,
+        names: &mut HashMap<NodeName, NodeId>,
+        nodes: &mut NodeDefs<PData, PipeNode>,
         receivers: &mut Vec<ReceiverWrapper<PData>>,
-        node: NodeId,
+        name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = factory
@@ -495,26 +497,34 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             .ok_or_else(|| Error::UnknownReceiver {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
-        let runtime_config = ReceiverConfig::new(node.name.clone());
+        let runtime_config = ReceiverConfig::new(name.clone());
         let create = factory.create;
 
+        let node_id = nodes.next(
+            name.clone(),
+            NodeType::Receiver,
+            PipeNode {
+                index: receivers.len(),
+            },
+        )?;
+        if names.insert(name.clone(), node_id.clone()).is_some() {
+            return Err(Error::ReceiverAlreadyExists { receiver: name });
+        }
+
         receivers.push(
-            create(node.clone(), node_config, &runtime_config)
+            create(node_id, node_config, &runtime_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
-        if prev_node.is_some() {
-            return Err(Error::ReceiverAlreadyExists {
-                receiver: node.name,
-            });
-        }
         Ok(())
     }
 
     /// Creates a processor node and adds it to the list of runtime nodes.
     fn create_processor(
         factory: &PipelineFactory<PData>,
-        nodes: &mut Vec<ProcessorWrapper<PData>>,
-        node: NodeId,
+        names: &mut HashMap<NodeName, NodeId>,
+        nodes: &mut NodeDefs<PData, PipeNode>,
+        processors: &mut Vec<ProcessorWrapper<PData>>,
+        name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = factory
@@ -523,26 +533,34 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             .ok_or_else(|| Error::UnknownProcessor {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
-        let processor_config = ProcessorConfig::new(node.name.clone());
+        let processor_config = ProcessorConfig::new(name.clone());
         let create = factory.create;
-        let prev_node = nodes.insert(
-            node.id,
-            create(node.clone(), &node_config.config, &processor_config)
+
+        let node_id = nodes.next(
+            name.clone(),
+            NodeType::Processor,
+            PipeNode {
+                index: processors.len(),
+            },
+        )?;
+        if names.insert(name.clone(), node_id.clone()).is_some() {
+            return Err(Error::ProcessorAlreadyExists { processor: name });
+        }
+        processors.push(
+            create(node_id, &node_config.config, &processor_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
-        if prev_node.is_some() {
-            return Err(Error::ProcessorAlreadyExists {
-                processor: node.name,
-            });
-        }
+
         Ok(())
     }
 
     /// Creates an exporter node and adds it to the list of runtime nodes.
     fn create_exporter(
         factory: &PipelineFactory<PData>,
-        nodes: &mut Vec<ExporterWrapper<PData>>,
-        node: NodeId,
+        names: &mut HashMap<NodeName, NodeId>,
+        nodes: &mut NodeDefs<PData, PipeNode>,
+        exporters: &mut Vec<ExporterWrapper<PData>>,
+        name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = factory
@@ -551,18 +569,24 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             .ok_or_else(|| Error::UnknownExporter {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
-        let exporter_config = ExporterConfig::new(node.name.clone());
+        let exporter_config = ExporterConfig::new(name.clone());
         let create = factory.create;
-        let prev_node = nodes.insert(
-            node.id,
-            create(node.clone(), node_config, &exporter_config)
+
+        let node_id = nodes.next(
+            name.clone(),
+            NodeType::Exporter,
+            PipeNode {
+                index: exporters.len(),
+            },
+        )?;
+
+        if names.insert(name.clone(), node_id.clone()).is_some() {
+            return Err(Error::ExporterAlreadyExists { exporter: name });
+        }
+        exporters.push(
+            create(node_id, node_config, &exporter_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
-        if prev_node.is_some() {
-            return Err(Error::ExporterAlreadyExists {
-                exporter: node.name,
-            });
-        }
         Ok(())
     }
 
@@ -570,48 +594,35 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     ///
     /// Each item represents a hyper-edge with source node id, port, dispatch strategy, and destination
     /// node ids.
-    pub(crate) fn collect_hyper_edges_runtime(
-        &self,
-    ) -> Result<Vec<HyperEdgeRuntime>, Error<PData>> {
+    fn collect_hyper_edges_runtime(
+        receivers: &Vec<ReceiverWrapper<PData>>,
+        processors: &Vec<ProcessorWrapper<PData>>,
+    ) -> Vec<HyperEdgeRuntime> {
         let mut edges = Vec::new();
-        let mut byname: HashMap<_, &dyn Node> = HashMap::new();
-        let ierr = || Error::InternalError {
-            message: "invalid node index".into(),
-        };
+        let mut nodes: Vec<&dyn Node> = Vec::new();
+        nodes.extend(receivers.iter().map(|node| node as &dyn Node));
+        nodes.extend(processors.iter().map(|node| node as &dyn Node));
 
-        for (idx, def) in self.nodes.iter().enumerate() {
-            let u = Index::try_from(idx).map_err(|_| ierr())?;
-             = byname.insert(def.name.clone(), self.get_node(u).ok_or(ierr())?);
-        }
-
-        for id in self.receivers.keys().chain(self.processors.keys()) {
-            let node = self.get_node(*id).ok_or(ierr())?;
+        for node in nodes {
             let config = node.user_config();
             for (port, hyper_edge_cfg) in &config.out_ports {
-                let destinations: Vec<_> = hyper_edge_cfg
+                let destinations = hyper_edge_cfg
                     .destinations
                     .iter()
-                    .map(|x| {
-                        let node = byname.get(x).ok_or(ierr());
-                        node.map(|n| n.unique())
-                    })
-                    .collect();
+                    .cloned()
+                    .collect::<Vec<_>>();
                 if destinations.is_empty() {
                     continue;
                 }
-                let destinations = {
-                    let result: Result<_, _> = destinations.into_iter().collect();
-                    result?
-                };
                 edges.push(HyperEdgeRuntime {
-                    source: node.unique(),
+                    source: node.node_id(),
                     port: port.clone(),
                     dispatch_strategy: hyper_edge_cfg.dispatch_strategy.clone(),
                     destinations,
                 });
             }
         }
-        Ok(edges)
+        edges
     }
 }
 

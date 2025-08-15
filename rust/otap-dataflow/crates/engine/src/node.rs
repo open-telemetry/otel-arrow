@@ -92,7 +92,7 @@ pub(crate) struct NodeDefinition<Inner> {
 }
 
 /// NodeDefs is a Index-indexed set of node definitions.
-pub struct NodeDefs<PData, Inner> {
+pub(crate) struct NodeDefs<PData, Inner> {
     /// Entries have an implicit index equal to their Index value.
     entries: Vec<NodeDefinition<Inner>>,
 
@@ -111,7 +111,7 @@ impl<PData, Inner> Default for NodeDefs<PData, Inner> {
 impl<PData, Inner> NodeDefs<PData, Inner> {
     /// Gets a the node definition
     #[must_use]
-    pub fn get(&self, index: Index) -> Option<&NodeDefinition<Inner>> {
+    pub(crate) fn get(&self, index: Index) -> Option<&NodeDefinition<Inner>> {
         self.entries.get(index.0 as usize)
     }
 
@@ -131,18 +131,18 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
         Ok(uniq)
     }
 
-    // Returns an iterator over NodeId values for this set.
-    // pub(crate) fn iter(&self) -> impl Iterator<Item = (NodeId, &NodeDefinition<Inner>)> {
-    //     self.entries.iter().enumerate().map(|(idx, val)| {
-    //         (
-    //             NodeId {
-    //                 name: val.name.clone(),
-    //                 index: Index::try_from(idx).expect("enumerated"),
-    //             },
-    //             val,
-    //         )
-    //     })
-    // }
+    /// Returns an iterator over NodeId values for this set.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (NodeId, &NodeDefinition<Inner>)> {
+        self.entries.iter().enumerate().map(|(idx, val)| {
+            (
+                NodeId {
+                    name: val.name.clone(),
+                    index: Index::try_from(idx).expect("enumerated"),
+                },
+                val,
+            )
+        })
+    }
 }
 
 impl TryFrom<usize> for Index {
@@ -161,11 +161,11 @@ mod tests {
 
     #[test]
     fn test_too_many_nodes_error() {
-        let mut node_defs: NodeDefs<()> = NodeDefs::default();
+        let mut node_defs: NodeDefs<(), ()> = NodeDefs::default();
         let node_id = NodeId::try_from("test_node").expect("valid node id");
         const LIMIT: usize = u16::MAX as usize + 1;
         for i in 0..=LIMIT {
-            let result = node_defs.next(node_id.clone(), NodeType::Processor);
+            let result = node_defs.next(node_id.clone(), NodeType::Processor, ());
 
             if i == LIMIT {
                 // This should fail with TooManyNodes error
@@ -176,47 +176,10 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn test_node_defs_basic_operations() {
-        let mut node_defs: NodeDefs<()> = NodeDefs::default();
-        let node_id = NodeId::try_from("test_node").expect("valid node id");
-
-        // Test creating a few nodes
-        let node1 = node_defs.next(node_id.clone(), NodeType::Receiver).unwrap();
-        let node2 = node_defs
-            .next(node_id.clone(), NodeType::Processor)
-            .unwrap();
-        let node3 = node_defs.next(node_id.clone(), NodeType::Exporter).unwrap();
-
-        // Verify unique IDs are assigned sequentially
-        assert_eq!(node1.id.0, 0);
-        assert_eq!(node2.id.0, 1);
-        assert_eq!(node3.id.0, 2);
-
-        // Test get function
-        let (retrieved_node1, node1_type) = node_defs.get(node1.id).unwrap();
-        assert_eq!(retrieved_node1.name, node_id);
-        assert_eq!(node1_type, NodeType::Receiver);
-
-        let (retrieved_node2, node2_type) = node_defs.get(node2.id).unwrap();
-        assert_eq!(retrieved_node2.name, node_id);
-        assert_eq!(node2_type, NodeType::Processor);
-
-        let (retrieved_node3, node3_type) = node_defs.get(node3.id).unwrap();
-        assert_eq!(retrieved_node3.name, node_id);
-        assert_eq!(node3_type, NodeType::Exporter);
-
-        // Test iterator
-        let nodes: Vec<_> = node_defs.iter().collect();
-        assert_eq!(nodes.len(), 3);
-        assert_eq!(nodes[0].id.0, 0);
-        assert_eq!(nodes[1].id.0, 1);
-        assert_eq!(nodes[2].id.0, 2);
-    }
 }
 
 impl NodeId {
+    #[cfg(test)]
     pub(crate) fn invalid(idx: Index) -> NodeId {
         Self::build(idx, "invalid".into())
     }

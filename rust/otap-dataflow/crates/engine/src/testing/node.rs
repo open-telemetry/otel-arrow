@@ -8,10 +8,10 @@ use crate::node::{NodeDefs, NodeId, NodeName, NodeType};
 /// test.
 #[must_use]
 pub fn test_node<T: Into<NodeName>>(name: T) -> NodeId {
-    NodeDefs::<()>::default()
+    NodeDefs::<(), ()>::default()
         // Note that the node must be irrelevant since the user is not
         // saving the NodeDefs object.
-        .next(name.into(), NodeType::Processor)
+        .next(name.into(), NodeType::Processor, ())
         .expect("ok")
 }
 
@@ -19,9 +19,9 @@ pub fn test_node<T: Into<NodeName>>(name: T) -> NodeId {
 /// names.
 #[must_use]
 pub fn test_nodes<T: Into<NodeName>>(names: Vec<T>) -> Vec<NodeId> {
-    let mut defs = NodeDefs::<()>::default();
+    let mut defs = NodeDefs::<(), ()>::default();
     for name in names {
-        _ = defs.next(name.into(), NodeType::Processor).expect("ok");
+        _ = defs.next(name.into(), NodeType::Processor, ()).expect("ok");
     }
-    defs.iter().collect()
+    defs.iter().map(|(node, _)| node).collect()
 }
