@@ -648,8 +648,7 @@ async fn display_report_pipeline(
         .await?;
     writer
         .write(&format!(
-            "\t- average pipeline latency          : {:.2} s\n",
-            average_pipeline_latency,
+            "\t- average pipeline latency          : {average_pipeline_latency:.2} s\n"
         ))
         .await?;
 
