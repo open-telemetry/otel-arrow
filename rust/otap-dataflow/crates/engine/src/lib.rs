@@ -33,18 +33,18 @@ pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
+pub mod context;
 
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::Receiver;
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 pub use linkme::distributed_slice;
+use context::PipelineContext;
 use node::Node;
 use otap_df_config::node::{DispatchStrategy, NodeUserConfig};
-use otap_df_config::{NodeId, PipelineGroupId, PipelineId, PortName};
-use otap_df_telemetry::attributes::NodeStaticAttrs;
+use otap_df_config::{NodeId, PortName};
 use otap_df_telemetry::metrics::MultivariateMetrics;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
 
 /// Trait for factory types that expose a name.
 ///
@@ -61,7 +61,7 @@ pub struct ReceiverFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new receiver instance.
     pub create: fn(
-        pipeline: PipelineHandle,
+        pipeline_ctx: PipelineContext,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
@@ -89,7 +89,7 @@ pub struct ProcessorFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new processor instance.
     pub create: fn(
-        pipeline: PipelineHandle,
+        pipeline: PipelineContext,
         config: &Value,
         processor_config: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
@@ -117,7 +117,7 @@ pub struct ExporterFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new exporter instance.
     pub create: fn(
-        pipeline: PipelineHandle,
+        pipeline: PipelineContext,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
@@ -173,89 +173,6 @@ pub const fn build_factory<PData: 'static + Clone>() -> PipelineFactory<PData> {
     panic!(
         "build_registry() should never be called - it's replaced by the #[factory_registry] macro"
     )
-}
-
-/// A lightweight handle to a pipeline.
-#[derive(Clone)]
-pub struct PipelineHandle {
-    metrics_registry_handle: MetricsRegistryHandle,
-
-    // Context information for the pipeline.
-    core_id: usize,
-    thread_id: usize,
-    pipeline_group_id: PipelineGroupId,
-    pipeline_id: PipelineId,
-    node_id: NodeId,
-}
-
-impl PipelineHandle {
-    /// Creates a new `PipelineHandle`.
-    pub fn new(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        metrics_registry_handle: MetricsRegistryHandle) -> Self {
-        Self {
-            metrics_registry_handle,
-
-            // This context will be set later by the controller.
-            core_id: 0,
-            thread_id: 0,
-            pipeline_group_id,
-            pipeline_id,
-            node_id: NodeId::default(),
-        }
-    }
-
-    /// Registers a new multivariate metrics instance with the metrics registry.
-    pub fn register_metrics<T: MultivariateMetrics + Default + Debug + Send + Sync>(
-        &self,
-        metrics: &mut T
-    ) {
-        self.metrics_registry_handle.register(metrics, NodeStaticAttrs {
-            node_id: self.node_id.clone(),
-            node_type: "NA".into(),     // ToDo(LQ): Set node type when available
-            pipeline_id: self.pipeline_id.clone(),
-            core_id: self.core_id,
-            numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
-            process_id: 0, // ToDo(LQ): Set process ID if available
-        })
-    }
-
-    /// Returns a metrics registry handle.
-    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
-        self.metrics_registry_handle.clone()
-    }
-
-    /// Returns a new pipeline handle with the given core context.
-    pub fn with_core_context(
-        &self,
-        core_id: usize,
-        thread_id: usize,
-    ) -> Self {
-        Self {
-            metrics_registry_handle: self.metrics_registry_handle.clone(),
-            core_id,
-            thread_id,
-            pipeline_group_id: self.pipeline_group_id.clone(),
-            pipeline_id: self.pipeline_id.clone(),
-            node_id: self.node_id.clone(),
-        }
-    }
-    
-    /// Returns a new pipeline handle with the given node identifiers.
-    pub fn with_node_context(
-        &self,
-        node_id: NodeId,
-    ) -> Self {
-        Self {
-            metrics_registry_handle: self.metrics_registry_handle.clone(),
-            core_id: self.core_id,
-            thread_id: self.thread_id,
-            pipeline_group_id: self.pipeline_group_id.clone(),
-            pipeline_id: self.pipeline_id.clone(),
-            node_id,
-        }
-    }
 }
 
 /// A pipeline factory.
@@ -329,7 +246,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     ///   analysis.
     pub fn build(
         &self,
-        pipeline: PipelineHandle,
+        pipeline_ctx: PipelineContext,
         config: otap_df_config::pipeline::PipelineConfig,
     ) -> Result<RuntimePipeline<PData>, Error<PData>> {
         let mut receivers = HashMap::new();
@@ -339,16 +256,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (node_id, node_config) in config.node_iter() {
-            let pipeline_handle = pipeline.with_node_context(node_id.clone());
+            let pipeline_ctx = pipeline_ctx.with_node_context(node_id.clone(), node_config.kind);
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
-                    self.create_receiver(pipeline_handle, &mut receivers, node_id.clone(), node_config.clone())?
+                    self.create_receiver(pipeline_ctx, &mut receivers, node_id.clone(), node_config.clone())?
                 }
                 otap_df_config::node::NodeKind::Processor => {
-                    self.create_processor(pipeline_handle, &mut processors, node_id.clone(), node_config.clone())?
+                    self.create_processor(pipeline_ctx, &mut processors, node_id.clone(), node_config.clone())?
                 }
                 otap_df_config::node::NodeKind::Exporter => {
-                    self.create_exporter(pipeline_handle, &mut exporters, node_id.clone(), node_config.clone())?
+                    self.create_exporter(pipeline_ctx, &mut exporters, node_id.clone(), node_config.clone())?
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
@@ -518,7 +435,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a receiver node and adds it to the list of runtime nodes.
     fn create_receiver(
         &self,
-        pipeline: PipelineHandle,
+        pipeline_ctx: PipelineContext,
         receivers: &mut HashMap<NodeId, ReceiverWrapper<PData>>,
         receiver_id: NodeId,
         node_config: Arc<NodeUserConfig>,
@@ -534,7 +451,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let prev_node = receivers.insert(
             receiver_id.clone(),
-            create(pipeline, node_config, &runtime_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(pipeline_ctx, node_config, &runtime_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ReceiverAlreadyExists {
@@ -547,7 +464,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a processor node and adds it to the list of runtime nodes.
     fn create_processor(
         &self,
-        pipeline: PipelineHandle,
+        pipeline_ctx: PipelineContext,
         nodes: &mut HashMap<NodeId, ProcessorWrapper<PData>>,
         processor_id: NodeId,
         node_config: Arc<NodeUserConfig>,
@@ -562,7 +479,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let create = factory.create;
         let prev_node = nodes.insert(
             processor_id.clone(),
-            create(pipeline, &node_config.config, &processor_config)
+            create(pipeline_ctx, &node_config.config, &processor_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
@@ -576,7 +493,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates an exporter node and adds it to the list of runtime nodes.
     fn create_exporter(
         &self,
-        pipeline: PipelineHandle,
+        pipeline_ctx: PipelineContext,
         nodes: &mut HashMap<NodeId, ExporterWrapper<PData>>,
         exporter_id: NodeId,
         node_config: Arc<NodeUserConfig>,
@@ -591,7 +508,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let create = factory.create;
         let prev_node = nodes.insert(
             exporter_id.clone(),
-            create(pipeline, node_config, &exporter_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(pipeline_ctx, node_config, &exporter_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ExporterAlreadyExists {

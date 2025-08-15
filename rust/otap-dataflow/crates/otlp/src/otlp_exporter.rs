@@ -18,7 +18,7 @@ use crate::proto::opentelemetry::collector::{
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::{ExporterFactory, PipelineHandle};
+use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -28,6 +28,7 @@ use otap_df_engine::message::{Message, MessageChannel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use otap_df_engine::context::PipelineContext;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -55,7 +56,7 @@ pub struct OTLPExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTLPExporter::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -77,7 +78,7 @@ impl OTLPExporter {
 
     /// Creates a new OTLPExporter from a configuration object
     #[allow(clippy::result_large_err)]
-    pub fn from_config(_pipeline: PipelineHandle, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(_pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -216,14 +217,14 @@ mod tests {
 
     use crate::grpc::OTLPData;
     use crate::mock::{LogsServiceMock, MetricsServiceMock, ProfilesServiceMock, TraceServiceMock};
-    use crate::otlp_exporter::{OTLP_EXPORTER_URN, OTLPExporter};
+    use crate::otlp_exporter::{OTLPExporter, OTLP_EXPORTER_URN};
     use crate::proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
+        logs::v1::{logs_service_server::LogsServiceServer, ExportLogsServiceRequest},
+        metrics::v1::{metrics_service_server::MetricsServiceServer, ExportMetricsServiceRequest},
         profiles::v1development::{
-            ExportProfilesServiceRequest, profiles_service_server::ProfilesServiceServer,
+            profiles_service_server::ProfilesServiceServer, ExportProfilesServiceRequest,
         },
-        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
+        trace::v1::{trace_service_server::TraceServiceServer, ExportTraceServiceRequest},
     };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
@@ -234,7 +235,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 

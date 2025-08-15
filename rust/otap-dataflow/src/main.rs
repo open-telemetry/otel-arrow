@@ -33,9 +33,12 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Load pipeline configuration from file
+    // For now, we predefine pipeline group and pipeline IDs.
+    // That will be replaced with a more dynamic approach in the future.
     let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
     let pipeline_id: PipelineId = "default_pipeline".into();
+
+    // Load pipeline configuration from file
     let pipeline_cfg = PipelineConfig::from_file(
         pipeline_group_id.clone(),
         pipeline_id.clone(),

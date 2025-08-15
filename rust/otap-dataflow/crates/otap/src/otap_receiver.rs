@@ -14,7 +14,7 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::{PipelineHandle, ReceiverFactory};
+use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -32,6 +32,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
+use otap_df_engine::context::PipelineContext;
 
 const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
 
@@ -56,7 +57,7 @@ pub struct OTAPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
-    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTAPReceiver::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -83,7 +84,7 @@ impl OTAPReceiver {
     }
 
     /// Creates a new OTAPReceiver from a configuration object
-    pub fn from_config(_pipeline: PipelineHandle, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(_pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -175,22 +176,22 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 mod tests {
     use crate::grpc::OtapArrowBytes;
     use crate::mock::create_batch_arrow_record;
-    use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
+    use crate::otap_receiver::{OTAPReceiver, OTAP_RECEIVER_URN};
     use crate::pdata::OtapPdata;
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-        ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
-        arrow_metrics_service_client::ArrowMetricsServiceClient,
+        arrow_logs_service_client::ArrowLogsServiceClient, arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
+        ArrowPayloadType,
     };
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(

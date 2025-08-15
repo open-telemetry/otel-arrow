@@ -22,7 +22,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
-use otap_df_engine::{distributed_slice, ExporterFactory, PipelineHandle};
+use otap_df_engine::{distributed_slice, ExporterFactory};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -35,6 +35,7 @@ use sysinfo::{
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
+use otap_df_engine::context::PipelineContext;
 use otap_df_telemetry::metrics::PerfExporterMetrics;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
@@ -81,7 +82,7 @@ pub struct PerfExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
-    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             PerfExporter::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -98,7 +99,7 @@ impl PerfExporter {
     }
 
     /// Creates a new PerfExporter from a configuration object
-    pub fn from_config(pipeline: PipelineHandle, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let mut metrics = PerfExporterMetrics::default();
         pipeline.register_metrics(&mut metrics);
         Ok(PerfExporter {

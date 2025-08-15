@@ -8,11 +8,13 @@
 //! A node can have multiple outgoing named ports, each connected to a hyper-edge that defines how
 //! data flows from this node to one or more target nodes.
 
+use std::borrow::Cow;
 use crate::{Description, NodeId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Display, Formatter};
 
 /// User configuration for a node in the pipeline.
 /// Each node contains its own settings (i.e. user config) and defines how it connects to downstream
@@ -104,6 +106,23 @@ pub enum NodeKind {
     // Connector,
     /// A merged chain of consecutive processors (experimental).
     ProcessorChain,
+}
+
+impl Default for NodeKind {
+    fn default() -> Self {
+        NodeKind::Receiver
+    }
+}
+
+impl Into<Cow<'static, str>> for NodeKind {
+    fn into(self) -> Cow<'static, str> {
+        match self {
+            NodeKind::Receiver => "receiver".into(),
+            NodeKind::Processor => "processor".into(),
+            NodeKind::Exporter => "exporter".into(),
+            NodeKind::ProcessorChain => "processor_chain".into(),
+        }
+    }
 }
 
 impl NodeUserConfig {

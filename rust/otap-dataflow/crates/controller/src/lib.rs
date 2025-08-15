@@ -19,10 +19,9 @@
 use otap_df_config::{
     PipelineGroupId, PipelineId, pipeline::PipelineConfig, pipeline_group::Quota,
 };
-use otap_df_engine::{PipelineFactory, PipelineHandle};
+use otap_df_engine::PipelineFactory;
+use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_telemetry::MetricsSystem;
-use otap_df_telemetry::collector::MetricsCollector;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
 use tokio::runtime::Builder;
@@ -55,9 +54,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline: PipelineConfig,
         quota: Quota,
     ) -> Result<(), error::Error> {
+        // Initialize a global metrics system and reporter.
+        // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let metrics_system = MetricsSystem::new();
         let metrics_reporter = metrics_system.reporter();
-        let pipeline_handle = PipelineHandle::new(pipeline_group_id, pipeline_id, metrics_system.registry());
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
 
         let metrics_aggr_handle = thread::Builder::new()
             .name("metrics-aggregator".to_owned())
@@ -104,7 +105,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
             let pipeline_config = pipeline.clone();
             let pipeline_factory = self.pipeline_factory;
-            let pipeline_handle = pipeline_handle.with_core_context(core_id.id, thread_id);
+            let pipeline_handle = controller_ctx.pipeline_context_with(
+                pipeline_group_id.clone(),
+                pipeline_id.clone(),
+                core_id.id,
+                thread_id,
+            );
             let metrics_reporter = metrics_reporter.clone();
 
             let handle = thread::Builder::new()
@@ -165,7 +171,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         core_id: core_affinity::CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
-        pipeline_handle: PipelineHandle,
+        pipeline_handle: PipelineContext,
         metrics_reporter: MetricsReporter,
     ) -> Result<Vec<()>, error::Error> {
         // Pin thread to specific core

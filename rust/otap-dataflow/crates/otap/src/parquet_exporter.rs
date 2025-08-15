@@ -25,14 +25,14 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use self::idgen::PartitionSequenceIdGenerator;
-use self::partition::{Partition, partition};
+use self::partition::{partition, Partition};
 use self::writer::WriteBatch;
 use async_trait::async_trait;
-use futures::{FutureExt, pin_mut};
+use futures::{pin_mut, FutureExt};
 use futures_timer::Delay;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::{ExporterFactory, PipelineHandle};
+use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -40,6 +40,7 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otel_arrow_rust::otap::OtapArrowRecords;
+use otap_df_engine::context::PipelineContext;
 
 mod config;
 mod idgen;
@@ -63,7 +64,7 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |pipeline: PipelineHandle, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             ParquetExporter::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -80,7 +81,7 @@ impl ParquetExporter {
     }
 
     /// construct a new instance from the configuration object
-    pub fn from_config(_pipeline: PipelineHandle, config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(_pipeline: PipelineContext, config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
         let config: config::Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
