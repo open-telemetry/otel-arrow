@@ -40,6 +40,7 @@ use otap_df_engine::{
     local::message::LocalSender,
     local::processor::{EffectHandler, Processor},
     message::Message,
+    testing::test_node,
 };
 use otap_df_otlp::grpc::OTLPData;
 use otap_df_otlp::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -72,7 +73,7 @@ fn create_processor_with_pending(
     let (sender, receiver) = mpsc::Channel::new(1000);
     let mut senders_map = HashMap::new();
     let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
-    let effect_handler = EffectHandler::new("bench_processor".into(), senders_map, None);
+    let effect_handler = EffectHandler::new(test_node("retry_processor"), senders_map, None);
 
     // Pre-populate with pending messages by adding and NACKing them
     // Note: This setup is not timed as part of the benchmark
