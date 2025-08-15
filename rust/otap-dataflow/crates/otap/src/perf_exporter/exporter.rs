@@ -23,6 +23,8 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
+use otel_arrow_rust::Consumer;
+use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
 use std::borrow::Cow;
@@ -267,7 +269,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     break;
                 }
                 Message::PData(pdata) => {
-                    let batch = match OtapArrowBytes::try_from(pdata) {
+                    let mut batch = match OtapArrowBytes::try_from(pdata) {
                         Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowTraces(batch)) => batch,
@@ -319,10 +321,12 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 
                     // increment counters for received arrow payloads
                     received_arrow_records_count += batch.arrow_payloads.len() as u64;
-                    total_received_arrow_records_count += received_arrow_records_count as u128;
+                    total_received_arrow_records_count += batch.arrow_payloads.len() as u128;
                     // increment counters for otlp signals
-                    received_otlp_signal_count += calculate_otlp_signal_count(batch);
-                    total_received_otlp_signal_count += received_otlp_signal_count as u128;
+                    let batch_received_otlp_signal_count =
+                        calculate_otlp_signal_count(&mut batch).unwrap_or_default();
+                    received_otlp_signal_count += batch_received_otlp_signal_count;
+                    total_received_otlp_signal_count += batch_received_otlp_signal_count as u128;
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -392,19 +396,44 @@ fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     Ok(Duration::new(secs, nanosecs))
 }
 
-/// calculate number of otlp signals based on arrow payload type
-fn calculate_otlp_signal_count(batch: BatchArrowRecords) -> u64 {
-    batch.arrow_payloads.iter().fold(0, |acc, arrow_payload| {
-        let table_size = if arrow_payload.r#type == ArrowPayloadType::Spans as i32
-            || arrow_payload.r#type == ArrowPayloadType::Logs as i32
-            || arrow_payload.r#type == ArrowPayloadType::UnivariateMetrics as i32
+/// Calculate number of OTLP signals based on Arrow payload type
+fn calculate_otlp_signal_count(
+    batch: &mut BatchArrowRecords,
+) -> Result<u64, otel_arrow_rust::error::Error> {
+    let main_record_type = batch.arrow_payloads[0].r#type;
+
+    // Handle the different ArrowPayloadTypes using a match statement
+    match ArrowPayloadType::try_from(main_record_type) {
+        Ok(payload_type)
+            if matches!(
+                payload_type,
+                ArrowPayloadType::Spans
+                    | ArrowPayloadType::Logs
+                    | ArrowPayloadType::UnivariateMetrics
+            ) =>
         {
-            arrow_payload.record.len() as u64
-        } else {
-            0
-        };
-        acc + table_size
-    })
+            let mut consumer = Consumer::default();
+            consumer.consume_bar(batch).map(|record_messages| {
+                let otap_batch = match payload_type {
+                    ArrowPayloadType::Spans => {
+                        OtapArrowRecords::Traces(from_record_messages(record_messages))
+                    }
+                    ArrowPayloadType::Logs => {
+                        OtapArrowRecords::Logs(from_record_messages(record_messages))
+                    }
+                    ArrowPayloadType::UnivariateMetrics => {
+                        OtapArrowRecords::Metrics(from_record_messages(record_messages))
+                    }
+                    _ => return 0, // Handle all other cases by returning 0 immediately
+                };
+                otap_batch
+                    .get(payload_type)
+                    .map_or(0, |record_batch| record_batch.num_rows()) as u64
+            })
+        }
+        // Return 0 for all other types or invalid input
+        _ => Ok(0),
+    }
 }
 
 /// takes in the process and system outputs cpu stats via the writer
@@ -620,7 +649,7 @@ async fn display_report_pipeline(
     writer
         .write(&format!(
             "\t- average pipeline latency          : {:.2} s\n",
-            average_pipeline_latency * 1000.0,
+            average_pipeline_latency,
         ))
         .await?;
 
@@ -665,72 +694,26 @@ async fn display_report_pipeline(
 #[cfg(test)]
 mod tests {
 
+    use crate::fixtures::{
+        SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
+        create_simple_metrics_arrow_record_batches, create_simple_trace_arrow_record_batches,
+    };
     use crate::grpc::OtapArrowBytes;
     use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
-    use fluke_hpack::Encoder;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
-    };
-    use std::fs::{File, remove_file};
+    use std::collections::HashMap;
+    use std::fs::File;
     use std::future::Future;
     use std::io::{BufReader, prelude::*};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::NamedTempFile;
     use tokio::time::{Duration, sleep};
-
-    const TRACES_BATCH_ID: i64 = 0;
-    const LOGS_BATCH_ID: i64 = 1;
-    const METRICS_BATCH_ID: i64 = 2;
-    const ROW_SIZE: usize = 10;
-    const MESSAGE_LEN: usize = 5;
-
-    pub fn create_batch_arrow_record_helper(
-        batch_id: i64,
-        payload_type: ArrowPayloadType,
-        message_len: usize,
-        row_size: usize,
-    ) -> BatchArrowRecords {
-        // init arrow payload vec
-        let mut arrow_payloads = Vec::new();
-        // create ArrowPayload objects and add to the vector
-        for _ in 0..message_len {
-            let arrow_payload_object = ArrowPayload {
-                schema_id: "0".to_string(),
-                r#type: payload_type as i32,
-                record: vec![1; row_size],
-            };
-            arrow_payloads.push(arrow_payload_object);
-        }
-
-        // create timestamp
-        // unix timestamp -> get secs and nano secs -> format string as secs:nanos -> create byte array &[u8]
-        // decoding will do the opposite to get the latency
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-
-        let secs = timestamp.as_secs().to_string();
-        let nanos = timestamp.subsec_nanos().to_string();
-
-        // string formatted with timestamp secs : timestamp subsec_nanos
-        let timestamp_string = format!("{secs}:{nanos}");
-        let timestamp_bytes = timestamp_string.as_bytes();
-
-        // convert time to
-        let headers = vec![(b"timestamp" as &[u8], timestamp_bytes)];
-        let mut encoder = Encoder::new();
-        let encoded_headers = encoder.encode(headers);
-        BatchArrowRecords {
-            batch_id,
-            arrow_payloads,
-            headers: encoded_headers,
-        }
-    }
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -740,25 +723,25 @@ mod tests {
         |ctx| {
             Box::pin(async move {
                 // send some messages to the exporter to calculate pipeline statistics
-                for _ in 0..3 {
-                    let traces_batch_data = create_batch_arrow_record_helper(
-                        TRACES_BATCH_ID,
-                        ArrowPayloadType::Spans,
-                        MESSAGE_LEN,
-                        ROW_SIZE,
-                    );
-                    let logs_batch_data = create_batch_arrow_record_helper(
-                        LOGS_BATCH_ID,
-                        ArrowPayloadType::Logs,
-                        MESSAGE_LEN,
-                        ROW_SIZE,
-                    );
-                    let metrics_batch_data = create_batch_arrow_record_helper(
-                        METRICS_BATCH_ID,
-                        ArrowPayloadType::UnivariateMetrics,
-                        MESSAGE_LEN,
-                        ROW_SIZE,
-                    );
+                for i in 0..3 {
+                    let traces_batch_data =
+                        create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
+                            id_offset: 3 * i,
+                            num_rows: 5,
+                            ..Default::default()
+                        });
+                    let logs_batch_data =
+                        create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                            id_offset: 3 * i + 1,
+                            num_rows: 5,
+                            ..Default::default()
+                        });
+                    let metrics_batch_data =
+                        create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
+                            id_offset: 3 * i + 2,
+                            num_rows: 5,
+                            ..Default::default()
+                        });
                     // // Send a data message
                     ctx.send_pdata(OtapArrowBytes::ArrowTraces(traces_batch_data).into())
                         .await
@@ -808,6 +791,37 @@ mod tests {
                 for line in reader.lines() {
                     lines.push(line.unwrap());
                 }
+
+                // Check lines with batch / signal counts for correct values
+                let prefixes = vec![
+                    ("total_otlp", "\t- total otlp signal received"),
+                    ("total_pdata", "\t- total pdata batch received"),
+                ];
+                // Map to store the last match per pattern
+                let mut last_values: HashMap<&str, u32> = HashMap::new();
+                for line in &lines {
+                    for (key, prefix) in &prefixes {
+                        if line.starts_with(prefix) {
+                            if let Some((_prefix, value_str)) = line.split_once(":") {
+                                if let Ok(value) = value_str.trim().parse::<u32>() {
+                                    _ = last_values.insert(*key, value);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3 * 3 batches of 5 signals each = 9 batches, 45 signals
+                assert_eq!(
+                    last_values.get("total_otlp"),
+                    Some(&45),
+                    "Expected total otlp signal received to be 45"
+                );
+                assert_eq!(
+                    last_values.get("total_pdata"),
+                    Some(&9),
+                    "Expected total pdata batch received to be 9"
+                );
 
                 // report contains message throughput
                 let message_throughput_line = &lines[1];
@@ -870,7 +884,8 @@ mod tests {
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
         let config = Config::new(1000, 0.3, true, true, true, true, true);
-        let output_file = "perf_output.txt".to_string();
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let output_file = temp_file.path().to_str().unwrap().to_string();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             PerfExporter::new(config, Some(output_file.clone())),
@@ -882,8 +897,5 @@ mod tests {
             .set_exporter(exporter)
             .run_test(scenario())
             .run_validation(validation_procedure(output_file.clone()));
-
-        // remove the created file, prevent accidental check in of report
-        remove_file(output_file).expect("Failed to remove file\n");
     }
 }

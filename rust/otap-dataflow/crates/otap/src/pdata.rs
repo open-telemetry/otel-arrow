@@ -461,6 +461,163 @@ mod test {
     // these signal types
     // https://github.com/open-telemetry/otel-arrow/issues/768
 
+    fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
+        let mut otlp_bytes = vec![];
+        otlp_service_req.encode(&mut otlp_bytes).unwrap();
+        let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
+
+        // test can go OtlpProtoBytes -> OtapBatch & back
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
+        let pdata: OtapPdata = otap_batch.into();
+
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let bytes = match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => bytes,
+            _ => panic!("unexpected otlp bytes pdata variant"),
+        };
+
+        let result = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
+        assert_eq!(otlp_service_req, result);
+    }
+
+    #[test]
+    fn test_otlp_otap_logs_roundtrip() {
+        // test to ensure the correct attributes are assigned to the correct log message after
+        // roundtrip encoding/decoding
+
+        let otlp_service_req = ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val1"))],
+                    ..Default::default()
+                })
+                .log_records(vec![
+                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(2u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                        .finish(),
+                    LogRecord::build(3u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val2"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    name: "Scope2".into(),
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val2"))],
+                    ..Default::default()
+                })
+                .log_records(vec![
+                    LogRecord::build(4u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
+                        .finish(),
+                    LogRecord::build(5u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val5"))])
+                        .finish(),
+                ])
+                .finish(),
+                ScopeLogs::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val3"))],
+                    ..Default::default()
+                })
+                .log_records(vec![
+                    LogRecord::build(6u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val6"))])
+                        .finish(),
+                    LogRecord::build(7u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val7"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        roundtrip_otlp_otap_logs(otlp_service_req);
+    }
+
+    #[test]
+    fn test_otlp_otap_logs_repeated_attributes() {
+        // check to ensure attributes that are repeated are correctly encoded and decoding when
+        // doing round-trip between OTLP and OTAP. This test is needed because OTAP attributes'
+        // parent IDs can be in multiple formats: plain encoded, and quasi-delta encoded (where
+        // delta encoding is used for sequential runs of some key-value pairs).
+
+        let otlp_service_req = ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::build("scope1").attributes(vec![
+                    KeyValue::new("scope_key", AnyValue::new_string("val")),
+                ]))
+                .log_records(vec![
+                    // Add some logs with repeated attributes
+                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(2u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                    LogRecord::build(3u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+            // also add some scopes and resources where the attributes repeat ...
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::build("scope2").attributes(vec![
+                    KeyValue::new("scope_key", AnyValue::new_string("val")),
+                ]))
+                .log_records(vec![
+                    LogRecord::build(4u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+            ResourceLogs::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val"))],
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::build("scope2").attributes(vec![
+                    KeyValue::new("scope_key", AnyValue::new_string("val")),
+                ]))
+                .log_records(vec![
+                    LogRecord::build(7u64, SeverityNumber::Info, "")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        roundtrip_otlp_otap_logs(otlp_service_req);
+    }
+
     #[test]
     fn test_signal_type() {
         // Test signal_type for OtlpProtoBytes variants

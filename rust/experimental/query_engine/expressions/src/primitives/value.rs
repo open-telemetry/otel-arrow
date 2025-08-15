@@ -1,12 +1,12 @@
 use std::fmt::{Debug, Display};
 
-use chrono::{DateTime, FixedOffset, SecondsFormat};
-use regex::Regex;
+use chrono::{DateTime, FixedOffset, SecondsFormat, TimeZone, Utc};
+use regex::{Regex, RegexBuilder};
 use serde_json::json;
 
 use crate::{
     ArrayValue, ExpressionError, IndexValueClosureCallback, KeyValueClosureCallback, MapValue,
-    QueryLocation, ValueType, array_value, map_value,
+    QueryLocation, ValueType, array_value, date_utils, map_value,
 };
 
 #[derive(Debug, Clone)]
@@ -52,6 +52,7 @@ impl Value<'_> {
                     None
                 }
             }
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v != 0),
             _ => None,
         }
     }
@@ -62,6 +63,7 @@ impl Value<'_> {
             Value::Integer(i) => Some(i.get_value()),
             Value::Double(d) => Some(d.get_value() as i64),
             Value::String(s) => s.get_value().parse::<i64>().ok(),
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt(),
             _ => None,
         }
     }
@@ -69,7 +71,23 @@ impl Value<'_> {
     pub fn convert_to_datetime(&self) -> Option<DateTime<FixedOffset>> {
         match self {
             Value::DateTime(d) => Some(d.get_value()),
-            _ => None,
+            _ => {
+                if let Some(i) = self.convert_to_integer() {
+                    Some(Utc.timestamp_nanos(i).into())
+                } else {
+                    let mut result = None;
+                    self.convert_to_string(&mut |v| {
+                        result = Some(date_utils::parse_date_time(v));
+                    });
+
+                    match result {
+                        Some(v) => v.ok(),
+                        None => panic!(
+                            "Encountered a Value which does not correctly implement convert_to_string"
+                        ),
+                    }
+                }
+            }
         }
     }
 
@@ -79,6 +97,7 @@ impl Value<'_> {
             Value::Integer(i) => Some(i.get_value() as f64),
             Value::Double(d) => Some(d.get_value()),
             Value::String(s) => s.get_value().parse::<f64>().ok(),
+            Value::DateTime(d) => d.get_value().timestamp_nanos_opt().map(|v| v as f64),
             _ => None,
         }
     }
@@ -243,6 +262,11 @@ impl Value<'_> {
         }
     }
 
+    /// Compare two values and return:
+    ///
+    /// * -1 if left is less than right
+    /// * 0 if left is equal to right
+    /// * 1 if left is greater than right
     pub fn compare_values(
         query_location: &QueryLocation,
         left: &Value,
@@ -401,22 +425,7 @@ impl Value<'_> {
         }
     }
 
-    fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
-        let mut r = None;
-
-        right.convert_to_string(&mut |o| {
-            if case_insensitive {
-                r = Some(caseless::default_caseless_match_str(left, o))
-            } else {
-                r = Some(left == o)
-            }
-        });
-
-        r.expect("Encountered a type which does not correctly implement convert_to_string")
-    }
-
     pub fn replace_matches(
-        _query_location: &QueryLocation,
         haystack: &Value,
         needle: &Value,
         replacement: &Value,
@@ -484,6 +493,283 @@ impl Value<'_> {
             _ => None,
         }
     }
+
+    pub fn add(left: &Value, right: &Value) -> Option<NumericValue> {
+        match (left, right) {
+            (Value::Integer(l), Value::Integer(r)) => {
+                Some(NumericValue::Integer(l.get_value() + r.get_value()))
+            }
+            (Value::Double(l), Value::Double(r)) => {
+                Some(NumericValue::Double(l.get_value() + r.get_value()))
+            }
+            _ => {
+                if Self::values_may_be_double(left, right) {
+                    let left_double = left.convert_to_double()?;
+                    let right_double = right.convert_to_double()?;
+                    Some(NumericValue::Double(left_double + right_double))
+                } else {
+                    let left_integer = left.convert_to_integer()?;
+                    let right_integer = right.convert_to_integer()?;
+                    Some(NumericValue::Integer(left_integer + right_integer))
+                }
+            }
+        }
+    }
+
+    pub fn subtract(left: &Value, right: &Value) -> Option<NumericValue> {
+        match (left, right) {
+            (Value::Integer(l), Value::Integer(r)) => {
+                Some(NumericValue::Integer(l.get_value() - r.get_value()))
+            }
+            (Value::Double(l), Value::Double(r)) => {
+                Some(NumericValue::Double(l.get_value() - r.get_value()))
+            }
+            _ => {
+                if Self::values_may_be_double(left, right) {
+                    let left_double = left.convert_to_double()?;
+                    let right_double = right.convert_to_double()?;
+                    Some(NumericValue::Double(left_double - right_double))
+                } else {
+                    let left_integer = left.convert_to_integer()?;
+                    let right_integer = right.convert_to_integer()?;
+                    Some(NumericValue::Integer(left_integer - right_integer))
+                }
+            }
+        }
+    }
+
+    pub fn multiply(left: &Value, right: &Value) -> Option<NumericValue> {
+        match (left, right) {
+            (Value::Integer(l), Value::Integer(r)) => {
+                Some(NumericValue::Integer(l.get_value() * r.get_value()))
+            }
+            (Value::Double(l), Value::Double(r)) => {
+                Some(NumericValue::Double(l.get_value() * r.get_value()))
+            }
+            _ => {
+                if Self::values_may_be_double(left, right) {
+                    let left_double = left.convert_to_double()?;
+                    let right_double = right.convert_to_double()?;
+                    Some(NumericValue::Double(left_double * right_double))
+                } else {
+                    let left_integer = left.convert_to_integer()?;
+                    let right_integer = right.convert_to_integer()?;
+                    Some(NumericValue::Integer(left_integer * right_integer))
+                }
+            }
+        }
+    }
+
+    pub fn divide(left: &Value, right: &Value) -> Option<NumericValue> {
+        match (left, right) {
+            (Value::Integer(l), Value::Integer(r)) => {
+                Some(NumericValue::Integer(l.get_value() / r.get_value()))
+            }
+            (Value::Double(l), Value::Double(r)) => {
+                Some(NumericValue::Double(l.get_value() / r.get_value()))
+            }
+            _ => {
+                if Self::values_may_be_double(left, right) {
+                    let left_double = left.convert_to_double()?;
+                    let right_double = right.convert_to_double()?;
+                    Some(NumericValue::Double(left_double / right_double))
+                } else {
+                    let left_integer = left.convert_to_integer()?;
+                    let right_integer = right.convert_to_integer()?;
+                    Some(NumericValue::Integer(left_integer / right_integer))
+                }
+            }
+        }
+    }
+
+    pub fn modulus(left: &Value, right: &Value) -> Option<NumericValue> {
+        match (left, right) {
+            (Value::Integer(l), Value::Integer(r)) => {
+                Some(NumericValue::Integer(l.get_value() % r.get_value()))
+            }
+            (Value::Double(l), Value::Double(r)) => {
+                Some(NumericValue::Double(l.get_value() % r.get_value()))
+            }
+            _ => {
+                if Self::values_may_be_double(left, right) {
+                    let left_double = left.convert_to_double()?;
+                    let right_double = right.convert_to_double()?;
+                    Some(NumericValue::Double(left_double % right_double))
+                } else {
+                    let left_integer = left.convert_to_integer()?;
+                    let right_integer = right.convert_to_integer()?;
+                    Some(NumericValue::Integer(left_integer % right_integer))
+                }
+            }
+        }
+    }
+
+    pub fn bin(value: &Value, bin_size: &Value) -> Option<NumericValue> {
+        match (value, bin_size) {
+            (Value::Integer(value), Value::Integer(bin_size)) => {
+                let bin_size = bin_size.get_value();
+                Some(NumericValue::Integer(
+                    (value.get_value() / bin_size) * bin_size,
+                ))
+            }
+            (Value::Double(value), Value::Double(bin_size)) => {
+                let bin_size = bin_size.get_value();
+                Some(NumericValue::Double(
+                    (value.get_value() / bin_size).floor() * bin_size,
+                ))
+            }
+            _ => {
+                if Self::values_may_be_double(value, bin_size) {
+                    let value_double = value.convert_to_double()?;
+                    let bin_size_double = bin_size.convert_to_double()?;
+                    Some(NumericValue::Double(
+                        (value_double / bin_size_double).floor() * bin_size_double,
+                    ))
+                } else {
+                    let value_integer = value.convert_to_integer()?;
+                    let bin_size_integer = bin_size.convert_to_integer()?;
+                    Some(NumericValue::Integer(
+                        (value_integer / bin_size_integer) * bin_size_integer,
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn ceiling(value: &Value) -> Option<i64> {
+        if let Value::Double(d) = value {
+            Some(d.get_value().ceil() as i64)
+        } else if let Value::String(s) = value
+            && let Some(d) = s.get_value().parse::<f64>().ok()
+        {
+            Some(d.ceil() as i64)
+        } else {
+            value.convert_to_integer()
+        }
+    }
+
+    pub fn floor(value: &Value) -> Option<i64> {
+        if let Value::Double(d) = value {
+            Some(d.get_value().floor() as i64)
+        } else if let Value::String(s) = value
+            && let Some(d) = s.get_value().parse::<f64>().ok()
+        {
+            Some(d.floor() as i64)
+        } else {
+            value.convert_to_integer()
+        }
+    }
+
+    pub fn parse_regex(
+        query_location: &QueryLocation,
+        pattern: &Value,
+        options: Option<&Value>,
+    ) -> Result<Regex, ExpressionError> {
+        if let Value::String(s) = pattern {
+            match options {
+                None => Regex::new(s.get_value()).map_err(|e| {
+                    ExpressionError::ParseError(
+                        query_location.clone(),
+                        format!("Failed to parse Regex from pattern: {e}"),
+                    )
+                }),
+                Some(Value::String(options)) => {
+                    let options = options.get_value();
+
+                    let mut builder = RegexBuilder::new(s.get_value());
+
+                    if options.contains('i') {
+                        builder.case_insensitive(true);
+                    }
+                    if options.contains('m') {
+                        builder.multi_line(true);
+                    }
+                    if options.contains('s') {
+                        builder.dot_matches_new_line(true);
+                    }
+
+                    builder.build().map_err(|e| {
+                        ExpressionError::ParseError(
+                            query_location.clone(),
+                            format!("Failed to parse Regex from pattern: {e}"),
+                        )
+                    })
+                }
+                _ => Err(ExpressionError::ParseError(
+                    query_location.clone(),
+                    format!(
+                        "Input of '{:?}' type could not be pased as Regex options",
+                        options.unwrap().get_value_type()
+                    ),
+                )),
+            }
+        } else {
+            Err(ExpressionError::ParseError(
+                query_location.clone(),
+                format!(
+                    "Input of '{:?}' type could not be pased as a Regex",
+                    pattern.get_value_type()
+                ),
+            ))
+        }
+    }
+
+    pub fn negate(value: &Value) -> Option<NumericValue> {
+        match value {
+            Value::Integer(i) => Some(NumericValue::Integer(-i.get_value())),
+            Value::Double(d) => Some(NumericValue::Double(-d.get_value())),
+            _ => {
+                if let Value::String(l) = value
+                    && l.get_value().contains(['.', 'e'])
+                {
+                    value.convert_to_double().map(|v| NumericValue::Double(-v))
+                } else {
+                    value
+                        .convert_to_integer()
+                        .map(|v| NumericValue::Integer(-v))
+                }
+            }
+        }
+    }
+
+    fn are_string_values_equal(left: &str, right: &Value, case_insensitive: bool) -> bool {
+        let mut r = None;
+
+        right.convert_to_string(&mut |o| {
+            if case_insensitive {
+                r = Some(caseless::default_caseless_match_str(left, o))
+            } else {
+                r = Some(left == o)
+            }
+        });
+
+        r.expect("Encountered a type which does not correctly implement convert_to_string")
+    }
+
+    fn values_may_be_double(left: &Value, right: &Value) -> bool {
+        if left.get_value_type() == ValueType::Double || right.get_value_type() == ValueType::Double
+        {
+            return true;
+        }
+
+        let left_may_by_double = if let Value::String(l) = left
+            && l.get_value().contains(['.', 'e'])
+        {
+            true
+        } else {
+            false
+        };
+
+        let right_may_by_double = if let Value::String(r) = right
+            && r.get_value().contains(['.', 'e'])
+        {
+            true
+        } else {
+            false
+        };
+
+        left_may_by_double || right_may_by_double
+    }
 }
 
 impl Display for Value<'_> {
@@ -502,10 +788,16 @@ impl PartialEq for Value<'_> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum NumericValue {
+    Integer(i64),
+    Double(f64),
+}
+
 pub trait AsValue: Debug {
     fn get_value_type(&self) -> ValueType;
 
-    fn to_value(&self) -> Value;
+    fn to_value(&self) -> Value<'_>;
 }
 
 #[derive(Debug, Clone)]
@@ -522,7 +814,7 @@ pub enum StaticValue<'a> {
 }
 
 pub trait AsStaticValue: AsValue {
-    fn to_static_value(&self) -> StaticValue;
+    fn to_static_value(&self) -> StaticValue<'_>;
 }
 
 impl<T: AsStaticValue> AsValue for T {
@@ -540,7 +832,7 @@ impl<T: AsStaticValue> AsValue for T {
         }
     }
 
-    fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value<'_> {
         match self.to_static_value() {
             StaticValue::Array(a) => Value::Array(a),
             StaticValue::Boolean(b) => Value::Boolean(b),
@@ -724,6 +1016,22 @@ mod tests {
         );
 
         run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(0).into(),
+            )),
+            Some(false),
+        );
+
+        run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Some(true),
+        );
+
+        run_test_success(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
@@ -775,6 +1083,14 @@ mod tests {
         );
 
         run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Some(1),
+        );
+
+        run_test_success(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
@@ -792,6 +1108,7 @@ mod tests {
         };
 
         let dt: DateTime<FixedOffset> = Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into();
+        let unix_plus_one = Utc.timestamp_nanos(1).into();
 
         run_test_success(
             Value::DateTime(&DateTimeScalarExpression::new(
@@ -804,7 +1121,33 @@ mod tests {
         run_test_success(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
-                "hello world",
+                "6/29/2025",
+            )),
+            Some(dt),
+        );
+
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            Some(unix_plus_one),
+        );
+
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
+            Some(unix_plus_one),
+        );
+
+        run_test_success(
+            Value::Boolean(&BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+            Some(unix_plus_one),
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world 8/25/2025",
             )),
             None,
         );
@@ -853,6 +1196,14 @@ mod tests {
                 "1.18",
             )),
             Some(1.18),
+        );
+
+        run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Some(1.0),
         );
 
         run_test_success(
@@ -980,8 +1331,6 @@ mod tests {
                 )
                 .unwrap_err();
 
-                // todo: Remove this when another ExpressionError is defined
-                #[allow(irrefutable_let_patterns)]
                 if let ExpressionError::TypeMismatch(_, msg) = actual {
                     assert_eq!(expected, msg);
                 } else {
@@ -1672,8 +2021,6 @@ mod tests {
             let actual =
                 Value::compare_values(&QueryLocation::new_fake(), &left, &right).unwrap_err();
 
-            // todo: Remove this when another ExpressionError is defined
-            #[allow(irrefutable_let_patterns)]
             if let ExpressionError::TypeMismatch(_, msg) = actual {
                 assert_eq!(expected, msg);
             } else {
@@ -1717,6 +2064,24 @@ mod tests {
             0,
         );
 
+        run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            0,
+        );
+
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            0,
+        );
+
         run_test_failure(
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1751,24 +2116,6 @@ mod tests {
             )),
             Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
             "Value of 'String' type on left side of comparison operation could not be converted to double",
-        );
-
-        run_test_failure(
-            Value::DateTime(&DateTimeScalarExpression::new(
-                QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
-            )),
-            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
-            "Value of 'Integer' type on right side of comparison operation could not be converted to DateTime",
-        );
-
-        run_test_failure(
-            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
-            Value::DateTime(&DateTimeScalarExpression::new(
-                QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
-            )),
-            "Value of 'Double' type on left side of comparison operation could not be converted to DateTime",
         );
     }
 
@@ -1920,6 +2267,718 @@ mod tests {
             )),
             false,
             "Haystack value of 'Integer' type is not supported for contains operation. Only Array and String values are supported.",
+        );
+    }
+
+    #[test]
+    pub fn test_add() {
+        let run_test_success = |left: Value, right: Value, expected: Option<NumericValue>| {
+            let actual = Value::add(&left, &right);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.01,
+            )),
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.18,
+            )),
+            Some(NumericValue::Double(2.19)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+            Some(NumericValue::Integer(60)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.01",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.18",
+            )),
+            Some(NumericValue::Double(2.19)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1e10",
+            )),
+            Some(NumericValue::Double(10000000001.0)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            Some(NumericValue::Integer(19)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_subtract() {
+        let run_test_success = |left: Value, right: Value, expected: Option<NumericValue>| {
+            let actual = Value::subtract(&left, &right);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.01,
+            )),
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.18,
+            )),
+            Some(NumericValue::Double(-0.16999999999999993)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+            Some(NumericValue::Integer(24)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.01",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.18",
+            )),
+            Some(NumericValue::Double(-0.16999999999999993)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1e10",
+            )),
+            Some(NumericValue::Double(-9999999999.0)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            Some(NumericValue::Integer(-17)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_multiply() {
+        let run_test_success = |left: Value, right: Value, expected: Option<NumericValue>| {
+            let actual = Value::multiply(&left, &right);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.01,
+            )),
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.18,
+            )),
+            Some(NumericValue::Double(1.1918)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+            Some(NumericValue::Integer(756)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.01",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.18",
+            )),
+            Some(NumericValue::Double(1.1918)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1e10",
+            )),
+            Some(NumericValue::Double(1.0e10)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            Some(NumericValue::Integer(18)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_divide() {
+        let run_test_success = |left: Value, right: Value, expected: Option<NumericValue>| {
+            let actual = Value::divide(&left, &right);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.01,
+            )),
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                1.18,
+            )),
+            Some(NumericValue::Double(0.8559322033898306)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+            Some(NumericValue::Integer(2)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.01",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.18",
+            )),
+            Some(NumericValue::Double(0.8559322033898306)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1e10",
+            )),
+            Some(NumericValue::Double(1e-10)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            Some(NumericValue::Integer(0)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_modulus() {
+        let run_test_success = |left: Value, right: Value, expected: Option<NumericValue>| {
+            let actual = Value::modulus(&left, &right);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                10.18,
+            )),
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 3.0)),
+            Some(NumericValue::Double(1.1799999999999997)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 10)),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 3)),
+            Some(NumericValue::Integer(1)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10.18",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "3.0",
+            )),
+            Some(NumericValue::Double(1.1799999999999997)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1e10",
+            )),
+            Some(NumericValue::Double(1.0)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10",
+            )),
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "3")),
+            Some(NumericValue::Integer(1)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_ceiling() {
+        let run_test_success = |value: Value, expected: Option<i64>| {
+            let actual = Value::ceiling(&value);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
+            Some(2),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                -1.9,
+            )),
+            Some(-1),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 0.0)),
+            Some(0),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 2.0)),
+            Some(2),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Some(42),
+        );
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                -42,
+            )),
+            Some(-42),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.1",
+            )),
+            Some(2),
+        );
+        // String values that cannot be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_floor() {
+        let run_test_success = |value: Value, expected: Option<i64>| {
+            let actual = Value::floor(&value);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
+            Some(1),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                -1.9,
+            )),
+            Some(-2),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 0.0)),
+            Some(0),
+        );
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 2.0)),
+            Some(2),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Some(42),
+        );
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                -42,
+            )),
+            Some(-42),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.1",
+            )),
+            Some(1),
+        );
+        // String values that cannot be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, None);
+    }
+
+    #[test]
+    pub fn test_bin() {
+        let run_test_success = |value: Value, bin_size: Value, expected: Option<NumericValue>| {
+            let actual = Value::bin(&value, &bin_size);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                10018.18,
+            )),
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                100.0,
+            )),
+            Some(NumericValue::Double(10000.0)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                10018,
+            )),
+            Value::Integer(&IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                100,
+            )),
+            Some(NumericValue::Integer(10000)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10018.18",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "100.0",
+            )),
+            Some(NumericValue::Double(10000.0)),
+        );
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10018",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "100.0",
+            )),
+            Some(NumericValue::Double(10000.0)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "10018",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "100",
+            )),
+            Some(NumericValue::Integer(10000)),
+        );
+        // String values that cannot be parsed as numeric
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "18",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, Value::Null, None);
+    }
+
+    #[test]
+    fn test_parse_regex() {
+        let run_test_success = |pattern: Value, options: Option<Value>, test: &str| {
+            let is_match =
+                Value::parse_regex(&QueryLocation::new_fake(), &pattern, options.as_ref())
+                    .unwrap()
+                    .is_match(test);
+
+            assert!(is_match);
+        };
+
+        let run_test_failure = |pattern: Value, options: Option<Value>| {
+            Value::parse_regex(&QueryLocation::new_fake(), &pattern, options.as_ref()).unwrap_err();
+        };
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "[^a]ello world",
+            )),
+            None,
+            "hello world",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello world",
+            )),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "i",
+            ))),
+            "HELLO WORLD",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "^\\w*.\\w*$",
+            )),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "s",
+            ))),
+            "hello\nworld",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "^\\w*$",
+            )),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "m",
+            ))),
+            "hello\nworld",
+        );
+
+        run_test_failure(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(")),
+            None,
+        );
+
+        run_test_failure(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(")),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "m",
+            ))),
+        );
+
+        run_test_failure(Value::Null, None);
+
+        run_test_failure(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(")),
+            Some(Value::Null),
+        );
+    }
+
+    #[test]
+    pub fn test_negate() {
+        let run_test_success = |value: Value, expected: Option<NumericValue>| {
+            let actual = Value::negate(&value);
+            assert_eq!(expected, actual)
+        };
+
+        // Double values
+        run_test_success(
+            Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1)),
+            Some(NumericValue::Double(-1.1)),
+        );
+
+        // Integer values
+        run_test_success(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 42)),
+            Some(NumericValue::Integer(-42)),
+        );
+
+        // String values that can be parsed as double
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "1.1",
+            )),
+            Some(NumericValue::Double(-1.1)),
+        );
+        // String values that can be parsed as integer
+        run_test_success(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "1")),
+            Some(NumericValue::Integer(-1)),
+        );
+        // String values that cannot be parsed
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "hello",
+            )),
+            None,
+        );
+
+        // Null value
+        run_test_success(Value::Null, None);
+
+        // Value convertable to int
+        run_test_success(
+            Value::Boolean(&BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+            Some(NumericValue::Integer(-1)),
         );
     }
 }

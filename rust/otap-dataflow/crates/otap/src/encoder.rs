@@ -25,7 +25,7 @@ use otel_arrow_rust::{
             HistogramDataPointsRecordBatchBuilder, MetricsRecordBatchBuilder,
             NumberDataPointsRecordBatchBuilder, SummaryDataPointsRecordBatchBuilder,
         },
-        spans::{EventsBuilder, LinksBuilder, SpansRecordBatchBuilder},
+        traces::{EventsRecordBatchBuilder, LinksRecordBatchBuilder, TracesRecordBatchBuilder},
     },
     otap::{Logs, Metrics, OtapArrowRecords, Traces},
     otlp::attributes::parent_id::ParentId,
@@ -55,9 +55,9 @@ where
     let mut curr_event_id: u32 = 0;
     let mut curr_link_id: u32 = 0;
 
-    let mut spans = SpansRecordBatchBuilder::new();
-    let mut events = EventsBuilder::new();
-    let mut links = LinksBuilder::new();
+    let mut spans = TracesRecordBatchBuilder::new();
+    let mut events = EventsRecordBatchBuilder::new();
+    let mut links = LinksRecordBatchBuilder::new();
 
     // First, we traverse the view collecting the trace data into our RecordBatch builders.
 
@@ -90,6 +90,7 @@ where
         }
 
         for scope_spans in resource_spans.scopes() {
+            spans.append_schema_url_n(scope_spans.schema_url(), scope_spans.spans().count());
             if let Some(scope) = scope_spans.scope() {
                 for kv in scope.attributes() {
                     scope_attrs.append_parent_id(&curr_scope_id);
@@ -119,37 +120,39 @@ where
                     append_attribute_value(&mut span_attrs, &kv)?;
                 }
 
-                spans.append_start_time_unix_nano(span.start_time_unix_nano().map(|v| v as i64));
+                spans.append_start_time_unix_nano(
+                    span.start_time_unix_nano().map(|v| v as i64).unwrap_or(0),
+                );
                 let duration = match (span.start_time_unix_nano(), span.end_time_unix_nano()) {
                     (Some(start), Some(end)) => Some((end as i64) - (start as i64)),
                     _ => None,
                 };
-                spans.append_duration_time_unix_nano(duration);
+                spans.append_duration_time_unix_nano(duration.unwrap_or(0));
 
-                spans.append_trace_id(span.trace_id())?;
-                spans.append_span_id(span.span_id())?;
+                spans.append_trace_id(span.trace_id().copied().unwrap_or_default())?;
+                spans.append_span_id(span.span_id().copied().unwrap_or_default())?;
                 spans.append_trace_state(span.trace_state());
-                spans.append_parent_span_id(span.parent_span_id())?;
-                spans.append_name(span.name());
+                spans.append_parent_span_id(span.parent_span_id().copied())?;
+                spans.append_name(span.name().unwrap_or_default());
                 spans.append_kind(Some(span.kind()));
-                spans.append_dropped_attributes_count(span.dropped_attributes_count());
-                spans.append_dropped_events_count(span.dropped_events_count());
-                spans.append_dropped_links_count(span.dropped_links_count());
+                spans.append_dropped_attributes_count(Some(span.dropped_attributes_count()));
+                spans.append_dropped_events_count(Some(span.dropped_events_count()));
+                spans.append_dropped_links_count(Some(span.dropped_links_count()));
+
+                spans
+                    .status
+                    .append_code(span.status().map(|s| s.status_code()));
 
                 if let Some(status) = span.status() {
-                    spans.append_status_code(Some(status.status_code()));
-                    spans.append_status_status_message(status.message());
-                } else {
-                    spans.append_status_code(None);
-                    spans.append_status_status_message(None);
+                    spans.status.append_status_message(status.message());
                 }
 
                 for event in span.events() {
                     events.append_id(Some(curr_event_id));
                     events.append_parent_id(curr_span_id);
                     events.append_time_unix_nano(event.time_unix_nano().map(|v| v as i64));
-                    events.append_name(event.name());
-                    events.append_dropped_attributes_count(event.dropped_attributes_count());
+                    events.append_name(event.name().unwrap_or_default());
+                    events.append_dropped_attributes_count(Some(event.dropped_attributes_count()));
 
                     for kv in event.attributes() {
                         event_attrs.append_parent_id(&curr_event_id);
@@ -164,10 +167,10 @@ where
                 for link in span.links() {
                     links.append_id(Some(curr_link_id));
                     links.append_parent_id(curr_span_id);
-                    links.append_trace_id(link.trace_id())?;
-                    links.append_span_id(link.span_id())?;
+                    links.append_trace_id(link.trace_id().copied())?;
+                    links.append_span_id(link.span_id().copied())?;
                     links.append_trace_state(link.trace_state());
-                    links.append_dropped_attributes_count(link.dropped_attributes_count());
+                    links.append_dropped_attributes_count(Some(link.dropped_attributes_count()));
 
                     for kv in link.attributes() {
                         link_attrs.append_parent_id(&curr_link_id);
@@ -193,36 +196,20 @@ where
     // Then we build up an OTAP Batch from the RecordBatch builders....
 
     let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
-
-    // Append spans records along with events and links!
-    otap_batch.set(ArrowPayloadType::Spans, spans.finish()?);
-    otap_batch.set(ArrowPayloadType::SpanEvents, events.finish()?);
-    otap_batch.set(ArrowPayloadType::SpanLinks, links.finish()?);
-
-    // Append attrs for spans, scopes, resources, events and links!
-    let span_attrs_rb = span_attrs.finish()?;
-    if span_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::SpanAttrs, span_attrs_rb);
-    }
-
-    let resource_attrs_rb = resource_attrs.finish()?;
-    if resource_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
-    }
-
-    let scope_attrs_rb = scope_attrs.finish()?;
-    if scope_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb);
-    }
-
-    let event_attrs_rb = event_attrs.finish()?;
-    if event_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::SpanEventAttrs, event_attrs_rb);
-    }
-
-    let link_attrs_rb = link_attrs.finish()?;
-    if link_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::SpanLinkAttrs, link_attrs_rb);
+    let pairs = [
+        (spans.finish()?, ArrowPayloadType::Spans),
+        (events.finish()?, ArrowPayloadType::SpanEvents),
+        (links.finish()?, ArrowPayloadType::SpanLinks),
+        (span_attrs.finish()?, ArrowPayloadType::SpanAttrs),
+        (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
+        (scope_attrs.finish()?, ArrowPayloadType::ScopeAttrs),
+        (event_attrs.finish()?, ArrowPayloadType::SpanEventAttrs),
+        (link_attrs.finish()?, ArrowPayloadType::SpanLinkAttrs),
+    ];
+    for (rb, payload_type) in pairs {
+        if rb.num_rows() > 0 {
+            otap_batch.set(payload_type, rb);
+        }
     }
 
     Ok(otap_batch)
@@ -975,12 +962,11 @@ mod test {
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
-    use otel_arrow_rust::schema::{consts, no_nulls};
+    use otel_arrow_rust::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
     use prost::Message;
 
     #[test]
     fn test_metrics_round_trip() {
-        use otel_arrow_rust::encode::record::spans::{SpanId, TraceId};
         use otel_arrow_rust::proto::opentelemetry::metrics::v1::{
             Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
             HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
@@ -1183,7 +1169,7 @@ mod test {
                     "resource",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new("dropped_attributes_count", DataType::UInt32, true),
                         ]
                         .into(),
@@ -1194,7 +1180,7 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -1251,7 +1237,7 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0; 5])) as ArrayRef,
                     ),
@@ -1268,7 +1254,7 @@ mod test {
                 // scope
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0; 5])) as ArrayRef,
                     ),
@@ -1365,7 +1351,7 @@ mod test {
         let resource_attrs = otap_batch.get(ArrowPayloadType::ResourceAttrs).unwrap();
         let expected_resource_attrs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1404,7 +1390,7 @@ mod test {
         let scope_attrs = otap_batch.get(ArrowPayloadType::ScopeAttrs).unwrap();
         let expected_scope_attrs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1443,7 +1429,7 @@ mod test {
         let metric_attrs = otap_batch.get(ArrowPayloadType::MetricAttrs).unwrap();
         let expected_metric_attrs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1529,7 +1515,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1639,7 +1626,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1747,7 +1735,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1855,7 +1844,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1967,7 +1957,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -2105,7 +2096,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -2217,7 +2209,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -2384,12 +2377,12 @@ mod test {
         // check that the logs record batch is what we expect
         let expected_log_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt16, true),
+                Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     "resource",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -2408,7 +2401,7 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -2499,7 +2492,7 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -2533,7 +2526,7 @@ mod test {
                 // scope
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -2656,7 +2649,7 @@ mod test {
         // check that the resource_attrs record batch is what we expect
         let expected_resource_attrs_log_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -2691,7 +2684,7 @@ mod test {
         // check that the scope_attrs record batch is what we expect
         let expected_scope_attrs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -2726,7 +2719,7 @@ mod test {
         // check that the log_attrs record batch is what we expect
         let expected_log_attrs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -2815,12 +2808,18 @@ mod test {
             Arc::new(Schema::new(vec![
                 Field::new(
                     consts::RESOURCE,
-                    DataType::Struct(vec![Field::new(consts::ID, DataType::UInt16, true)].into()),
+                    DataType::Struct(
+                        vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()]
+                            .into(),
+                    ),
                     true,
                 ),
                 Field::new(
                     consts::SCOPE,
-                    DataType::Struct(vec![Field::new(consts::ID, DataType::UInt16, true)].into()),
+                    DataType::Struct(
+                        vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()]
+                            .into(),
+                    ),
                     true,
                 ),
                 Field::new(
@@ -2836,12 +2835,14 @@ mod test {
             ])),
             vec![
                 Arc::new(StructArray::new(
-                    vec![Field::new(consts::ID, DataType::UInt16, true)].into(),
+                    vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()]
+                        .into(),
                     vec![Arc::new(UInt16Array::from(vec![0]))],
                     None,
                 )),
                 Arc::new(StructArray::new(
-                    vec![Field::new(consts::ID, DataType::UInt16, true)].into(),
+                    vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()]
+                        .into(),
                     vec![Arc::new(UInt16Array::from(vec![0]))],
                     None,
                 )),
@@ -2899,7 +2900,7 @@ mod test {
                     consts::RESOURCE,
                     DataType::Struct(
                         vec![
-                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -2917,7 +2918,7 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -2950,7 +2951,7 @@ mod test {
             vec![
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -2974,7 +2975,7 @@ mod test {
                 ])),
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -3078,12 +3079,12 @@ mod test {
 
         let expected_logs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(
                         vec![
-                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -3101,7 +3102,7 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -3137,7 +3138,7 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef,
                     ),
@@ -3161,7 +3162,7 @@ mod test {
                 ])),
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0, 1, 2])) as ArrayRef,
                     ),
@@ -3201,7 +3202,7 @@ mod test {
         // check that the log_attrs record batch is what we expect
         let expected_log_attrs_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -3542,7 +3543,7 @@ mod test {
 
         let expected_attrs = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     consts::ATTRIBUTE_KEY,
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -3722,7 +3723,6 @@ mod test {
 
     #[test]
     fn test_spans_proto_struct() {
-        use otel_arrow_rust::encode::record::spans::{SpanId, TraceId};
         use otel_arrow_rust::proto::opentelemetry::trace::v1::*;
 
         let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -3800,7 +3800,7 @@ mod test {
                     "resource",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "schema_url",
                                 DataType::Dictionary(
@@ -3819,7 +3819,7 @@ mod test {
                     "scope",
                     DataType::Struct(
                         vec![
-                            Field::new("id", DataType::UInt16, true),
+                            Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                             Field::new(
                                 "name",
                                 DataType::Dictionary(
@@ -3843,44 +3843,31 @@ mod test {
                     true,
                 ),
                 Field::new(
+                    "schema_url",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
+                Field::new(
                     "start_time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
                 Field::new(
                     "duration_time_unix_nano",
-                    DataType::Duration(TimeUnit::Nanosecond),
-                    false,
-                ),
-                Field::new(
-                    "trace_id",
                     DataType::Dictionary(
                         Box::new(DataType::UInt8),
-                        Box::new(DataType::FixedSizeBinary(16)),
+                        Box::new(DataType::Duration(TimeUnit::Nanosecond)),
                     ),
                     false,
                 ),
-                Field::new(
-                    "span_id",
-                    DataType::Dictionary(
-                        Box::new(DataType::UInt8),
-                        Box::new(DataType::FixedSizeBinary(8)),
-                    ),
-                    false,
-                ),
+                Field::new("trace_id", DataType::FixedSizeBinary(16), false),
+                Field::new("span_id", DataType::FixedSizeBinary(8), false),
                 Field::new(
                     "trace_state",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
                     true,
                 ),
-                Field::new(
-                    "parent_span_id",
-                    DataType::Dictionary(
-                        Box::new(DataType::UInt8),
-                        Box::new(DataType::FixedSizeBinary(8)),
-                    ),
-                    true,
-                ),
+                Field::new("parent_span_id", DataType::FixedSizeBinary(8), true),
                 Field::new(
                     "name",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -3895,13 +3882,28 @@ mod test {
                 Field::new("dropped_events_count", DataType::UInt32, true),
                 Field::new("dropped_links_count", DataType::UInt32, true),
                 Field::new(
-                    "code",
-                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
-                    true,
-                ),
-                Field::new(
-                    "status_message",
-                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    "status",
+                    DataType::Struct(
+                        vec![
+                            Field::new(
+                                "code",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Int32),
+                                ),
+                                true,
+                            ),
+                            Field::new(
+                                "status_message",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
                     true,
                 ),
             ])),
@@ -3911,7 +3913,7 @@ mod test {
                 // resource
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // resource.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -3945,7 +3947,7 @@ mod test {
                 // scope
                 Arc::new(StructArray::from(vec![
                     (
-                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        Arc::new(Field::new("id", DataType::UInt16, true).with_plain_encoding()),
                         // scope.id
                         Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                     ),
@@ -3989,40 +3991,41 @@ mod test {
                         Arc::new(UInt32Array::from(vec![17])) as ArrayRef,
                     ),
                 ])) as ArrayRef,
+                // schema_url
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "https://schema.opentelemetry.io/scope_schema",
+                    ])),
+                )) as ArrayRef,
                 // timestamps
                 Arc::new(TimestampNanosecondArray::from(vec![999])),
-                Arc::new(DurationNanosecondArray::from(vec![1000])),
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0]),
+                    Arc::new(DurationNanosecondArray::from(vec![1000])),
+                )),
                 // trace_id
-                Arc::new(DictionaryArray::<UInt8Type>::new(
-                    UInt8Array::from(vec![0]),
-                    Arc::new(
-                        FixedSizeBinaryArray::try_from_iter(vec![a_trace_id.to_vec()].into_iter())
-                            .unwrap(),
-                    ),
-                )) as ArrayRef,
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(vec![a_trace_id.to_vec()].into_iter())
+                        .unwrap(),
+                ),
                 // span_id
-                Arc::new(DictionaryArray::<UInt8Type>::new(
-                    UInt8Array::from(vec![0]),
-                    Arc::new(
-                        FixedSizeBinaryArray::try_from_iter(vec![a_span_id.to_vec()].into_iter())
-                            .unwrap(),
-                    ),
-                )) as ArrayRef,
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(vec![a_span_id.to_vec()].into_iter())
+                        .unwrap(),
+                ),
                 // trace_state
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
                     Arc::new(StringArray::from(vec!["some_state"])),
                 )) as ArrayRef,
                 // parent_span_id
-                Arc::new(DictionaryArray::<UInt8Type>::new(
-                    UInt8Array::from(vec![0]),
-                    Arc::new(
-                        FixedSizeBinaryArray::try_from_iter(
-                            vec![a_parent_span_id.to_vec()].into_iter(),
-                        )
-                        .unwrap(),
-                    ),
-                )) as ArrayRef,
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![a_parent_span_id.to_vec()].into_iter(),
+                    )
+                    .unwrap(),
+                ),
                 // name
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
@@ -4039,16 +4042,39 @@ mod test {
                 Arc::new(UInt32Array::from(vec![11])) as ArrayRef,
                 // dropped_links_count
                 Arc::new(UInt32Array::from(vec![29])) as ArrayRef,
-                // status code
-                Arc::new(DictionaryArray::<UInt8Type>::new(
-                    UInt8Array::from(vec![0]),
-                    Arc::new(Int32Array::from(vec![status::StatusCode::Error as i32])),
-                )),
-                // status message
-                Arc::new(DictionaryArray::<UInt8Type>::new(
-                    UInt8Array::from(vec![0]),
-                    Arc::new(StringArray::from(vec!["something happened"])),
-                )),
+                // status
+                Arc::new(StructArray::from(vec![
+                    // status code
+                    (
+                        Arc::new(Field::new(
+                            "code",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Int32),
+                            ),
+                            true,
+                        )),
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(Int32Array::from(vec![status::StatusCode::Error as i32])),
+                        )) as ArrayRef,
+                    ),
+                    // status message
+                    (
+                        Arc::new(Field::new(
+                            "status_message",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0]),
+                            Arc::new(StringArray::from(vec!["something happened"])),
+                        )) as ArrayRef,
+                    ),
+                ])) as ArrayRef,
             ],
         )
         .unwrap();
@@ -4161,7 +4187,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -4203,7 +4230,8 @@ mod test {
                     "parent_id",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
                     false,
-                ),
+                )
+                .with_plain_encoding(),
                 Field::new(
                     "key",
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),

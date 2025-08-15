@@ -36,51 +36,58 @@ pub enum StaticScalarExpression {
 }
 
 impl StaticScalarExpression {
-    pub fn from_json(query_location: QueryLocation, input: &str) -> Option<StaticScalarExpression> {
+    pub fn from_json(
+        query_location: QueryLocation,
+        input: &str,
+    ) -> Result<StaticScalarExpression, ExpressionError> {
         return match serde_json::from_str::<serde_json::Value>(input) {
-            Ok(v) => from_value(&query_location, v),
-            Err(_) => None,
+            Ok(v) => Ok(from_value(&query_location, v)?),
+            Err(e) => Err(ExpressionError::ParseError(
+                query_location,
+                format!("Input could not be parsed as JSON: {e}"),
+            )),
         };
 
         fn from_value(
             query_location: &QueryLocation,
             value: serde_json::Value,
-        ) -> Option<StaticScalarExpression> {
+        ) -> Result<StaticScalarExpression, ExpressionError> {
             match value {
-                serde_json::Value::Null => Some(StaticScalarExpression::Null(
+                serde_json::Value::Null => Ok(StaticScalarExpression::Null(
                     NullScalarExpression::new(query_location.clone()),
                 )),
-                serde_json::Value::Bool(b) => Some(StaticScalarExpression::Boolean(
+                serde_json::Value::Bool(b) => Ok(StaticScalarExpression::Boolean(
                     BooleanScalarExpression::new(query_location.clone(), b),
                 )),
                 serde_json::Value::Number(n) => {
                     if let Some(i) = n.as_i64() {
-                        Some(StaticScalarExpression::Integer(
+                        Ok(StaticScalarExpression::Integer(
                             IntegerScalarExpression::new(query_location.clone(), i),
                         ))
                     } else {
-                        n.as_f64().map(|f| {
+                        match n.as_f64().map(|f| {
                             StaticScalarExpression::Double(DoubleScalarExpression::new(
                                 query_location.clone(),
                                 f,
                             ))
-                        })
+                        }) {
+                            Some(s) => Ok(s),
+                            None => Err(ExpressionError::ParseError(
+                                query_location.clone(),
+                                format!("Input '{n}' could not be parsed as a number"),
+                            )),
+                        }
                     }
                 }
-                serde_json::Value::String(s) => Some(StaticScalarExpression::String(
+                serde_json::Value::String(s) => Ok(StaticScalarExpression::String(
                     StringScalarExpression::new(query_location.clone(), &s),
                 )),
                 serde_json::Value::Array(v) => {
                     let mut values = Vec::new();
                     for value in v {
-                        match from_value(query_location, value) {
-                            Some(s) => {
-                                values.push(s);
-                            }
-                            None => return None,
-                        }
+                        values.push(from_value(query_location, value)?);
                     }
-                    Some(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                    Ok(StaticScalarExpression::Array(ArrayScalarExpression::new(
                         query_location.clone(),
                         values,
                     )))
@@ -88,14 +95,9 @@ impl StaticScalarExpression {
                 serde_json::Value::Object(m) => {
                     let mut values = HashMap::new();
                     for (key, value) in m {
-                        match from_value(query_location, value) {
-                            Some(s) => {
-                                values.insert(key.into(), s);
-                            }
-                            None => return None,
-                        }
+                        values.insert(key.into(), from_value(query_location, value)?);
                     }
-                    Some(StaticScalarExpression::Map(MapScalarExpression::new(
+                    Ok(StaticScalarExpression::Map(MapScalarExpression::new(
                         query_location.clone(),
                         values,
                     )))
@@ -136,7 +138,7 @@ impl Expression for StaticScalarExpression {
 }
 
 impl AsStaticValue for StaticScalarExpression {
-    fn to_static_value(&self) -> StaticValue {
+    fn to_static_value(&self) -> StaticValue<'_> {
         match self {
             StaticScalarExpression::Array(a) => StaticValue::Array(a),
             StaticScalarExpression::Boolean(b) => StaticValue::Boolean(b),
@@ -378,9 +380,10 @@ mod tests {
     #[test]
     pub fn test_from_json() {
         let run_test = |input: &str| {
-            let value = StaticScalarExpression::from_json(QueryLocation::new_fake(), input);
+            let value =
+                StaticScalarExpression::from_json(QueryLocation::new_fake(), input).unwrap();
 
-            assert_eq!(Some(input.into()), value.map(|v| v.to_value().to_string()));
+            assert_eq!(input, value.to_value().to_string());
         };
 
         run_test("true");

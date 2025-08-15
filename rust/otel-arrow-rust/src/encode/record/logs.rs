@@ -21,7 +21,7 @@ use crate::{
         dictionary::DictionaryOptions,
     },
     otlp::attributes::store::AttributeValueType,
-    schema::consts,
+    schema::{FieldExt, consts},
 };
 
 /// Record batch builder for logs
@@ -213,7 +213,9 @@ impl LogsRecordBatchBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -308,12 +310,6 @@ impl LogsRecordBatchBuilder {
         }
 
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-    }
-}
-
-impl Default for LogsRecordBatchBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -658,12 +654,6 @@ impl LogsBodyBuilder {
     }
 }
 
-impl Default for LogsBodyBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Builder for the `resource` struct column of the logs OTAP record.
 pub struct ResourceBuilder {
     id: UInt16ArrayBuilder,
@@ -742,7 +732,9 @@ impl ResourceBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -765,12 +757,6 @@ impl ResourceBuilder {
         }
 
         StructArray::try_new(Fields::from(fields), columns, None)
-    }
-}
-
-impl Default for ResourceBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -876,7 +862,9 @@ impl ScopeBuilder {
         let mut columns = vec![];
 
         if let Some(array) = self.id.finish() {
-            fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+            fields.push(
+                Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding(),
+            );
             columns.push(array);
         }
 
@@ -900,11 +888,5 @@ impl ScopeBuilder {
         }
 
         StructArray::try_new(Fields::from(fields), columns, None)
-    }
-}
-
-impl Default for ScopeBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }

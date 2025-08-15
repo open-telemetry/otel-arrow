@@ -1,11 +1,12 @@
 use std::sync::{LazyLock, RwLock};
 
-use data_engine_expressions::PipelineExpression;
+use data_engine_expressions::*;
 use data_engine_kql_parser::*;
 use data_engine_recordset::*;
 
 use crate::*;
 
+const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;
 
 static EXPRESSIONS: LazyLock<RwLock<Vec<PipelineExpression>>> =
@@ -72,11 +73,9 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
     ) {
         Ok((included, dropped)) => {
             let mut included_records_otlp_response = Vec::new();
-            if included.is_some() {
-                match ExportLogsServiceRequest::to_protobuf(
-                    included.as_ref().unwrap(),
-                    OTLP_BUFFER_INITIAL_CAPACITY,
-                ) {
+            if let Some(ref included) = included {
+                match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY)
+                {
                     Ok(r) => {
                         included_records_otlp_response = r.to_vec();
                     }
@@ -87,11 +86,8 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
             }
 
             let mut dropped_records_otlp_response = Vec::new();
-            if dropped.is_some() {
-                match ExportLogsServiceRequest::to_protobuf(
-                    dropped.as_ref().unwrap(),
-                    OTLP_BUFFER_INITIAL_CAPACITY,
-                ) {
+            if let Some(ref dropped) = dropped {
+                match ExportLogsServiceRequest::to_protobuf(dropped, OTLP_BUFFER_INITIAL_CAPACITY) {
                     Ok(r) => {
                         dropped_records_otlp_response = r.to_vec();
                     }
@@ -166,11 +162,81 @@ pub fn process_export_logs_service_request_using_pipeline(
 
     let mut included_records = None;
 
-    if !final_results.included_records.is_empty() {
-        process_log_record_results(
-            &mut export_logs_service_request,
-            final_results.included_records,
-        );
+    let has_summaries = !final_results.summaries.is_empty();
+    let has_included_records = !final_results.included_records.is_empty();
+    if has_summaries || has_included_records {
+        if has_included_records {
+            process_log_record_results(
+                &mut export_logs_service_request,
+                final_results.included_records,
+            );
+        }
+
+        if has_summaries {
+            let mut log_records = Vec::new();
+
+            for summary in final_results.summaries {
+                let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
+                    summary.aggregation_values.len() + summary.group_by_values.len(),
+                );
+
+                for (key, value) in summary.group_by_values {
+                    attributes.push((key, value.into()));
+                }
+
+                for (key, value) in summary.aggregation_values {
+                    match value {
+                        SummaryAggregation::Average { count, sum } => {
+                            let avg = sum.to_double() / count as f64;
+
+                            attributes.push((
+                                key,
+                                AnyValue::Native(OtlpAnyValue::DoubleValue(
+                                    DoubleValueStorage::new(avg),
+                                )),
+                            ));
+                        }
+                        SummaryAggregation::Count(v) => {
+                            attributes.push((
+                                key,
+                                AnyValue::Native(OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                                    v as i64,
+                                ))),
+                            ));
+                        }
+                        SummaryAggregation::Maximum(v) | SummaryAggregation::Minimum(v) => {
+                            attributes.push((key, v.into()));
+                        }
+                        SummaryAggregation::Sum(v) => {
+                            let v = match v {
+                                SummaryValue::Double(d) => AnyValue::Native(
+                                    OtlpAnyValue::DoubleValue(DoubleValueStorage::new(d)),
+                                ),
+                                SummaryValue::Integer(i) => AnyValue::Native(
+                                    OtlpAnyValue::IntValue(IntegerValueStorage::new(i)),
+                                ),
+                            };
+                            attributes.push((key, v));
+                        }
+                    }
+                }
+
+                log_records.push(LogRecord::new().with_attributes(attributes));
+            }
+
+            let summary_otlp = ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_instrumentation_scope(
+                        InstrumentationScope::new()
+                            .with_name("query_engine.otlp_bridge".into())
+                            .with_version(CRATE_VERSION.into()),
+                    )
+                    .with_log_records(log_records),
+            );
+
+            export_logs_service_request.resource_logs.push(summary_otlp);
+        }
+
         included_records = Some(export_logs_service_request);
     }
 
@@ -388,5 +454,25 @@ mod tests {
 
         assert!(included_records.is_some());
         assert!(dropped_records.is_none());
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_summary() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
+        );
+
+        let pipeline = parse_kql_query_into_pipeline("source | summarize Count = count()").unwrap();
+
+        let (included_records, dropped_records) =
+            process_export_logs_service_request_using_pipeline(
+                &pipeline,
+                RecordSetEngineDiagnosticLevel::Verbose,
+                request,
+            )
+            .unwrap();
+
+        assert!(included_records.is_some());
+        assert!(dropped_records.is_some());
     }
 }
