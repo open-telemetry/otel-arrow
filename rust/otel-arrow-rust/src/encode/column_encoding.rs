@@ -8,12 +8,16 @@
 //! The motivation behind adding these encodings to the columns is for better compression when,
 //! for example, transmitting OTAP data via gRPC.
 
-use std::ops::AddAssign;
+use std::{ops::AddAssign, sync::Arc};
 
 use arrow::{
-    array::{ArrayRef, ArrowPrimitiveType, RecordBatch, StructArray, UInt32Array},
+    array::{
+        Array, ArrayRef, ArrowNumericType, ArrowPrimitiveType, PrimitiveArray, RecordBatch,
+        StructArray, UInt32Array,
+    },
+    buffer::{MutableBuffer, ScalarBuffer},
     compute::take_record_batch,
-    datatypes::{DataType, Field, Schema, UInt16Type},
+    datatypes::{ArrowNativeType, DataType, Field, Schema, UInt16Type},
     row::{RowConverter, SortField},
 };
 
@@ -206,22 +210,66 @@ fn sort_record_batch(
 
 struct EncodedColumnResult<T: ArrowPrimitiveType> {
     new_column: ArrayRef,
-    remapping: Vec<(T::Native, T::Native)>,
+    remapping: Vec<T::Native>,
 }
 
 ///
-fn create_new_delta_encoded_column_from<T>(column: ArrayRef) -> Result<EncodedColumnResult<T>>
+fn create_new_delta_encoded_column_from<T>(
+    column: &PrimitiveArray<T>,
+) -> Result<EncodedColumnResult<T>>
 where
     T: ArrowPrimitiveType,
-    <T as ArrowPrimitiveType>::Native: From<u8> + AddAssign,
+    <T as ArrowPrimitiveType>::Native: From<u8> + AddAssign + PartialOrd,
 {
-    let mut curr_id: T::Native = T::Native::default();
-    let one = T::Native::from(1u8);
-
     // TODO need to check if column has at least one value
     // TODO we can do nothing if the column contains only one value?
+    // TODO use a bunch of unsafe stuff here to build the new column
 
-    todo!()
+    let zero = T::Native::from(0u8);
+    let one = T::Native::from(1u8);
+
+    let remappings_len = arrow::compute::max(column).unwrap();
+    let mut remappings = vec![zero; remappings_len.as_usize()];
+
+    let mut curr_id: T::Native = T::Native::default();
+
+    let mut new_buffer = MutableBuffer::with_capacity(column.len() * size_of::<T::Native>());
+
+    let mut prev_value = None;
+    for val in column.iter() {
+        match val {
+            Some(val) => match prev_value {
+                Some(prev) => {
+                    if val == prev {
+                        new_buffer.push(zero);
+                    } else {
+                        new_buffer.push(one);
+
+                        curr_id += one;
+                        remappings[val.as_usize()] = curr_id;
+                        prev_value = Some(val);
+                    }
+                }
+                None => {
+                    new_buffer.push(zero);
+                    prev_value = Some(val);
+                }
+            },
+            None => {
+                // push the default value, we'll
+                new_buffer.push(T::Native::default());
+            }
+        }
+    }
+
+    let nulls = column.nulls().cloned();
+    let new_buffer = ScalarBuffer::<T::Native>::new(new_buffer.into(), 0, column.len());
+    let new_column = PrimitiveArray::<T>::new(new_buffer, nulls);
+
+    Ok(EncodedColumnResult {
+        new_column: Arc::new(new_column),
+        remapping: remappings,
+    })
 }
 
 /// apply transport-optimized encodings to the record batch's columns
@@ -269,8 +317,8 @@ pub fn apply_column_encodings(
     let columns = record_batch.columns();
 
     for column_encoding in to_apply {
-        let column = column_encoding.access_column(&schema, columns).unwrap();
-        let r = create_new_delta_encoded_column_from::<UInt16Type>(column);
+        // let column = column_encoding.access_column(&schema, columns).unwrap();
+        // let r = create_new_delta_encoded_column_from::<UInt16Type>(column);
     }
 
     todo!();
@@ -278,13 +326,10 @@ pub fn apply_column_encodings(
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
-
     use arrow::{
         array::{FixedSizeBinaryArray, StringArray, StructArray, UInt8Array, UInt16Array},
         datatypes::{Field, Fields},
     };
-    use arrow_ipc::FixedSizeBinary;
 
     use crate::{encode::column_encoding, schema::FieldExt};
 
@@ -499,6 +544,11 @@ mod test {
     #[test]
     fn test_sort_columns_single_column() {
         // TODO
+        todo!()
+    }
+
+    #[test]
+    fn test_create_delta_encoded_column() {
         todo!()
     }
 
