@@ -1,3 +1,4 @@
 [submodule "proto/opentelemetry-proto"]
 	path = proto/opentelemetry-proto
 	url = git@github.com:open-telemetry/opentelemetry-proto.git
+    update = none
