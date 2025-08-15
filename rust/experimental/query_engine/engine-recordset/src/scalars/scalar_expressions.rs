@@ -167,9 +167,11 @@ where
             }
         },
         ScalarExpression::List(l) => {
-            let mut values = Vec::new();
+            let expressions = l.get_value_expressions();
 
-            for v in l.get_value_expressions() {
+            let mut values = Vec::with_capacity(expressions.len());
+
+            for v in expressions {
                 values.push(execute_scalar_expression(execution_context, v)?);
             }
 

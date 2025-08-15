@@ -717,6 +717,7 @@ mod tests {
             );
 
             state.push_variable_name("variable");
+            state.push_variable_name("var1");
 
             let mut result = KqlPestParser::parse(Rule::comparison_expression, input).unwrap();
 
@@ -798,14 +799,16 @@ mod tests {
 
         // Test in operator
         run_test(
-            "variable in ('test1', 'test2')",
+            "variable in (var1, 'test2')",
             LogicalExpression::Contains(ContainsLogicalExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::List(ListScalarExpression::new(
                     QueryLocation::new_fake(),
                     vec![
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "test1"),
+                        ScalarExpression::Variable(VariableScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
+                            ValueAccessor::new(),
                         )),
                         ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "test2"),
