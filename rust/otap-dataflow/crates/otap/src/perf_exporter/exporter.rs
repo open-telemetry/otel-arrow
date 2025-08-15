@@ -22,8 +22,10 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
-use otap_df_engine::{distributed_slice, ExporterFactory};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_engine::{ExporterFactory, distributed_slice};
+use otel_arrow_rust::Consumer;
+use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -152,7 +154,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         let _telemetry_timer = effect_handler
             .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
             .await?;
-        
+
         // Helper function to generate performance report
         let generate_report = async |received_arrow_records_count: u64,
                                      received_otlp_signal_count: u64,
@@ -283,7 +285,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     break;
                 }
                 Message::PData(pdata) => {
-                    let batch = match OtapArrowBytes::try_from(pdata) {
+                    let mut batch = match OtapArrowBytes::try_from(pdata) {
                         Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowTraces(batch)) => batch,
@@ -336,7 +338,12 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 
                     // increment counters for received arrow payloads
                     received_arrow_records_count += batch.arrow_payloads.len() as u64;
-                    total_received_arrow_records_count += received_arrow_records_count as u128;
+                    total_received_arrow_records_count += batch.arrow_payloads.len() as u128;
+                    // increment counters for otlp signals
+                    let batch_received_otlp_signal_count =
+                        calculate_otlp_signal_count(&mut batch).unwrap_or_default();
+                    received_otlp_signal_count += batch_received_otlp_signal_count;
+                    total_received_otlp_signal_count += batch_received_otlp_signal_count as u128;
                     // increment counters for otlp signals and update telemetry counters
                     let mut per_kind_logs = 0u64;
                     let mut per_kind_spans = 0u64;
@@ -347,12 +354,10 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         else if payload.r#type == ArrowPayloadType::Spans as i32 { per_kind_spans += n; }
                         else if payload.r#type == ArrowPayloadType::UnivariateMetrics as i32 { per_kind_metrics += n; }
                     }
-                    received_otlp_signal_count += per_kind_logs + per_kind_spans + per_kind_metrics;
                     self.metrics.pdata_msgs.inc();
                     self.metrics.logs.add(per_kind_logs);
                     self.metrics.spans.add(per_kind_spans);
                     self.metrics.metrics.add(per_kind_metrics);
-                    total_received_otlp_signal_count += received_otlp_signal_count as u128;
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -382,6 +387,7 @@ async fn get_writer(output_file: Option<String>) -> Box<dyn AsyncWrite + Unpin> 
         None => Box::new(tokio::io::stdout()),
     }
 }
+
 /// takes in the configuration and returns the appropriate system refresh list to make sure only the necessary data is refreshed
 fn sys_refresh_list(config: &Config) -> RefreshKind {
     let mut sys_refresh_list = RefreshKind::nothing();
@@ -421,7 +427,45 @@ fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
     Ok(Duration::new(secs, nanosecs))
 }
 
-// calculate_otlp_signal_count moved inline for telemetry updates.
+/// Calculate number of OTLP signals based on Arrow payload type
+fn calculate_otlp_signal_count(
+    batch: &mut BatchArrowRecords,
+) -> Result<u64, otel_arrow_rust::error::Error> {
+    let main_record_type = batch.arrow_payloads[0].r#type;
+
+    // Handle the different ArrowPayloadTypes using a match statement
+    match ArrowPayloadType::try_from(main_record_type) {
+        Ok(payload_type)
+            if matches!(
+                payload_type,
+                ArrowPayloadType::Spans
+                    | ArrowPayloadType::Logs
+                    | ArrowPayloadType::UnivariateMetrics
+            ) =>
+        {
+            let mut consumer = Consumer::default();
+            consumer.consume_bar(batch).map(|record_messages| {
+                let otap_batch = match payload_type {
+                    ArrowPayloadType::Spans => {
+                        OtapArrowRecords::Traces(from_record_messages(record_messages))
+                    }
+                    ArrowPayloadType::Logs => {
+                        OtapArrowRecords::Logs(from_record_messages(record_messages))
+                    }
+                    ArrowPayloadType::UnivariateMetrics => {
+                        OtapArrowRecords::Metrics(from_record_messages(record_messages))
+                    }
+                    _ => return 0, // Handle all other cases by returning 0 immediately
+                };
+                otap_batch
+                    .get(payload_type)
+                    .map_or(0, |record_batch| record_batch.num_rows()) as u64
+            })
+        }
+        // Return 0 for all other types or invalid input
+        _ => Ok(0),
+    }
+}
 
 /// takes in the process and system outputs cpu stats via the writer
 async fn display_cpu_usage(

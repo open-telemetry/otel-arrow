@@ -5,6 +5,10 @@ pub enum MathScalarExpression {
     /// Returns the sum of two values.
     Add(BinaryMathmaticalScalarExpression),
 
+    /// Returns a value rounded down to the nearest multiple of a given bin
+    /// size, effectively grouping similar values into buckets.
+    Bin(BinaryMathmaticalScalarExpression),
+
     /// Returns the smallest integral value greater than or equal to the specified number.
     Ceiling(UnaryMathmaticalScalarExpression),
 
@@ -14,8 +18,14 @@ pub enum MathScalarExpression {
     /// Returns the largest integral value less than or equal to the specified number.
     Floor(UnaryMathmaticalScalarExpression),
 
+    /// Returns the remainder of a division operation between two values.
+    Modulus(BinaryMathmaticalScalarExpression),
+
     /// Returns the result of multiplying two values.
     Multiply(BinaryMathmaticalScalarExpression),
+
+    /// Negate the value returned by the inner scalar expression.
+    Negate(UnaryMathmaticalScalarExpression),
 
     /// Returns the result of subtracting two values.
     Subtract(BinaryMathmaticalScalarExpression),
@@ -35,8 +45,27 @@ impl MathScalarExpression {
                     _ => Ok(None),
                 }
             }
+            MathScalarExpression::Negate(u) => {
+                let value = u
+                    .get_value_expression()
+                    .try_resolve_value_type(pipeline)?
+                    .unwrap_or(ValueType::Null);
+                match value {
+                    ValueType::Integer => Ok(Some(ValueType::Integer)),
+                    ValueType::Double => Ok(Some(ValueType::Double)),
+                    value => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&value) {
+                            Ok(Some(ValueType::Integer))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }
+            }
             MathScalarExpression::Add(b)
+            | MathScalarExpression::Bin(b)
             | MathScalarExpression::Divide(b)
+            | MathScalarExpression::Modulus(b)
             | MathScalarExpression::Multiply(b)
             | MathScalarExpression::Subtract(b) => {
                 let left = b
@@ -77,20 +106,33 @@ impl MathScalarExpression {
         'b: 'c,
     {
         match self {
-            MathScalarExpression::Ceiling(u) => {
-                Self::try_resolve_static_unary_operation(pipeline, u, Value::ceiling)
-            }
-            MathScalarExpression::Floor(u) => {
-                Self::try_resolve_static_unary_operation(pipeline, u, Value::floor)
-            }
             MathScalarExpression::Add(b) => {
                 Self::try_resolve_static_binary_operation(pipeline, b, Value::add)
+            }
+            MathScalarExpression::Bin(b) => {
+                Self::try_resolve_static_binary_operation(pipeline, b, Value::bin)
+            }
+            MathScalarExpression::Ceiling(u) => {
+                Self::try_resolve_static_unary_operation(pipeline, u, |v| {
+                    Value::ceiling(v).map(NumericValue::Integer)
+                })
             }
             MathScalarExpression::Divide(b) => {
                 Self::try_resolve_static_binary_operation(pipeline, b, Value::divide)
             }
+            MathScalarExpression::Floor(u) => {
+                Self::try_resolve_static_unary_operation(pipeline, u, |v| {
+                    Value::floor(v).map(NumericValue::Integer)
+                })
+            }
+            MathScalarExpression::Modulus(b) => {
+                Self::try_resolve_static_binary_operation(pipeline, b, Value::modulus)
+            }
             MathScalarExpression::Multiply(b) => {
                 Self::try_resolve_static_binary_operation(pipeline, b, Value::multiply)
+            }
+            MathScalarExpression::Negate(u) => {
+                Self::try_resolve_static_unary_operation(pipeline, u, Value::negate)
             }
             MathScalarExpression::Subtract(b) => {
                 Self::try_resolve_static_binary_operation(pipeline, b, Value::subtract)
@@ -104,19 +146,27 @@ impl MathScalarExpression {
         op: F,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
     where
-        F: FnOnce(&Value) -> Option<i64>,
+        F: FnOnce(&Value) -> Option<NumericValue>,
     {
         if let Some(v) = unary_expression
             .get_value_expression()
             .try_resolve_static(pipeline)?
         {
             if let Some(i) = (op)(&v.to_value()) {
-                Ok(Some(ResolvedStaticScalarExpression::Value(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        unary_expression.query_location.clone(),
-                        i,
-                    )),
-                )))
+                match i {
+                    NumericValue::Integer(i) => Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            unary_expression.query_location.clone(),
+                            i,
+                        )),
+                    ))),
+                    NumericValue::Double(d) => Ok(Some(ResolvedStaticScalarExpression::Value(
+                        StaticScalarExpression::Double(DoubleScalarExpression::new(
+                            unary_expression.query_location.clone(),
+                            d,
+                        )),
+                    ))),
+                }
             } else {
                 Ok(Some(ResolvedStaticScalarExpression::Value(
                     StaticScalarExpression::Null(NullScalarExpression::new(
@@ -180,10 +230,13 @@ impl Expression for MathScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
             MathScalarExpression::Add(b) => b.get_query_location(),
+            MathScalarExpression::Bin(b) => b.get_query_location(),
             MathScalarExpression::Ceiling(u) => u.get_query_location(),
             MathScalarExpression::Divide(b) => b.get_query_location(),
             MathScalarExpression::Floor(u) => u.get_query_location(),
+            MathScalarExpression::Modulus(b) => b.get_query_location(),
             MathScalarExpression::Multiply(b) => b.get_query_location(),
+            MathScalarExpression::Negate(u) => u.get_query_location(),
             MathScalarExpression::Subtract(b) => b.get_query_location(),
         }
     }
@@ -191,10 +244,13 @@ impl Expression for MathScalarExpression {
     fn get_name(&self) -> &'static str {
         match self {
             MathScalarExpression::Add(_) => "MathScalar(Add)",
+            MathScalarExpression::Bin(_) => "MathScalar(Bin)",
             MathScalarExpression::Ceiling(_) => "MathScalar(Ceiling)",
             MathScalarExpression::Divide(_) => "MathScalar(Divide)",
             MathScalarExpression::Floor(_) => "MathScalar(Floor)",
+            MathScalarExpression::Modulus(_) => "MathScalar(Modulus)",
             MathScalarExpression::Multiply(_) => "MathScalar(Multiply)",
+            MathScalarExpression::Negate(_) => "MathScalar(Negate)",
             MathScalarExpression::Subtract(_) => "MathScalar(Subtract)",
         }
     }
@@ -373,6 +429,76 @@ mod tests {
                     )),
                     None,
                     Some(Value::Null),
+                ),
+            ],
+        );
+
+        run_test(
+            MathScalarExpression::Negate,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 1.1),
+                    )),
+                    Some(ValueType::Double),
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        -1.1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                    Some(ValueType::Integer),
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        -1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.1"),
+                    )),
+                    None,
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        -1.1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1"),
+                    )),
+                    None,
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        -1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    Some(ValueType::Integer),
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        -1,
+                    ))),
                 ),
             ],
         );
@@ -747,6 +873,188 @@ mod tests {
                     Some(Value::Integer(&IntegerScalarExpression::new(
                         QueryLocation::new_fake(),
                         1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.18"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+            ],
+        );
+
+        run_test(
+            MathScalarExpression::Modulus,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 10.18),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 3.0),
+                    )),
+                    Some(ValueType::Double),
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1.1799999999999997,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+                    )),
+                    Some(ValueType::Integer),
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 3.0),
+                    )),
+                    Some(ValueType::Double),
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1.0,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10.18"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "3.00"),
+                    )),
+                    None,
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1.1799999999999997,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "3"),
+                    )),
+                    None,
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "1.18"),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    )),
+                    None,
+                    Some(Value::Null),
+                ),
+            ],
+        );
+
+        run_test(
+            MathScalarExpression::Bin,
+            vec![
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 10018.18),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 100.0),
+                    )),
+                    Some(ValueType::Double),
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        10000.0,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10018),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 100),
+                    )),
+                    Some(ValueType::Integer),
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        10000,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 10018),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Double(
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 100.0),
+                    )),
+                    Some(ValueType::Double),
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        10000.0,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10018.18"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "100.0"),
+                    )),
+                    None,
+                    Some(Value::Double(&DoubleScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        10000.0,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "10018"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "100"),
+                    )),
+                    None,
+                    Some(Value::Integer(&IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        10000,
                     ))),
                 ),
                 (

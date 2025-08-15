@@ -37,6 +37,9 @@ pub mod fake_data_generator;
 #[cfg(test)]
 mod mock;
 
+/// Signal-type router processor (OTAP-based)
+pub mod signal_type_router;
+
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
