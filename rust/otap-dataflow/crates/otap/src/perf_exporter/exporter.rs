@@ -28,7 +28,6 @@ use otel_arrow_rust::Consumer;
 use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
@@ -42,11 +41,11 @@ use tokio::time::{Duration, Instant};
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
     writer: Box<dyn AsyncWrite + Unpin>,
-    exporter_id: Cow<'static, str>,
+    exporter_id: NodeId,
 }
 
 impl OutputWriter {
-    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: Cow<'static, str>) -> Self {
+    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: NodeId) -> Self {
         Self {
             writer,
             exporter_id,

@@ -11,7 +11,6 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
 use prost::Message as ProstMessage;
-use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
@@ -147,19 +146,13 @@ pub trait HierarchicalBatchSplit: Sized {
     /// # Returns
     ///
     /// A `Result` containing a vector of batches, or an error if the batch size is zero.
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self>;
 }
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
-        if max_batch_size == 0 {
-            return Err(Error::ProcessorError {
-                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportTraceServiceRequest"),
-                error: "max_batch_size must be greater than zero".into(),
-            });
-        }
-        Ok(split_into_batches(self, max_batch_size))
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self> {
+        split_into_batches(self, max_batch_size)
     }
 }
 
@@ -206,14 +199,8 @@ impl ScopeGroup for ScopeMetrics {
 }
 
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
-        if max_batch_size == 0 {
-            return Err(Error::ProcessorError {
-                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportMetricsServiceRequest"),
-                error: "max_batch_size must be greater than zero".into(),
-            });
-        }
-        Ok(split_into_batches(self, max_batch_size))
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self> {
+        split_into_batches(self, max_batch_size)
     }
 }
 
@@ -275,14 +262,8 @@ impl ScopeGroup for ScopeLogs {
 }
 
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
-        if max_batch_size == 0 {
-            return Err(Error::ProcessorError {
-                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportLogsServiceRequest"),
-                error: "max_batch_size must be greater than zero".into(),
-            });
-        }
-        Ok(split_into_batches(self, max_batch_size))
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self> {
+        split_into_batches(self, max_batch_size)
     }
 }
 
@@ -390,6 +371,10 @@ impl GenericBatcher {
     #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
+        // ToDo: Validate should check self.config.send_batch_size > 0
+        if config.send_batch_size == 0 {
+            panic!("max_batch_size must be greater than zero");
+        }
         Self {
             traces_pending: None,
             metrics_pending: None,
@@ -583,10 +568,10 @@ impl Processor<OTLPData> for GenericBatcher {
                         }
                         let mut batches = match self.config.sizer {
                             BatchSizer::Requests => {
-                                Ok(req.split_by_requests(self.config.send_batch_size))
+                                req.split_by_requests(self.config.send_batch_size)
                             }
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        }?;
+                        };
                         // The last batch may not be full: buffer it, emit the rest
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
@@ -611,10 +596,10 @@ impl Processor<OTLPData> for GenericBatcher {
                         }
                         let mut batches = match self.config.sizer {
                             BatchSizer::Requests => {
-                                Ok(req.split_by_requests(self.config.send_batch_size))
+                                req.split_by_requests(self.config.send_batch_size)
                             }
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        }?;
+                        };
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler
@@ -637,10 +622,10 @@ impl Processor<OTLPData> for GenericBatcher {
                         }
                         let mut batches = match self.config.sizer {
                             BatchSizer::Requests => {
-                                Ok(req.split_by_requests(self.config.send_batch_size))
+                                req.split_by_requests(self.config.send_batch_size)
                             }
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        }?;
+                        };
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler

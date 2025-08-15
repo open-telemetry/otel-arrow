@@ -422,7 +422,7 @@ mod test {
                     match exporter_result {
                         Ok(_) => panic!("expected exporter result to be error, received: Ok(())"),
                         Err(Error::IoError { node, error }) => {
-                            assert_eq!(&node, "test_exporter");
+                            assert_eq!(node.name, "test_exporter");
                             assert_eq!(error.kind(), ErrorKind::TimedOut);
                         },
                         Err(e) => panic!("{}", format!("received unexpected error: {e:?}. Expected IoError caused by timeout"))

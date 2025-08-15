@@ -243,7 +243,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// - Assign channels to the source nodes and their destination nodes based on the previous
     ///   analysis.
     pub fn build(
-        factory: &PipelineFactory<PData>,
+        self: &PipelineFactory<PData>,
         config: PipelineConfig,
     ) -> Result<RuntimePipeline<PData>, Error<PData>> {
         let mut receivers = Vec::new();
@@ -258,24 +258,21 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
             match node_config.kind {
-                otap_df_config::node::NodeKind::Receiver => Self::create_receiver(
-                    factory,
+                otap_df_config::node::NodeKind::Receiver => self.create_receiver(
                     &mut receiver_names,
                     &mut nodes,
                     &mut receivers,
                     name.clone(),
                     node_config.clone(),
                 )?,
-                otap_df_config::node::NodeKind::Processor => Self::create_processor(
-                    factory,
+                otap_df_config::node::NodeKind::Processor => self.create_processor(
                     &mut processor_names,
                     &mut nodes,
                     &mut processors,
                     name.clone(),
                     node_config.clone(),
                 )?,
-                otap_df_config::node::NodeKind::Exporter => Self::create_exporter(
-                    factory,
+                otap_df_config::node::NodeKind::Exporter => self.create_exporter(
                     &mut exporter_names,
                     &mut nodes,
                     &mut exporters,
@@ -297,7 +294,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         // First pass: collect all channel assignments to avoid multiple mutable borrows
         struct ChannelAssignment<PData> {
-            source: NodeId,
+            source_id: NodeId,
             port: PortName,
             sender: Sender<PData>,
             destinations: Vec<(NodeId, Receiver<PData>)>,
@@ -342,7 +339,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .zip(pdata_receivers.into_iter())
                 .collect();
             assignments.push(ChannelAssignment {
-                source: hyper_edge.source,
+                source_id: hyper_edge.source,
                 port: hyper_edge.port,
                 sender: pdata_sender,
                 destinations,
@@ -352,12 +349,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Second pass: perform all assignments
         for assignment in assignments {
             let src_node = pipeline
-                .get_mut_sender(assignment.source.index)
+                .get_mut_sender(assignment.source_id.index)
                 .ok_or_else(|| Error::UnknownNode {
-                    node: assignment.source.name.clone(),
+                    node: assignment.source_id.name.clone(),
                 })?;
             src_node.set_pdata_sender(
-                assignment.source,
+                assignment.source_id,
                 assignment.port.clone(),
                 assignment.sender,
             )?;
@@ -441,14 +438,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
     /// Creates a receiver node and adds it to the list of runtime nodes.
     fn create_receiver(
-        factory: &PipelineFactory<PData>,
+        &self,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
         receivers: &mut Vec<ReceiverWrapper<PData>>,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
-        let factory = factory
+        let factory = self
             .get_receiver_factory_map()
             .get(node_config.plugin_urn.as_ref())
             .ok_or_else(|| Error::UnknownReceiver {
@@ -475,14 +472,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
     /// Creates a processor node and adds it to the list of runtime nodes.
     fn create_processor(
-        factory: &PipelineFactory<PData>,
+        &self,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
         processors: &mut Vec<ProcessorWrapper<PData>>,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
-        let factory = factory
+        let factory = self
             .get_processor_factory_map()
             .get(node_config.plugin_urn.as_ref())
             .ok_or_else(|| Error::UnknownProcessor {
@@ -509,14 +506,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
     /// Creates an exporter node and adds it to the list of runtime nodes.
     fn create_exporter(
-        factory: &PipelineFactory<PData>,
+        &self,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
         exporters: &mut Vec<ExporterWrapper<PData>>,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<(), Error<PData>> {
-        let factory = factory
+        let factory = self
             .get_exporter_factory_map()
             .get(node_config.plugin_urn.as_ref())
             .ok_or_else(|| Error::UnknownExporter {
