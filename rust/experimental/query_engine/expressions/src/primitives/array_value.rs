@@ -7,7 +7,13 @@ pub trait ArrayValue: Debug {
 
     fn len(&self) -> usize;
 
-    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)>;
+    fn get(&self, index: usize) -> Option<&(dyn AsValue)>;
+
+    // Note: Used to update the RefCell borrow when accessing sub-elements of
+    // the source or variables which use interior mutability. In arrays that
+    // have dynamic elements a string message will be returned indicating lack
+    // of support for this method
+    fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
     fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
         self.get_item_range((..).into(), item_callback)
