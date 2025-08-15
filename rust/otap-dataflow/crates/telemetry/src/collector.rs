@@ -48,7 +48,7 @@ impl MetricsCollector {
             tokio::select! {
                 // ToDo need to be moved into a CollectorExporter
                 _ = timer.tick() => {
-                    self.registry.for_each_metrics(|m, attrs| {
+                    self.registry.for_each_changed_and_zero(|m, attrs| {
                         // Ignore individual report errors for now; could log.
                         let _ = reporter.report(m, attrs.clone());
                     });

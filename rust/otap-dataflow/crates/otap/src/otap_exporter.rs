@@ -68,7 +68,7 @@ impl OTAPExporter {
     }
 
     /// Creates a new OTAPExporter from a configuration object
-    pub fn from_config(pipeline_handle: PipelineContext, _config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(_pipeline_handle: PipelineContext, _config: &Value) -> Result<Self, otap_df_config::error::Error> {
         // ToDo: implement config parsing
         Ok(OTAPExporter {
             grpc_endpoint: "127.0.0.1:4317".to_owned(),

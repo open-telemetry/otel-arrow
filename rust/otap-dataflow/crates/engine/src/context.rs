@@ -2,7 +2,6 @@
 
 //! Context providing general information on the current controller and the current pipeline.
 
-use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
 use otap_df_telemetry::attributes::NodeStaticAttrs;
 use otap_df_telemetry::metrics::MultivariateMetrics;

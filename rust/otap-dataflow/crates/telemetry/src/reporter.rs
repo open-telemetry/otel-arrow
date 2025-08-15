@@ -3,7 +3,6 @@
 //! Metrics reporter handle.
 
 use crate::metrics::{MetricsSnapshot, MultivariateMetrics};
-use crate::registry::MetricsKey;
 
 /// A sharable/clonable metrics reporter sending metrics to a `MetricsCollector`.
 #[derive(Clone, Debug)]
@@ -28,7 +27,7 @@ impl MetricsReporter {
             // If there are no non-zero metrics, we do not send anything.
             return;
         }
-        
+
         let snapshot = metrics.clone();
         if let Err(e) = self
             .metrics_sender

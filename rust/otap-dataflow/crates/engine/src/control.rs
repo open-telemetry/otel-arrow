@@ -10,7 +10,6 @@ use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
 use std::time::Duration;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::registry::MetricsKey;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.

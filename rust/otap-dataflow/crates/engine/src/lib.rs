@@ -44,7 +44,6 @@ use context::PipelineContext;
 use node::Node;
 use otap_df_config::node::{DispatchStrategy, NodeUserConfig};
 use otap_df_config::{NodeId, PortName};
-use otap_df_telemetry::metrics::MultivariateMetrics;
 
 /// Trait for factory types that expose a name.
 ///

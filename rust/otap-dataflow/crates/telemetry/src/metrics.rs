@@ -101,6 +101,11 @@ const PERF_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
             kind: MetricsKind::Counter,
         },
         MetricsField {
+            name: "invalid-pdata.messages",
+            unit: "{msg}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
             name: "logs",
             unit: "{log}",
             kind: MetricsKind::Counter,
@@ -149,6 +154,10 @@ impl MultivariateMetrics for ReceiverMetrics {
         let values = [self.bytes_received.get(), self.messages_received.get()];
         Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f,v)| (f, v)))
     }
+
+    fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
+        self.bytes_received.get() != 0 || self.messages_received.get() != 0
+    }
 }
 
 impl MultivariateMetrics for PerfExporterMetrics {
@@ -186,11 +195,21 @@ impl MultivariateMetrics for PerfExporterMetrics {
         let values = [
             self.bytes_total.get(),
             self.pdata_msgs.get(),
+            self.invalid_pdata_msgs.get(),
             self.logs.get(),
             self.spans.get(),
             self.metrics.get(),
         ];
         Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f,v)| (f, v)))
+    }
+
+    fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
+        self.bytes_total.get() != 0
+            || self.pdata_msgs.get() != 0
+            || self.invalid_pdata_msgs.get() != 0
+            || self.logs.get() != 0
+            || self.spans.get() != 0
+            || self.metrics.get() != 0
     }
 }
 

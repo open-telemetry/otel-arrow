@@ -28,16 +28,3 @@ pub struct MetricsDescriptor {
     /// Ordered field metadata.
     pub fields: &'static [MetricsField],
 }
-
-/// Immutable attributes captured at metrics creation time.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct StaticAttrs {
-    /// Pipeline identifier (numeric mapping if available, 0 means unknown).
-    pub pipeline_id: u32,
-    /// Core identifier (0 means unknown).
-    pub core_id: u16,
-    /// NUMA node identifier (0 means unknown/single node).
-    pub numa_node_id: u16,
-    /// Process identifier.
-    pub process_id: u32,
-}

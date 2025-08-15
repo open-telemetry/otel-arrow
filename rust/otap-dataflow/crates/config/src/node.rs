@@ -14,7 +14,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Display, Formatter};
 
 /// User configuration for a node in the pipeline.
 /// Each node contains its own settings (i.e. user config) and defines how it connects to downstream

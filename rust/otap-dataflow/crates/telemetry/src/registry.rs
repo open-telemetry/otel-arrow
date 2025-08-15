@@ -80,6 +80,30 @@ impl MetricsRegistry {
     pub(crate) fn len(&self) -> usize {
         self.receiver_metrics.len() + self.perf_exporter_metrics.len()
     }
+
+    /// Iterates over all registered metrics that have at least one non-zero field, invoking the
+    /// provided closure with the metric and its static attributes, then zeroes (flushes) them.
+    ///
+    /// This operation holds the registry mutex only for the duration of the iteration.
+    pub(crate) fn for_each_changed_and_zero<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&dyn MultivariateMetrics, &NodeStaticAttrs),
+    {
+        // Receiver metrics
+        for (metrics, attrs) in self.receiver_metrics.values_mut() {
+            if metrics.has_non_zero() {
+                f(metrics as &dyn MultivariateMetrics, attrs);
+                metrics.zero();
+            }
+        }
+        // Perf exporter metrics
+        for (metrics, attrs) in self.perf_exporter_metrics.values_mut() {
+            if metrics.has_non_zero() {
+                f(metrics as &dyn MultivariateMetrics, attrs);
+                metrics.zero();
+            }
+        }
+    }
 }
 
 impl MetricsRegistryHandle {
@@ -128,6 +152,17 @@ impl MetricsRegistryHandle {
     /// Returns the total number of registered metrics sets.
     pub fn len(&self) -> usize {
         self.metric_registry.lock().len()
+    }
+
+    /// Iterates over all multivariate metrics that have at least one non-zero counter/value.
+    /// The closure is invoked with the current (pre-zero) metrics followed by the metrics being
+    /// zeroed (flushed) before proceeding. Metrics that are all zero are skipped.
+    pub fn for_each_changed_and_zero<F>(&self, f: F)
+    where
+        F: FnMut(&dyn MultivariateMetrics, &NodeStaticAttrs),
+    {
+        let mut reg = self.metric_registry.lock();
+        reg.for_each_changed_and_zero(f);
     }
 }
 
@@ -210,6 +245,58 @@ mod tests {
         let inner = registry.metric_registry.lock();
         let count = inner.iter_metrics().count();
         assert_eq!(count, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_for_each_changed_and_zero() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::metrics::PerfExporterMetrics;
+        let mut registry = super::MetricsRegistryHandle::new();
+
+        let mut recv = ReceiverMetrics::default();
+        registry.register(&mut recv, NodeStaticAttrs {
+            node_id: "r1".into(), node_type: "receiver".into(), pipeline_id: "p".into(), core_id: 0, numa_node_id: 0, process_id: 0,
+        });
+        let mut perf = PerfExporterMetrics::default();
+        registry.register(&mut perf, NodeStaticAttrs {
+            node_id: "perf".into(), node_type: "exporter".into(), pipeline_id: "p".into(), core_id: 0, numa_node_id: 0, process_id: 0,
+        });
+
+        // Initially all zero: expect no invocation.
+        let mut calls = 0usize;
+        registry.for_each_changed_and_zero(|_, _| calls += 1);
+        assert_eq!(calls, 0, "No metrics should be flushed when all are zero");
+
+        // Add some values and aggregate.
+        recv.bytes_received += 10;
+        recv.messages_received += 2;
+        recv.aggregate_into(&mut registry)?;
+        perf.bytes_total += 5;
+        perf.invalid_pdata_msgs += 3; // only this and one other counter changed
+        perf.aggregate_into(&mut registry)?;
+
+        // Expect two invocations (receiver + perf exporter)
+        let mut seen = Vec::new();
+        registry.for_each_changed_and_zero(|m, attrs| {
+            seen.push(attrs.node_id.clone());
+            // ensure reported values are non-zero
+            assert!(m.has_non_zero());
+        });
+        seen.sort();
+        assert_eq!(seen, vec!["perf", "r1"]);
+
+        // A second pass should yield nothing (they were zeroed)
+        let mut calls_after = 0usize;
+        registry.for_each_changed_and_zero(|_, _| calls_after += 1);
+        assert_eq!(calls_after, 0, "Metrics should have been zeroed after flush");
+
+        // Change only one perf exporter field and ensure it's still flushed.
+        perf.invalid_pdata_msgs += 7;
+        perf.aggregate_into(&mut registry)?;
+        let mut flushed = Vec::new();
+        registry.for_each_changed_and_zero(|_, attrs| flushed.push(attrs.node_id.clone()));
+        assert_eq!(flushed, vec!["perf"], "Only perf metrics changed so only it should flush");
+
         Ok(())
     }
 }
