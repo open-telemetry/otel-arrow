@@ -64,7 +64,7 @@ where
             )?;
 
             if selectors.is_empty() {
-                let variables = execution_context.get_variables().borrow_mut();
+                let variables = execution_context.get_variables().get_local_variables_mut();
 
                 return Ok(Some(ResolvedValueMut::MapKey {
                     map: variables,
@@ -73,7 +73,7 @@ where
             }
 
             let variable = RefMut::filter_map(
-                execution_context.get_variables().borrow_mut(),
+                execution_context.get_variables().get_local_variables_mut(),
                 |vars| match vars.get_mut(v.get_name().get_value()) {
                     ValueMutGetResult::Found(v) => Some(v),
                     _ => None,
@@ -582,7 +582,7 @@ mod tests {
             let execution_context = test.create_execution_context();
 
             {
-                let mut variables = execution_context.get_variables().borrow_mut();
+                let mut variables = execution_context.get_variables().get_local_variables_mut();
 
                 variables.set(
                     "key1",

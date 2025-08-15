@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Display, Write},
     time::SystemTime,
@@ -88,7 +89,7 @@ impl RecordSetEngine {
 pub struct RecordSetEngineBatch<'a, 'b, 'c, TRecord: Record> {
     pipeline: &'a PipelineExpression,
     engine: &'b RecordSetEngine,
-    variables: RecordSetEngineVariables<'static>,
+    global_variables: RefCell<MapValueStorage<OwnedValue>>,
     summaries: Summaries,
     included_records: Vec<RecordSetEngineRecord<'a, 'c, TRecord>>,
 }
@@ -105,7 +106,7 @@ where
         Self {
             engine,
             pipeline,
-            variables: RecordSetEngineVariables::new(),
+            global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
             summaries: Summaries::new(engine.summary_cardinality_limit),
             included_records: Vec::new(),
         }
@@ -148,7 +149,7 @@ where
         let execution_context = ExecutionContext::new(
             diagnostic_level,
             self.pipeline,
-            &self.variables,
+            &self.global_variables,
             &self.summaries,
             attached_records,
             record,

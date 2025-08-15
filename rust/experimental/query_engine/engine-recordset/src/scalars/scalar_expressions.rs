@@ -70,11 +70,11 @@ where
             }
         }
         ScalarExpression::Variable(v) => {
-            let variable = Ref::filter_map(execution_context.get_variables().borrow(), |vars| {
-                vars.get(v.get_name().get_value())
-            });
+            let variable = execution_context
+                .get_variables()
+                .get_global_or_local_variable(v.get_name().get_value());
 
-            if variable.is_err() {
+            if variable.is_none() {
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Verbose,
                     scalar_expression,
@@ -731,21 +731,32 @@ mod tests {
         let run_test = |scalar_expression, expected_value: Value| {
             let mut test = TestExecutionContext::new();
 
+            test.set_global_variable(
+                "gvar1",
+                ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(18))),
+            );
+
             let execution_context = test.create_execution_context();
 
-            execution_context.get_variables().borrow_mut().set(
-                "var1",
-                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
-                    "hello world".into(),
-                ))),
-            );
-            execution_context.get_variables().borrow_mut().set(
-                "var2",
-                ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from([(
-                    "key1".into(),
-                    OwnedValue::String(StringValueStorage::new("hello world".into())),
-                )])))),
-            );
+            {
+                let mut variables = execution_context.get_variables().get_local_variables_mut();
+
+                variables.set(
+                    "var1",
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                        "hello world".into(),
+                    ))),
+                );
+                variables.set(
+                    "var2",
+                    ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from(
+                        [(
+                            "key1".into(),
+                            OwnedValue::String(StringValueStorage::new("hello world".into())),
+                        )],
+                    )))),
+                );
+            }
 
             let value = execute_scalar_expression(&execution_context, &scalar_expression).unwrap();
 
@@ -785,6 +796,16 @@ mod tests {
                 )]),
             )),
             Value::String(&StringValueStorage::new("hello world".into())),
+        );
+
+        // Test global variable resolution
+        run_test(
+            ScalarExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new_fake(),
+                StringScalarExpression::new(QueryLocation::new_fake(), "gvar1"),
+                ValueAccessor::new(),
+            )),
+            Value::Integer(&IntegerValueStorage::new(18)),
         );
     }
 
