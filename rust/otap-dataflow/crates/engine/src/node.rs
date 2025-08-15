@@ -179,11 +179,8 @@ mod tests {
 }
 
 impl NodeId {
-    pub(crate) fn build(idx: Index, name: NodeName) -> NodeId {
-        NodeId {
-            index: idx,
-            name: name,
-        }
+    pub(crate) fn build(index: Index, name: NodeName) -> NodeId {
+        NodeId { index, name }
     }
 }
 

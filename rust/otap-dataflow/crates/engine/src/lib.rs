@@ -8,14 +8,14 @@ use crate::{
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
-    node::{Node, NodeDefs, NodeId, NodeType},
+    node::{Node, NodeDefs, NodeId, NodeName, NodeType},
     processor::ProcessorWrapper,
     receiver::ReceiverWrapper,
     runtime_pipeline::{PipeNode, RuntimePipeline},
     shared::message::{SharedReceiver, SharedSender},
 };
 use otap_df_config::{
-    NodeId as NodeName, PortName,
+    PortName,
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
@@ -559,8 +559,8 @@ struct HyperEdgeRuntime {
 /// Each item represents a hyper-edge with source node id, port, dispatch strategy, and destination
 /// node ids.
 fn collect_hyper_edges_runtime<PData>(
-    receivers: &Vec<ReceiverWrapper<PData>>,
-    processors: &Vec<ProcessorWrapper<PData>>,
+    receivers: &[ReceiverWrapper<PData>],
+    processors: &[ProcessorWrapper<PData>],
 ) -> Vec<HyperEdgeRuntime> {
     let mut edges = Vec::new();
     let mut nodes: Vec<&dyn Node> = Vec::new();

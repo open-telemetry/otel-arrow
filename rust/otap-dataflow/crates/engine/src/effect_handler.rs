@@ -36,7 +36,7 @@ impl EffectHandlerCore {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
     }
 
-    /// Returns the name of the node associated with this effect handler.
+    /// Returns the id of the node associated with this effect handler.
     #[must_use]
     pub(crate) fn node_id(&self) -> NodeId {
         self.node_id.clone()

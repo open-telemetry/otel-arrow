@@ -132,12 +132,12 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
     #[must_use]
     pub fn new(
-        node: NodeId,
+        node_id: NodeId,
         msg_senders: HashMap<PortName, LocalSender<PData>>,
         default_port: Option<PortName>,
         node_request_sender: PipelineCtrlMsgSender,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node);
+        let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
 
         // Determine and cache the default sender

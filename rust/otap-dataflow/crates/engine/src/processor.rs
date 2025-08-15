@@ -31,7 +31,7 @@ pub enum ProcessorWrapper<PData> {
     /// A processor with a `!Send` implementation.
     Local {
         /// Index node identifier.
-        node: NodeId,
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -50,7 +50,7 @@ pub enum ProcessorWrapper<PData> {
     /// A processor with a `Send` implementation.
     Shared {
         /// Index node identifier.
-        node: NodeId,
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the processor.
@@ -98,7 +98,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn local<P>(
         processor: P,
-        node: NodeId,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -110,7 +110,7 @@ impl<PData> ProcessorWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ProcessorWrapper::Local {
-            node,
+            node_id,
             user_config,
             runtime_config,
             processor: Box::new(processor),
@@ -124,7 +124,7 @@ impl<PData> ProcessorWrapper<PData> {
     /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn shared<P>(
         processor: P,
-        node: NodeId,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ProcessorConfig,
     ) -> Self
@@ -136,7 +136,7 @@ impl<PData> ProcessorWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ProcessorWrapper::Shared {
-            node,
+            node_id,
             user_config,
             runtime_config,
             processor: Box::new(processor),
@@ -152,7 +152,7 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn prepare_runtime(self) -> Result<ProcessorWrapperRuntime<PData>, Error<PData>> {
         match self {
             ProcessorWrapper::Local {
-                node,
+                node_id,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -163,12 +163,13 @@ impl<PData> ProcessorWrapper<PData> {
                 let message_channel = MessageChannel::new(
                     Receiver::Local(control_receiver),
                     Receiver::Local(pdata_receiver.ok_or_else(|| Error::ProcessorError {
-                        processor: node.clone(),
+                        processor: node_id.clone(),
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler = local::EffectHandler::new(node, pdata_senders, default_port);
+                let effect_handler =
+                    local::EffectHandler::new(node_id, pdata_senders, default_port);
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -176,7 +177,7 @@ impl<PData> ProcessorWrapper<PData> {
                 })
             }
             ProcessorWrapper::Shared {
-                node,
+                node_id,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -187,12 +188,13 @@ impl<PData> ProcessorWrapper<PData> {
                 let message_channel = MessageChannel::new(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
-                        processor: node.clone(),
+                        processor: node_id.clone(),
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler = shared::EffectHandler::new(node, pdata_senders, default_port);
+                let effect_handler =
+                    shared::EffectHandler::new(node_id, pdata_senders, default_port);
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
@@ -262,8 +264,8 @@ impl<PData> Node for ProcessorWrapper<PData> {
 
     fn node_id(&self) -> NodeId {
         match self {
-            ProcessorWrapper::Local { node, .. } => node.clone(),
-            ProcessorWrapper::Shared { node, .. } => node.clone(),
+            ProcessorWrapper::Local { node_id, .. } => node_id.clone(),
+            ProcessorWrapper::Shared { node_id, .. } => node_id.clone(),
         }
     }
 
@@ -291,11 +293,6 @@ impl<PData> Node for ProcessorWrapper<PData> {
 
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable for ProcessorWrapper<PData> {
-    /// Sends a control message to the node.
-    // async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
-    //     self.control_sender().send(msg).await
-    // }
-
     /// Returns the control message sender for the processor.
     fn control_sender(&self) -> Sender<NodeControlMsg> {
         match self {
@@ -310,7 +307,7 @@ impl<PData> Controllable for ProcessorWrapper<PData> {
 impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
-        node: NodeId,
+        node_id: NodeId,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
@@ -324,11 +321,11 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
                 Ok(())
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node_id,
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node_id,
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }
@@ -338,7 +335,7 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
 impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
-        node: NodeId,
+        node_id: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, receiver) {
@@ -351,11 +348,11 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
                 Ok(())
             }
             (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node_id,
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node_id,
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

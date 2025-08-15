@@ -30,7 +30,7 @@ pub enum ReceiverWrapper<PData> {
     /// A receiver with a `!Send` implementation.
     Local {
         /// Index node identifier.
-        node: NodeId,
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -49,7 +49,7 @@ pub enum ReceiverWrapper<PData> {
     /// A receiver with a `Send` implementation.
     Shared {
         /// Index node identifier.
-        node: NodeId,
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the node.
@@ -84,7 +84,7 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn local<R>(
         receiver: R,
-        node: NodeId,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ReceiverConfig,
     ) -> Self
@@ -95,7 +95,7 @@ impl<PData> ReceiverWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ReceiverWrapper::Local {
-            node,
+            node_id,
             user_config,
             runtime_config: config.clone(),
             receiver: Box::new(receiver),
@@ -109,7 +109,7 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn shared<R>(
         receiver: R,
-        node: NodeId,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ReceiverConfig,
     ) -> Self
@@ -120,7 +120,7 @@ impl<PData> ReceiverWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ReceiverWrapper::Shared {
-            node,
+            node_id,
             user_config,
             runtime_config: config.clone(),
             receiver: Box::new(receiver),
@@ -138,7 +138,7 @@ impl<PData> ReceiverWrapper<PData> {
     ) -> Result<(), Error<PData>> {
         match self {
             ReceiverWrapper::Local {
-                node,
+                node_id,
                 receiver,
                 control_receiver,
                 pdata_senders,
@@ -147,7 +147,7 @@ impl<PData> ReceiverWrapper<PData> {
             } => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
-                        receiver: node.clone(),
+                        receiver: node_id.clone(),
                         error: "The pdata sender must be defined at this stage".to_owned(),
                     });
                 } else {
@@ -156,7 +156,7 @@ impl<PData> ReceiverWrapper<PData> {
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
                 let effect_handler = local::EffectHandler::new(
-                    node,
+                    node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
@@ -164,7 +164,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
-                node,
+                node_id,
                 receiver,
                 control_receiver,
                 pdata_senders,
@@ -173,7 +173,7 @@ impl<PData> ReceiverWrapper<PData> {
             } => {
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
-                        receiver: node.clone(),
+                        receiver: node_id.clone(),
                         error: "The pdata sender must be defined at this stage".to_owned(),
                     });
                 } else {
@@ -182,7 +182,7 @@ impl<PData> ReceiverWrapper<PData> {
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
                 let effect_handler = shared::EffectHandler::new(
-                    node,
+                    node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
@@ -216,8 +216,8 @@ impl<PData> Node for ReceiverWrapper<PData> {
 
     fn node_id(&self) -> NodeId {
         match self {
-            ReceiverWrapper::Local { node, .. } => node.clone(),
-            ReceiverWrapper::Shared { node, .. } => node.clone(),
+            ReceiverWrapper::Local { node_id, .. } => node_id.clone(),
+            ReceiverWrapper::Shared { node_id, .. } => node_id.clone(),
         }
     }
 
@@ -246,7 +246,7 @@ impl<PData> Node for ReceiverWrapper<PData> {
 impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
     fn set_pdata_sender(
         &mut self,
-        node: NodeId,
+        node_id: NodeId,
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error<PData>> {
@@ -260,11 +260,11 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 Ok(())
             }
             (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node_id,
                 error: "Expected a local sender for PData".to_owned(),
             }),
             (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node.clone(),
+                processor: node_id,
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

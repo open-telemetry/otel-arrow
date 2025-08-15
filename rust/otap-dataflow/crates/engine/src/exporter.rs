@@ -29,7 +29,7 @@ pub enum ExporterWrapper<PData> {
     /// An exporter with a `!Send` implementation.
     Local {
         /// Index identifier for the node.
-        node: NodeId,
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -46,7 +46,7 @@ pub enum ExporterWrapper<PData> {
     /// An exporter with a `Send` implementation.
     Shared {
         /// Index identifier for the node.
-        node: NodeId,
+        node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
         /// The exporter instance.
@@ -80,7 +80,7 @@ impl<PData> ExporterWrapper<PData> {
     /// implementation).
     pub fn local<E>(
         exporter: E,
-        node: NodeId,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExporterConfig,
     ) -> Self
@@ -91,9 +91,9 @@ impl<PData> ExporterWrapper<PData> {
             mpsc::Channel::new(config.control_channel.capacity);
 
         ExporterWrapper::Local {
-            node: node.clone(),
+            node_id: node_id.clone(),
             user_config,
-            effect_handler: local::EffectHandler::new(node),
+            effect_handler: local::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: LocalSender::MpscSender(control_sender),
             control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
@@ -105,7 +105,7 @@ impl<PData> ExporterWrapper<PData> {
     /// implementation).
     pub fn shared<E>(
         exporter: E,
-        node: NodeId,
+        node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExporterConfig,
     ) -> Self
@@ -116,9 +116,9 @@ impl<PData> ExporterWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         ExporterWrapper::Shared {
-            node: node.clone(),
+            node_id: node_id.clone(),
             user_config,
-            effect_handler: shared::EffectHandler::new(node),
+            effect_handler: shared::EffectHandler::new(node_id),
             exporter: Box::new(exporter),
             control_sender: SharedSender::MpscSender(control_sender),
             control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
@@ -190,8 +190,8 @@ impl<PData> Node for ExporterWrapper<PData> {
 
     fn node_id(&self) -> NodeId {
         match self {
-            ExporterWrapper::Local { node, .. } => node.clone(),
-            ExporterWrapper::Shared { node, .. } => node.clone(),
+            ExporterWrapper::Local { node_id, .. } => node_id.clone(),
+            ExporterWrapper::Shared { node_id, .. } => node_id.clone(),
         }
     }
 
@@ -220,7 +220,7 @@ impl<PData> Node for ExporterWrapper<PData> {
 impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
     fn set_pdata_receiver(
         &mut self,
-        node: NodeId,
+        node_id: NodeId,
         receiver: Receiver<PData>,
     ) -> Result<(), Error<PData>> {
         match (self, receiver) {
@@ -233,7 +233,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
                 Ok(())
             }
             (ExporterWrapper::Shared { .. }, _) => Err(Error::ExporterError {
-                exporter: node.clone(),
+                exporter: node_id,
                 error: "Expected a shared sender for PData".to_owned(),
             }),
         }

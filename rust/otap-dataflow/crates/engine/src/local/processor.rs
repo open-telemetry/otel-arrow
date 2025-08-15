@@ -99,11 +99,11 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
     pub fn new(
-        node: NodeId,
+        node_id: NodeId,
         msg_senders: HashMap<PortName, LocalSender<PData>>,
         default_port: Option<PortName>,
     ) -> Self {
-        let core = EffectHandlerCore::new(node);
+        let core = EffectHandlerCore::new(node_id);
 
         // Determine and cache the default sender
         let default_sender = if let Some(ref port) = default_port {

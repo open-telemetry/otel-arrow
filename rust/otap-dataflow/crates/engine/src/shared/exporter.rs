@@ -212,9 +212,9 @@ pub struct EffectHandler<PData> {
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter name.
     #[must_use]
-    pub fn new(node: NodeId) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node),
+            core: EffectHandlerCore::new(node_id),
             _pd: PhantomData,
         }
     }

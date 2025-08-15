@@ -103,12 +103,12 @@ impl<PData> EffectHandler<PData> {
     /// when it uses components that are `Send`.
     #[must_use]
     pub fn new(
-        node: NodeId,
+        node_id: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node);
+        let mut core = EffectHandlerCore::new(node_id);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
 
         // Determine and cache the default sender

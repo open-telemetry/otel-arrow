@@ -6,9 +6,9 @@
 //! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
 use crate::control::{NodeControlMsg, PipelineControlMsg};
-use crate::node::NodeId;
+use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
-use otap_df_config::{NodeId as NodeName, PortName, Urn};
+use otap_df_config::{PortName, Urn};
 use std::borrow::Cow;
 
 /// All errors that can occur in the pipeline engine infrastructure.

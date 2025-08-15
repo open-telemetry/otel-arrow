@@ -227,9 +227,9 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let (node, pdata_sender, pdata_receiver) = match &self.receiver {
+        let (node_id, pdata_sender, pdata_receiver) = match &self.receiver {
             ReceiverWrapper::Local {
-                node,
+                node_id,
                 runtime_config,
                 ..
             } => {
@@ -237,20 +237,20 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                     runtime_config.output_pdata_channel.capacity,
                 );
                 (
-                    node.clone(),
+                    node_id.clone(),
                     Sender::Local(LocalSender::MpscSender(sender)),
                     Receiver::Local(LocalReceiver::MpscReceiver(receiver)),
                 )
             }
             ReceiverWrapper::Shared {
-                node,
+                node_id,
                 runtime_config,
                 ..
             } => {
                 let (sender, receiver) =
                     tokio::sync::mpsc::channel(runtime_config.output_pdata_channel.capacity);
                 (
-                    node.clone(),
+                    node_id.clone(),
                     Sender::Shared(SharedSender::MpscSender(sender)),
                     Receiver::Shared(SharedReceiver::MpscReceiver(receiver)),
                 )
@@ -259,7 +259,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         self.receiver
-            .set_pdata_sender(node, "".into(), pdata_sender)
+            .set_pdata_sender(node_id, "".into(), pdata_sender)
             .expect("Failed to set pdata sender");
 
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
