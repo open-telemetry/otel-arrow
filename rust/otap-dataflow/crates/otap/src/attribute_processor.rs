@@ -52,53 +52,71 @@ use std::sync::Arc;
 pub const ATTRIBUTE_PROCESSOR_URN: &str = "urn:otap:processor:attribute_processor";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// Action types supported by the attributes processor.
-pub enum ActionType {
+/// Actions that can be performed on attributes.
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum Action {
     /// Insert a new attribute with the specified value.
     /// Currently not implemented.
-    #[serde(rename = "insert")]
-    Insert,
-    /// Update the value of an existing attribute or rename it if value is provided.
+    Insert {
+        /// The attribute key to insert.
+        key: String,
+        /// The value to insert.
+        value: String,
+    },
+
+    /// Update an existing attribute.
     /// Currently only supports renaming via the value field.
-    #[serde(rename = "update")]
-    Update,
+    Update {
+        /// The attribute key to update.
+        key: String,
+        /// The new value or key to rename to.
+        value: String,
+    },
+
     /// Insert a new attribute or update an existing one.
     /// Currently not implemented.
-    #[serde(rename = "upsert")]
-    Upsert,
+    Upsert {
+        /// The attribute key to upsert.
+        key: String,
+        /// The value to set.
+        value: String,
+    },
+
     /// Delete an attribute by key.
-    #[serde(rename = "delete")]
-    Delete,
+    Delete {
+        /// The attribute key to delete.
+        key: String,
+    },
+
     /// Hash the value of an attribute.
     /// Currently not implemented.
-    #[serde(rename = "hash")]
-    Hash,
+    Hash {
+        /// The attribute key to hash.
+        key: String,
+        /// Optional salt for hashing.
+        #[serde(default)]
+        salt: Option<String>,
+    },
+
     /// Extract a value from an attribute using a regex pattern.
     /// Currently not implemented.
-    #[serde(rename = "extract")]
-    Extract,
+    Extract {
+        /// The attribute key to create.
+        key: String,
+        /// The source attribute to extract from.
+        from_attribute: String,
+        /// The regex pattern to use for extraction.
+        pattern: String,
+    },
+
     /// Convert an attribute's value to a different type.
     /// Currently not implemented.
-    #[serde(rename = "convert")]
-    Convert,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// An action to perform on attributes.
-pub struct Action {
-    /// The attribute key to act on.
-    pub key: String,
-    /// The type of action to perform.
-    pub action: ActionType,
-    /// Optional value to use in the action.
-    #[serde(default)]
-    pub value: Option<String>,
-    /// Optional source attribute key for extract operations.
-    #[serde(default)]
-    pub from_attribute: Option<String>,
-    /// Optional regex pattern for extract operations.
-    #[serde(default)]
-    pub pattern: Option<String>,
+    Convert {
+        /// The attribute key to convert.
+        key: String,
+        /// The type to convert to.
+        converted_type: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -150,15 +168,12 @@ impl AttributeProcessor {
         let mut deletes = BTreeSet::new();
 
         for action in config.actions {
-            match action.action {
-                ActionType::Delete => {
-                    let _ = deletes.insert(action.key);
+            match action {
+                Action::Delete { key } => {
+                    let _ = deletes.insert(key);
                 }
-                ActionType::Update => {
-                    // For update actions with a value, treat as rename
-                    if let Some(new_value) = action.value {
-                        let _ = renames.insert(action.key, new_value);
-                    }
+                Action::Update { key, value } => {
+                    let _ = renames.insert(key, value);
                 }
                 // Other actions not yet supported
                 _ => {}
