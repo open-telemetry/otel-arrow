@@ -7,7 +7,6 @@
 use crate::message::Sender;
 use crate::node::Index;
 use crate::shared::message::{SharedReceiver, SharedSender};
-use otap_df_channel::error::SendError;
 use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
@@ -19,7 +18,7 @@ pub enum NodeControlMsg {
     ///
     /// Typically used for confirming successful delivery or processing.
     Ack {
-        /// Index identifier of the message being acknowledged.
+        /// Unique identifier of the message being acknowledged.
         id: u64,
     },
 
@@ -28,7 +27,7 @@ pub enum NodeControlMsg {
     /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
     /// unavailability, or other conditions preventing successful processing.
     Nack {
-        /// Index identifier of the message not being acknowledged.
+        /// Unique identifier of the message not being acknowledged.
         id: u64,
         /// Human-readable reason for the NACK.
         reason: String,
@@ -89,14 +88,6 @@ pub enum PipelineControlMsg {
 /// updates, shutdown requests, or timer events. Implementers are not required to be thread-safe.
 #[async_trait::async_trait(?Send)]
 pub trait Controllable {
-    /// Sends a control message to the node asynchronously.
-    ///
-    /// Returns an error if the message could not be delivered.
-    async fn send_node_control_msg(
-        &self,
-        msg: NodeControlMsg,
-    ) -> Result<(), SendError<NodeControlMsg>>;
-
     /// Returns the sender for control messages to this node.
     ///
     /// Used for direct message passing from the pipeline engine.

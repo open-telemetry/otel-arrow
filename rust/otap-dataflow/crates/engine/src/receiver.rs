@@ -69,14 +69,6 @@ pub enum ReceiverWrapper<PData> {
 
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable for ReceiverWrapper<PData> {
-    /// Sends a control message to the node.
-    async fn send_node_control_msg(
-        &self,
-        msg: NodeControlMsg,
-    ) -> Result<(), SendError<NodeControlMsg>> {
-        self.control_sender().send(msg).await
-    }
-
     /// Returns the control message sender for the receiver.
     fn control_sender(&self) -> Sender<NodeControlMsg> {
         match self {

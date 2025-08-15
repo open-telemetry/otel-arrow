@@ -15,16 +15,16 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
-    pub(crate) node: NodeId,
+    pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender>,
 }
 
 impl EffectHandlerCore {
     /// Creates a new EffectHandlerCore with node_id.
-    pub(crate) fn new(node: NodeId) -> Self {
+    pub(crate) fn new(node_id: NodeId) -> Self {
         Self {
-            node,
+            node_id,
             pipeline_ctrl_msg_sender: None,
         }
     }
@@ -39,7 +39,7 @@ impl EffectHandlerCore {
     /// Returns the name of the node associated with this effect handler.
     #[must_use]
     pub(crate) fn node_id(&self) -> NodeId {
-        self.node.clone()
+        self.node_id.clone()
     }
 
     /// Print an info message to stdout.
@@ -159,14 +159,14 @@ impl EffectHandlerCore {
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::StartTimer {
-                node_id: self.node.index,
+                node_id: self.node_id.index,
                 duration,
             })
             .await
             .map_err(Error::PipelineControlMsgError)?;
 
         Ok(TimerCancelHandle {
-            node_id: self.node.index,
+            node_id: self.node_id.index,
             pipeline_ctrl_msg_sender,
         })
     }
