@@ -16,38 +16,24 @@ For more information about the ResolvedRegistry please check the
 
 ```json
 {
-    "steps": [
-        {
-            "delay_between_batches_ms": 0,
-            "batches_to_generate": 1,
-            "signal_type": {
-                "Metrics": {
-                    "resource_count": 1,
-                    "scope_count": 1
-                }
-            }
+    "traffic_config": {
+        "messages_per_second": 10,
+        "metric_load": {
+            "messages_per_scope": 5,
+            "scopes_per_resource": 1,
+            "resources_per_request": 1,
         },
-        {
-            "delay_between_batches_ms": 0,
-            "batches_to_generate": 1,
-            "signal_type": {
-                "Traces": {
-                    "resource_count": 1,
-                    "scope_count": 1
-                }
-            }
+        "trace_load": {
+            "messages_per_scope": 5,
+            "scopes_per_resource": 1,
+            "resources_per_request": 1,
         },
-        {
-            "delay_between_batches_ms": 0,
-            "batches_to_generate": 1,
-            "signal_type": {
-                "Logs": {
-                    "resource_count": 1,
-                    "scope_count": 1
-                }
-            }
-        }
-    ],
+        "log_load": {
+            "messages_per_scope": 5,
+            "scopes_per_resource": 1,
+            "resources_per_request": 1,
+        },
+    },
     "resolved_registry": {
         "groups": [
             {

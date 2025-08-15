@@ -45,4 +45,4 @@ pub mod signal_type_router;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
-pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
+static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
