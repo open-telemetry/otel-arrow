@@ -165,7 +165,7 @@ where
 /// static FACTORY_REGISTRY: PipelineFactory<MyData> = build_factory();
 /// ```
 #[must_use]
-pub const fn build_factory<PData: 'static + Debug + Clone>() -> PipelineFactory<PData> {
+pub const fn build_factory<PData: 'static + Clone>() -> PipelineFactory<PData> {
     // This function should never actually be called since the macro replaces it entirely.
     // If it is called, that indicates a bug in the macro system.
     panic!(
@@ -177,7 +177,7 @@ pub const fn build_factory<PData: 'static + Debug + Clone>() -> PipelineFactory<
 ///
 /// This factory contains a registry of all the micro-factories for receivers, processors, and
 /// exporters, as well as the logic for creating pipelines based on a given configuration.
-pub struct PipelineFactory<PData: 'static + Debug + Clone> {
+pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,

@@ -238,7 +238,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(test)]
     async fn effect_handler_send_message_single_port_fallback() {
         let (tx, rx) = channel::<u64>(10);
         let mut senders = HashMap::new();
