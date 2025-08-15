@@ -35,9 +35,10 @@ use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::local::message::LocalSender;
+use crate::node::NodeId;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use otap_df_config::{NodeId, PortName};
+use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -263,6 +264,7 @@ mod tests {
     use super::*;
     use crate::control::pipeline_ctrl_msg_channel;
     use crate::local::message::LocalSender;
+    use crate::testing::test_node;
     use otap_df_channel::mpsc;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
@@ -282,7 +284,7 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -302,7 +304,7 @@ mod tests {
         let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -318,7 +320,7 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new("recv".into(), senders, Some("a".into()), ctrl_tx);
+        let eh = EffectHandler::new(test_node("recv"), senders, Some("a".into()), ctrl_tx);
 
         eh.send_message(11).await.unwrap();
 
@@ -340,7 +342,7 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -368,7 +370,7 @@ mod tests {
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
-        let eh = EffectHandler::new("recv".into(), senders, None, ctrl_tx);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

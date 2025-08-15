@@ -21,8 +21,11 @@ use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
 pub mod exporter;
+pub mod node;
 pub mod processor;
 pub mod receiver;
+
+pub use node::{test_node, test_nodes};
 
 /// A test message type used in component tests.
 #[derive(Debug, PartialEq, Clone)]

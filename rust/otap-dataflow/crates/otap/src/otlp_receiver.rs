@@ -12,6 +12,7 @@ use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
@@ -43,9 +44,10 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTLPReceiver::from_config(&node_config.config)?,
+            node,
             node_config,
             receiver_config,
         ))
@@ -141,7 +143,10 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -363,6 +368,7 @@ mod tests {
                     compression_method: None,
                 },
             },
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
