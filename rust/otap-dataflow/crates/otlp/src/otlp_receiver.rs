@@ -200,7 +200,10 @@ mod tests {
     };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -318,7 +321,7 @@ mod tests {
         // create our receiver
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver::new(addr, None),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

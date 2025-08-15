@@ -283,7 +283,7 @@ mod tests {
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
     use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
-    use crate::testing::{CtrlMsgCounters, TestMsg};
+    use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
@@ -553,7 +553,7 @@ mod tests {
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::local(
             TestReceiver::new(test_runtime.counters(), port_tx),
-            test_runtime.test_node(),
+            test_node("recv"),
             user_config,
             test_runtime.config(),
         );
@@ -574,7 +574,7 @@ mod tests {
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::shared(
             TestReceiver::new(test_runtime.counters(), port_tx),
-            test_runtime.test_node(),
+            test_node("recv"),
             user_config,
             test_runtime.config(),
         );

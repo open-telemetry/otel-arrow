@@ -441,6 +441,7 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::test_node;
     use tokio::time::{Duration, sleep};
 
     use otap_df_config::node::NodeUserConfig;
@@ -536,7 +537,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -558,7 +559,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -580,7 +581,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

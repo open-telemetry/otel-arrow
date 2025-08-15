@@ -256,7 +256,7 @@ mod tests {
     use crate::shared::exporter as shared;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
-    use crate::testing::{CtrlMsgCounters, TestMsg};
+    use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
@@ -406,7 +406,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::local(
             TestExporter::new(test_runtime.counters()),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );
@@ -423,7 +423,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
         let exporter = ExporterWrapper::shared(
             TestExporter::new(test_runtime.counters()),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );

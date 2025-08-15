@@ -127,7 +127,7 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::{processor::TestRuntime, test_node};
     use serde_json::json;
 
     #[test]
@@ -140,9 +140,11 @@ mod tests {
     fn test_factory_creation_ok() {
         let config = json!({});
         let processor_config = ProcessorConfig::new("test_router");
-        let test_runtime = TestRuntime::<()>::new();
-        let result =
-            create_signal_type_router(test_runtime.test_node(), &config, &processor_config);
+        let result = create_signal_type_router(
+            test_node(processor_config.name.clone()),
+            &config,
+            &processor_config,
+        );
         assert!(result.is_ok());
     }
 
@@ -151,9 +153,11 @@ mod tests {
         // An invalid type (e.g., number instead of object) should error
         let config = json!(42);
         let processor_config = ProcessorConfig::new("test_router");
-        let test_runtime = TestRuntime::<()>::new();
-        let result =
-            create_signal_type_router(test_runtime.test_node(), &config, &processor_config);
+        let result = create_signal_type_router(
+            test_node(processor_config.name.clone()),
+            &config,
+            &processor_config,
+        );
         assert!(result.is_err());
     }
 
@@ -166,7 +170,7 @@ mod tests {
         let user_cfg = Arc::new(NodeUserConfig::new_processor_config("sig_router_test"));
         let wrapper = ProcessorWrapper::local(
             SignalTypeRouter::new(SignalTypeRouterConfig::default()),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             user_cfg,
             test_runtime.config(),
         );

@@ -206,7 +206,7 @@ mod tests {
     #![allow(missing_docs)]
     use super::*;
     use crate::local::message::LocalSender;
-    use crate::node::{NodeDefs, NodeType};
+    use crate::testing::test_node;
     use otap_df_channel::mpsc;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
@@ -214,12 +214,6 @@ mod tests {
 
     fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
-    }
-
-    fn test_node() -> NodeUnique {
-        NodeDefs::<()>::new()
-            .next("proc".into(), NodeType::Processor)
-            .expect("first")
     }
 
     #[tokio::test]
@@ -231,7 +225,7 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node(), senders, None);
+        let eh = EffectHandler::new(test_node("proc"), senders, None);
         eh.send_message_to("b", 42).await.unwrap();
 
         // Ensure only 'b' received
@@ -244,12 +238,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(test)]
     async fn effect_handler_send_message_single_port_fallback() {
         let (tx, rx) = channel::<u64>(10);
         let mut senders = HashMap::new();
         let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
 
-        let eh = EffectHandler::new(test_node(), senders, None);
+        let eh = EffectHandler::new(test_node("proc"), senders, None);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -264,7 +259,7 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node(), senders, Some("a".into()));
+        let eh = EffectHandler::new(test_node("proc"), senders, Some("a".into()));
 
         eh.send_message(11).await.unwrap();
 
@@ -285,7 +280,7 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node(), senders, None);
+        let eh = EffectHandler::new(test_node("proc"), senders, None);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -312,7 +307,7 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node(), senders, None);
+        let eh = EffectHandler::new(test_node("proc"), senders, None);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

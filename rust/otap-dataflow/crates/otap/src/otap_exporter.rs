@@ -225,8 +225,10 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::TestContext;
-    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use otap_df_otlp::compression::CompressionMethod;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
@@ -383,7 +385,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTAPExporter::new(grpc_endpoint, None),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

@@ -143,9 +143,9 @@ mod tests {
     use super::*;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
-    use crate::node::{NodeDefs, NodeType, NodeUnique};
+    use crate::node::NodeUnique;
     use crate::shared::message::{SharedReceiver, SharedSender};
-    use otap_df_config::NodeId;
+    use crate::testing::test_nodes;
     use std::collections::HashMap;
     use std::time::Duration;
     use tokio::task::LocalSet;
@@ -168,24 +168,17 @@ mod tests {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
         let mut control_senders = HashMap::new();
         let mut control_receivers = HashMap::new();
-        let mut node_defs = NodeDefs::<()>::new();
 
         // Create mock control senders for test nodes
-        let node_ids: Vec<NodeId> = vec!["node1".into(), "node2".into(), "node3".into()];
-        for node_id in node_ids {
-            let node = node_defs.next(node_id, NodeType::Processor).expect("ok");
+        let nodes = test_nodes(vec!["node1", "node2", "node3"]);
+        for node in &nodes {
             let (sender, receiver) = create_mock_control_sender();
             let _ = control_senders.insert(node.id, sender);
             let _ = control_receivers.insert(node.id, receiver);
         }
 
         let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders);
-        (
-            manager,
-            pipeline_tx,
-            control_receivers,
-            node_defs.iter().collect(),
-        )
+        (manager, pipeline_tx, control_receivers, nodes)
     }
 
     /// Validates the core timer workflow:

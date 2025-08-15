@@ -163,8 +163,10 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::TestContext;
-    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use otap_df_otlp::grpc::OTLPData;
     use otap_df_otlp::mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use otap_df_otlp::proto::opentelemetry::collector::{
@@ -301,7 +303,7 @@ mod tests {
                     compression_method: None,
                 },
             },
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

@@ -9,10 +9,10 @@ use crate::config::ProcessorConfig;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
-use crate::node::{NodeDefs, NodeType, NodeUnique, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
-use crate::testing::{CtrlMsgCounters, setup_test_runtime};
+use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -109,9 +109,6 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
-    /// node defined for the test
-    node: NodeUnique,
-
     _pd: PhantomData<PData>,
 }
 
@@ -137,16 +134,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
-        let node = NodeDefs::<()>::default()
-            .next(config.name.clone(), NodeType::Processor)
-            .expect("valid test config");
 
         Self {
             config,
             rt,
             local_tasks,
             counter: CtrlMsgCounters::new(),
-            node,
             _pd: PhantomData,
         }
     }
@@ -159,11 +152,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the message counter.
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counter.clone()
-    }
-
-    /// Returns the test node identifier corresponding with config.name.
-    pub fn test_node(&self) -> NodeUnique {
-        self.node.clone()
     }
 
     /// Initializes the test runtime with a processor using a non-sendable effect handler.
@@ -187,7 +175,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         };
 
         // Set the output sender for the processor
-        let _ = processor.set_pdata_sender(self.test_node(), "output".into(), pdata_sender);
+        let _ = processor.set_pdata_sender(
+            test_node(self.config().name.clone()),
+            "out".into(),
+            pdata_sender,
+        );
         // Set a dummy input receiver (not used in these tests since we call process directly)
         // We need this because prepare_runtime expects both to be set
         let dummy_receiver = match &processor {
@@ -200,7 +192,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 Receiver::Shared(SharedReceiver::MpscReceiver(receiver))
             }
         };
-        let _ = processor.set_pdata_receiver(self.test_node(), dummy_receiver);
+        let _ = processor.set_pdata_receiver(test_node(self.config().name.clone()), dummy_receiver);
 
         TestPhase {
             rt: self.rt,

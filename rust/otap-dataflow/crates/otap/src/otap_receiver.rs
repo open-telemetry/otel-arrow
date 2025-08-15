@@ -184,7 +184,10 @@ mod tests {
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -336,7 +339,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
         let receiver = ReceiverWrapper::shared(
             OTAPReceiver::new(addr, None, message_size),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

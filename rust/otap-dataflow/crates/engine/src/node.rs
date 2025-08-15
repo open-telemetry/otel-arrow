@@ -122,11 +122,7 @@ impl<PData> NodeDefs<PData> {
 
     /// Gets the next unique node identifier. Returns an error when
     /// the underlying u16 overflows.
-    pub(crate) fn next(
-        &mut self,
-        name: NodeId,
-        ntype: NodeType,
-    ) -> Result<NodeUnique, Error<PData>> {
+    pub fn next(&mut self, name: NodeId, ntype: NodeType) -> Result<NodeUnique, Error<PData>> {
         let uniq = NodeUnique {
             name: name.clone(),
             id: Unique::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
@@ -170,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_too_many_nodes_error() {
-        let mut node_defs: NodeDefs<()> = NodeDefs::new();
+        let mut node_defs: NodeDefs<()> = NodeDefs::default();
         let node_id = NodeId::try_from("test_node").expect("valid node id");
         const LIMIT: usize = u16::MAX as usize + 1;
         for i in 0..=LIMIT {
@@ -189,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_node_defs_basic_operations() {
-        let mut node_defs: NodeDefs<()> = NodeDefs::new();
+        let mut node_defs: NodeDefs<()> = NodeDefs::default();
         let node_id = NodeId::try_from("test_node").expect("valid node id");
 
         // Test creating a few nodes

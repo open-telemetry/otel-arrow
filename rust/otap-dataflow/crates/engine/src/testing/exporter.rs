@@ -13,9 +13,9 @@ use crate::error::Error;
 use crate::exporter::ExporterWrapper;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
-use crate::node::{NodeDefs, NodeType, NodeUnique, NodeWithPDataReceiver};
+use crate::node::NodeWithPDataReceiver;
 use crate::shared::message::{SharedReceiver, SharedSender};
-use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
+use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_channel::error::SendError;
 use serde_json::Value;
 use std::fmt::Debug;
@@ -132,9 +132,6 @@ pub struct TestRuntime<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    /// node defined for the test
-    node: NodeUnique,
-
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
@@ -184,16 +181,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
-        let node = NodeDefs::<()>::default()
-            .next(config.name.clone(), NodeType::Exporter)
-            .expect("valid test config");
 
         Self {
             config,
             rt,
             local_tasks,
             counter,
-            node,
             _pd: PhantomData,
         }
     }
@@ -206,11 +199,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the message counter.
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counter.clone()
-    }
-
-    /// Returns the test node identifier corresponding with config.name.
-    pub fn test_node(&self) -> NodeUnique {
-        self.node.clone()
     }
 
     /// Sets the exporter for the test runtime and returns the test phase.
@@ -237,7 +225,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         exporter
-            .set_pdata_receiver(self.test_node(), pdata_rx)
+            .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
         let run_exporter_handle = self
             .local_tasks

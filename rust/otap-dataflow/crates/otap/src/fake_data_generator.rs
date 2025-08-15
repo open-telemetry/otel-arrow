@@ -183,7 +183,10 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use otap_df_otlp::fake_signal_receiver::config::{
         Config, Load, OTLPSignal, ScenarioStep, SignalType,
     };
@@ -916,7 +919,7 @@ mod tests {
         // create our receiver
         let receiver = ReceiverWrapper::local(
             FakeGeneratorReceiver::new(config),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

@@ -213,7 +213,10 @@ mod test {
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
@@ -283,7 +286,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -367,7 +370,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -406,7 +409,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -443,7 +446,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -504,7 +507,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

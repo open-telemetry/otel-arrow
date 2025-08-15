@@ -373,7 +373,7 @@ mod tests {
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
-    use crate::testing::{CtrlMsgCounters, TestMsg};
+    use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
@@ -513,7 +513,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::local(
             TestProcessor::new(test_runtime.counters()),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );
@@ -530,7 +530,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
         let processor = ProcessorWrapper::shared(
             TestProcessor::new(test_runtime.counters()),
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
         );

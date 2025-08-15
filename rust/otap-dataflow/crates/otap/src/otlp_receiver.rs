@@ -145,7 +145,10 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -367,7 +370,7 @@ mod tests {
                     compression_method: None,
                 },
             },
-            test_runtime.test_node(),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

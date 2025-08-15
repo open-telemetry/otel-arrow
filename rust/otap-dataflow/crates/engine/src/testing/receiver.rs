@@ -12,7 +12,7 @@ use crate::control::{
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
-use crate::node::{NodeDefs, NodeType, NodeUnique, NodeWithPDataSender};
+use crate::node::NodeWithPDataSender;
 use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
@@ -134,9 +134,6 @@ pub struct TestRuntime<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    /// node defined for the test
-    node: NodeUnique,
-
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
@@ -184,16 +181,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
-        let node = NodeDefs::<()>::default()
-            .next(config.name.clone(), NodeType::Receiver)
-            .expect("valid test config");
 
         Self {
             config,
             rt,
             local_tasks,
             counter: CtrlMsgCounters::new(),
-            node,
             _pd: PhantomData,
         }
     }
@@ -206,11 +199,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Returns the message counter.
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counter.clone()
-    }
-
-    /// Returns the test node identifier corresponding with config.name.
-    pub fn test_node(&self) -> NodeUnique {
-        self.node.clone()
     }
 
     /// Sets the receiver for the test runtime and returns a test phase.
