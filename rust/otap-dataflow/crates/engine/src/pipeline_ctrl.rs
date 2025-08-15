@@ -13,7 +13,7 @@
 use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::message::Sender;
-use crate::node::Index;
+use crate::node::NodeIndex;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
@@ -32,15 +32,15 @@ pub struct PipelineCtrlMsgManager {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
     /// Allows sending control messages back to nodes.
-    control_senders: HashMap<Index, Sender<NodeControlMsg>>,
+    control_senders: HashMap<NodeIndex, Sender<NodeControlMsg>>,
     /// Min-heap of (Instant, NodeId) for timer expirations.
-    timers: BinaryHeap<Reverse<(Instant, Index)>>,
+    timers: BinaryHeap<Reverse<(Instant, NodeIndex)>>,
     /// Set of NodeIds with canceled timers, so we can skip them when they pop.
-    canceled: HashSet<Index>,
+    canceled: HashSet<NodeIndex>,
     /// Maps NodeId to the currently scheduled expiration Instant, to avoid firing outdated timers.
-    timer_map: HashMap<Index, Instant>,
+    timer_map: HashMap<NodeIndex, Instant>,
     /// Maps NodeId to the timer duration, for recurring timers.
-    durations: HashMap<Index, std::time::Duration>,
+    durations: HashMap<NodeIndex, std::time::Duration>,
 }
 
 impl PipelineCtrlMsgManager {
@@ -48,7 +48,7 @@ impl PipelineCtrlMsgManager {
     #[must_use]
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
-        control_senders: HashMap<Index, Sender<NodeControlMsg>>,
+        control_senders: HashMap<NodeIndex, Sender<NodeControlMsg>>,
     ) -> Self {
         Self {
             pipeline_ctrl_msg_receiver,
@@ -162,7 +162,7 @@ mod tests {
     fn setup_test_manager() -> (
         PipelineCtrlMsgManager,
         crate::control::PipelineCtrlMsgSender,
-        HashMap<Index, Receiver<NodeControlMsg>>,
+        HashMap<NodeIndex, Receiver<NodeControlMsg>>,
         Vec<NodeId>,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
@@ -499,7 +499,7 @@ mod tests {
 
                 // Send StartTimer for node with no control sender
                 let start_msg = PipelineControlMsg::StartTimer {
-                    node_id: Index::try_from(1234).expect("ok"),
+                    node_id: NodeIndex::try_from(1234).expect("ok"),
                     duration,
                 };
                 pipeline_tx.send(start_msg).await.unwrap();

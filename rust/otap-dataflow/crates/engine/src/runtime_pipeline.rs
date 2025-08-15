@@ -5,7 +5,7 @@
 use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
 use crate::node::{
-    Index, Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender,
+    Node, NodeDefs, NodeId, NodeIndex, NodeType, NodeWithPDataReceiver, NodeWithPDataSender,
 };
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
@@ -31,13 +31,13 @@ pub struct RuntimePipeline<PData: Debug> {
     exporters: Vec<ExporterWrapper<PData>>,
 
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
-    /// Indexed by Index
+    /// Indexed by NodeIndex
     nodes: NodeDefs<PData, PipeNode>,
 }
 
 /// PipeNode contains runtime-specific info.
 pub(crate) struct PipeNode {
-    index: usize, // Index into the appropriate vector w/ offset precomputed
+    index: usize, // NodeIndex into the appropriate vector w/ offset precomputed
 }
 
 impl PipeNode {
@@ -163,7 +163,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a reference to any node by its ID as a Node trait object
     #[must_use]
-    pub fn get_node(&self, node: Index) -> Option<&dyn Node> {
+    pub fn get_node(&self, node: NodeIndex) -> Option<&dyn Node> {
         let ndef = self.nodes.get(node)?;
 
         match ndef.ntype {
@@ -178,7 +178,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a mutable NodeWithPDataSender reference (processors and receivers).
     #[must_use]
-    pub fn get_mut_sender(&mut self, node: Index) -> Option<&mut dyn NodeWithPDataSender<PData>> {
+    pub fn get_mut_sender(
+        &mut self,
+        node: NodeIndex,
+    ) -> Option<&mut dyn NodeWithPDataSender<PData>> {
         let ndef = self.nodes.get(node)?;
 
         match ndef.ntype {
@@ -198,7 +201,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     #[must_use]
     pub fn get_mut_receiver(
         &mut self,
-        node: Index,
+        node: NodeIndex,
     ) -> Option<&mut dyn NodeWithPDataReceiver<PData>> {
         let ndef = self.nodes.get(node)?;
 

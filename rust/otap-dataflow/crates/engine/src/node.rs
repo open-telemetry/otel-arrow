@@ -35,19 +35,19 @@ pub trait Node {
     async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
 }
 
-/// NodeId consists of NodeId and Index integer.
+/// NodeId consists of NodeId and NodeIndex integer.
 #[derive(Clone, Debug)]
 pub struct NodeId {
     /// A unique integer.
-    pub(crate) index: Index,
+    pub(crate) index: NodeIndex,
 
     /// A unique name as defined by otap_df_config.
     pub name: NodeName,
 }
 
-/// Indexness value, presently a u16.
+/// Index in the NodeDefs vector
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
-pub struct Index(u16);
+pub struct NodeIndex(u16);
 
 /// Enum to identify the type of a node for registry lookups
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +81,7 @@ pub trait NodeWithPDataReceiver<PData>: Node {
     ) -> Result<(), Error<PData>>;
 }
 
-/// NodeDefinition is an entry in NodeDefs, indexed by the corresponding Index assignment.
+/// NodeDefinition is an entry in NodeDefs, indexed by the corresponding NodeIndex assignment.
 pub(crate) struct NodeDefinition<Inner> {
     /// Type of node.
     pub(crate) ntype: NodeType,
@@ -91,9 +91,9 @@ pub(crate) struct NodeDefinition<Inner> {
     pub(crate) inner: Inner,
 }
 
-/// NodeDefs is a Index-indexed set of node definitions.
+/// NodeDefs is a NodeIndex-indexed set of node definitions.
 pub(crate) struct NodeDefs<PData, Inner> {
-    /// Entries have an implicit index equal to their Index value.
+    /// Entries have an implicit index equal to their NodeIndex value.
     entries: Vec<NodeDefinition<Inner>>,
 
     _data: PhantomData<PData>,
@@ -111,7 +111,7 @@ impl<PData, Inner> Default for NodeDefs<PData, Inner> {
 impl<PData, Inner> NodeDefs<PData, Inner> {
     /// Gets a the node definition
     #[must_use]
-    pub(crate) fn get(&self, index: Index) -> Option<&NodeDefinition<Inner>> {
+    pub(crate) fn get(&self, index: NodeIndex) -> Option<&NodeDefinition<Inner>> {
         self.entries.get(index.0 as usize)
     }
 
@@ -124,7 +124,7 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
         inner: Inner,
     ) -> Result<NodeId, Error<PData>> {
         let uniq = NodeId::build(
-            Index::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
+            NodeIndex::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
             name.clone(),
         );
         self.entries.push(NodeDefinition { ntype, name, inner });
@@ -137,7 +137,7 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
             (
                 NodeId {
                     name: val.name.clone(),
-                    index: Index::try_from(idx).expect("enumerated"),
+                    index: NodeIndex::try_from(idx).expect("enumerated"),
                 },
                 val,
             )
@@ -145,7 +145,7 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
     }
 }
 
-impl TryFrom<usize> for Index {
+impl TryFrom<usize> for NodeIndex {
     type Error = std::num::TryFromIntError;
 
     /// TryFrom signals an error when the u16 overflows.
@@ -179,7 +179,7 @@ mod tests {
 }
 
 impl NodeId {
-    pub(crate) fn build(index: Index, name: NodeName) -> NodeId {
+    pub(crate) fn build(index: NodeIndex, name: NodeName) -> NodeId {
         NodeId { index, name }
     }
 }
