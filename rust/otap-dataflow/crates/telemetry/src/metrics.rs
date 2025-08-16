@@ -23,7 +23,7 @@ pub trait MultivariateMetrics {
     fn descriptor(&self) -> &'static MetricsDescriptor;
 
     /// Iterate over (descriptor_field, current_value) pairs in defined order.
-    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_>;
+    fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_>;
 
     /// Aggregates the metrics of this type to the provided registry.
     fn aggregate_into(&self, registry: &mut MetricsRegistryHandle) -> Result<(), Error>;
@@ -37,10 +37,10 @@ pub trait MultivariateMetrics {
     }
 }
 
-/// Multivariate metrics for receivers.
+/// OTLP receiver metrics.
 #[repr(C, align(64))]
 #[derive(Debug, Default, Clone)]
-pub struct ReceiverMetrics {
+pub struct OtlpReceiverMetrics {
     /// A unique key set at the registration of these metrics.
     key: Option<MetricsKey>,
 
@@ -50,8 +50,8 @@ pub struct ReceiverMetrics {
     pub messages_received: Counter<u64>,
 }
 
-const RECEIVER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
-    name: "receiver_metrics",
+const OTLP_RECEIVER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
+    name: "otlp.receiver.metrics",
     fields: &[
         MetricsField {
             name: "bytes.received",
@@ -66,43 +66,123 @@ const RECEIVER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
     ],
 };
 
-/// Multivariate metrics for the OTAP PerfExporter node.
+/// OTLP exporter metrics.
 #[repr(C, align(64))]
 #[derive(Debug, Default, Clone)]
-pub struct PerfExporterMetrics {
+pub struct OtlpExporterMetrics {
     /// A unique key set at the registration of these metrics.
     key: Option<MetricsKey>,
 
-    /// Total bytes processed by the perf exporter.
-    pub bytes_total: Counter<u64>,
-    /// Number of pdata messages handled.
-    pub pdata_msgs: Counter<u64>,
-    /// Number of invalid pdata messages
-    pub invalid_pdata_msgs: Counter<u64>,
-    /// Number of logs processed.
+    /// Number of export log requests received by the exporter.
+    pub export_logs_request_received: Counter<u64>,
+    /// Number of export log requests that succeeded.
+    pub export_logs_request_success: Counter<u64>,
+    /// Number of export log requests that failed.
+    pub export_logs_request_failure: Counter<u64>,
+
+    /// Number of export metrics requests received by the exporter.
+    pub export_metrics_request_received: Counter<u64>,
+    /// Number of export metrics requests that succeeded.
+    pub export_metrics_request_success: Counter<u64>,
+    /// Number of export metrics requests that failed.
+    pub export_metrics_request_failure: Counter<u64>,
+
+    /// Number of export traces requests received by the exporter.
+    pub export_traces_request_received: Counter<u64>,
+    /// Number of export traces requests that succeeded.
+    pub export_traces_request_success: Counter<u64>,
+    /// Number of export traces requests that failed.
+    pub export_traces_request_failure: Counter<u64>,
+}
+
+const OTLP_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
+    name: "otlp.exporter.metrics",
+    fields: &[
+        MetricsField {
+            name: "export.logs.request.received",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.logs.request.success",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.logs.request.failure",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.metrics.request.received",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.metrics.request.success",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.metrics.request.failure",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.traces.request.received",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.traces.request.success",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "export.traces.request.failure",
+            unit: "{req}",
+            kind: MetricsKind::Counter,
+        }
+    ],
+};
+
+/// Pdata-oriented metrics for the OTAP PerfExporter.
+#[repr(C, align(64))]
+#[derive(Debug, Default, Clone)]
+pub struct PerfExporterPdataMetrics {
+    /// A unique key set at the registration of these metrics.
+    key: Option<MetricsKey>,
+
+    /// Number of pdata batches received.
+    pub batches: Counter<u64>,
+    /// Number of invalid pdata batches received.
+    pub invalid_batches: Counter<u64>,
+    /// Number of arrow records received.
+    pub arrow_records: Counter<u64>,
+    /// Number of logs received.
     pub logs: Counter<u64>,
-    /// Number of spans processed.
+    /// Number of spans received.
     pub spans: Counter<u64>,
-    /// Number of metrics processed.
+    /// Number of metrics received.
     pub metrics: Counter<u64>,
 }
 
 const PERF_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
-    name: "perf_exporter_metrics",
+    name: "perf.exporter.pdata.metrics",
     fields: &[
         MetricsField {
-            name: "bytes.total",
-            unit: "By",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "pdata.messages",
+            name: "batches",
             unit: "{msg}",
             kind: MetricsKind::Counter,
         },
         MetricsField {
-            name: "invalid-pdata.messages",
+            name: "invalid.batches",
             unit: "{msg}",
+            kind: MetricsKind::Counter,
+        },
+        MetricsField {
+            name: "arrow.records",
+            unit: "{record}",
             kind: MetricsKind::Counter,
         },
         MetricsField {
@@ -123,13 +203,28 @@ const PERF_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
     ],
 };
 
-impl MultivariateMetrics for ReceiverMetrics {
+impl MultivariateMetrics for OtlpReceiverMetrics {
+    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
+        let key = registry.otlp_receiver_metrics.insert((OtlpReceiverMetrics::default(), attrs));
+        self.key = Some(key);
+    }
+
+    fn descriptor(&self) -> &'static MetricsDescriptor {
+        &OTLP_RECEIVER_METRICS_DESC
+    }
+
+    fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> {
+        let desc = self.descriptor();
+        let values = [self.bytes_received.get(), self.messages_received.get()];
+        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f, v)| (f, v)))
+    }
+
     fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
         if let Some(key) = self.key {
-            aggregator.add_receiver_metrics(key, self);
+            aggregator.add_otlp_receiver_metrics(key, self);
             Ok(())
         } else {
-            Err(Error::MetricsNotRegistered{
+            Err(Error::MetricsNotRegistered {
                 descriptor: self.descriptor()
             })
         }
@@ -140,73 +235,120 @@ impl MultivariateMetrics for ReceiverMetrics {
         self.messages_received.set(0);
     }
 
-    fn descriptor(&self) -> &'static MetricsDescriptor {
-        &RECEIVER_METRICS_DESC
-    }
-
-    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
-        let key = registry.receiver_metrics.insert((ReceiverMetrics::default(), attrs));
-        self.key = Some(key);
-    }
-
-    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_> {
-        let desc = self.descriptor();
-        let values = [self.bytes_received.get(), self.messages_received.get()];
-        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f,v)| (f, v)))
-    }
-
     fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
         self.bytes_received.get() != 0 || self.messages_received.get() != 0
     }
 }
 
-impl MultivariateMetrics for PerfExporterMetrics {
+impl MultivariateMetrics for OtlpExporterMetrics {
+    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
+        let key = registry.otlp_exporter_metrics.insert((OtlpExporterMetrics::default(), attrs));
+        self.key = Some(key);
+    }
+
+    fn descriptor(&self) -> &'static MetricsDescriptor {
+        &OTLP_EXPORTER_METRICS_DESC
+    }
+
+    fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> {
+        let desc = self.descriptor();
+        let values = [
+            self.export_logs_request_received.get(),
+            self.export_logs_request_success.get(),
+            self.export_logs_request_failure.get(),
+            self.export_metrics_request_received.get(),
+            self.export_metrics_request_success.get(),
+            self.export_metrics_request_failure.get(),
+            self.export_traces_request_received.get(),
+            self.export_traces_request_success.get(),
+            self.export_traces_request_failure.get(),
+        ];
+        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f, v)| (f, v)))
+    }
+
     fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
         if let Some(key) = self.key {
-            aggregator.add_perf_exporter_metrics(key, self);
+            aggregator.add_otlp_exporter_metrics(key, self);
             Ok(())
         } else {
-            Err(Error::MetricsNotRegistered{
+            Err(Error::MetricsNotRegistered {
                 descriptor: self.descriptor()
             })
         }
     }
 
     fn zero(&mut self) {
-        self.bytes_total.set(0);
-        self.pdata_msgs.set(0);
-        self.invalid_pdata_msgs.set(0);
-        self.logs.set(0);
-        self.spans.set(0);
-        self.metrics.set(0);
+        self.export_logs_request_received.set(0);
+        self.export_logs_request_success.set(0);
+        self.export_logs_request_failure.set(0);
+        self.export_metrics_request_received.set(0);
+        self.export_metrics_request_success.set(0);
+        self.export_metrics_request_failure.set(0);
+        self.export_traces_request_received.set(0);
+        self.export_traces_request_success.set(0);
+        self.export_traces_request_failure.set(0);
+    }
+
+    fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
+        self.export_logs_request_received.get() != 0
+            || self.export_logs_request_success.get() != 0
+            || self.export_logs_request_failure.get() != 0
+            || self.export_metrics_request_received.get() != 0
+            || self.export_metrics_request_success.get() != 0
+            || self.export_metrics_request_failure.get() != 0
+            || self.export_traces_request_received.get() != 0
+            || self.export_traces_request_success.get() != 0
+            || self.export_traces_request_failure.get() != 0
+    }
+}
+
+impl MultivariateMetrics for PerfExporterPdataMetrics {
+    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
+        let key = registry.perf_exporter_metrics.insert((PerfExporterPdataMetrics::default(), attrs));
+        self.key = Some(key);
     }
 
     fn descriptor(&self) -> &'static MetricsDescriptor {
         &PERF_EXPORTER_METRICS_DESC
     }
 
-    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
-        let key = registry.perf_exporter_metrics.insert((PerfExporterMetrics::default(), attrs));
-        self.key = Some(key);
-    }
-
-    fn field_values(&self) -> Box<dyn Iterator<Item = (&'static MetricsField, u64)> + '_> {
+    fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> {
         let desc = self.descriptor();
         let values = [
-            self.bytes_total.get(),
-            self.pdata_msgs.get(),
-            self.invalid_pdata_msgs.get(),
+            self.batches.get(),
+            self.invalid_batches.get(),
+            self.arrow_records.get(),
             self.logs.get(),
             self.spans.get(),
             self.metrics.get(),
         ];
-        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f,v)| (f, v)))
+        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f, v)| (f, v)))
+    }
+
+    fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
+        if let Some(key) = self.key {
+            aggregator.add_perf_exporter_metrics(key, self);
+            Ok(())
+        } else {
+            Err(Error::MetricsNotRegistered {
+                descriptor: self.descriptor()
+            })
+        }
+    }
+
+    fn zero(&mut self) {
+        self.batches.set(0);
+        self.invalid_batches.set(0);
+        self.arrow_records.set(0);
+        self.logs.set(0);
+        self.spans.set(0);
+        self.metrics.set(0);
     }
 
     fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
-        self.bytes_total.get() != 0
-            || self.pdata_msgs.get() != 0
-            || self.invalid_pdata_msgs.get() != 0
+        self.batches.get() != 0
+            || self.invalid_batches.get() != 0
+            || self.arrow_records.get() != 0
             || self.logs.get() != 0
             || self.spans.get() != 0
             || self.metrics.get() != 0
@@ -215,21 +357,19 @@ impl MultivariateMetrics for PerfExporterMetrics {
 
 #[cfg(test)]
 mod tests {
-    use crate::metrics::{PerfExporterMetrics, ReceiverMetrics, MultivariateMetrics};
+    use crate::metrics::{PerfExporterPdataMetrics, OtlpReceiverMetrics, MultivariateMetrics};
 
     #[test]
     fn test_perf_exporter_metrics() {
-        let mut metrics = PerfExporterMetrics::default();
+        let mut metrics = PerfExporterPdataMetrics::default();
         assert!(!metrics.has_non_zero());
 
-        metrics.bytes_total.inc();
         metrics.logs.add(10);
         metrics.metrics.inc();
 
         metrics.logs.inc();
 
         assert!(metrics.has_non_zero());
-        assert_eq!(metrics.bytes_total.get(), 1);
         assert_eq!(metrics.logs.get(), 11);
         assert_eq!(metrics.metrics.get(), 1);
 
@@ -239,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_receiver_metrics_has_non_zero() {
-        let mut metrics = ReceiverMetrics::default();
+        let mut metrics = OtlpReceiverMetrics::default();
         assert!(!metrics.has_non_zero());
         metrics.bytes_received.add(5);
         assert!(metrics.has_non_zero());

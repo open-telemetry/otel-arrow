@@ -4,12 +4,14 @@
 //!
 //! Note: This module will be entirely generated from a telemetry schema and Weaver in the future.
 
+use crate::attributes::NodeStaticAttrs;
+use crate::metrics::{
+    MultivariateMetrics, OtlpExporterMetrics, OtlpReceiverMetrics, PerfExporterPdataMetrics,
+};
+use parking_lot::Mutex;
+use slotmap::{SlotMap, new_key_type};
 use std::fmt::Debug;
 use std::sync::Arc;
-use parking_lot::Mutex;
-use slotmap::{new_key_type, SlotMap};
-use crate::attributes::NodeStaticAttrs;
-use crate::metrics::{MultivariateMetrics, PerfExporterMetrics, ReceiverMetrics};
 
 new_key_type! {
     /// A unique key for identifying a set of metrics in the registry.
@@ -32,9 +34,11 @@ pub struct MetricsRegistryHandle {
 /// A metrics registry that maintains aggregated metrics for different set of static attributes.
 ///
 #[derive(Debug)]
-pub(crate) struct MetricsRegistry {
-    pub(crate) receiver_metrics: SlotMap<MetricsKey,(ReceiverMetrics, NodeStaticAttrs)>,
-    pub(crate) perf_exporter_metrics: SlotMap<MetricsKey,(PerfExporterMetrics, NodeStaticAttrs)>,
+pub struct MetricsRegistry {
+    pub(crate) otlp_receiver_metrics: SlotMap<MetricsKey, (OtlpReceiverMetrics, NodeStaticAttrs)>,
+    pub(crate) otlp_exporter_metrics: SlotMap<MetricsKey, (OtlpExporterMetrics, NodeStaticAttrs)>,
+    pub(crate) perf_exporter_metrics:
+        SlotMap<MetricsKey, (PerfExporterPdataMetrics, NodeStaticAttrs)>,
 }
 
 impl MetricsRegistry {
@@ -46,21 +50,75 @@ impl MetricsRegistry {
         metrics.register_into(self, attrs);
     }
 
-    fn add_receiver_metrics(&mut self, metrics_key: MetricsKey, metrics: &ReceiverMetrics) {
-        if let Some((existing_metrics, _)) = self.receiver_metrics.get_mut(metrics_key) {
-            existing_metrics.bytes_received.add(metrics.bytes_received.get());
-            existing_metrics.messages_received.add(metrics.messages_received.get());
+    fn add_otlp_receiver_metrics(
+        &mut self,
+        metrics_key: MetricsKey,
+        metrics: &OtlpReceiverMetrics,
+    ) {
+        if let Some((existing_metrics, _)) = self.otlp_receiver_metrics.get_mut(metrics_key) {
+            existing_metrics
+                .bytes_received
+                .add(metrics.bytes_received.get());
+            existing_metrics
+                .messages_received
+                .add(metrics.messages_received.get());
+        } else {
+            // TODO: consider logging missing key
+        }
+    }
+
+    fn add_otlp_exporter_metrics(
+        &mut self,
+        metrics_key: MetricsKey,
+        metrics: &OtlpExporterMetrics,
+    ) {
+        if let Some((existing_metrics, _)) = self.otlp_exporter_metrics.get_mut(metrics_key) {
+            existing_metrics
+                .export_logs_request_received
+                .add(metrics.export_logs_request_received.get());
+            existing_metrics
+                .export_logs_request_success
+                .add(metrics.export_logs_request_success.get());
+            existing_metrics
+                .export_logs_request_failure
+                .add(metrics.export_logs_request_failure.get());
+            existing_metrics
+                .export_traces_request_received
+                .add(metrics.export_traces_request_received.get());
+            existing_metrics
+                .export_traces_request_success
+                .add(metrics.export_traces_request_success.get());
+            existing_metrics
+                .export_traces_request_failure
+                .add(metrics.export_traces_request_failure.get());
+            existing_metrics
+                .export_metrics_request_received
+                .add(metrics.export_metrics_request_received.get());
+            existing_metrics
+                .export_metrics_request_success
+                .add(metrics.export_metrics_request_success.get());
+            existing_metrics
+                .export_metrics_request_failure
+                .add(metrics.export_metrics_request_failure.get());
         } else {
             // TODO: consider logging missing key
         }
     }
 
     // Perf exporter metrics operations
-    fn add_perf_exporter_metrics(&mut self, metrics_key: MetricsKey, metrics: &PerfExporterMetrics) {
+    fn add_perf_exporter_metrics(
+        &mut self,
+        metrics_key: MetricsKey,
+        metrics: &PerfExporterPdataMetrics,
+    ) {
         if let Some((existing_metrics, _)) = self.perf_exporter_metrics.get_mut(metrics_key) {
-            existing_metrics.bytes_total.add(metrics.bytes_total.get());
-            existing_metrics.pdata_msgs.add(metrics.pdata_msgs.get());
-            existing_metrics.invalid_pdata_msgs.add(metrics.invalid_pdata_msgs.get());
+            existing_metrics.batches.add(metrics.batches.get());
+            existing_metrics
+                .invalid_batches
+                .add(metrics.invalid_batches.get());
+            existing_metrics
+                .arrow_records
+                .add(metrics.arrow_records.get());
             existing_metrics.logs.add(metrics.logs.get());
             existing_metrics.spans.add(metrics.spans.get());
             existing_metrics.metrics.add(metrics.metrics.get());
@@ -70,15 +128,29 @@ impl MetricsRegistry {
     }
 
     /// Iterate over all registered metrics (all concrete types) exposing them as trait objects with their static attrs.
-    pub(crate) fn iter_metrics(&self) -> impl Iterator<Item = (&dyn MultivariateMetrics, &NodeStaticAttrs)> {
-        let recv_iter = self.receiver_metrics.values().map(|(m, attrs)| (m as &dyn MultivariateMetrics, attrs));
-        let perf_iter = self.perf_exporter_metrics.values().map(|(m, attrs)| (m as &dyn MultivariateMetrics, attrs));
-        recv_iter.chain(perf_iter)
+    pub(crate) fn iter_metrics(
+        &self,
+    ) -> impl Iterator<Item = (&dyn MultivariateMetrics, &NodeStaticAttrs)> {
+        let otlp_recv_iter = self
+            .otlp_receiver_metrics
+            .values()
+            .map(|(m, attrs)| (m as &dyn MultivariateMetrics, attrs));
+        let otlp_exporter_iter = self
+            .otlp_exporter_metrics
+            .values()
+            .map(|(m, attrs)| (m as &dyn MultivariateMetrics, attrs));
+        let perf_iter = self
+            .perf_exporter_metrics
+            .values()
+            .map(|(m, attrs)| (m as &dyn MultivariateMetrics, attrs));
+        otlp_recv_iter.chain(otlp_exporter_iter).chain(perf_iter)
     }
 
     /// Returns the total number of registered metrics sets.
     pub(crate) fn len(&self) -> usize {
-        self.receiver_metrics.len() + self.perf_exporter_metrics.len()
+        self.otlp_receiver_metrics.len()
+            + self.otlp_exporter_metrics.len()
+            + self.perf_exporter_metrics.len()
     }
 
     /// Iterates over all registered metrics that have at least one non-zero field, invoking the
@@ -89,8 +161,15 @@ impl MetricsRegistry {
     where
         F: FnMut(&dyn MultivariateMetrics, &NodeStaticAttrs),
     {
-        // Receiver metrics
-        for (metrics, attrs) in self.receiver_metrics.values_mut() {
+        // OTLP Receiver metrics
+        for (metrics, attrs) in self.otlp_receiver_metrics.values_mut() {
+            if metrics.has_non_zero() {
+                f(metrics as &dyn MultivariateMetrics, attrs);
+                metrics.zero();
+            }
+        }
+        // OTLP Exporter metrics
+        for (metrics, attrs) in self.otlp_exporter_metrics.values_mut() {
             if metrics.has_non_zero() {
                 f(metrics as &dyn MultivariateMetrics, attrs);
                 metrics.zero();
@@ -111,7 +190,8 @@ impl MetricsRegistryHandle {
     pub fn new() -> Self {
         Self {
             metric_registry: Arc::new(Mutex::new(MetricsRegistry {
-                receiver_metrics: SlotMap::default(),
+                otlp_receiver_metrics: SlotMap::default(),
+                otlp_exporter_metrics: SlotMap::default(),
                 perf_exporter_metrics: SlotMap::default(),
             })),
         }
@@ -126,14 +206,37 @@ impl MetricsRegistryHandle {
         self.metric_registry.lock().register(metrics, attrs);
     }
 
-    /// Adds a new set of receiver metrics to the aggregator.
-    pub fn add_receiver_metrics(&self, metrics_key: MetricsKey, metrics: &ReceiverMetrics) {
-        self.metric_registry.lock().add_receiver_metrics(metrics_key, metrics);
+    /// Adds a new set of OTLP receiver metrics to the aggregator.
+    pub fn add_otlp_receiver_metrics(
+        &self,
+        metrics_key: MetricsKey,
+        metrics: &OtlpReceiverMetrics,
+    ) {
+        self.metric_registry
+            .lock()
+            .add_otlp_receiver_metrics(metrics_key, metrics);
+    }
+
+    /// Adds a new set of OTLP exporter metrics to the aggregator.
+    pub fn add_otlp_exporter_metrics(
+        &self,
+        metrics_key: MetricsKey,
+        metrics: &OtlpExporterMetrics,
+    ) {
+        self.metric_registry
+            .lock()
+            .add_otlp_exporter_metrics(metrics_key, metrics);
     }
 
     /// Adds a new set of perf exporter metrics to the aggregator.
-    pub fn add_perf_exporter_metrics(&self, metrics_key: MetricsKey, metrics: &PerfExporterMetrics) {
-        self.metric_registry.lock().add_perf_exporter_metrics(metrics_key, metrics);
+    pub fn add_perf_exporter_metrics(
+        &self,
+        metrics_key: MetricsKey,
+        metrics: &PerfExporterPdataMetrics,
+    ) {
+        self.metric_registry
+            .lock()
+            .add_perf_exporter_metrics(metrics_key, metrics);
     }
 
     /// Iterate over all registered metrics invoking the provided closure.
@@ -169,42 +272,51 @@ impl MetricsRegistryHandle {
 #[cfg(test)]
 mod tests {
     use crate::attributes::NodeStaticAttrs;
-    use crate::metrics::{MultivariateMetrics, ReceiverMetrics};
+    use crate::metrics::{MultivariateMetrics, OtlpReceiverMetrics};
 
     #[test]
     fn test_multivariate_metrics_aggregator() -> Result<(), Box<dyn std::error::Error>> {
         let mut registry = super::MetricsRegistryHandle::new();
 
         // Declare 2 receivers and 1 perf exporter multivariate metrics
-        let mut otlp_receiver_mvm = ReceiverMetrics::default();
-        registry.register(&mut otlp_receiver_mvm, NodeStaticAttrs {
-            node_id: "otlp_receiver".into(),
-            node_type: "receiver".into(),
-            pipeline_id: "pipeline1".into(),
-            core_id: 0,
-            numa_node_id: 0,
-            process_id: 0,
-        });
+        let mut otlp_receiver_mvm = OtlpReceiverMetrics::default();
+        registry.register(
+            &mut otlp_receiver_mvm,
+            NodeStaticAttrs {
+                node_id: "otlp_receiver".into(),
+                node_type: "receiver".into(),
+                pipeline_id: "pipeline1".into(),
+                core_id: 0,
+                numa_node_id: 0,
+                process_id: 0,
+            },
+        );
 
-        let mut otap_receiver_mvm = ReceiverMetrics::default();
-        registry.register(&mut otap_receiver_mvm, NodeStaticAttrs {
-            node_id: "otap_receiver".into(),
-            node_type: "receiver".into(),
-            pipeline_id: "pipeline1".into(),
-            core_id: 0,
-            numa_node_id: 0,
-            process_id: 0,
-        });
+        let mut otap_receiver_mvm = OtlpReceiverMetrics::default();
+        registry.register(
+            &mut otap_receiver_mvm,
+            NodeStaticAttrs {
+                node_id: "otap_receiver".into(),
+                node_type: "receiver".into(),
+                pipeline_id: "pipeline1".into(),
+                core_id: 0,
+                numa_node_id: 0,
+                process_id: 0,
+            },
+        );
 
-        let mut perf_exporter_mvm = crate::metrics::PerfExporterMetrics::default();
-        registry.register(&mut perf_exporter_mvm, NodeStaticAttrs {
-            node_id: "perf_exporter".into(),
-            node_type: "exporter".into(),
-            pipeline_id: "pipeline1".into(),
-            core_id: 0,
-            numa_node_id: 0,
-            process_id: 0,
-        });
+        let mut perf_exporter_mvm = crate::metrics::PerfExporterPdataMetrics::default();
+        registry.register(
+            &mut perf_exporter_mvm,
+            NodeStaticAttrs {
+                node_id: "perf_exporter".into(),
+                node_type: "exporter".into(),
+                pipeline_id: "pipeline1".into(),
+                core_id: 0,
+                numa_node_id: 0,
+                process_id: 0,
+            },
+        );
 
         otlp_receiver_mvm.bytes_received += 100;
         otlp_receiver_mvm.messages_received += 10;
@@ -222,17 +334,15 @@ mod tests {
         otlp_receiver_mvm.messages_received += 90;
         otlp_receiver_mvm.aggregate_into(&mut registry)?;
 
-        perf_exporter_mvm.bytes_total += 500;
-        perf_exporter_mvm.pdata_msgs += 50;
-        perf_exporter_mvm.invalid_pdata_msgs += 40;
+        perf_exporter_mvm.batches += 50;
+        perf_exporter_mvm.invalid_batches += 40;
         perf_exporter_mvm.logs += 60;
         perf_exporter_mvm.spans += 70;
         perf_exporter_mvm.metrics += 80;
         perf_exporter_mvm.aggregate_into(&mut registry)?;
 
-        perf_exporter_mvm.bytes_total += 600;
-        perf_exporter_mvm.pdata_msgs += 70;
-        perf_exporter_mvm.invalid_pdata_msgs += 60;
+        perf_exporter_mvm.batches += 70;
+        perf_exporter_mvm.invalid_batches += 60;
         perf_exporter_mvm.logs += 80;
         perf_exporter_mvm.spans += 90;
         perf_exporter_mvm.metrics += 100;
@@ -250,17 +360,33 @@ mod tests {
 
     #[test]
     fn test_for_each_changed_and_zero() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::metrics::PerfExporterMetrics;
+        use crate::metrics::PerfExporterPdataMetrics;
         let mut registry = super::MetricsRegistryHandle::new();
 
-        let mut recv = ReceiverMetrics::default();
-        registry.register(&mut recv, NodeStaticAttrs {
-            node_id: "r1".into(), node_type: "receiver".into(), pipeline_id: "p".into(), core_id: 0, numa_node_id: 0, process_id: 0,
-        });
-        let mut perf = PerfExporterMetrics::default();
-        registry.register(&mut perf, NodeStaticAttrs {
-            node_id: "perf".into(), node_type: "exporter".into(), pipeline_id: "p".into(), core_id: 0, numa_node_id: 0, process_id: 0,
-        });
+        let mut recv = OtlpReceiverMetrics::default();
+        registry.register(
+            &mut recv,
+            NodeStaticAttrs {
+                node_id: "r1".into(),
+                node_type: "receiver".into(),
+                pipeline_id: "p".into(),
+                core_id: 0,
+                numa_node_id: 0,
+                process_id: 0,
+            },
+        );
+        let mut perf = PerfExporterPdataMetrics::default();
+        registry.register(
+            &mut perf,
+            NodeStaticAttrs {
+                node_id: "perf".into(),
+                node_type: "exporter".into(),
+                pipeline_id: "p".into(),
+                core_id: 0,
+                numa_node_id: 0,
+                process_id: 0,
+            },
+        );
 
         // Initially all zero: expect no invocation.
         let mut calls = 0usize;
@@ -271,8 +397,7 @@ mod tests {
         recv.bytes_received += 10;
         recv.messages_received += 2;
         recv.aggregate_into(&mut registry)?;
-        perf.bytes_total += 5;
-        perf.invalid_pdata_msgs += 3; // only this and one other counter changed
+        perf.invalid_batches += 3; // only this and one other counter changed
         perf.aggregate_into(&mut registry)?;
 
         // Expect two invocations (receiver + perf exporter)
@@ -288,14 +413,21 @@ mod tests {
         // A second pass should yield nothing (they were zeroed)
         let mut calls_after = 0usize;
         registry.for_each_changed_and_zero(|_, _| calls_after += 1);
-        assert_eq!(calls_after, 0, "Metrics should have been zeroed after flush");
+        assert_eq!(
+            calls_after, 0,
+            "Metrics should have been zeroed after flush"
+        );
 
         // Change only one perf exporter field and ensure it's still flushed.
-        perf.invalid_pdata_msgs += 7;
+        perf.invalid_batches += 7;
         perf.aggregate_into(&mut registry)?;
         let mut flushed = Vec::new();
         registry.for_each_changed_and_zero(|_, attrs| flushed.push(attrs.node_id.clone()));
-        assert_eq!(flushed, vec!["perf"], "Only perf metrics changed so only it should flush");
+        assert_eq!(
+            flushed,
+            vec!["perf"],
+            "Only perf metrics changed so only it should flush"
+        );
 
         Ok(())
     }

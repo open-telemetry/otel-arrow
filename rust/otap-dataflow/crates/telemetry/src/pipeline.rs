@@ -91,7 +91,7 @@ pub(crate) fn format_line_protocol(metrics: &dyn MultivariateMetrics, attrs: &No
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{ReceiverMetrics, PerfExporterMetrics};
+    use crate::metrics::{OtlpReceiverMetrics, PerfExporterPdataMetrics};
     use std::borrow::Cow;
 
     fn sample_attrs() -> NodeStaticAttrs { NodeStaticAttrs {
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_receiver_line_protocol() {
-        let mut m = ReceiverMetrics::default();
+        let mut m = OtlpReceiverMetrics::default();
         m.bytes_received.add(42);
         m.messages_received.inc();
         let line = format_line_protocol(&m, &sample_attrs());
@@ -117,8 +117,7 @@ mod tests {
 
     #[test]
     fn test_perf_exporter_line_protocol() {
-        let mut m = PerfExporterMetrics::default();
-        m.bytes_total.add(10);
+        let mut m = PerfExporterPdataMetrics::default();
         m.logs.add(5);
         m.metrics.inc();
         let line = format_line_protocol(&m, &NodeStaticAttrs { node_id: Cow::Borrowed("x"), node_type: Cow::Borrowed("exporter"), pipeline_id: Cow::Borrowed("p2"), core_id: 1, numa_node_id: 0, process_id: 4321 });
@@ -131,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_present_and_order() {
-        let m = ReceiverMetrics::default();
+        let m = OtlpReceiverMetrics::default();
         let line = format_line_protocol(&m, &sample_attrs());
         // Ensure exactly two space separators: one between tags & fields, one before timestamp.
         let space_count = line.chars().filter(|c| *c == ' ').count();

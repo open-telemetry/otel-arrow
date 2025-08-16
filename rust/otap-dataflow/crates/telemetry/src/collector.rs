@@ -41,7 +41,7 @@ impl MetricsCollector {
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
     pub async fn run_collection_loop(mut self) -> Result<(), Error> {
-        let mut timer = interval(Duration::from_secs(10));
+        let mut timer = interval(Duration::from_secs(1));
         let reporter = LineProtocolPipeline;
 
         loop {

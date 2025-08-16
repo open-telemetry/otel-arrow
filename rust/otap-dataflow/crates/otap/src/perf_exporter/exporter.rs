@@ -17,28 +17,26 @@ use byte_unit::Byte;
 use fluke_hpack::Decoder;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
-use otel_arrow_rust::Consumer;
-use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
+use otap_df_telemetry::metrics::PerfExporterPdataMetrics;
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
-    get_current_pid, CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind,
-    RefreshKind, System,
+    CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
+    System, get_current_pid,
 };
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::metrics::PerfExporterMetrics;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -73,7 +71,7 @@ pub struct PerfExporter {
     config: Config,
     output: Option<String>,
 
-    metrics: PerfExporterMetrics,
+    metrics: PerfExporterPdataMetrics,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -84,7 +82,9 @@ pub struct PerfExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
-    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             PerfExporter::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -97,13 +97,20 @@ impl PerfExporter {
     /// creates a perf exporter with the provided config
     #[must_use]
     pub fn new(config: Config, output: Option<String>) -> Self {
-        PerfExporter { config, output, metrics: Default::default() }
+        PerfExporter {
+            config,
+            output,
+            metrics: Default::default(),
+        }
     }
 
     /// Creates a new PerfExporter from a configuration object
-    pub fn from_config(pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
-        let mut metrics = PerfExporterMetrics::default();
-        pipeline.register_metrics(&mut metrics);
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
+        let mut metrics = PerfExporterPdataMetrics::default();
+        pipeline_ctx.register_metrics(&mut metrics);
         Ok(PerfExporter {
             config: serde_json::from_value(config.clone()).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
@@ -125,14 +132,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
     ) -> Result<(), Error<OtapPdata>> {
         // init variables for tracking
         let mut average_pipeline_latency: f64 = 0.0;
-        let mut received_arrow_records_count: u64 = 0;
-        let mut received_otlp_signal_count: u64 = 0;
-        let mut total_received_arrow_records_count: u128 = 0;
-        let mut total_received_otlp_signal_count: u128 = 0;
-        let mut received_pdata_batch_count: u64 = 0;
-        let mut invalid_pdata_count: u64 = 0;
-        let mut total_received_pdata_batch_count: u64 = 0;
-    let mut last_perf_time: Instant = Instant::now();
+        let last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
             exporter: effect_handler.exporter_id(),
             error: format!("Failed to get process pid: {e}\n"),
@@ -145,25 +145,14 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         let sys_refresh_list = sys_refresh_list(&self.config);
 
         effect_handler.info("Starting Perf Exporter\n").await;
-        // Start report generation TimerTick (existing behavior).
-        let _report_timer = effect_handler
-            .start_periodic_timer(Duration::from_millis(self.config.frequency()))
-            .await?;
 
         // Start telemetry collection tick as a dedicated control message.
-        let _telemetry_timer = effect_handler
+        let _ = effect_handler
             .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
             .await?;
 
         // Helper function to generate performance report
-        let generate_report = async |received_arrow_records_count: u64,
-                                     received_otlp_signal_count: u64,
-                                     received_pdata_batch_count: u64,
-                                     total_received_arrow_records_count: u128,
-                                     total_received_otlp_signal_count: u128,
-                                     total_received_pdata_batch_count: u64,
-                                     invalid_pdata_count: u64,
-                                     average_pipeline_latency: f64,
+        let generate_report = async |average_pipeline_latency: f64,
                                      last_perf_time: Instant,
                                      system: &mut System,
                                      config: &Config,
@@ -178,15 +167,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 .write("====================Pipeline Report====================\n")
                 .await?;
             display_report_pipeline(
-                received_arrow_records_count,
-                received_otlp_signal_count,
-                received_pdata_batch_count,
-                total_received_arrow_records_count,
-                total_received_otlp_signal_count,
-                total_received_pdata_batch_count,
-                invalid_pdata_count,
                 average_pipeline_latency,
-                duration,
                 writer,
             )
             .await?;
@@ -235,45 +216,16 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
-                Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
                     _ = metrics_reporter.report(&mut self.metrics).await;
-                }
-                Message::Control(NodeControlMsg::TimerTick { .. }) => {
-                    generate_report(
-                        received_arrow_records_count,
-                        received_otlp_signal_count,
-                        received_pdata_batch_count,
-                        total_received_arrow_records_count,
-                        total_received_otlp_signal_count,
-                        total_received_pdata_batch_count,
-                        invalid_pdata_count,
-                        average_pipeline_latency,
-                        last_perf_time,
-                        &mut system,
-                        &self.config,
-                        &mut writer,
-                        process_pid,
-                    )
-                    .await?;
-
-                    // reset received counters and update last_perf_time
-                    received_arrow_records_count = 0;
-                    received_otlp_signal_count = 0;
-                    received_pdata_batch_count = 0;
-                    last_perf_time = Instant::now();
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     // Generate final performance report before shutting down
                     generate_report(
-                        received_arrow_records_count,
-                        received_otlp_signal_count,
-                        received_pdata_batch_count,
-                        total_received_arrow_records_count,
-                        total_received_otlp_signal_count,
-                        total_received_pdata_batch_count,
-                        invalid_pdata_count,
                         average_pipeline_latency,
                         last_perf_time,
                         &mut system,
@@ -285,22 +237,42 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     break;
                 }
                 Message::PData(pdata) => {
-                    let mut batch = match OtapArrowBytes::try_from(pdata) {
+                    let batch = match OtapArrowBytes::try_from(pdata) {
                         Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowTraces(batch)) => batch,
                         Err(_) => {
                             // if the pdata is not a valid Arrow batch, we skip it.
                             // For example, when it is a not supported signal type.
-                            invalid_pdata_count += 1;
-                            total_received_pdata_batch_count += 1;
-                            self.metrics.invalid_pdata_msgs.inc();
+                            self.metrics.invalid_batches.inc();
                             continue;
                         }
                     };
-                    // keep track of batches received
-                    received_pdata_batch_count += 1;
-                    total_received_pdata_batch_count += 1;
+
+                    // Keep track of batches and Arrow records received
+                    self.metrics.batches.inc();
+                    self.metrics.arrow_records.add(batch.arrow_payloads.len() as u64);
+
+                    // Increment counters per type of OTLP signals
+                    for arrow_payload in &batch.arrow_payloads {
+                        match ArrowPayloadType::try_from(arrow_payload.r#type) {
+                            Ok(ArrowPayloadType::UnivariateMetrics) => {
+                                self.metrics.metrics.add(arrow_payload.record.len() as u64);
+                                break;
+                            }
+                            Ok(ArrowPayloadType::Logs) => {
+                                self.metrics.logs.add(arrow_payload.record.len() as u64);
+                                break;
+                            }
+                            Ok(ArrowPayloadType::Spans) => {
+                                self.metrics.spans.add(arrow_payload.record.len() as u64);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ToDo (LQ) We need to introduce pdata headers without hpack encoding for data coming from other nodes
                     // decode the headers which are hpack encoded
                     // check for timestamp
                     // get time delta between now and timestamp
@@ -336,28 +308,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         );
                     }
 
-                    // increment counters for received arrow payloads
-                    received_arrow_records_count += batch.arrow_payloads.len() as u64;
-                    total_received_arrow_records_count += batch.arrow_payloads.len() as u128;
-                    // increment counters for otlp signals
-                    let batch_received_otlp_signal_count =
-                        calculate_otlp_signal_count(&mut batch).unwrap_or_default();
-                    received_otlp_signal_count += batch_received_otlp_signal_count;
-                    total_received_otlp_signal_count += batch_received_otlp_signal_count as u128;
-                    // increment counters for otlp signals and update telemetry counters
-                    let mut per_kind_logs = 0u64;
-                    let mut per_kind_spans = 0u64;
-                    let mut per_kind_metrics = 0u64;
-                    for payload in &batch.arrow_payloads {
-                        let n = payload.record.len() as u64;
-                        if payload.r#type == ArrowPayloadType::Logs as i32 { per_kind_logs += n; }
-                        else if payload.r#type == ArrowPayloadType::Spans as i32 { per_kind_spans += n; }
-                        else if payload.r#type == ArrowPayloadType::UnivariateMetrics as i32 { per_kind_metrics += n; }
-                    }
-                    self.metrics.pdata_msgs.inc();
-                    self.metrics.logs.add(per_kind_logs);
-                    self.metrics.spans.add(per_kind_spans);
-                    self.metrics.metrics.add(per_kind_metrics);
+                    // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -425,46 +376,6 @@ fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
         .map_err(|error| error.to_string())?;
 
     Ok(Duration::new(secs, nanosecs))
-}
-
-/// Calculate number of OTLP signals based on Arrow payload type
-fn calculate_otlp_signal_count(
-    batch: &mut BatchArrowRecords,
-) -> Result<u64, otel_arrow_rust::error::Error> {
-    let main_record_type = batch.arrow_payloads[0].r#type;
-
-    // Handle the different ArrowPayloadTypes using a match statement
-    match ArrowPayloadType::try_from(main_record_type) {
-        Ok(payload_type)
-            if matches!(
-                payload_type,
-                ArrowPayloadType::Spans
-                    | ArrowPayloadType::Logs
-                    | ArrowPayloadType::UnivariateMetrics
-            ) =>
-        {
-            let mut consumer = Consumer::default();
-            consumer.consume_bar(batch).map(|record_messages| {
-                let otap_batch = match payload_type {
-                    ArrowPayloadType::Spans => {
-                        OtapArrowRecords::Traces(from_record_messages(record_messages))
-                    }
-                    ArrowPayloadType::Logs => {
-                        OtapArrowRecords::Logs(from_record_messages(record_messages))
-                    }
-                    ArrowPayloadType::UnivariateMetrics => {
-                        OtapArrowRecords::Metrics(from_record_messages(record_messages))
-                    }
-                    _ => return 0, // Handle all other cases by returning 0 immediately
-                };
-                otap_batch
-                    .get(payload_type)
-                    .map_or(0, |record_batch| record_batch.num_rows()) as u64
-            })
-        }
-        // Return 0 for all other types or invalid input
-        _ => Ok(0),
-    }
 }
 
 /// takes in the process and system outputs cpu stats via the writer
@@ -660,62 +571,13 @@ async fn display_io_usage(
 
 /// accepts pipeline statistics and prints a report via the writer
 async fn display_report_pipeline(
-    received_arrow_records_count: u64,
-    received_otlp_signal_count: u64,
-    received_pdata_batch_count: u64,
-    total_received_arrow_records_count: u128,
-    total_received_otlp_signal_count: u128,
-    total_received_pdata_batch_count: u64,
-    invalid_pdata_count: u64,
     average_pipeline_latency: f64,
-    duration: Duration,
     writer: &mut OutputWriter,
 ) -> Result<(), Error<OtapPdata>> {
     writer
         .write(&format!(
-            "\t- arrow records throughput          : {:.2} arrow-records/s\n",
-            (received_arrow_records_count as f64 / duration.as_secs_f64()),
-        ))
-        .await?;
-    writer
-        .write(&format!(
             "\t- average pipeline latency          : {:.2} s\n",
             average_pipeline_latency * 1000.0,
-        ))
-        .await?;
-
-    writer
-        .write(&format!(
-            "\t- total arrow records received      : {total_received_arrow_records_count}\n"
-        ))
-        .await?;
-    writer
-        .write(&format!(
-            "\t- otlp signal throughput            : {:.2} otlp/s\n",
-            (received_otlp_signal_count as f64 / duration.as_secs_f64()),
-        ))
-        .await?;
-    writer
-        .write(&format!(
-            "\t- total otlp signal received        : {total_received_otlp_signal_count}\n"
-        ))
-        .await?;
-    writer
-        .write(&format!(
-            "\t- pdata batch throughput            : {:.2} pdata/s\n",
-            received_pdata_batch_count as f64 / duration.as_secs_f64(),
-        ))
-        .await?;
-
-    writer
-        .write(&format!(
-            "\t- total pdata batch received        : {total_received_pdata_batch_count}\n"
-        ))
-        .await?;
-
-    writer
-        .write(&format!(
-            "\t- invalid pdata batches received    : {invalid_pdata_count}\n"
         ))
         .await?;
 
@@ -728,7 +590,7 @@ mod tests {
     use crate::grpc::OtapArrowBytes;
     use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
-    use crate::perf_exporter::exporter::{PerfExporter, OTAP_PERF_EXPORTER_URN};
+    use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
     use fluke_hpack::Encoder;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
@@ -738,12 +600,12 @@ mod tests {
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
-    use std::fs::{remove_file, File};
+    use std::fs::{File, remove_file};
     use std::future::Future;
-    use std::io::{prelude::*, BufReader};
+    use std::io::{BufReader, prelude::*};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     const TRACES_BATCH_ID: i64 = 0;
     const LOGS_BATCH_ID: i64 = 1;
