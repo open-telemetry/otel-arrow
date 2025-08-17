@@ -23,25 +23,31 @@ where
 {
     match scalar_expression {
         ScalarExpression::Source(s) => {
-            let record = Ref::map(execution_context.get_record().borrow(), |v| {
-                v as &dyn AsStaticValue
-            });
-            let mut selectors = s.get_value_accessor().get_selectors().iter();
+            if let Some(record) = execution_context.get_record() {
+                let mut selectors = s.get_value_accessor().get_selectors().iter();
 
-            let value = select_from_borrowed_value(
-                execution_context,
-                BorrowSource::Source,
-                record,
-                &mut selectors,
-            )?;
+                let value = select_from_borrowed_value(
+                    execution_context,
+                    BorrowSource::Source,
+                    record.borrow(),
+                    &mut selectors,
+                )?;
 
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: '{value}'"),
-            );
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    scalar_expression,
+                    || format!("Evaluated as: '{value}'"),
+                );
 
-            Ok(value)
+                Ok(value)
+            } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    scalar_expression,
+                    || "Evaluated as 'null' because source could not be found".into(),
+                );
+                Ok(ResolvedValue::Computed(OwnedValue::Null))
+            }
         }
         ScalarExpression::Attached(a) => {
             if let Some(Some(record)) = execution_context

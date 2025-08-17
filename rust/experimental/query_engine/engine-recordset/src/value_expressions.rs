@@ -37,16 +37,22 @@ where
 {
     match mutable_value_expression {
         MutableValueExpression::Source(s) => {
-            let mut selectors = capture_selector_values_for_mutable_write(
-                execution_context,
-                mutable_value_expression,
-                s.get_value_accessor().get_selectors(),
-            )?;
+            let value = if let Some(record) = execution_context.get_record() {
+                let mut selectors = capture_selector_values_for_mutable_write(
+                    execution_context,
+                    mutable_value_expression,
+                    s.get_value_accessor().get_selectors(),
+                )?;
 
-            let record = execution_context.get_record().borrow_mut();
-
-            let value =
-                select_from_borrowed_root_map(execution_context, s, record, selectors.drain(..))?;
+                select_from_borrowed_root_map(
+                    execution_context,
+                    s,
+                    record.borrow_mut(),
+                    selectors.drain(..),
+                )?
+            } else {
+                None
+            };
 
             log_mutable_value_expression_evaluated(
                 execution_context,

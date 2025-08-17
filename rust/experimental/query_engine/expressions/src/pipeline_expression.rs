@@ -1,10 +1,14 @@
-use crate::{DataExpression, Expression, ExpressionError, QueryLocation, StaticScalarExpression};
+use crate::{
+    DataExpression, Expression, ExpressionError, QueryLocation, ScalarExpression,
+    StaticScalarExpression,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineExpression {
     query: Box<str>,
     query_location: QueryLocation,
     constants: Vec<StaticScalarExpression>,
+    initializations: Vec<PipelineInitialization>,
     expressions: Vec<DataExpression>,
 }
 
@@ -14,6 +18,7 @@ impl PipelineExpression {
             query: query.into(),
             query_location: QueryLocation::new(0, query.len(), 1, 1).unwrap(),
             constants: Vec::new(),
+            initializations: Vec::new(),
             expressions: Vec::new(),
         }
     }
@@ -28,7 +33,7 @@ impl PipelineExpression {
         &self.query[start..end]
     }
 
-    pub fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
+    pub(crate) fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
         self.constants.push(value);
         self.constants.len() - 1
     }
@@ -47,6 +52,18 @@ impl PipelineExpression {
 
     pub(crate) fn push_expression(&mut self, expression: DataExpression) {
         self.expressions.push(expression);
+    }
+
+    pub(crate) fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
+        self.initializations
+            .push(PipelineInitialization::SetGlobalVariable {
+                name: name.into(),
+                value,
+            });
+    }
+
+    pub fn get_initializations(&self) -> &[PipelineInitialization] {
+        &self.initializations
     }
 
     pub(crate) fn optimize(&mut self) -> Result<(), Vec<ExpressionError>> {
@@ -69,6 +86,14 @@ impl Expression for PipelineExpression {
     fn get_name(&self) -> &'static str {
         "PipelineExpression"
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PipelineInitialization {
+    SetGlobalVariable {
+        name: String,
+        value: ScalarExpression,
+    },
 }
 
 pub struct PipelineExpressionBuilder {
@@ -110,6 +135,10 @@ impl PipelineExpressionBuilder {
 
     pub fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
         self.pipeline.push_constant(value)
+    }
+
+    pub fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
+        self.pipeline.push_global_variable(name, value)
     }
 
     pub fn build(self) -> Result<PipelineExpression, Vec<ExpressionError>> {

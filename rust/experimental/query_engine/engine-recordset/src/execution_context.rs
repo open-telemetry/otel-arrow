@@ -17,7 +17,7 @@ where
     variables: ExecutionContextVariables<'b>,
     summaries: &'b Summaries,
     attached_records: Option<&'b dyn AttachedRecords>,
-    record: RefCell<TRecord>,
+    record: Option<RefCell<TRecord>>,
 }
 
 impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord> {
@@ -27,14 +27,14 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         global_variables: &'b RefCell<MapValueStorage<OwnedValue>>,
         summaries: &'b Summaries,
         attached_records: Option<&'b dyn AttachedRecords>,
-        record: TRecord,
+        record: Option<TRecord>,
     ) -> ExecutionContext<'a, 'b, 'c, TRecord> {
         Self {
             diagnostic_level,
             diagnostics: RefCell::new(Vec::new()),
             pipeline,
             attached_records,
-            record: RefCell::new(record),
+            record: record.map(|v| RefCell::new(v)),
             variables: ExecutionContextVariables::new(global_variables),
             summaries,
         }
@@ -78,8 +78,8 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         self.attached_records
     }
 
-    pub fn get_record(&self) -> &RefCell<TRecord> {
-        &self.record
+    pub fn get_record(&self) -> Option<&RefCell<TRecord>> {
+        self.record.as_ref()
     }
 
     pub fn get_variables(&self) -> &ExecutionContextVariables<'b> {
@@ -90,10 +90,14 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         self.summaries
     }
 
+    pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'c>> {
+        self.diagnostics.take()
+    }
+
     pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, 'c, TRecord> {
         RecordSetEngineRecord::new(
             self.pipeline,
-            self.record.into_inner(),
+            self.record.expect("record wasn't set").into_inner(),
             self.diagnostics.take(),
         )
     }
@@ -159,7 +163,7 @@ impl TestExecutionContext {
             global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
             summaries: Summaries::new(8192),
             attached_records: None,
-            record: Some(Default::default()),
+            record: None,
         }
     }
 
@@ -194,7 +198,7 @@ impl TestExecutionContext {
             self.attached_records
                 .as_ref()
                 .map(|v| v as &dyn AttachedRecords),
-            self.record.take().expect("Record wasn't set"),
+            self.record.take(),
         )
     }
 }
