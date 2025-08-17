@@ -17,14 +17,15 @@ use arrow::{
     },
     buffer::{MutableBuffer, ScalarBuffer},
     compute::take_record_batch,
-    datatypes::{ArrowNativeType, DataType, Field, Schema, UInt16Type},
+    datatypes::{ArrowNativeType, DataType, Field, FieldRef, Schema, UInt16Type},
     row::{RowConverter, SortField},
 };
+use snafu::OptionExt;
 
 use crate::{
-    error::Result,
+    error::{self, Result},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::{consts, get_field_metadata},
+    schema::{FieldExt, consts, get_field_metadata},
 };
 
 /// identifier for column encoding
@@ -115,6 +116,73 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
     // otherwise just return column by nname
     let column_idx = schema.index_of(path).ok()?;
     columns.get(column_idx).cloned()
+}
+
+fn replace_column(path: &str, schema: &Schema, columns: &mut [ArrayRef], new_column: ArrayRef) {
+    // TODO write tests for this
+    if let Some(struct_col_name) = struct_column_name(path) {
+        let field_index = schema.index_of(struct_col_name).ok();
+        if let Some(field_index) = field_index {
+            let struct_column = columns[field_index].as_any().downcast_ref::<StructArray>();
+            if let Some(struct_column) = struct_column {
+                if let Some((struct_idx, _)) = struct_column.fields().find(consts::ID) {
+                    let mut new_struct_columns = struct_column.columns().to_vec();
+                    new_struct_columns[struct_idx] = new_column;
+                    let new_struct_array = Arc::new(StructArray::new(
+                        struct_column.fields().clone(),
+                        new_struct_columns,
+                        struct_column.nulls().cloned(),
+                    ));
+                    columns[field_index] = new_struct_array;
+                }
+            }
+        }
+        return;
+    }
+
+    let field_index = schema.index_of(path).ok();
+    if let Some(field_index) = field_index {
+        columns[field_index] = new_column
+    }
+}
+
+/// sets the encoding metadata on the field metadata for column at path
+fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding: Encoding) {
+    // TODO write tests for this
+
+    if let Some(struct_col_name) = struct_column_name(path) {
+        // replace the field metadata in some nested struct
+        let found_field = fields
+            .iter()
+            .enumerate()
+            .find(|(i, f)| f.name().as_str() == struct_col_name);
+        if let Some((idx, field)) = found_field {
+            if let DataType::Struct(struct_fields) = field.data_type() {
+                let mut new_struct_fields = struct_fields.to_vec();
+                update_field_encoding_metadata(&mut new_struct_fields, consts::ID, encoding);
+
+                let new_field = field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(DataType::Struct(new_struct_fields.into()));
+                fields[idx] = Arc::new(new_field)
+            }
+        }
+    }
+
+    // not a field nested within a struct, so just replace the metadata on field where name == path
+    let found_field = fields
+        .iter()
+        .enumerate()
+        .find(|(i, f)| f.name().as_str() == path);
+    if let Some((idx, field)) = found_field {
+        let encoding = match encoding {
+            Encoding::Delta => consts::metadata::encodings::DELTA,
+            Encoding::AttributeQuasiDelta => consts::metadata::encodings::QUASI_DELTA,
+        };
+        let new_field = field.as_ref().clone().with_encoding(encoding);
+        fields[idx] = Arc::new(new_field)
+    }
 }
 
 /// if configured to encode the ID column in the nested resource/scope struct array, this
@@ -231,7 +299,7 @@ where
     let remappings_len = arrow::compute::max(column).unwrap();
     let mut remappings = vec![zero; remappings_len.as_usize()];
 
-    let mut curr_id: T::Native = T::Native::default();
+    let mut curr_id: T::Native = zero;
 
     let mut new_buffer = MutableBuffer::with_capacity(column.len() * size_of::<T::Native>());
 
@@ -256,8 +324,8 @@ where
                 }
             },
             None => {
-                // push the default value, we'll
-                new_buffer.push(T::Native::default());
+                // push the default value & we'll clone the null buffer later
+                new_buffer.push(zero);
             }
         }
     }
@@ -272,11 +340,45 @@ where
     })
 }
 
+#[derive(Debug, PartialEq)]
+struct ParentIdRemapping {
+    column_path: &'static str,
+    // TODO this won't always be u16
+    remapped_ids: RemappedParentIds,
+}
+
+impl ParentIdRemapping {
+    fn new(column_path: &'static str, remapped_ids: RemappedParentIds) -> Self {
+        Self {
+            column_path,
+            remapped_ids,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum RemappedParentIds {
+    UInt8(Vec<u8>),
+    UInt16(Vec<u16>),
+}
+
+impl From<Vec<u8>> for RemappedParentIds {
+    fn from(ids: Vec<u8>) -> Self {
+        Self::UInt8(ids)
+    }
+}
+
+impl From<Vec<u16>> for RemappedParentIds {
+    fn from(ids: Vec<u16>) -> Self {
+        Self::UInt16(ids)
+    }
+}
+
 /// apply transport-optimized encodings to the record batch's columns
-pub fn apply_column_encodings(
+fn apply_column_encodings(
     payload_type: &ArrowPayloadType,
     record_batch: &RecordBatch,
-) -> Result<RecordBatch> {
+) -> Result<(RecordBatch, Option<Vec<ParentIdRemapping>>)> {
     let column_encodings = get_column_encodings(payload_type);
 
     // TODO revisit this check after filling in get_column_encodings b/c there might not be any
@@ -284,10 +386,10 @@ pub fn apply_column_encodings(
     // as it'll never be true.
     if column_encodings.is_empty() {
         // nothing to do
-        return Ok(record_batch.clone());
+        return Ok((record_batch.clone(), None));
     }
 
-    let mut schema = record_batch.schema().as_ref().clone();
+    let schema = record_batch.schema();
 
     // determine which columns need to be encoded
     let mut to_apply = vec![];
@@ -300,7 +402,7 @@ pub fn apply_column_encodings(
 
     if to_apply.len() == 0 {
         // nothing to do
-        return Ok(record_batch.clone());
+        return Ok((record_batch.clone(), None));
     }
 
     if to_apply.len() != column_encodings.len() {
@@ -312,16 +414,52 @@ pub fn apply_column_encodings(
     // sort record batch before applying the encoding. This will give us the best compression ratio
     // for columns which may have many repeated sequences of the same value
     let record_batch = sort_record_batch(payload_type, record_batch)?;
-
-    let schema = record_batch.schema();
-    let columns = record_batch.columns();
+    let mut columns = record_batch.columns().to_vec();
+    let mut fields = schema.fields.to_vec();
+    let mut remapped_parent_ids = Vec::with_capacity(column_encodings.len());
 
     for column_encoding in to_apply {
-        // let column = column_encoding.access_column(&schema, columns).unwrap();
-        // let r = create_new_delta_encoded_column_from::<UInt16Type>(column);
+        let column = column_encoding.access_column(&schema, &columns).unwrap();
+
+        // TODO clean up how this match is structured
+        let encoding_result = match (column_encoding.encoding, &column_encoding.data_type) {
+            (Encoding::Delta, DataType::UInt16) => {
+                let column =
+                    column
+                        .as_any()
+                        .downcast_ref()
+                        .context(error::InvalidListArraySnafu {
+                            expect_oneof: vec![DataType::UInt16],
+                            actual: column.data_type().clone(),
+                        })?;
+                create_new_delta_encoded_column_from::<UInt16Type>(column)
+            }
+            _ => {
+                // unexpected ...
+                todo!()
+            }
+        }?;
+
+        remapped_parent_ids.push(ParentIdRemapping::new(
+            column_encoding.path,
+            encoding_result.remapping.into(),
+        ));
+        // TODO the order of arguments between this and the next method call are not consistent
+        replace_column(
+            column_encoding.path,
+            &schema,
+            &mut columns,
+            encoding_result.new_column,
+        );
+        // TODO could make this a method call on column_encoding?
+        update_field_encoding_metadata(&mut fields, column_encoding.path, column_encoding.encoding);
     }
 
-    todo!();
+    // Safety: TODO
+    let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .expect("TODO why we can expect here");
+
+    Ok((record_batch, Some(remapped_parent_ids)))
 }
 
 #[cfg(test)]
@@ -585,7 +723,10 @@ mod test {
         .unwrap();
 
         let result = apply_column_encodings(&ArrowPayloadType::Logs, &input).unwrap();
-        assert_eq!(result, input);
+        assert_eq!(result.0, input);
+
+        // assert no parent ID remappings returned
+        assert_eq!(result.1, None)
     }
 
     #[test]
@@ -601,6 +742,9 @@ mod test {
         .unwrap();
 
         let result = apply_column_encodings(&ArrowPayloadType::Logs, &input).unwrap();
-        assert_eq!(result, input);
+        assert_eq!(result.0, input);
+
+        // assert no parent ID remappings returned
+        assert_eq!(result.1, None)
     }
 }

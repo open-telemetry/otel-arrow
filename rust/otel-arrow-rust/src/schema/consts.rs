@@ -88,7 +88,14 @@ pub mod metadata {
     pub const COLUMN_ENCODING: &str = "encoding";
 
     pub mod encodings {
+        /// delta encoding
+        pub const DELTA: &str = "delta";
+
         /// plain encoding - e.g. the values in the array are not encoded
         pub const PLAIN: &str = "plain";
+
+        /// quasi-delta encoding. This is used for attributes where subsequent runs of matching
+        /// type, key and value will have the parent_id field delta encoded.
+        pub const QUASI_DELTA: &str = "quasidelta";
     }
 }
