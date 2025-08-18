@@ -124,10 +124,12 @@ conversion_expressions = _{
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
+parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
 string_expressions = _{
     strlen_expression
     | replace_string_expression
     | substring_expression
+    | parse_json_expression
 }
 
 scalar_expression = {
