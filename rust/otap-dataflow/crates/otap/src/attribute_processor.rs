@@ -185,43 +185,13 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
                 }
 
                 let signal = pdata.signal_type();
-
-                enum Kind {
-                    Records,
-                    OtapBytes,
-                    OtlpBytes,
-                }
-
-                // Canonicalize to records and remember original kind
-                let (mut records, kind): (OtapArrowRecords, Kind) = match pdata {
-                    OtapPdata::OtapArrowRecords(r) => (r, Kind::Records),
-                    OtapPdata::OtapArrowBytes(_) => {
-                        let r: OtapArrowRecords = pdata.try_into()?;
-                        (r, Kind::OtapBytes)
-                    }
-                    OtapPdata::OtlpBytes(_) => {
-                        let r: OtapArrowRecords = pdata.try_into()?;
-                        (r, Kind::OtlpBytes)
-                    }
-                };
+                let signal = pdata.signal_type();
+                let mut records: OtapArrowRecords = pdata.try_into()?;
 
                 // Apply transform across selected domains
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
-
-                // Convert back to original outer variant
-                let out_pdata = match kind {
-                    Kind::Records => OtapPdata::OtapArrowRecords(records),
-                    Kind::OtapBytes => {
-                        let bytes: crate::grpc::OtapArrowBytes = records.try_into()?;
-                        bytes.into()
-                    }
-                    Kind::OtlpBytes => {
-                        let bytes: crate::pdata::OtlpProtoBytes = records.try_into()?;
-                        OtapPdata::OtlpBytes(bytes)
-                    }
-                };
-
-                effect_handler.send_message(out_pdata).await
+                
+                effect_handler.send_message(records.into()).await
             }
         }
     }
