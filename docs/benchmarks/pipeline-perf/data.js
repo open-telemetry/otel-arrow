@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1755550328734,
+  "lastUpdate": 1755558645527,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "8164192+clhain@users.noreply.github.com",
-            "name": "clhain",
-            "username": "clhain"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "a921de10ac7e956db8eb82a1a7936daa172677a9",
-          "message": "Perf - Add otel based classes for interacting with metric / trace data in the orchestrator (#541)\n\nThis PR adds the basic plumbing for a move towards a common otel-based\nmechanism to allow test framework components and plugins to generate,\nstore, and access telemetry data.\n\nThe basic idea is:\n1. Test framework elements register standard otel Metric/Span exporters\non creation (log exporter too but no plan to support native store /\nquery of these... except maybe as span events)\n2. By default, we register exporters that will store these signals in\nmemory (but remote backends via otlp should work fine too)\n3. TestFrameworkElements generate spans / events via otel sdk for\n'everything' (tests, steps, hooks, etc)\n4. Plugins can generate their own spans/metrics the same way (e.g.\ndocker process monitor plugin creates a gauge container.cpu.utilization\nusing the framework's ctx.get_meter())\n5. signal retriever interfaces provide access to stored data (default in\nmemory, or remote) represented as a MetricDataFrame, SpanDataFrame,\nSpanEventDataFrame... signal specific pd.DataFrames - simplified\nrepresentations of the otel dataclasses (felt a lot easier to work with\nthan just a raw list[Span] / MetricData) - better support for storing to\ndisk.\n\nExample use:\n1. Docker Container Monitoring plugin is started and begins collecting\ncpu data for containers every X seconds\n2. Load is started and allowed to come to a steady state (which is\noptionally validated via metricsretriver provided data)\n3. Framework automatically generates a span for \"Test Step: Observe\nProcess\", a 60 second pause\n5. A reporting plugin is configured to fetch the span for this test step\n(or a custom event added via a hook insertion, or etc...), and then\nqueries the metricsretriever for all container.cpu.utilization metrics\nbetween the span.start and span.end - aggregates them, and reports that\nvalue (optionally as it's own event or metric!)\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2025-06-05T21:20:25Z",
-          "tree_id": "59ad32679eb816f10a331a568ec2f27d03ed0e62",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/a921de10ac7e956db8eb82a1a7936daa172677a9"
-        },
-        "date": 1749159016621,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 461666.6666666667,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 13850000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 13850000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 2.46,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 2.79,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 146.33,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 179.88,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 436166.6666666667,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 13085000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 13085000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 2.39,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 2.8,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 111.94,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 132.6,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 142.03,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff5d7e5f542aa2593402672390fd89de6b5f8cc5",
+          "message": "[query-engine] Improve validation in KQL string function parsing (#959)\n\n## Changes\n\n* Adds parameter validation in `strlen` and `replace_string`\n* Adjust the query location to point to the inner expression instead of\nthe root rule in `substring` and `parse_json`",
+          "timestamp": "2025-08-18T22:46:13Z",
+          "tree_id": "ffbf062c70e1b8d1c2fb5c3058ae3ad0623c6cd0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ff5d7e5f542aa2593402672390fd89de6b5f8cc5"
+        },
+        "date": 1755558643067,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 745333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22360000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22360000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.77,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.81,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 165.38,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 193.62,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 733500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22005000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22005000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.69,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.85,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 124.35,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 144.12,
             "unit": "MiB"
           }
         ]
