@@ -15,6 +15,8 @@
 //! We may add support for them later.
 //!
 //! Example configuration (YAML):
+//! You can optionally scope the transformation using `apply_to`. Valid values: signal, resource, scope.
+//! If omitted, defaults to [signal].
 //! ```yaml
 //! actions:
 //!   - action: "rename"
@@ -22,6 +24,7 @@
 //!     to: "rpc.method"       # Renames http.method to rpc.method
 //!   - key: "db.statement"
 //!     action: "delete"       # Removes db.statement attribute
+//!   # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
 //! ```
 //!
 //! Implementation uses otel_arrow_rust::otap::transform::transform_attributes for
@@ -45,7 +48,7 @@ use otel_arrow_rust::otap::{
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 /// URN for the AttributeProcessor
@@ -79,17 +82,18 @@ pub enum Action {
 /// Configuration for the AttributeProcessor.
 ///
 /// Accepts configuration in the same format as the OpenTelemetry Collector's attributes processor.
-/// Currently supports a subset of operations that can be implemented via
-/// otel_arrow_rust::otap::transform::transform_attributes:
-/// - update: Implemented as rename when value is provided
-/// - delete: Remove attributes by key
+/// Supported actions: rename (deviation), delete. Others are ignored.
 ///
-/// Other operations (insert, upsert, hash, extract, convert) are accepted in configuration
-/// but not yet implemented.
+/// You can control which attribute domains are transformed via `apply_to`.
+/// Valid values: "signal" (default), "resource", "scope".
 pub struct AttributeProcessorConfig {
     /// List of actions to apply in order.
     #[serde(default)]
     pub actions: Vec<Action>,
+
+    /// Attribute domains to apply transforms to. Defaults to ["signal"].
+    #[serde(default)]
+    pub apply_to: Option<Vec<String>>,
 }
 
 /// Processor that applies attribute transformations to OTAP attribute batches.
@@ -101,6 +105,8 @@ pub struct AttributeProcessorConfig {
 pub struct AttributeProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
+    // Selected attribute domains to transform
+    domains: HashSet<ApplyDomain>,
 }
 
 impl AttributeProcessor {
@@ -136,6 +142,8 @@ impl AttributeProcessor {
             }
         }
 
+        let domains = parse_apply_to(config.apply_to.as_ref());
+
         Self {
             transform: AttributesTransform {
                 rename: if renames.is_empty() {
@@ -149,6 +157,7 @@ impl AttributeProcessor {
                     Some(deletes)
                 },
             },
+            domains,
         }
     }
 }
@@ -168,7 +177,7 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
 
                 match pdata {
                     OtapPdata::OtapArrowRecords(ref mut records) => {
-                        apply_transform(records, signal, &self.transform)?;
+                        apply_transform(records, signal, &self.transform, &self.domains)?;
                         effect_handler.send_message(pdata).await
                     }
                     OtapPdata::OtapArrowBytes(_) => {
@@ -176,7 +185,12 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
                         let signal_ty = pdata.signal_type();
                         let records: OtapArrowRecords = pdata.clone().try_into()?;
                         let mut records_mut = records;
-                        apply_transform(&mut records_mut, signal_ty, &self.transform)?;
+                        apply_transform(
+                            &mut records_mut,
+                            signal_ty,
+                            &self.transform,
+                            &self.domains,
+                        )?;
                         let bytes: crate::grpc::OtapArrowBytes = records_mut.try_into()?;
                         let pdata_back: OtapPdata = bytes.into();
                         effect_handler.send_message(pdata_back).await
@@ -185,7 +199,7 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
                         // Convert to OTAP, apply transform, convert back
                         let records: OtapArrowRecords = otlp_bytes.try_into()?;
                         let mut records_mut = records;
-                        apply_transform(&mut records_mut, signal, &self.transform)?;
+                        apply_transform(&mut records_mut, signal, &self.transform, &self.domains)?;
                         let bytes: crate::pdata::OtlpProtoBytes = records_mut.try_into()?;
                         let pdata_back = OtapPdata::OtlpBytes(bytes);
                         effect_handler.send_message(pdata_back).await
@@ -201,12 +215,13 @@ fn apply_transform(
     records: &mut OtapArrowRecords,
     signal: SignalType,
     transform: &AttributesTransform,
+    domains: &HashSet<ApplyDomain>,
 ) -> Result<(), EngineError<OtapPdata>> {
-    let payloads = attrs_payloads_for_signal(signal);
+    let payloads = attrs_payloads(signal, domains);
 
     // Only apply if we have transforms to apply
     if transform.rename.is_some() || transform.delete.is_some() {
-        for &payload_ty in payloads {
+        for payload_ty in payloads {
             if let Some(rb) = records.get(payload_ty).cloned() {
                 let rb = transform_attributes(&rb, transform)
                     .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
@@ -218,28 +233,78 @@ fn apply_transform(
     Ok(())
 }
 
-fn attrs_payloads_for_signal(signal: SignalType) -> &'static [ArrowPayloadType] {
-    use ArrowPayloadType as A;
-    match signal {
-        SignalType::Logs => &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs],
-        SignalType::Metrics => &[
-            A::ResourceAttrs,
-            A::ScopeAttrs,
-            A::MetricAttrs,
-            A::NumberDpAttrs,
-            A::HistogramDpAttrs,
-            A::SummaryDpAttrs,
-            A::NumberDpExemplarAttrs,
-            A::HistogramDpExemplarAttrs,
-        ],
-        SignalType::Traces => &[
-            A::ResourceAttrs,
-            A::ScopeAttrs,
-            A::SpanAttrs,
-            A::SpanEventAttrs,
-            A::SpanLinkAttrs,
-        ],
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ApplyDomain {
+    Signal,
+    Resource,
+    Scope,
+}
+
+fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
+    let mut set = HashSet::new();
+    match apply_to {
+        None => {
+            let _ = set.insert(ApplyDomain::Signal);
+        }
+        Some(list) if list.is_empty() => {
+            let _ = set.insert(ApplyDomain::Signal);
+        }
+        Some(list) => {
+            for item in list {
+                match item.as_str() {
+                    "signal" => {
+                        let _ = set.insert(ApplyDomain::Signal);
+                    }
+                    "resource" => {
+                        let _ = set.insert(ApplyDomain::Resource);
+                    }
+                    "scope" => {
+                        let _ = set.insert(ApplyDomain::Scope);
+                    }
+                    _ => {
+                        // Unknown entry: ignore for now; could return config error in future
+                    }
+                }
+            }
+            if set.is_empty() {
+                let _ = set.insert(ApplyDomain::Signal);
+            }
+        }
     }
+    set
+}
+
+fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> Vec<ArrowPayloadType> {
+    use ArrowPayloadType as A;
+    let mut out: Vec<ArrowPayloadType> = Vec::new();
+    // Domains are unioned
+    if domains.contains(&ApplyDomain::Resource) {
+        out.push(A::ResourceAttrs);
+    }
+    if domains.contains(&ApplyDomain::Scope) {
+        out.push(A::ScopeAttrs);
+    }
+    if domains.contains(&ApplyDomain::Signal) {
+        match signal {
+            SignalType::Logs => {
+                out.push(A::LogAttrs);
+            }
+            SignalType::Metrics => {
+                out.push(A::MetricAttrs);
+                out.push(A::NumberDpAttrs);
+                out.push(A::HistogramDpAttrs);
+                out.push(A::SummaryDpAttrs);
+                out.push(A::NumberDpExemplarAttrs);
+                out.push(A::HistogramDpExemplarAttrs);
+            }
+            SignalType::Traces => {
+                out.push(A::SpanAttrs);
+                out.push(A::SpanEventAttrs);
+                out.push(A::SpanLinkAttrs);
+            }
+        }
+    }
+    out
 }
 
 fn engine_err(msg: &str) -> EngineError<OtapPdata> {
@@ -398,7 +463,13 @@ mod tests {
             ]
         });
         let processor = AttributeProcessor::from_config(&config).unwrap();
-        apply_transform(&mut otap_records, SignalType::Logs, &processor.transform).unwrap();
+        apply_transform(
+            &mut otap_records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
 
         if let Some(rb) = otap_records.get(ArrowPayloadType::LogAttrs) {
             let all_keys = collect_key_strings(rb);
@@ -448,7 +519,13 @@ mod tests {
             ]
         });
         let processor = AttributeProcessor::from_config(&config).unwrap();
-        apply_transform(&mut otap_records, SignalType::Logs, &processor.transform).unwrap();
+        apply_transform(
+            &mut otap_records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
 
         if let Some(rb) = otap_records.get(ArrowPayloadType::LogAttrs) {
             let all = collect_key_strings(rb);
@@ -476,7 +553,13 @@ mod tests {
             ]
         });
         let processor = AttributeProcessor::from_config(&config).unwrap();
-        apply_transform(&mut records, SignalType::Metrics, &processor.transform).unwrap();
+        apply_transform(
+            &mut records,
+            SignalType::Metrics,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
 
         let rb2 = records.get(ArrowPayloadType::MetricAttrs).unwrap();
         let key_idx = rb2.schema().index_of("key").unwrap();
@@ -507,7 +590,13 @@ mod tests {
             ]
         });
         let processor = AttributeProcessor::from_config(&config).unwrap();
-        apply_transform(&mut records, SignalType::Traces, &processor.transform).unwrap();
+        apply_transform(
+            &mut records,
+            SignalType::Traces,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
 
         let rb2 = records.get(ArrowPayloadType::SpanAttrs).unwrap();
         let all = collect_key_strings(rb2);
@@ -516,6 +605,75 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(all, expected);
+    }
+
+    #[test]
+    fn test_resource_only_apply_to() {
+        // Resource-only rename
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        // Put keys in ResourceAttrs
+        let rb = make_attrs_batch(vec![0u16, 0u16], vec!["svc.name", "keep"]);
+        records.set(ArrowPayloadType::ResourceAttrs, rb);
+
+        let config = json!({
+            "actions": [
+                { "action": "rename", "from": "svc.name", "to": "service.name" }
+            ],
+            "apply_to": ["resource"]
+        });
+        let processor = AttributeProcessor::from_config(&config).unwrap();
+        apply_transform(
+            &mut records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
+
+        let rb2 = records.get(ArrowPayloadType::ResourceAttrs).unwrap();
+        let all = collect_key_strings(rb2);
+        assert_eq!(all, vec!["service.name", "keep"]);
+
+        // Ensure LogAttrs are untouched (none present still none)
+        assert!(records.get(ArrowPayloadType::LogAttrs).is_none());
+    }
+
+    #[test]
+    fn test_signal_and_resource_apply_to() {
+        // Build a Logs record with both Resource and Log attributes present
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        // Resource attrs
+        let rb_res = make_attrs_batch(vec![0u16, 0u16], vec!["svc.name", "keep_r"]);
+        records.set(ArrowPayloadType::ResourceAttrs, rb_res);
+        // Log attrs
+        let rb_log = make_attrs_batch(vec![0u16, 0u16], vec!["http.method", "keep_l"]);
+        records.set(ArrowPayloadType::LogAttrs, rb_log);
+
+        let config = json!({
+            "actions": [
+                { "action": "rename", "from": "svc.name", "to": "service.name" },
+                { "action": "rename", "from": "http.method", "to": "rpc.method" }
+            ],
+            "apply_to": ["signal", "resource"]
+        });
+        let processor = AttributeProcessor::from_config(&config).unwrap();
+        apply_transform(
+            &mut records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
+
+        // Resource rename applied
+        let rb2_res = records.get(ArrowPayloadType::ResourceAttrs).unwrap();
+        let all_res = collect_key_strings(rb2_res);
+        assert_eq!(all_res, vec!["service.name", "keep_r"]);
+
+        // Signal (log) rename applied
+        let rb2_log = records.get(ArrowPayloadType::LogAttrs).unwrap();
+        let all_log = collect_key_strings(rb2_log);
+        assert_eq!(all_log, vec!["rpc.method", "keep_l"]);
     }
 
     #[test]
@@ -536,7 +694,13 @@ mod tests {
             ]
         });
         let processor = AttributeProcessor::from_config(&config).unwrap();
-        apply_transform(&mut records, SignalType::Logs, &processor.transform).unwrap();
+        apply_transform(
+            &mut records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
 
         let rb2 = records.get(ArrowPayloadType::LogAttrs).unwrap();
         let all = collect_key_strings(rb2);
@@ -564,7 +728,13 @@ mod tests {
             ]
         });
         let processor = AttributeProcessor::from_config(&config).unwrap();
-        apply_transform(&mut records, SignalType::Logs, &processor.transform).unwrap();
+        apply_transform(
+            &mut records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
 
         // Verify only the update action was applied
         let rb2 = records.get(ArrowPayloadType::LogAttrs).unwrap();
@@ -588,7 +758,13 @@ mod tests {
             ]
         });
         let processor = AttributeProcessor::from_config(&config).unwrap();
-        apply_transform(&mut records, SignalType::Traces, &processor.transform).unwrap();
+        apply_transform(
+            &mut records,
+            SignalType::Traces,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
 
         let rb2 = records.get(ArrowPayloadType::SpanAttrs).unwrap();
         let key_idx = rb2.schema().index_of("key").unwrap();
