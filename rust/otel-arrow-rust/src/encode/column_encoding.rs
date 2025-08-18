@@ -20,13 +20,18 @@ use arrow::{
     },
     buffer::{MutableBuffer, ScalarBuffer},
     compute::take_record_batch,
-    datatypes::{ArrowNativeType, DataType, Field, FieldRef, Schema, UInt16Type},
+    datatypes::{ArrowNativeType, DataType, Field, FieldRef, Schema, UInt16Type, UInt32Type},
+    record_batch,
     row::{RowConverter, SortField},
 };
 use snafu::OptionExt;
 
 use crate::{
     error::{self, Result},
+    otap::transform::{
+        materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
+        materialize_parent_ids_by_columns, remove_delta_encoding,
+    },
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::{FieldExt, consts},
 };
@@ -407,8 +412,10 @@ impl From<Vec<u16>> for RemappedParentIds {
 /// TODO comments
 // TODO could this be a method on ParentIdRemapping?
 pub fn remap_parent_ids(
+    // TODO comment that this is the payload type of the record batch
+    payload_type: &ArrowPayloadType,
     record_batch: &RecordBatch,
-    remappings: &RemappedParentIds,
+    remapping: &RemappedParentIds,
 ) -> Result<RecordBatch> {
     // TODO tests for this function
 
@@ -426,15 +433,21 @@ pub fn remap_parent_ids(
     // before we remap the IDs
     let field = schema.field(field_idx);
     let metadata = field.metadata();
-    // TODO is there a better way to do this syntax wise (ugly 4 lines below)
-    let is_plain_encoded = metadata
-        .get(consts::metadata::COLUMN_ENCODING)
-        .map(String::as_str)
-        == Some(consts::metadata::encodings::PLAIN);
+    let is_plain_encoded = matches!(
+        metadata.get(consts::metadata::COLUMN_ENCODING).map(String::as_str),
+        Some(enc) if enc == consts::metadata::encodings::PLAIN
+    );
+    let record_batch = if !is_plain_encoded {
+        remove_parent_id_column_encoding(payload_type, record_batch)?
+    } else {
+        record_batch.clone()
+    };
+    // reassign schema to the new record batch schema, which may have updated metadata due to
+    // having maybe materialized the encoded parent IDs
+    let schema = record_batch.schema();
 
     let parent_id_col = record_batch.column(field_idx);
-
-    let new_parent_ids = match remappings {
+    let new_parent_ids = match remapping {
         RemappedParentIds::UInt8(_ids) => {
             todo!()
         }
@@ -446,18 +459,20 @@ pub fn remap_parent_ids(
                     expect_oneof: vec![DataType::UInt16],
                     actual: parent_id_col.data_type().clone(),
                 })?;
-            let new_parent_id_col = if !is_plain_encoded {
-                // here, need to remove the encodings
-                todo!();
-            } else {
-                remap_parent_id_col(&parent_id_col, ids)
-            }?;
-
-            Arc::new(new_parent_id_col) as ArrayRef
+            Arc::new(remap_parent_id_col(parent_id_col, ids)?) as ArrayRef
         }
     };
 
-    todo!()
+    let new_columns = record_batch.columns().iter().enumerate().map(|(i, col)| {
+        if i == field_idx {
+            new_parent_ids.clone()
+        } else {
+            col.clone()
+        }
+    });
+
+    // TODO explain why we can expect here
+    Ok(RecordBatch::try_new(schema, new_columns.collect()).expect("TODO"))
 }
 
 fn remap_parent_id_col<T: ArrowPrimitiveType>(
@@ -492,6 +507,60 @@ fn remap_parent_id_col<T: ArrowPrimitiveType>(
         ScalarBuffer::new(new_parent_ids.into(), 0, parent_ids.len()),
         parent_ids.nulls().cloned(),
     ))
+}
+
+fn remove_parent_id_column_encoding(
+    payload_type: &ArrowPayloadType,
+    record_batch: &RecordBatch,
+) -> Result<RecordBatch> {
+    match payload_type {
+        ArrowPayloadType::LogAttrs
+        | ArrowPayloadType::SpanAttrs
+        | ArrowPayloadType::ResourceAttrs
+        | ArrowPayloadType::MetricAttrs
+        | ArrowPayloadType::ScopeAttrs => materialize_parent_id_for_attributes::<u16>(record_batch),
+
+        ArrowPayloadType::SpanLinkAttrs
+        | ArrowPayloadType::SpanEventAttrs
+        | ArrowPayloadType::NumberDpAttrs
+        | ArrowPayloadType::SummaryDpAttrs
+        | ArrowPayloadType::HistogramDpAttrs
+        | ArrowPayloadType::ExpHistogramDpAttrs
+        | ArrowPayloadType::HistogramDpExemplarAttrs
+        | ArrowPayloadType::NumberDpExemplarAttrs
+        | ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
+            materialize_parent_id_for_attributes::<u32>(record_batch)
+        }
+
+        ArrowPayloadType::SpanEvents => {
+            materialize_parent_ids_by_columns::<u16>(record_batch, [consts::NAME])
+        }
+        ArrowPayloadType::SpanLinks => {
+            materialize_parent_ids_by_columns::<u16>(record_batch, [consts::TRACE_ID])
+        }
+
+        ArrowPayloadType::NumberDataPoints
+        | ArrowPayloadType::SummaryDataPoints
+        | ArrowPayloadType::HistogramDataPoints
+        | ArrowPayloadType::ExpHistogramDataPoints => {
+            remove_delta_encoding::<UInt32Type>(record_batch, consts::PARENT_ID)
+        }
+
+        ArrowPayloadType::NumberDpExemplars
+        | ArrowPayloadType::HistogramDpExemplars
+        | ArrowPayloadType::ExpHistogramDpExemplars => {
+            materialize_parent_id_for_exemplars::<u32>(record_batch)
+        }
+
+        ArrowPayloadType::Logs
+        | ArrowPayloadType::UnivariateMetrics
+        | ArrowPayloadType::MultivariateMetrics
+        | ArrowPayloadType::Spans
+        | ArrowPayloadType::Unknown => {
+            // nothing to do b/c there are no parent ID field for these payload types
+            Ok(record_batch.clone())
+        }
+    }
 }
 
 /// TODO comments
@@ -610,7 +679,9 @@ mod test {
         datatypes::{Field, Fields},
     };
 
-    use crate::{encode::column_encoding, schema::FieldExt};
+    use crate::{
+        encode::column_encoding, otlp::attributes::store::AttributeValueType, schema::FieldExt,
+    };
 
     use super::*;
 
@@ -1075,5 +1146,107 @@ mod test {
             },
         ];
         assert_eq!(result.1, Some(expected_id_remappings));
+    }
+
+    #[test]
+    fn test_remap_parent_ids_plain_encoded() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+        ]));
+
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(UInt16Array::from_iter_values(vec![
+                5, 0, 3, 1, 2, 4,
+            ]))],
+        )
+        .unwrap();
+
+        // represents remapped IDs like
+        // original -> new
+        // 0 -> 4,
+        // 1 -> 2,
+        // 2 -> 1,
+        // 3 -> 0,
+        // 4 -> 5,
+        // 5 -> 3
+        let remapping = RemappedParentIds::UInt16(vec![4, 2, 1, 0, 5, 3]);
+
+        let result =
+            remap_parent_ids(&ArrowPayloadType::LogAttrs, &record_batch, &remapping).unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(UInt16Array::from_iter_values(vec![
+                3, 4, 0, 2, 1, 5,
+            ]))],
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_remap_parent_ids_with_decode() {
+        // in order to remap the parent IDs, if the column is delta encoded then we need to turn it
+        // back into a plain encoded column. This test ensures we do that properly
+
+        // TODO we might need to expand this to all payload types ...
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // this delta encoded column represents
+        // 0, 1, 2, 3, 4, 5
+        let parent_ids = UInt16Array::from_iter_values([0, 1, 1, 1, 1, 1]);
+        let attr_types =
+            UInt8Array::from_iter_values(std::iter::repeat_n(AttributeValueType::Str as u8, 6));
+        let attr_keys = StringArray::from_iter_values(std::iter::repeat_n("a", 6));
+        let attr_vals = StringArray::from_iter_values(std::iter::repeat_n("a", 6));
+        let record_batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(parent_ids.clone()),
+                Arc::new(attr_types.clone()),
+                Arc::new(attr_keys.clone()),
+                Arc::new(attr_vals.clone()),
+            ],
+        )
+        .unwrap();
+
+        // represents remapped IDs like
+        // original -> new
+        // 0 -> 4,
+        // 1 -> 2,
+        // 2 -> 1,
+        // 3 -> 0,
+        // 4 -> 5,
+        // 5 -> 3
+        let remapping = RemappedParentIds::UInt16(vec![4, 2, 1, 0, 5, 3]);
+        let result =
+            remap_parent_ids(&ArrowPayloadType::LogAttrs, &record_batch, &remapping).unwrap();
+
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values([4, 2, 1, 0, 5, 3])),
+                Arc::new(attr_types.clone()),
+                Arc::new(attr_keys.clone()),
+                Arc::new(attr_vals.clone()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result, expected)
     }
 }

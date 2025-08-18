@@ -98,6 +98,7 @@ impl Producer {
             let (record_batch, parent_id_remappings) =
                 apply_column_encodings(payload_type, record_batch)?;
             // TODO -- here you need to decide whether to modify the original otap_batch?
+            // TODO why is this code very ugly looking?
             if let Some(parent_id_remappings) = parent_id_remappings {
                 for parent_id_remapping in parent_id_remappings {
                     if let Some(child_payload_type) = get_type_with_associated_parent_id(
@@ -105,8 +106,11 @@ impl Producer {
                         parent_id_remapping.column_path,
                     ) {
                         if let Some(child_rb) = otap_batch.get(child_payload_type) {
-                            let new_child_rb =
-                                remap_parent_ids(child_rb, &parent_id_remapping.remapped_ids)?;
+                            let new_child_rb = remap_parent_ids(
+                                payload_type,
+                                child_rb,
+                                &parent_id_remapping.remapped_ids,
+                            )?;
                             otap_batch.set(child_payload_type, new_child_rb);
                         }
                     } else {
