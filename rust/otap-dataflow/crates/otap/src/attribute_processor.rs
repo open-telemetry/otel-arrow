@@ -2,24 +2,24 @@
 
 //! Attribute processor for OTAP pipelines.
 //!
-//! This processor provides attribute transformations for telemetry data, supporting
-//! the OpenTelemetry Collector's attributes processor configuration format. It operates
+//! This processor provides attribute transformations for telemetry data. It operates
 //! on OTAP Arrow payloads (OtapArrowRecords and OtapArrowBytes) and can convert OTLP
 //! bytes to OTAP for processing.
 //!
-//! Currently supports a subset of the collector's operations:
-//! - `update` with `value`: Renames an attribute by changing its key
-//! - `delete`: Removes an attribute by key
+//! Supported actions (current subset):
+//! - `rename`: Renames an attribute key (non-standard deviation from the Go collector).
+//! - `delete`: Removes an attribute by key.
 //!
-//! Other operations (`insert`, `upsert`, `hash`, `extract`, `convert`) are accepted in
-//! configuration but not yet implemented.
+//! Unsupported actions are ignored if present in the config:
+//! `insert`, `upsert`, `update` (value update), `hash`, `extract`, `convert`.
+//! We may add support for them later.
 //!
 //! Example configuration (YAML):
 //! ```yaml
 //! actions:
-//!   - key: "http.method"
-//!     action: "update"
-//!     value: "rpc.method"    # Renames http.method to rpc.method
+//!   - action: "rename"
+//!     from: "http.method"
+//!     to: "rpc.method"       # Renames http.method to rpc.method
 //!   - key: "db.statement"
 //!     action: "delete"       # Removes db.statement attribute
 //! ```
@@ -55,31 +55,12 @@ pub const ATTRIBUTE_PROCESSOR_URN: &str = "urn:otap:processor:attribute_processo
 /// Actions that can be performed on attributes.
 #[serde(tag = "action", rename_all = "lowercase")]
 pub enum Action {
-    /// Insert a new attribute with the specified value.
-    /// Currently not implemented.
-    Insert {
-        /// The attribute key to insert.
-        key: String,
-        /// The value to insert.
-        value: String,
-    },
-
-    /// Update an existing attribute.
-    /// Currently only supports renaming via the value field.
-    Update {
-        /// The attribute key to update.
-        key: String,
-        /// The new value or key to rename to.
-        value: String,
-    },
-
-    /// Insert a new attribute or update an existing one.
-    /// Currently not implemented.
-    Upsert {
-        /// The attribute key to upsert.
-        key: String,
-        /// The value to set.
-        value: String,
+    /// Rename an existing attribute key (non-standard; deviates from Go config).
+    Rename {
+        /// The source key to rename from.
+        from: String,
+        /// The destination key to rename to.
+        to: String,
     },
 
     /// Delete an attribute by key.
@@ -88,35 +69,10 @@ pub enum Action {
         key: String,
     },
 
-    /// Hash the value of an attribute.
-    /// Currently not implemented.
-    Hash {
-        /// The attribute key to hash.
-        key: String,
-        /// Optional salt for hashing.
-        #[serde(default)]
-        salt: Option<String>,
-    },
-
-    /// Extract a value from an attribute using a regex pattern.
-    /// Currently not implemented.
-    Extract {
-        /// The attribute key to create.
-        key: String,
-        /// The source attribute to extract from.
-        from_attribute: String,
-        /// The regex pattern to use for extraction.
-        pattern: String,
-    },
-
-    /// Convert an attribute's value to a different type.
-    /// Currently not implemented.
-    Convert {
-        /// The attribute key to convert.
-        key: String,
-        /// The type to convert to.
-        converted_type: String,
-    },
+    /// Other actions are accepted for forward-compatibility but ignored.
+    /// These variants allow deserialization of Go-style configs without effect.
+    #[serde(other)]
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -172,11 +128,11 @@ impl AttributeProcessor {
                 Action::Delete { key } => {
                     let _ = deletes.insert(key);
                 }
-                Action::Update { key, value } => {
-                    let _ = renames.insert(key, value);
+                Action::Rename { from, to } => {
+                    let _ = renames.insert(from, to);
                 }
-                // Other actions not yet supported
-                _ => {}
+                // Unsupported actions are ignored for now
+                Action::Unsupported => {}
             }
         }
 
@@ -435,9 +391,9 @@ mod tests {
         let config = json!({
             "actions": [
                 {
-                    "key": "http.method",
-                    "action": "update",
-                    "value": "rpc.method"
+                    "action": "rename",
+                    "from": "http.method",
+                    "to": "rpc.method"
                 }
             ]
         });
@@ -480,14 +436,14 @@ mod tests {
         let config = json!({
             "actions": [
                 {
-                    "key": "http.method",
-                    "action": "update",
-                    "value": "rpc.method"
+                    "action": "rename",
+                    "from": "http.method",
+                    "to": "rpc.method"
                 },
                 {
-                    "key": "user_agent",
-                    "action": "update",
-                    "value": "http.user_agent"
+                    "action": "rename",
+                    "from": "user_agent",
+                    "to": "http.user_agent"
                 }
             ]
         });
@@ -513,9 +469,9 @@ mod tests {
         let config = json!({
             "actions": [
                 {
-                    "key": "http.method",
-                    "action": "update",
-                    "value": "rpc.method"
+                    "action": "rename",
+                    "from": "http.method",
+                    "to": "rpc.method"
                 }
             ]
         });
@@ -539,14 +495,14 @@ mod tests {
         let config = json!({
             "actions": [
                 {
-                    "key": "A",
-                    "action": "update",
-                    "value": "X"
+                    "action": "rename",
+                    "from": "A",
+                    "to": "X"
                 },
                 {
-                    "key": "B",
-                    "action": "update",
-                    "value": "Y"
+                    "action": "rename",
+                    "from": "B",
+                    "to": "Y"
                 }
             ]
         });
@@ -596,14 +552,14 @@ mod tests {
         let config = json!({
             "actions": [
                 {
-                    "key": "http.method",
-                    "action": "insert",
-                    "value": "GET"
+                    "action": "rename",
+                    "from": "http.method",
+                    "to": "rpc.method"
                 },
                 {
+                    "action": "insert",
                     "key": "http.method",
-                    "action": "update",
-                    "value": "rpc.method"
+                    "value": "GET"
                 }
             ]
         });
@@ -625,9 +581,9 @@ mod tests {
         let config = json!({
             "actions": [
                 {
-                    "key": "old.key",
-                    "action": "update",
-                    "value": "new.key"
+                    "action": "rename",
+                    "from": "old.key",
+                    "to": "new.key"
                 }
             ]
         });
