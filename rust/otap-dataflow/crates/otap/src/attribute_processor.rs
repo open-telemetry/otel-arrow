@@ -144,6 +144,13 @@ impl AttributeProcessor {
 
         let domains = parse_apply_to(config.apply_to.as_ref());
 
+        // TODO: Optimize action composition into a valid AttributesTransform that
+        // still reflects the user's intended semantics. Consider:
+        // - detecting and collapsing simple rename chains (e.g., a->b, b->c => a->c)
+        // - detecting cycles or duplicate destinations and falling back to serial
+        //   application of transforms when a composed map would be invalid.
+        // For now, we compose a single transform and let transform_attributes
+        // enforce validity (which may error for conflicting maps).
         Self {
             transform: AttributesTransform {
                 rename: if renames.is_empty() {
