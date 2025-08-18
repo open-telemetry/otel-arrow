@@ -14,8 +14,13 @@ use transform::{
 };
 
 use crate::{
-    decode::record_message::RecordMessage, error::Result,
-    proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts,
+    decode::record_message::RecordMessage,
+    encode::column_encoding::{
+        RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_column_encodings, remap_parent_ids,
+    },
+    error::Result,
+    proto::opentelemetry::arrow::v1::ArrowPayloadType,
+    schema::consts,
 };
 
 pub mod schema;
@@ -78,6 +83,15 @@ impl OtapArrowRecords {
             Self::Traces(_) => Traces::decode_transport_optimized_ids(self),
         }
     }
+
+    /// TODO
+    pub fn encode_transport_optimized_ids(&mut self) -> Result<()> {
+        match self {
+            Self::Logs(_) => Logs::encode_transport_optimized_ids(self),
+            Self::Metrics(_) => Metrics::encode_transport_optimized_ids(self),
+            Self::Traces(_) => Traces::encode_transport_optimized_ids(self),
+        }
+    }
 }
 
 /// The ArrowBatchStore helper trait is used to define a common interface for
@@ -103,6 +117,9 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// know which payloads use which types (u16 or u32) for ID/Parent ID fields as well
     /// as how the IDs are encoded.
     fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()>;
+
+    /// TODO comments
+    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()>;
 
     fn new() -> Self {
         Self::default()
@@ -247,6 +264,50 @@ impl OtapBatchStore for Logs {
 
         Ok(())
     }
+
+    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
+        // apply encoding to root logs record
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::Logs) {
+            let (rb, id_remappings) = apply_column_encodings(&ArrowPayloadType::Logs, rb)?;
+            otap_batch.set(ArrowPayloadType::Logs, rb);
+
+            // remap any of the child IDs if necessary ...
+            if let Some(id_remappings) = id_remappings {
+                for id_remapping in id_remappings {
+                    let child_payload_type = match id_remapping.column_path {
+                        RESOURCE_ID_COL_PATH => ArrowPayloadType::ResourceAttrs,
+                        SCOPE_ID_COL_PATH => ArrowPayloadType::ScopeAttrs,
+                        consts::ID => ArrowPayloadType::LogAttrs,
+
+                        // TODO this would be an unusual situation? Something clearly wrong ..
+                        _ => continue,
+                    };
+                    if let Some(child_rb) = otap_batch.get(child_payload_type) {
+                        let rb = remap_parent_ids(
+                            &child_payload_type,
+                            child_rb,
+                            &id_remapping.remapped_ids,
+                        )?;
+                        otap_batch.set(child_payload_type, rb);
+                    }
+                }
+            }
+        }
+
+        // apply any encodings to the child attributes
+        for payload_type in [
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+        ] {
+            if let Some(rb) = otap_batch.get(payload_type) {
+                let (rb, _) = apply_column_encodings(&payload_type, rb)?;
+                otap_batch.set(payload_type, rb);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
@@ -367,6 +428,10 @@ impl OtapBatchStore for Metrics {
 
         Ok(())
     }
+
+    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
+        todo!()
+    }
 }
 
 /// Store of record batches for a batch of OTAP traces data.
@@ -446,6 +511,10 @@ impl OtapBatchStore for Traces {
         }
 
         Ok(())
+    }
+
+    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
+        todo!()
     }
 }
 
@@ -693,6 +762,8 @@ mod test {
         batch.set(ArrowPayloadType::ResourceAttrs, attrs_rb.clone());
         batch.set(ArrowPayloadType::ScopeAttrs, attrs_rb.clone());
 
+        let batch_b4 = batch.clone();
+
         batch.decode_transport_optimized_ids().unwrap();
 
         // check log.ids
@@ -722,6 +793,17 @@ mod test {
             let expected = UInt16Array::from_iter_values(vec![1, 2, 1, 2]);
             assert_eq!(&expected, attrs_parent_ids);
         }
+
+        // TODO test roundtrip?
+        batch.encode_transport_optimized_ids().unwrap();
+        println!("{:?}", batch);
+
+        assert_eq!(batch, batch_b4);
+    }
+
+    #[test]
+    fn test_logs_encode_transport_optimized_ids() {
+        todo!()
     }
 
     #[test]

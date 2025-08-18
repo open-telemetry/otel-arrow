@@ -7,23 +7,17 @@
 
 use std::{collections::HashMap, io::Cursor};
 
-use arrow::array::{ArrayRef, ArrowPrimitiveType, RecordBatch, UInt32Array};
-use arrow::compute::{SortColumn, SortOptions, lexsort_to_indices, take_record_batch};
-use arrow::datatypes::{DataType, Schema, SchemaRef};
+use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
-use arrow::row::{RowConverter, SortField};
+
 use snafu::ResultExt;
 
-use crate::encode::column_encoding::{
-    apply_column_encodings, get_type_with_associated_parent_id, remap_parent_ids,
-};
 use crate::error::{self, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
-use crate::otlp::attributes::parent_id;
+
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
-use crate::proto::opentelemetry::metrics::v1::metric::Data;
-use crate::schema::consts;
 
 /// handles serializing the stream of record batches for some payload type
 struct StreamProducer {
@@ -83,6 +77,7 @@ impl Producer {
         // TODO if we decide to also apply the encodings to the original batch, we can avoid
         // the clone here (even though the clone _should_ be relatively cheap...
         let mut otap_batch = otap_batch.clone();
+        otap_batch.encode_transport_optimized_ids()?;
 
         let allowed_payloads = otap_batch.allowed_payload_types();
         let mut arrow_payloads = Vec::<ArrowPayload>::with_capacity(allowed_payloads.len());
@@ -93,33 +88,33 @@ impl Producer {
                 None => continue,
             };
 
-            // apply any column encodings to optimize transport
-            // let record_batch = apply_column_encodings(payload_type, record_batch);
-            let (record_batch, parent_id_remappings) =
-                apply_column_encodings(payload_type, record_batch)?;
-            // TODO -- here you need to decide whether to modify the original otap_batch?
-            // TODO why is this code very ugly looking?
-            if let Some(parent_id_remappings) = parent_id_remappings {
-                for parent_id_remapping in parent_id_remappings {
-                    if let Some(child_payload_type) = get_type_with_associated_parent_id(
-                        payload_type,
-                        parent_id_remapping.column_path,
-                    ) {
-                        if let Some(child_rb) = otap_batch.get(child_payload_type) {
-                            let new_child_rb = remap_parent_ids(
-                                payload_type,
-                                child_rb,
-                                &parent_id_remapping.remapped_ids,
-                            )?;
-                            otap_batch.set(child_payload_type, new_child_rb);
-                        }
-                    } else {
-                        // TODO? handle this
-                        // this would be unusual that we've got an ID column, but no associated
-                        // child type with a matching parent id
-                    }
-                }
-            }
+            // // apply any column encodings to optimize transport
+            // // let record_batch = apply_column_encodings(payload_type, record_batch);
+            // let (record_batch, parent_id_remappings) =
+            //     apply_column_encodings(payload_type, record_batch)?;
+            // // TODO -- here you need to decide whether to modify the original otap_batch?
+            // // TODO why is this code very ugly looking?
+            // if let Some(parent_id_remappings) = parent_id_remappings {
+            //     for parent_id_remapping in parent_id_remappings {
+            //         if let Some(child_payload_type) = get_type_with_associated_parent_id(
+            //             payload_type,
+            //             parent_id_remapping.column_path,
+            //         ) {
+            //             if let Some(child_rb) = otap_batch.get(child_payload_type) {
+            //                 let new_child_rb = remap_parent_ids(
+            //                     payload_type,
+            //                     child_rb,
+            //                     &parent_id_remapping.remapped_ids,
+            //                 )?;
+            //                 otap_batch.set(child_payload_type, new_child_rb);
+            //             }
+            //         } else {
+            //             // TODO? handle this
+            //             // this would be unusual that we've got an ID column, but no associated
+            //             // child type with a matching parent id
+            //         }
+            //     }
+            // }
 
             let schema = record_batch.schema();
             let schema_id = self.schema_id_builder.build_id(&schema);

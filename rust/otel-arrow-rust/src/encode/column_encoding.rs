@@ -15,13 +15,12 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowNumericType, ArrowPrimitiveType, PrimitiveArray, RecordBatch,
-        StructArray, UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, PrimitiveArray, RecordBatch, StructArray, UInt16Array,
+        UInt32Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
     compute::take_record_batch,
-    datatypes::{ArrowNativeType, DataType, Field, FieldRef, Schema, UInt16Type, UInt32Type},
-    record_batch,
+    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt16Type, UInt32Type},
     row::{RowConverter, SortField},
 };
 use snafu::OptionExt;
@@ -31,6 +30,7 @@ use crate::{
     otap::transform::{
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
         materialize_parent_ids_by_columns, remove_delta_encoding,
+        transport_encode_parent_id_for_attributes,
     },
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::{FieldExt, consts},
@@ -50,8 +50,10 @@ enum Encoding {
 // for the majority of columns, we'll be able to identify the path within the record batch as
 // the column name directly, but Resource ID and Scope ID, they're typically nested within a
 // struct on the root record so we treat these as special cases.
-const RESOURCE_ID_COL_PATH: &str = "resource.id";
-const SCOPE_ID_COL_PATH: &str = "scope.id";
+/// TODO
+pub const RESOURCE_ID_COL_PATH: &str = "resource.id";
+/// TODO
+pub const SCOPE_ID_COL_PATH: &str = "scope.id";
 
 /// specification for encoding that should be applied to the column before it is IPC serialized
 struct ColumnEncoding<'a> {
@@ -238,6 +240,31 @@ macro_rules! col_encoding {
 /// given payload type
 fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
     match payload_type {
+        ArrowPayloadType::ResourceAttrs => &[col_encoding!(
+            consts::PARENT_ID,
+            UInt16,
+            AttributeQuasiDelta
+        )],
+        ArrowPayloadType::ScopeAttrs => &[col_encoding!(
+            consts::PARENT_ID,
+            UInt16,
+            AttributeQuasiDelta
+        )],
+        ArrowPayloadType::LogAttrs => &[col_encoding!(
+            consts::PARENT_ID,
+            UInt16,
+            AttributeQuasiDelta
+        )],
+        // ArrowPayloadType::SpanAttrs => &[col_encoding!(
+        //     consts::PARENT_ID,
+        //     UInt16,
+        //     AttributeQuasiDelta
+        // )],
+        // ArrowPayloadType::MetricAttrs => &[col_encoding!(
+        //     consts::PARENT_ID,
+        //     UInt16,
+        //     AttributeQuasiDelta
+        // )],
         ArrowPayloadType::Logs => &[
             col_encoding!(consts::ID, UInt16, Delta),
             col_encoding!(RESOURCE_ID_COL_PATH, UInt16, Delta),
@@ -251,6 +278,21 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
 /// before applying any column encodings
 fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
     match payload_type {
+        // TODO fill in this for all the other types
+
+        // TODO need to check that this gives the correct sort order ..
+        ArrowPayloadType::ResourceAttrs
+        | ArrowPayloadType::ScopeAttrs
+        | ArrowPayloadType::LogAttrs => &[
+            consts::ATTRIBUTE_TYPE,
+            consts::ATTRIBUTE_KEY,
+            consts::ATTRIBUTE_INT,
+            consts::ATTRIBUTE_DOUBLE,
+            consts::ATTRIBUTE_BOOL,
+            consts::ATTRIBUTE_STR,
+            consts::ATTRIBUTE_BYTES,
+            consts::PARENT_ID,
+        ],
         ArrowPayloadType::Logs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],
         _ => &[],
     }
@@ -301,7 +343,7 @@ fn sort_record_batch(
 
 struct EncodedColumnResult<T: ArrowPrimitiveType> {
     new_column: ArrayRef,
-    remapping: Vec<T::Native>,
+    remapping: Option<Vec<T::Native>>,
 }
 
 /// TODO
@@ -364,7 +406,7 @@ where
 
     Ok(EncodedColumnResult {
         new_column: Arc::new(new_column),
-        remapping: remappings,
+        remapping: Some(remappings),
     })
 }
 
@@ -563,25 +605,6 @@ fn remove_parent_id_column_encoding(
     }
 }
 
-/// TODO comments
-// TODO weird method name
-pub fn get_type_with_associated_parent_id(
-    payload_type: &ArrowPayloadType,
-    id_path: &'static str,
-) -> Option<ArrowPayloadType> {
-    match payload_type {
-        ArrowPayloadType::Logs => match id_path {
-            RESOURCE_ID_COL_PATH => Some(ArrowPayloadType::ResourceAttrs),
-            SCOPE_ID_COL_PATH => Some(ArrowPayloadType::ScopeAttrs),
-            consts::ID => Some(ArrowPayloadType::LogAttrs),
-            _ => None,
-        },
-
-        // TODO fill in the others ...
-        _ => None,
-    }
-}
-
 /// apply transport-optimized encodings to the record batch's columns
 pub fn apply_column_encodings(
     payload_type: &ArrowPayloadType,
@@ -629,9 +652,8 @@ pub fn apply_column_encodings(
     for column_encoding in to_apply {
         let column = column_encoding.access_column(&schema, &columns).unwrap();
 
-        // TODO clean up how this match is structured
-        let encoding_result = match (column_encoding.encoding, &column_encoding.data_type) {
-            (Encoding::Delta, DataType::UInt16) => {
+        let encoding_result = match &column_encoding.data_type {
+            DataType::UInt16 => {
                 let column =
                     column
                         .as_any()
@@ -640,18 +662,28 @@ pub fn apply_column_encodings(
                             expect_oneof: vec![DataType::UInt16],
                             actual: column.data_type().clone(),
                         })?;
-                create_new_delta_encoded_column_from::<UInt16Type>(column)
+                match column_encoding.encoding {
+                    Encoding::Delta => create_new_delta_encoded_column_from::<UInt16Type>(column),
+                    Encoding::AttributeQuasiDelta => {
+                        let new_col =
+                            transport_encode_parent_id_for_attributes::<u16>(&record_batch)?;
+                        Ok(EncodedColumnResult {
+                            new_column: new_col,
+                            remapping: None,
+                        })
+                    }
+                }
             }
             _ => {
-                // unexpected ...
                 todo!()
             }
         }?;
-
-        remapped_parent_ids.push(ParentIdRemapping::new(
-            column_encoding.path,
-            encoding_result.remapping.into(),
-        ));
+        if let Some(remapping) = encoding_result.remapping {
+            remapped_parent_ids.push(ParentIdRemapping::new(
+                column_encoding.path,
+                remapping.into(),
+            ));
+        }
         // TODO the order of arguments between this and the next method call are not consistent
         replace_column(
             column_encoding.path,
@@ -918,7 +950,7 @@ mod test {
                 .expect("Expected UInt16Array");
             let expected_column = UInt16Array::from_iter_values(test_case.1);
             assert_eq!(result_col, &expected_column);
-            assert_eq!(&result.remapping, &test_case.2);
+            assert_eq!(&result.remapping.unwrap(), &test_case.2);
         }
     }
 

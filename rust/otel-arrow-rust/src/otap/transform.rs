@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Sub};
 use std::sync::Arc;
 
 use arrow::array::{
@@ -263,7 +263,133 @@ where
     let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
 
     // create new record batch but with parent column replaced
-    replace_materialized_parent_id_column(record_batch, materialized_parent_ids)
+    replace_parent_id_column(
+        record_batch,
+        materialized_parent_ids,
+        metadata::encodings::PLAIN,
+    )
+}
+
+/// TODO comments
+pub fn transport_encode_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
+where
+    T: ParentId,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+    // TODO can this be simplified?
+    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native:
+        Sub<Output = <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native>,
+{
+    // downcast parent ID into an array of the primitive type
+    let parent_id_arr = T::get_parent_id_column(record_batch)?;
+
+    // TODO write tests for this
+    if record_batch.num_rows() == 0 {
+        return Ok(Arc::new(parent_id_arr.clone()));
+    }
+
+    // TODO check if it's already encoded & early return
+
+    let keys_arr =
+        record_batch
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .context(error::ColumnNotFoundSnafu {
+                name: consts::ATTRIBUTE_KEY,
+            })?;
+    let key_eq_next = create_next_eq_array_for_array(keys_arr);
+
+    let type_arr = record_batch
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .context(error::ColumnNotFoundSnafu {
+            name: consts::ATTRIBUTE_TYPE,
+        })?;
+    let types_eq_next = create_next_element_equality_array(type_arr)?;
+    let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
+
+    let val_str_arr = record_batch.column_by_name(consts::ATTRIBUTE_STR);
+    let val_int_arr = record_batch.column_by_name(consts::ATTRIBUTE_INT);
+    let val_double_arr = record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE);
+    let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
+    let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
+
+    let mut materialized_parent_ids =
+        PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
+
+    // below we're iterating through the record batch and each time we find a contiguous range
+    // where all the types & attribute keys are the same, we use the "eq" compute kernel to
+    // compare all the values. Then we use the resulting next-element equality array for the
+    // values to determine if there should be delta encoding
+    let mut curr_range_start = 0;
+    for idx in 0..record_batch.num_rows() {
+        // check if we've found the end of a range of where all the type & attribute are the same
+        let found_range_end = if idx == types_eq_next.len() {
+            true // end of list
+        } else {
+            !types_eq_next.value(idx) || !key_eq_next.value(idx)
+        };
+
+        // when we find the range end, decode the parent ID values
+        if found_range_end {
+            let value_type = AttributeValueType::try_from(type_arr.value(curr_range_start))
+                .context(error::UnrecognizedAttributeValueTypeSnafu)?;
+            let value_arr = match value_type {
+                AttributeValueType::Str => val_str_arr,
+                AttributeValueType::Int => val_int_arr,
+                AttributeValueType::Bool => val_bool_arr,
+                AttributeValueType::Bytes => val_bytes_arr,
+                AttributeValueType::Double => val_double_arr,
+
+                // These types are always considered not equal for purposes of determining
+                // whether to delta encode parent ID
+                AttributeValueType::Map | AttributeValueType::Slice | AttributeValueType::Empty => {
+                    None
+                }
+            };
+
+            // add the first value from this range to the parent IDs
+            let first_parent_id = parent_id_arr
+                .value_at(curr_range_start)
+                // safety: there's a check at the beginning of this function to ensure that
+                // the batch is not empty
+                .expect("expect the batch not to be empty");
+            materialized_parent_ids.append_value(first_parent_id);
+
+            if let Some(value_arr) = value_arr {
+                // if we have a value array here, we want the parent ID to be delta encoded
+                let range_length = idx + 1 - curr_range_start;
+                let values_range = value_arr.slice(curr_range_start, range_length);
+                let values_eq_next = create_next_element_equality_array(&values_range)?;
+
+                for batch_idx in (curr_range_start + 1)..=idx {
+                    let curr_parent_id = parent_id_arr.value_at_or_default(batch_idx);
+                    let prev_value_range_idx = batch_idx - 1 - curr_range_start;
+
+                    let parent_id_or_delta = if values_eq_next.value(prev_value_range_idx)
+                        && !values_eq_next.is_null(prev_value_range_idx)
+                    {
+                        // value at current index equals previous so we're delta encoded
+                        let prev_parent_id = parent_id_arr.value_at_or_default(batch_idx - 1);
+                        curr_parent_id - prev_parent_id
+                    } else {
+                        // otherwise, we break the delta encoding
+                        curr_parent_id
+                    };
+                    materialized_parent_ids.append_value(parent_id_or_delta);
+                }
+            } else {
+                // if we're here, we've determined that the parent ID values are not delta encoded
+                // because the type doesn't support it
+                for batch_idx in (curr_range_start + 1)..(idx + 1) {
+                    materialized_parent_ids
+                        .append_value(parent_id_arr.value_at_or_default(batch_idx));
+                }
+            }
+
+            curr_range_start = idx + 1;
+        }
+    }
+
+    let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
+    Ok(materialized_parent_ids)
 }
 
 /// Materialize quasi-delta encoded record batch. Subsequent parent IDs are considered
@@ -340,7 +466,11 @@ where
 
     let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
 
-    replace_materialized_parent_id_column(record_batch, materialized_parent_ids)
+    replace_parent_id_column(
+        record_batch,
+        materialized_parent_ids,
+        metadata::encodings::PLAIN,
+    )
 }
 
 /// Decodes the quasi-delta encoded Parent IDs field for a record batch of exemplars.
@@ -373,9 +503,10 @@ where
 /// the same type, nullability and length as the record batch, and it also expects the
 /// original record batch to have a parent_id column. If these conditions are not met,
 /// an error is returned.
-fn replace_materialized_parent_id_column(
+fn replace_parent_id_column(
     record_batch: &RecordBatch,
     materialized_parent_ids: ArrayRef,
+    encoding: &'static str,
 ) -> Result<RecordBatch> {
     let schema = record_batch.schema();
     let parent_id_idx = schema
@@ -399,7 +530,7 @@ fn replace_materialized_parent_id_column(
         schema.as_ref(),
         consts::PARENT_ID,
         metadata::COLUMN_ENCODING,
-        metadata::encodings::PLAIN,
+        encoding.into(),
     );
 
     RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| {
