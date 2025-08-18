@@ -435,13 +435,13 @@ impl ParentIdRemapping {
 #[allow(missing_docs)]
 #[derive(Debug, PartialEq)]
 pub enum RemappedParentIds {
-    UInt8(Vec<u8>),
     UInt16(Vec<u16>),
+    UInt32(Vec<u32>),
 }
 
-impl From<Vec<u8>> for RemappedParentIds {
-    fn from(ids: Vec<u8>) -> Self {
-        Self::UInt8(ids)
+impl From<Vec<u32>> for RemappedParentIds {
+    fn from(ids: Vec<u32>) -> Self {
+        Self::UInt32(ids)
     }
 }
 
@@ -459,8 +459,6 @@ pub fn remap_parent_ids(
     record_batch: &RecordBatch,
     remapping: &RemappedParentIds,
 ) -> Result<RecordBatch> {
-    // TODO tests for this function
-
     // check if the column is already encoded
     let schema = record_batch.schema_ref();
     let field_idx = match schema.index_of(consts::PARENT_ID) {
@@ -484,21 +482,29 @@ pub fn remap_parent_ids(
     } else {
         record_batch.clone()
     };
+
     // reassign schema to the new record batch schema, which may have updated metadata due to
     // having maybe materialized the encoded parent IDs
     let schema = record_batch.schema();
 
     let parent_id_col = record_batch.column(field_idx);
     let new_parent_ids = match remapping {
-        RemappedParentIds::UInt8(_ids) => {
-            todo!()
-        }
         RemappedParentIds::UInt16(ids) => {
             let parent_id_col = parent_id_col
                 .as_any()
                 .downcast_ref::<UInt16Array>()
                 .with_context(|| error::InvalidListArraySnafu {
                     expect_oneof: vec![DataType::UInt16],
+                    actual: parent_id_col.data_type().clone(),
+                })?;
+            Arc::new(remap_parent_id_col(parent_id_col, ids)?) as ArrayRef
+        }
+        RemappedParentIds::UInt32(ids) => {
+            let parent_id_col = parent_id_col
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                .with_context(|| error::InvalidListArraySnafu {
+                    expect_oneof: vec![DataType::UInt32],
                     actual: parent_id_col.data_type().clone(),
                 })?;
             Arc::new(remap_parent_id_col(parent_id_col, ids)?) as ArrayRef
@@ -521,22 +527,22 @@ fn remap_parent_id_col<T: ArrowPrimitiveType>(
     parent_ids: &PrimitiveArray<T>,
     remapped_ids: &Vec<T::Native>,
 ) -> Result<PrimitiveArray<T>> {
-    // TODO tests for this
-
     let mut new_parent_ids =
         MutableBuffer::with_capacity(parent_ids.len() * size_of::<T::Native>());
     for val in parent_ids {
         match val {
             Some(id) => {
                 let remapped_id = remapped_ids[id.as_usize()];
-                // TODO comment safety
+                // Safety: we've preallocated the buffer with the correct length, so we're safe to
+                // call push_unchecked here and avoid the cost of checking the capacity reservation
+                // for every array
                 #[allow(unsafe_code)]
                 unsafe {
                     new_parent_ids.push_unchecked(remapped_id)
                 };
             }
             None => {
-                // TODO comment safety
+                // Safety: see the comment in the block above about why this is safe
                 #[allow(unsafe_code)]
                 unsafe {
                     new_parent_ids.push_unchecked(T::default_value())
@@ -710,6 +716,7 @@ mod test {
         array::{FixedSizeBinaryArray, StringArray, StructArray, UInt8Array, UInt16Array},
         datatypes::{Field, Fields},
     };
+    use prost::Name;
 
     use crate::{
         encode::column_encoding, otlp::attributes::store::AttributeValueType, schema::FieldExt,
@@ -1013,215 +1020,115 @@ mod test {
     }
 
     #[test]
-    fn test_apply_column_encodings_columns_already_plain_encoded() {
-        // TODO this test might already be covered by the otap test suite
-
-        let struct_fields: Fields =
-            vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()].into();
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                consts::RESOURCE,
-                DataType::Struct(struct_fields.clone()),
-                true,
-            ),
-            Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
-            Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
-            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
-        ]));
-
-        // This data is meant to represent a batch of logs that will be sorted, and will need to
-        // have the ID column remapped because it is no longer in an ascending order and so cannot
-        // be delta encoded into an unsigned int type.
-        //
-        // To help make sense of the expected results below, note that it will be sorted into
-        // this (e.g. 'data', below, is just a shuffled version of the following)
-        // (0, 0, 0, 1),
-        // (0, 0, 1, 2),
-        // (0, 1, 2, 3),
-        // (0, 1, 3, 7),
-        // (1, 2, 4, 5),
-        // (1, 2, 5, 6),
-        // (1, 3, 6, 4),
-        // (1, 3, 7, 0),
-        //
-        let data = vec![
-            (1, 3, 6, 4),
-            (0, 1, 2, 3),
-            (0, 0, 1, 2),
-            (0, 1, 3, 7),
-            (1, 2, 5, 6),
-            (1, 2, 4, 5),
-            (0, 0, 0, 1),
-            (1, 3, 7, 0),
-        ];
-
-        let resource_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.0));
-        let scope_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.1));
-        let trace_ids =
-            FixedSizeBinaryArray::try_from_iter(data.iter().map(|d| u128::to_be_bytes(d.2)))
-                .unwrap();
-        let log_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.3));
-
-        let record_batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(StructArray::new(
-                    struct_fields.clone(),
-                    vec![Arc::new(resource_ids)],
-                    None,
-                )),
-                Arc::new(StructArray::new(
-                    struct_fields.clone(),
-                    vec![Arc::new(scope_ids)],
-                    None,
-                )),
-                Arc::new(trace_ids),
-                Arc::new(log_ids),
-            ],
-        )
-        .unwrap();
-
-        let result = apply_column_encodings(&ArrowPayloadType::Logs, &record_batch).unwrap();
-
-        // by way of explanation for the expected data.. we expect that once the data is sorted,
-        // it will look something like this if we were to produce it in plain encoding
-        // (0, 0, 0, 0),
-        // (0, 0, 1, 1),
-        // (0, 1, 2, 2),
-        // (0, 1, 3, 3),
-        // (1, 2, 4, 4),
-        // (1, 2, 5, 5),
-        // (1, 3, 6, 6),
-        // (1, 3, 7, 7),
-        //
-        // which means the log IDs which have been remapped should now look something like this
-        //
-        // old_id -> new_id
-        // 1 -> 0
-        // 2 -> 1
-        // 3 -> 2
-        // 7 -> 3
-        // 5 -> 4
-        // 6 -> 5
-        // 4 -> 6
-        // 0 -> 7
-
-        let expected_data = vec![
-            (0, 0, 0, 0),
-            (0, 0, 1, 1),
-            (0, 1, 2, 1),
-            (0, 0, 3, 1),
-            (1, 1, 4, 1),
-            (0, 0, 5, 1),
-            (0, 1, 6, 1),
-            (0, 0, 7, 1),
-        ];
-        let resource_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.0));
-        let scope_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.1));
-        let trace_ids = FixedSizeBinaryArray::try_from_iter(
-            expected_data.iter().map(|d| u128::to_be_bytes(d.2)),
-        )
-        .unwrap();
-        let log_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.3));
-
-        let expected_struct_fields: Fields = vec![
-            Field::new(consts::ID, DataType::UInt16, true)
-                .with_encoding(consts::metadata::encodings::DELTA),
-        ]
-        .into();
-        let expected_schema = Arc::new(Schema::new(vec![
-            Field::new(
-                consts::RESOURCE,
-                DataType::Struct(expected_struct_fields.clone()),
-                true,
-            ),
-            Field::new(
-                consts::SCOPE,
-                DataType::Struct(expected_struct_fields.clone()),
-                true,
-            ),
-            Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
-            Field::new(consts::ID, DataType::UInt16, true)
-                .with_encoding(consts::metadata::encodings::DELTA),
-        ]));
-
-        let expected_record_batch = RecordBatch::try_new(
-            expected_schema,
-            vec![
-                Arc::new(StructArray::new(
-                    expected_struct_fields.clone(),
-                    vec![Arc::new(resource_ids)],
-                    None,
-                )),
-                Arc::new(StructArray::new(
-                    expected_struct_fields.clone(),
-                    vec![Arc::new(scope_ids)],
-                    None,
-                )),
-                Arc::new(trace_ids),
-                Arc::new(log_ids),
-            ],
-        )
-        .unwrap();
-        assert_eq!(result.0, expected_record_batch);
-
-        let expected_id_remappings = vec![
-            ParentIdRemapping {
-                column_path: consts::ID,
-                remapped_ids: RemappedParentIds::UInt16(vec![7, 0, 1, 2, 6, 4, 5, 3]),
-            },
-            ParentIdRemapping {
-                column_path: RESOURCE_ID_COL_PATH,
-                remapped_ids: RemappedParentIds::UInt16(vec![0, 1]),
-            },
-            ParentIdRemapping {
-                column_path: SCOPE_ID_COL_PATH,
-                remapped_ids: RemappedParentIds::UInt16(vec![0, 1, 2, 3]),
-            },
-        ];
-        assert_eq!(result.1, Some(expected_id_remappings));
-    }
-
-    #[test]
     fn test_remap_parent_ids_plain_encoded() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
-        ]));
+        fn do_test_generic<T: ArrowPrimitiveType>(payload_type: ArrowPayloadType)
+        where
+            Vec<<T as ArrowPrimitiveType>::Native>: Into<RemappedParentIds>,
+            <T as ArrowPrimitiveType>::Native: From<u8>,
+        {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, T::DATA_TYPE, false).with_plain_encoding(),
+            ]));
 
-        let record_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![
-                5, 0, 3, 1, 2, 4,
-            ]))],
-        )
-        .unwrap();
+            let record_batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(PrimitiveArray::<T>::from_iter_values(
+                    vec![5, 0, 3, 1, 2, 4].into_iter().map(T::Native::from),
+                ))],
+            )
+            .unwrap();
 
-        // represents remapped IDs like
-        // original -> new
-        // 0 -> 4,
-        // 1 -> 2,
-        // 2 -> 1,
-        // 3 -> 0,
-        // 4 -> 5,
-        // 5 -> 3
-        let remapping = RemappedParentIds::UInt16(vec![4, 2, 1, 0, 5, 3]);
+            // represents remapped IDs like
+            // original -> new
+            // 0 -> 4,
+            // 1 -> 2,
+            // 2 -> 1,
+            // 3 -> 0,
+            // 4 -> 5,
+            // 5 -> 3
+            let remapping: RemappedParentIds = vec![4, 2, 1, 0, 5, 3]
+                .into_iter()
+                .map(T::Native::from)
+                .collect::<Vec<_>>()
+                .into();
 
-        let result =
-            remap_parent_ids(&ArrowPayloadType::LogAttrs, &record_batch, &remapping).unwrap();
+            let result = remap_parent_ids(&payload_type, &record_batch, &remapping).unwrap();
 
-        let expected = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![
-                3, 4, 0, 2, 1, 5,
-            ]))],
-        )
-        .unwrap();
+            let expected = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(PrimitiveArray::<T>::from_iter_values(
+                    vec![3, 4, 0, 2, 1, 5].into_iter().map(T::Native::from),
+                ))],
+            )
+            .unwrap();
 
-        assert_eq!(result, expected);
+            assert_eq!(result, expected);
+        }
+
+        do_test_generic::<UInt16Type>(ArrowPayloadType::LogAttrs);
+        do_test_generic::<UInt32Type>(ArrowPayloadType::SpanLinkAttrs);
     }
 
     #[test]
-    fn test_remap_parent_ids_with_decode() {
+    fn test_remap_parent_ids_with_nulls_plain_encoded() {
+        fn do_test_generic<T: ArrowPrimitiveType>(payload_type: ArrowPayloadType)
+        where
+            Vec<<T as ArrowPrimitiveType>::Native>: Into<RemappedParentIds>,
+            <T as ArrowPrimitiveType>::Native: From<u8>,
+        {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, T::DATA_TYPE, true).with_plain_encoding(),
+            ]));
+
+            let record_batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(PrimitiveArray::<T>::from_iter(
+                    vec![Some(3), None, Some(2), Some(0), Some(1), None]
+                        .into_iter()
+                        .map(|v| match v {
+                            Some(v) => Some(T::Native::from(v)),
+                            None => None,
+                        }),
+                ))],
+            )
+            .unwrap();
+
+            // represents remapped IDs like
+            // original -> new
+            // 0 -> 3,
+            // 1 -> 2,
+            // 2 -> 1,
+            // 3 -> 0,
+            let remapping: RemappedParentIds = vec![3, 2, 1, 0]
+                .into_iter()
+                .map(T::Native::from)
+                .collect::<Vec<_>>()
+                .into();
+
+            let result = remap_parent_ids(&payload_type, &record_batch, &remapping).unwrap();
+
+            let expected = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(PrimitiveArray::<T>::from_iter(
+                    vec![Some(0), None, Some(1), Some(3), Some(2), None]
+                        .into_iter()
+                        .map(|v| match v {
+                            Some(v) => Some(T::Native::from(v)),
+                            None => None,
+                        }),
+                ))],
+            )
+            .unwrap();
+
+            assert_eq!(result, expected);
+        }
+
+        do_test_generic::<UInt16Type>(ArrowPayloadType::LogAttrs);
+        do_test_generic::<UInt32Type>(ArrowPayloadType::SpanLinkAttrs);
+    }
+
+    #[test]
+    fn test_remap_parent_ids_with_decode_attributes() {
         // in order to remap the parent IDs, if the column is delta encoded then we need to turn it
         // back into a plain encoded column. This test ensures we do that properly
 
