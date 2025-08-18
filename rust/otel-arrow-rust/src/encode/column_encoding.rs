@@ -13,7 +13,7 @@ use std::{ops::AddAssign, sync::Arc};
 use arrow::{
     array::{
         Array, ArrayRef, ArrowNumericType, ArrowPrimitiveType, PrimitiveArray, RecordBatch,
-        StructArray, UInt32Array,
+        StructArray, UInt16Array, UInt32Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
     compute::take_record_batch,
@@ -25,7 +25,11 @@ use snafu::OptionExt;
 use crate::{
     error::{self, Result},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::{FieldExt, consts, get_field_metadata},
+    schema::{
+        FieldExt,
+        consts::{self, metadata},
+        get_field_metadata,
+    },
 };
 
 /// identifier for column encoding
@@ -340,11 +344,16 @@ where
     })
 }
 
+/// context required to remap parent IDs. After an ID column has been encoded, the IDs may change
+/// so the parent IDs that pointed to these IDs also need to be renapped
+/// TODO can you write better commnents on this?
 #[derive(Debug, PartialEq)]
-struct ParentIdRemapping {
-    column_path: &'static str,
-    // TODO this won't always be u16
-    remapped_ids: RemappedParentIds,
+pub struct ParentIdRemapping {
+    /// TODO commentaires
+    pub column_path: &'static str,
+
+    /// TODO commentaires
+    pub remapped_ids: RemappedParentIds,
 }
 
 impl ParentIdRemapping {
@@ -356,8 +365,10 @@ impl ParentIdRemapping {
     }
 }
 
+/// TODO comments
+#[allow(missing_docs)]
 #[derive(Debug, PartialEq)]
-enum RemappedParentIds {
+pub enum RemappedParentIds {
     UInt8(Vec<u8>),
     UInt16(Vec<u16>),
 }
@@ -374,8 +385,117 @@ impl From<Vec<u16>> for RemappedParentIds {
     }
 }
 
+/// TODO comments
+// TODO could this be a method on ParentIdRemapping?
+pub fn remap_parent_ids(
+    record_batch: &RecordBatch,
+    remappings: &RemappedParentIds,
+) -> Result<RecordBatch> {
+    // TODO tests for this function
+
+    // check if the column is already encoded
+    let schema = record_batch.schema_ref();
+    let field_idx = match schema.index_of(consts::PARENT_ID) {
+        Ok(idx) => idx,
+        _ => {
+            // No parent ID column, so nothing to remap
+            return Ok(record_batch.clone());
+        }
+    };
+
+    // check if the column is plain encoded. If not, we'll need to remove any encoding
+    // before we remap the IDs
+    let field = schema.field(field_idx);
+    let metadata = field.metadata();
+    // TODO is there a better way to do this syntax wise (ugly 4 lines below)
+    let is_plain_encoded = metadata
+        .get(consts::metadata::COLUMN_ENCODING)
+        .map(String::as_str)
+        == Some(consts::metadata::encodings::PLAIN);
+
+    let parent_id_col = record_batch.column(field_idx);
+
+    let new_parent_ids = match remappings {
+        RemappedParentIds::UInt8(_ids) => {
+            todo!()
+        }
+        RemappedParentIds::UInt16(ids) => {
+            let parent_id_col = parent_id_col
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .with_context(|| error::InvalidListArraySnafu {
+                    expect_oneof: vec![DataType::UInt16],
+                    actual: parent_id_col.data_type().clone(),
+                })?;
+            let new_parent_id_col = if !is_plain_encoded {
+                // here, need to remove the encodings
+                todo!();
+            } else {
+                remap_parent_id_col(&parent_id_col, ids)
+            }?;
+
+            Arc::new(new_parent_id_col) as ArrayRef
+        }
+    };
+
+    todo!()
+}
+
+fn remap_parent_id_col<T: ArrowPrimitiveType>(
+    parent_ids: &PrimitiveArray<T>,
+    remapped_ids: &Vec<T::Native>,
+) -> Result<PrimitiveArray<T>> {
+    // TODO tests for this
+
+    let mut new_parent_ids =
+        MutableBuffer::with_capacity(parent_ids.len() * size_of::<T::Native>());
+    for val in parent_ids {
+        match val {
+            Some(id) => {
+                let remapped_id = remapped_ids[id.as_usize()];
+                // TODO comment safety
+                #[allow(unsafe_code)]
+                unsafe {
+                    new_parent_ids.push_unchecked(remapped_id)
+                };
+            }
+            None => {
+                // TODO comment safety
+                #[allow(unsafe_code)]
+                unsafe {
+                    new_parent_ids.push_unchecked(T::default_value())
+                }
+            }
+        }
+    }
+
+    Ok(PrimitiveArray::<T>::new(
+        ScalarBuffer::new(new_parent_ids.into(), 0, parent_ids.len()),
+        parent_ids.nulls().cloned(),
+    ))
+}
+
+/// TODO comments
+// TODO weird method name
+pub fn get_type_with_associated_parent_id(
+    payload_type: &ArrowPayloadType,
+    id_path: &'static str,
+) -> Option<ArrowPayloadType> {
+    match payload_type {
+        ArrowPayloadType::Logs => match id_path {
+            RESOURCE_ID_COL_PATH => Some(ArrowPayloadType::ResourceAttrs),
+            SCOPE_ID_COL_PATH => Some(ArrowPayloadType::ScopeAttrs),
+            consts::ID => Some(ArrowPayloadType::LogAttrs),
+            _ => None,
+        },
+
+        // TODO fill in the others ...
+        _ => None,
+    }
+}
+
 /// apply transport-optimized encodings to the record batch's columns
-fn apply_column_encodings(
+pub fn apply_column_encodings(
     payload_type: &ArrowPayloadType,
     record_batch: &RecordBatch,
 ) -> Result<(RecordBatch, Option<Vec<ParentIdRemapping>>)> {
@@ -459,6 +579,7 @@ fn apply_column_encodings(
     let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
         .expect("TODO why we can expect here");
 
+    // TODO need to write tests for this
     Ok((record_batch, Some(remapped_parent_ids)))
 }
 

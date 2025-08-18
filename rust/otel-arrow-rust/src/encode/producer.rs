@@ -14,9 +14,13 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::row::{RowConverter, SortField};
 use snafu::ResultExt;
 
+use crate::encode::column_encoding::{
+    apply_column_encodings, get_type_with_associated_parent_id, remap_parent_ids,
+};
 use crate::error::{self, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
+use crate::otlp::attributes::parent_id;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::metrics::v1::metric::Data;
 use crate::schema::consts;
@@ -76,6 +80,10 @@ impl Producer {
 
     /// produce `BatchArrowRecords` protobuf message from `OtapBatch`
     pub fn produce_bar(&mut self, otap_batch: &OtapArrowRecords) -> Result<BatchArrowRecords> {
+        // TODO if we decide to also apply the encodings to the original batch, we can avoid
+        // the clone here (even though the clone _should_ be relatively cheap...
+        let mut otap_batch = otap_batch.clone();
+
         let allowed_payloads = otap_batch.allowed_payload_types();
         let mut arrow_payloads = Vec::<ArrowPayload>::with_capacity(allowed_payloads.len());
 
@@ -87,6 +95,27 @@ impl Producer {
 
             // apply any column encodings to optimize transport
             // let record_batch = apply_column_encodings(payload_type, record_batch);
+            let (record_batch, parent_id_remappings) =
+                apply_column_encodings(payload_type, record_batch)?;
+            // TODO -- here you need to decide whether to modify the original otap_batch?
+            if let Some(parent_id_remappings) = parent_id_remappings {
+                for parent_id_remapping in parent_id_remappings {
+                    if let Some(child_payload_type) = get_type_with_associated_parent_id(
+                        payload_type,
+                        parent_id_remapping.column_path,
+                    ) {
+                        if let Some(child_rb) = otap_batch.get(child_payload_type) {
+                            let new_child_rb =
+                                remap_parent_ids(child_rb, &parent_id_remapping.remapped_ids)?;
+                            otap_batch.set(child_payload_type, new_child_rb);
+                        }
+                    } else {
+                        // TODO? handle this
+                        // this would be unusual that we've got an ID column, but no associated
+                        // child type with a matching parent id
+                    }
+                }
+            }
 
             let schema = record_batch.schema();
             let schema_id = self.schema_id_builder.build_id(&schema);
@@ -136,140 +165,6 @@ impl Default for Producer {
         Self::new()
     }
 }
-
-// const LOG_RESOURCE_ID_COL: &str = "resource.id";
-// const LOG_SCOPE_ID_COL: &str = "scope.id";
-
-// fn apply_column_encodings(
-//     payload_type: &ArrowPayloadType,
-//     record_batch: &RecordBatch,
-// ) -> RecordBatch {
-//     let column_encodings = get_column_encodings(payload_type);
-//     if column_encodings.is_empty() {
-//         return record_batch.clone();
-//     }
-
-//     let mut schema = record_batch.schema().as_ref().clone();
-
-//     // determine which columns need to be encoded
-//     let mut to_apply = vec![];
-//     for column_encoding in column_encodings {
-//         if !is_encoded(column_encoding.path, &schema, column_encoding.encoding) {
-//             to_apply.push(column_encoding);
-//         }
-//     }
-
-//     // nothing to do
-//     if to_apply.len() == 0 {
-//         return record_batch.clone();
-//     }
-
-//     // Prepare to apply sorting ...
-//     //
-//     // Below we should apply the correct sort order before before we delta-encode the columns.
-//     // This is because the columns we're applying the encoding to are unsigned integers, so the
-//     // delta cannot be negative. If encoding only been applied to some of the columns already,
-//     // (this would be unusual) we might need to remove it before we can sort.
-//     if to_apply.len() != column_encodings.len() {
-//         // TODO
-//         todo!()
-//     }
-
-//     // sort the record batch
-//     let columns = record_batch.columns();
-//     let mut sort_inputs = vec![];
-//     for path in get_sort_columns(payload_type) {
-//         if let Some(column) = access_column(path, &schema, columns) {
-//             sort_inputs.push(column);
-//         }
-//     }
-
-//     let record_batch = if sort_inputs.len() > 0 {
-//         // use row convert to convert to rows
-//         // TODO link docs
-//         // TODO benchmark against lex_sort_to_indices kernel
-//         let sort_fields = sort_inputs
-//             .iter()
-//             .map(|col| SortField::new(col.data_type().clone()))
-//             .collect();
-//         let converter = RowConverter::new(sort_fields).unwrap();
-//         let rows = converter.convert_columns(&sort_inputs).unwrap();
-
-//         let mut sort: Vec<_> = rows.iter().enumerate().collect();
-//         sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
-//         let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
-
-//         take_record_batch(record_batch, &indices).unwrap()
-//     } else {
-//         record_batch.clone()
-//     };
-
-//     let mut columns = record_batch.columns().to_vec();
-//     for column_encoding in column_encodings {
-//         if let Some(column) = access_column(column_encoding.path, &schema, &columns) {
-//             let new_column = match column_encoding.encoding {
-//                 Encoding::Delta => apply_delta_encoding(column, &column_encoding.data_type),
-//                 _ => {
-//                     // TODO
-//                     todo!()
-//                 }
-//             };
-
-//             replace_column(column_encoding.path, new_column, &mut schema, &mut columns);
-//             update_field_metadata(column_encoding.path, &mut schema, column_encoding.encoding);
-//         }
-//     }
-
-//     todo!()
-// }
-
-// fn is_encoded(path: &str, schema: &Schema, encoding: Encoding) -> bool {
-//     todo!()
-// }
-
-// fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
-//     todo!();
-// }
-
-// fn apply_delta_encoding(column: ArrayRef, data_type: &DataType) -> ArrayRef {
-//     todo!();
-// }
-
-// fn replace_column(
-//     path: &str,
-//     new_column: ArrayRef,
-//     schema: &mut Schema,
-//     columns: &mut Vec<ArrayRef>,
-// ) {
-//     todo!();
-// }
-
-// fn update_field_metadata(path: &str, schema: &mut Schema, encoding: Encoding) {
-//     todo!();
-// }
-
-// fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
-//     match payload_type {
-//         ArrowPayloadType::LogAttrs => {
-//             &[
-//                 // TODO could turn this into a macro
-//                 ColumnEncoding {
-//                     path: consts::ID,
-//                     data_type: DataType::UInt16,
-//                     encoding: Encoding::Delta,
-//                 },
-//             ]
-//         }
-//         _ => &[],
-//     }
-// }
-
-// fn get_sort_columns(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
-//     match payload_type {
-//         &ArrowPayloadType::LogAttrs => &[consts::ID, LOG_RESOURCE_ID_COL, LOG_RESOURCE_ID_COL],
-//         _ => &[],
-//     }
-// }
 
 #[cfg(test)]
 mod test {
