@@ -34,6 +34,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::strlen_expression => parse_strlen_expression(scalar_rule, state)?,
         Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
         Rule::substring_expression => parse_substring_expression(scalar_rule, state)?,
+        Rule::parse_json_expression => parse_parse_json_expression(scalar_rule, state)?,
         Rule::true_literal | Rule::false_literal => {
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
