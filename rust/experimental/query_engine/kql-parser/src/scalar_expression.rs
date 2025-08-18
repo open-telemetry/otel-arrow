@@ -28,6 +28,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::tolong_expression => parse_tolong_expression(scalar_rule, state)?,
         Rule::toreal_expression => parse_toreal_expression(scalar_rule, state)?,
         Rule::todouble_expression => parse_todouble_expression(scalar_rule, state)?,
+        Rule::todatetime_expression => parse_todatetime_expression(scalar_rule, state)?,
         Rule::strlen_expression => parse_strlen_expression(scalar_rule, state)?,
         Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
         Rule::substring_expression => parse_substring_expression(scalar_rule, state)?,
