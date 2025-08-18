@@ -185,12 +185,11 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
                 }
 
                 let signal = pdata.signal_type();
-                let signal = pdata.signal_type();
                 let mut records: OtapArrowRecords = pdata.try_into()?;
 
                 // Apply transform across selected domains
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
-                
+
                 effect_handler.send_message(records.into()).await
             }
         }
