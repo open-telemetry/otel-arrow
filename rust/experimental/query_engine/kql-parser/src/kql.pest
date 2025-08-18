@@ -104,6 +104,7 @@ tofloat_expression = { "tofloat" ~ "(" ~ scalar_expression ~ ")" }
 tolong_expression = { "tolong" ~ "(" ~ scalar_expression ~ ")" }
 toreal_expression = { "toreal" ~ "(" ~ scalar_expression ~ ")" }
 todouble_expression = { "todouble" ~ "(" ~ scalar_expression ~ ")" }
+todatetime_expression = { "todatetime" ~ "(" ~ scalar_expression ~ ")" }
 conversion_expressions = _{
     tostring_expression
     | toint_expression
@@ -112,6 +113,7 @@ conversion_expressions = _{
     | tolong_expression
     | toreal_expression
     | todouble_expression
+    | todatetime_expression
 }
 
 scalar_expression = {
@@ -148,40 +150,40 @@ project_away_expression = { "project-away" ~ (identifier_or_pattern_literal|acce
 where_expression = { "where" ~ logical_expression }
 
 average_aggregate_expression = {
-	"avg" ~ "(" ~ scalar_expression ~ ")"
+    "avg" ~ "(" ~ scalar_expression ~ ")"
 }
 count_aggregate_expression = {
-	"count" ~ "(" ~ ")"
+    "count" ~ "(" ~ ")"
 }
 maximum_aggregate_expression = {
-	"max" ~ "(" ~ scalar_expression ~ ")"
+    "max" ~ "(" ~ scalar_expression ~ ")"
 }
 minimum_aggregate_expression = {
-	"min" ~ "(" ~ scalar_expression ~ ")"
+    "min" ~ "(" ~ scalar_expression ~ ")"
 }
 sum_aggregate_expression = {
-	"sum" ~ "(" ~ scalar_expression ~ ")"
+    "sum" ~ "(" ~ scalar_expression ~ ")"
 }
 
 aggregate_expression = _{
-	average_aggregate_expression
-	| count_aggregate_expression
+    average_aggregate_expression
+    | count_aggregate_expression
     | maximum_aggregate_expression
     | minimum_aggregate_expression
     | sum_aggregate_expression
 }
 
 aggregate_assignment_expression = {
-	identifier_literal ~ "=" ~ aggregate_expression
+    identifier_literal ~ "=" ~ aggregate_expression
 }
 
 group_by_expression = {
-	identifier_literal ~ ("=" ~ scalar_expression)?
+    identifier_literal ~ ("=" ~ scalar_expression)?
 }
 
 summarize_expression = {
-	"summarize"
-    	~ (aggregate_assignment_expression ~ ("," ~ aggregate_assignment_expression)*)?
+    "summarize"
+        ~ (aggregate_assignment_expression ~ ("," ~ aggregate_assignment_expression)*)?
         ~ ("by" ~ group_by_expression ~ ("," ~ group_by_expression)*)?
         ~ ("|" ~ tabular_expressions)*
 }
