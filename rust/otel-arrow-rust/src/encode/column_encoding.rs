@@ -8,7 +8,10 @@
 //! The motivation behind adding these encodings to the columns is for better compression when,
 //! for example, transmitting OTAP data via gRPC.
 
-use std::{ops::AddAssign, sync::Arc};
+use std::{
+    ops::{Add, AddAssign},
+    sync::Arc,
+};
 
 use arrow::{
     array::{
@@ -25,11 +28,7 @@ use snafu::OptionExt;
 use crate::{
     error::{self, Result},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::{
-        FieldExt,
-        consts::{self, metadata},
-        get_field_metadata,
-    },
+    schema::{FieldExt, consts},
 };
 
 /// identifier for column encoding
@@ -122,7 +121,13 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
     columns.get(column_idx).cloned()
 }
 
-fn replace_column(path: &str, schema: &Schema, columns: &mut [ArrayRef], new_column: ArrayRef) {
+fn replace_column(
+    path: &str,
+    encoding: Encoding,
+    schema: &Schema,
+    columns: &mut [ArrayRef],
+    new_column: ArrayRef,
+) {
     // TODO write tests for this
     if let Some(struct_col_name) = struct_column_name(path) {
         let field_index = schema.index_of(struct_col_name).ok();
@@ -130,13 +135,20 @@ fn replace_column(path: &str, schema: &Schema, columns: &mut [ArrayRef], new_col
             let struct_column = columns[field_index].as_any().downcast_ref::<StructArray>();
             if let Some(struct_column) = struct_column {
                 if let Some((struct_idx, _)) = struct_column.fields().find(consts::ID) {
+                    // replace the encoding metadata on the struct field
+                    let mut new_struct_fields = struct_column.fields().to_vec();
+                    update_field_encoding_metadata(&mut new_struct_fields, consts::ID, encoding);
+
+                    // build new struct array
                     let mut new_struct_columns = struct_column.columns().to_vec();
                     new_struct_columns[struct_idx] = new_column;
                     let new_struct_array = Arc::new(StructArray::new(
-                        struct_column.fields().clone(),
+                        new_struct_fields.into(),
                         new_struct_columns,
                         struct_column.nulls().cloned(),
                     ));
+
+                    // replace the original struct column with the new one
                     columns[field_index] = new_struct_array;
                 }
             }
@@ -159,7 +171,8 @@ fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding:
         let found_field = fields
             .iter()
             .enumerate()
-            .find(|(i, f)| f.name().as_str() == struct_col_name);
+            .find(|(_, f)| f.name().as_str() == struct_col_name);
+
         if let Some((idx, field)) = found_field {
             if let DataType::Struct(struct_fields) = field.data_type() {
                 let mut new_struct_fields = struct_fields.to_vec();
@@ -178,7 +191,8 @@ fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding:
     let found_field = fields
         .iter()
         .enumerate()
-        .find(|(i, f)| f.name().as_str() == path);
+        .find(|(_, f)| f.name().as_str() == path);
+
     if let Some((idx, field)) = found_field {
         let encoding = match encoding {
             Encoding::Delta => consts::metadata::encodings::DELTA,
@@ -219,7 +233,7 @@ macro_rules! col_encoding {
 /// given payload type
 fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
     match payload_type {
-        ArrowPayloadType::LogAttrs => &[
+        ArrowPayloadType::Logs => &[
             col_encoding!(consts::ID, UInt16, Delta),
             col_encoding!(RESOURCE_ID_COL_PATH, UInt16, Delta),
             col_encoding!(SCOPE_ID_COL_PATH, UInt16, Delta),
@@ -285,22 +299,27 @@ struct EncodedColumnResult<T: ArrowPrimitiveType> {
     remapping: Vec<T::Native>,
 }
 
-///
+/// TODO
 fn create_new_delta_encoded_column_from<T>(
     column: &PrimitiveArray<T>,
 ) -> Result<EncodedColumnResult<T>>
 where
     T: ArrowPrimitiveType,
-    <T as ArrowPrimitiveType>::Native: From<u8> + AddAssign + PartialOrd,
+    <T as ArrowPrimitiveType>::Native: From<u8> + Add<Output = T::Native> + AddAssign + PartialOrd,
 {
     // TODO need to check if column has at least one value
     // TODO we can do nothing if the column contains only one value?
     // TODO use a bunch of unsafe stuff here to build the new column
 
+    // TODO - there's an important optimization that can be made here where, if all the IDs
+    // from the original array equal their counterpart in the remappings, we can avoid returning
+    // a new column altogether, which will mean we save time not having to remap the Parent IDs of
+    // the child record batch
+
     let zero = T::Native::from(0u8);
     let one = T::Native::from(1u8);
 
-    let remappings_len = arrow::compute::max(column).unwrap();
+    let remappings_len = one + arrow::compute::max(column).unwrap();
     let mut remappings = vec![zero; remappings_len.as_usize()];
 
     let mut curr_id: T::Native = zero;
@@ -567,6 +586,7 @@ pub fn apply_column_encodings(
         // TODO the order of arguments between this and the next method call are not consistent
         replace_column(
             column_encoding.path,
+            column_encoding.encoding,
             &schema,
             &mut columns,
             encoding_result.new_column,
@@ -808,7 +828,27 @@ mod test {
 
     #[test]
     fn test_create_delta_encoded_column() {
-        todo!()
+        let test_cases = vec![
+            (
+                // simple case:
+                [0, 1, 2, 3, 4, 5, 6, 7],
+                [0, 1, 1, 1, 1, 1, 1, 1],
+                [0, 1, 2, 3, 4, 5, 6, 7],
+            ), // TODO more test cases
+        ];
+
+        for test_case in test_cases {
+            let input = UInt16Array::from_iter_values(test_case.0);
+            let result = create_new_delta_encoded_column_from(&input).unwrap();
+            let result_col = result
+                .new_column
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .expect("Expected UInt16Array");
+            let expected_column = UInt16Array::from_iter_values(test_case.1);
+            assert_eq!(result_col, &expected_column);
+            assert_eq!(&result.remapping, &test_case.2);
+        }
     }
 
     #[test]
@@ -867,5 +907,173 @@ mod test {
 
         // assert no parent ID remappings returned
         assert_eq!(result.1, None)
+    }
+
+    #[test]
+    fn test_apply_column_encodings_columns_already_plain_encoded() {
+        let struct_fields: Fields =
+            vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()].into();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                consts::RESOURCE,
+                DataType::Struct(struct_fields.clone()),
+                true,
+            ),
+            Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+            Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]));
+
+        // This data is meant to represent a batch of logs that will be sorted, and will need to
+        // have the ID column remapped because it is no longer in an ascending order and so cannot
+        // be delta encoded into an unsigned int type.
+        //
+        // To help make sense of the expected results below, note that it will be sorted into
+        // this (e.g. 'data', below, is just a shuffled version of the following)
+        // (0, 0, 0, 1),
+        // (0, 0, 1, 2),
+        // (0, 1, 2, 3),
+        // (0, 1, 3, 7),
+        // (1, 2, 4, 5),
+        // (1, 2, 5, 6),
+        // (1, 3, 6, 4),
+        // (1, 3, 7, 0),
+        //
+        let data = vec![
+            (1, 3, 6, 4),
+            (0, 1, 2, 3),
+            (0, 0, 1, 2),
+            (0, 1, 3, 7),
+            (1, 2, 5, 6),
+            (1, 2, 4, 5),
+            (0, 0, 0, 1),
+            (1, 3, 7, 0),
+        ];
+
+        let resource_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.0));
+        let scope_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.1));
+        let trace_ids =
+            FixedSizeBinaryArray::try_from_iter(data.iter().map(|d| u128::to_be_bytes(d.2)))
+                .unwrap();
+        let log_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.3));
+
+        let record_batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(resource_ids)],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(scope_ids)],
+                    None,
+                )),
+                Arc::new(trace_ids),
+                Arc::new(log_ids),
+            ],
+        )
+        .unwrap();
+
+        let result = apply_column_encodings(&ArrowPayloadType::Logs, &record_batch).unwrap();
+
+        // by way of explanation for the expected data.. we expect that once the data is sorted,
+        // it will look something like this if we were to produce it in plain encoding
+        // (0, 0, 0, 0),
+        // (0, 0, 1, 1),
+        // (0, 1, 2, 2),
+        // (0, 1, 3, 3),
+        // (1, 2, 4, 4),
+        // (1, 2, 5, 5),
+        // (1, 3, 6, 6),
+        // (1, 3, 7, 7),
+        //
+        // which means the log IDs which have been remapped should now look something like this
+        //
+        // old_id -> new_id
+        // 1 -> 0
+        // 2 -> 1
+        // 3 -> 2
+        // 7 -> 3
+        // 5 -> 4
+        // 6 -> 5
+        // 4 -> 6
+        // 0 -> 7
+
+        let expected_data = vec![
+            (0, 0, 0, 0),
+            (0, 0, 1, 1),
+            (0, 1, 2, 1),
+            (0, 0, 3, 1),
+            (1, 1, 4, 1),
+            (0, 0, 5, 1),
+            (0, 1, 6, 1),
+            (0, 0, 7, 1),
+        ];
+        let resource_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.0));
+        let scope_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.1));
+        let trace_ids = FixedSizeBinaryArray::try_from_iter(
+            expected_data.iter().map(|d| u128::to_be_bytes(d.2)),
+        )
+        .unwrap();
+        let log_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.3));
+
+        let expected_struct_fields: Fields = vec![
+            Field::new(consts::ID, DataType::UInt16, true)
+                .with_encoding(consts::metadata::encodings::DELTA),
+        ]
+        .into();
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                consts::RESOURCE,
+                DataType::Struct(expected_struct_fields.clone()),
+                true,
+            ),
+            Field::new(
+                consts::SCOPE,
+                DataType::Struct(expected_struct_fields.clone()),
+                true,
+            ),
+            Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            Field::new(consts::ID, DataType::UInt16, true)
+                .with_encoding(consts::metadata::encodings::DELTA),
+        ]));
+
+        let expected_record_batch = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(resource_ids)],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(scope_ids)],
+                    None,
+                )),
+                Arc::new(trace_ids),
+                Arc::new(log_ids),
+            ],
+        )
+        .unwrap();
+        assert_eq!(result.0, expected_record_batch);
+
+        let expected_id_remappings = vec![
+            ParentIdRemapping {
+                column_path: consts::ID,
+                remapped_ids: RemappedParentIds::UInt16(vec![7, 0, 1, 2, 6, 4, 5, 3]),
+            },
+            ParentIdRemapping {
+                column_path: RESOURCE_ID_COL_PATH,
+                remapped_ids: RemappedParentIds::UInt16(vec![0, 1]),
+            },
+            ParentIdRemapping {
+                column_path: SCOPE_ID_COL_PATH,
+                remapped_ids: RemappedParentIds::UInt16(vec![0, 1, 2, 3]),
+            },
+        ];
+        assert_eq!(result.1, Some(expected_id_remappings));
     }
 }
