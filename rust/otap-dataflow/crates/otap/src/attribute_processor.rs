@@ -263,9 +263,6 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
         None => {
             let _ = set.insert(ApplyDomain::Signal);
         }
-        Some(list) if list.is_empty() => {
-            let _ = set.insert(ApplyDomain::Signal);
-        }
         Some(list) => {
             for item in list {
                 match item.as_str() {
