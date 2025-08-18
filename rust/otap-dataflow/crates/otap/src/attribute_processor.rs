@@ -172,39 +172,49 @@ impl local::Processor<OtapPdata> for AttributeProcessor {
         match msg {
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
-                let signal = pdata.signal_type();
-                let mut pdata = pdata;
-
-                match pdata {
-                    OtapPdata::OtapArrowRecords(ref mut records) => {
-                        apply_transform(records, signal, &self.transform, &self.domains)?;
-                        effect_handler.send_message(pdata).await
-                    }
-                    OtapPdata::OtapArrowBytes(_) => {
-                        // Convert to records, apply, convert back to bytes to preserve variant
-                        let signal_ty = pdata.signal_type();
-                        let records: OtapArrowRecords = pdata.clone().try_into()?;
-                        let mut records_mut = records;
-                        apply_transform(
-                            &mut records_mut,
-                            signal_ty,
-                            &self.transform,
-                            &self.domains,
-                        )?;
-                        let bytes: crate::grpc::OtapArrowBytes = records_mut.try_into()?;
-                        let pdata_back: OtapPdata = bytes.into();
-                        effect_handler.send_message(pdata_back).await
-                    }
-                    OtapPdata::OtlpBytes(otlp_bytes) => {
-                        // Convert to OTAP, apply transform, convert back
-                        let records: OtapArrowRecords = otlp_bytes.try_into()?;
-                        let mut records_mut = records;
-                        apply_transform(&mut records_mut, signal, &self.transform, &self.domains)?;
-                        let bytes: crate::pdata::OtlpProtoBytes = records_mut.try_into()?;
-                        let pdata_back = OtapPdata::OtlpBytes(bytes);
-                        effect_handler.send_message(pdata_back).await
-                    }
+                // Fast path: no actions to apply
+                if self.transform.rename.is_none() && self.transform.delete.is_none() {
+                    return effect_handler.send_message(pdata).await;
                 }
+
+                let signal = pdata.signal_type();
+
+                enum Kind {
+                    Records,
+                    OtapBytes,
+                    OtlpBytes,
+                }
+
+                // Canonicalize to records and remember original kind
+                let (mut records, kind): (OtapArrowRecords, Kind) = match pdata {
+                    OtapPdata::OtapArrowRecords(r) => (r, Kind::Records),
+                    OtapPdata::OtapArrowBytes(_) => {
+                        let r: OtapArrowRecords = pdata.try_into()?;
+                        (r, Kind::OtapBytes)
+                    }
+                    OtapPdata::OtlpBytes(_) => {
+                        let r: OtapArrowRecords = pdata.try_into()?;
+                        (r, Kind::OtlpBytes)
+                    }
+                };
+
+                // Apply transform across selected domains
+                apply_transform(&mut records, signal, &self.transform, &self.domains)?;
+
+                // Convert back to original outer variant
+                let out_pdata = match kind {
+                    Kind::Records => OtapPdata::OtapArrowRecords(records),
+                    Kind::OtapBytes => {
+                        let bytes: crate::grpc::OtapArrowBytes = records.try_into()?;
+                        bytes.into()
+                    }
+                    Kind::OtlpBytes => {
+                        let bytes: crate::pdata::OtlpProtoBytes = records.try_into()?;
+                        OtapPdata::OtlpBytes(bytes)
+                    }
+                };
+
+                effect_handler.send_message(out_pdata).await
             }
         }
     }
@@ -674,6 +684,130 @@ mod tests {
         let rb2_log = records.get(ArrowPayloadType::LogAttrs).unwrap();
         let all_log = collect_key_strings(rb2_log);
         assert_eq!(all_log, vec!["rpc.method", "keep_l"]);
+    }
+
+    #[test]
+    fn test_no_actions_noop_on_records() {
+        // No actions -> no changes applied; default apply_to is signal-only
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        // Resource + Log attrs
+        let rb_res = make_attrs_batch(vec![0u16], vec!["svc.name"]);
+        let rb_log = make_attrs_batch(vec![0u16], vec!["http.method"]);
+        records.set(ArrowPayloadType::ResourceAttrs, rb_res.clone());
+        records.set(ArrowPayloadType::LogAttrs, rb_log.clone());
+
+        let config = json!({
+            "actions": []
+        });
+        let processor = AttributeProcessor::from_config(&config).unwrap();
+        let before_res = collect_key_strings(records.get(ArrowPayloadType::ResourceAttrs).unwrap());
+        let before_log = collect_key_strings(records.get(ArrowPayloadType::LogAttrs).unwrap());
+
+        // apply_transform should be a no-op with empty transform
+        apply_transform(
+            &mut records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
+
+        let after_res = collect_key_strings(records.get(ArrowPayloadType::ResourceAttrs).unwrap());
+        let after_log = collect_key_strings(records.get(ArrowPayloadType::LogAttrs).unwrap());
+        assert_eq!(before_res, after_res);
+        assert_eq!(before_log, after_log);
+    }
+
+    #[test]
+    fn test_variant_preservation_otap_bytes_roundtrip() {
+        // Build records with log attrs
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        let rb_log = make_attrs_batch(vec![0u16, 0u16], vec!["http.method", "keep_l"]);
+        records.set(ArrowPayloadType::LogAttrs, rb_log);
+
+        // Convert to OtapArrowBytes
+        let bytes_in: crate::grpc::OtapArrowBytes = records.clone().try_into().unwrap();
+        let pdata_in: OtapPdata = bytes_in.into();
+
+        // Processor with rename
+        let config = json!({
+            "actions": [ { "action": "rename", "from": "http.method", "to": "rpc.method" } ]
+        });
+        let processor = AttributeProcessor::from_config(&config).unwrap();
+
+        // Canonicalize to records (like process() now does), apply, and convert back to OtapBytes
+        let mut roundtrip_records: OtapArrowRecords = pdata_in.try_into().unwrap();
+        apply_transform(
+            &mut roundtrip_records,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
+        let bytes_out: crate::grpc::OtapArrowBytes = roundtrip_records.try_into().unwrap();
+        let pdata_out: OtapPdata = bytes_out.into();
+
+        // Validate variant is bytes and rename applied
+        match pdata_out {
+            OtapPdata::OtapArrowBytes(b) => {
+                let rec2: OtapArrowRecords = b.try_into().unwrap();
+                let keys = collect_key_strings(rec2.get(ArrowPayloadType::LogAttrs).unwrap());
+                assert_eq!(keys, vec!["rpc.method", "keep_l"]);
+            }
+            other => panic!("expected OtapArrowBytes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_variant_preservation_otlp_bytes_roundtrip() {
+        // Build OTLP logs request
+        let logs_req = ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource::default())
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::default())
+                        .log_records(vec![
+                            LogRecord::build(1u64, SeverityNumber::Info, "evt")
+                                .attributes(vec![
+                                    KeyValue::new("http.method", AnyValue::new_string("GET")),
+                                    KeyValue::new("keep_l", AnyValue::new_string("ok")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+        ]);
+        let mut bytes = vec![];
+        logs_req.encode(&mut bytes).unwrap();
+        let pdata_in = OtapPdata::OtlpBytes(crate::pdata::OtlpProtoBytes::ExportLogsRequest(bytes));
+
+        // Processor with rename
+        let config = json!({
+            "actions": [ { "action": "rename", "from": "http.method", "to": "rpc.method" } ]
+        });
+        let processor = AttributeProcessor::from_config(&config).unwrap();
+
+        // Convert to records, apply, convert back to OtlpBytes
+        let mut recs: OtapArrowRecords = pdata_in.clone().try_into().unwrap();
+        apply_transform(
+            &mut recs,
+            SignalType::Logs,
+            &processor.transform,
+            &processor.domains,
+        )
+        .unwrap();
+        let out_bytes: crate::pdata::OtlpProtoBytes = recs.try_into().unwrap();
+        let pdata_out = OtapPdata::OtlpBytes(out_bytes);
+
+        // Validate variant preserved and rename applied after decoding back to records
+        if let OtapPdata::OtlpBytes(out) = pdata_out {
+            let recs2: OtapArrowRecords = out.try_into().unwrap();
+            let keys = collect_key_strings(recs2.get(ArrowPayloadType::LogAttrs).unwrap());
+            assert!(keys.contains(&"rpc.method".to_string()));
+            assert!(!keys.contains(&"http.method".to_string()));
+        } else {
+            panic!("expected OtlpBytes variant");
+        }
     }
 
     #[test]
