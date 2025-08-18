@@ -113,6 +113,24 @@ pub(crate) fn parse_todouble_expression(
     )))
 }
 
+pub(crate) fn parse_todatetime_expression(
+    todatetime_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&todatetime_rule);
+    let mut inner = todatetime_rule.into_inner();
+
+    let scalar_expr_rule = inner.next().unwrap();
+
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    Ok(ScalarExpression::Convert(
+        ConvertScalarExpression::DateTime(ConversionScalarExpression::new(
+            query_location,
+            inner_expr,
+        )),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +624,40 @@ mod tests {
                     println!("Parser correctly created Double conversion AST for {description}");
                 }
                 _ => panic!("Expected ConvertScalarExpression::Double for: {description}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_todatetime_expression() {
+        let test_cases = vec![
+            (
+                "todatetime(0)",
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            (
+                "todatetime('1/1/1970')",
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "1/1/1970"),
+                )),
+            ),
+        ];
+
+        for (input, value) in test_cases {
+            let state = ParserState::new(input);
+            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+                .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
+
+            let result = parse_scalar_expression(parsed.next().unwrap(), &state)
+                .unwrap_or_else(|_| panic!("Failed to parse expression: {input}"));
+
+            match result {
+                ScalarExpression::Convert(ConvertScalarExpression::DateTime(c)) => {
+                    assert_eq!(&value, c.get_inner_expression());
+                }
+                _ => panic!("Expected ConvertScalarExpression::DateTime"),
             }
         }
     }
