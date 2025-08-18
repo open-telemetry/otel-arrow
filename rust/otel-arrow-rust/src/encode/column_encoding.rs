@@ -1014,6 +1014,8 @@ mod test {
 
     #[test]
     fn test_apply_column_encodings_columns_already_plain_encoded() {
+        // TODO this test might already be covered by the otap test suite
+
         let struct_fields: Fields =
             vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()].into();
         let schema = Arc::new(Schema::new(vec![
