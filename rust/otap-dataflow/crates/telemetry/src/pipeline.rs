@@ -91,48 +91,48 @@ pub(crate) fn format_line_protocol(metrics: &dyn MultivariateMetrics, attrs: &No
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{OtlpReceiverMetrics, PerfExporterPdataMetrics};
+    use crate::descriptor::{MetricsDescriptor, MetricsField, MetricsKind};
+    use crate::error::Error;
+    use crate::metrics::MultivariateMetrics;
+    use crate::registry::{MetricsKey, MetricsRegistry, MetricsRegistryHandle};
     use std::borrow::Cow;
 
+    #[derive(Clone, Default)]
+    struct TestM { key: Option<MetricsKey>, a: u64, b: u64 }
+    const DESC: MetricsDescriptor = MetricsDescriptor { name: "test.metrics", fields: &[
+        MetricsField { name: "a", unit: "{u}", kind: MetricsKind::Counter },
+        MetricsField { name: "b", unit: "{u}", kind: MetricsKind::Counter },
+    ]};
+    impl MultivariateMetrics for TestM {
+        fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) { self.key = Some(registry.insert_default::<Self>(attrs)); }
+        fn descriptor(&self) -> &'static MetricsDescriptor { &DESC }
+        fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> { Box::new(DESC.fields.iter().zip([self.a, self.b].into_iter()).map(|(f,v)| (f,v))) }
+        fn merge_from_same_kind(&mut self, other: &dyn MultivariateMetrics) { let o = other.as_any().downcast_ref::<Self>().unwrap(); self.a += o.a; self.b += o.b; }
+    fn aggregate_into(&self, reg: &mut MetricsRegistryHandle) -> Result<(), Error> { if let Some(k)=self.key { reg.add_metrics(k, self); Ok(()) } else { Err(Error::MetricsNotRegistered { descriptor: self.descriptor() }) } }
+        fn zero(&mut self) { self.a = 0; self.b = 0; }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    }
+
     fn sample_attrs() -> NodeStaticAttrs { NodeStaticAttrs {
-        node_id: Cow::Borrowed("nodeA"),
-        node_type: Cow::Borrowed("receiver"),
-        pipeline_id: Cow::Borrowed("p1"),
-        core_id: 0,
-        numa_node_id: 0,
-        process_id: 1234,
+        node_id: Cow::Borrowed("nodeA"), node_type: Cow::Borrowed("receiver"), pipeline_id: Cow::Borrowed("p1"), core_id: 0, numa_node_id: 0, process_id: 1234,
     }}
 
     #[test]
-    fn test_receiver_line_protocol() {
-        let mut m = OtlpReceiverMetrics::default();
-        m.bytes_received.add(42);
-        m.messages_received.inc();
+    fn test_line_protocol_fields_and_tags() {
+        let mut m = TestM::default();
+        m.a = 1; m.b = 2;
         let line = format_line_protocol(&m, &sample_attrs());
-        assert!(line.starts_with("receiver_metrics,node_id=nodeA,node_type=receiver,pipeline_id=p1"));
-        assert!(line.contains("bytes.received=42i"));
-        assert!(line.contains("messages.received=1i"));
-        assert!(line.rsplit_once(' ').unwrap().1.parse::<i64>().is_ok());
-    }
-
-    #[test]
-    fn test_perf_exporter_line_protocol() {
-        let mut m = PerfExporterPdataMetrics::default();
-        m.logs.add(5);
-        m.metrics.inc();
-        let line = format_line_protocol(&m, &NodeStaticAttrs { node_id: Cow::Borrowed("x"), node_type: Cow::Borrowed("exporter"), pipeline_id: Cow::Borrowed("p2"), core_id: 1, numa_node_id: 0, process_id: 4321 });
-        assert!(line.starts_with("perf_exporter_metrics,node_id=x,node_type=exporter,pipeline_id=p2"));
-        assert!(line.contains("bytes.total=10i"));
-        assert!(line.contains("logs=5i"));
-        assert!(line.contains("metrics=1i"));
+        assert!(line.starts_with("test.metrics,node_id=nodeA,node_type=receiver,pipeline_id=p1"));
+        assert!(line.contains("a=1i"));
+        assert!(line.contains("b=2i"));
         assert!(line.rsplit_once(' ').unwrap().1.parse::<i64>().is_ok());
     }
 
     #[test]
     fn test_timestamp_present_and_order() {
-        let m = OtlpReceiverMetrics::default();
+        let m = TestM::default();
         let line = format_line_protocol(&m, &sample_attrs());
-        // Ensure exactly two space separators: one between tags & fields, one before timestamp.
         let space_count = line.chars().filter(|c| *c == ' ').count();
         assert_eq!(space_count, 2, "expected two spaces (tags-fields, fields-timestamp)");
         let (_before_ts, ts_str) = line.rsplit_once(' ').unwrap();

@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Declaration of all multivariate metrics types used in this system.
+//! Core multivariate metrics traits and types.
 //!
-//! Note: This module will be entirely generated from a telemetry schema and Weaver in the future.
+//! This module intentionally contains no product-specific metrics definitions. Concrete metrics
+//! live in their respective nodes/crates and implement the `MultivariateMetrics` trait defined
+//! here.
 
 use crate::attributes::NodeStaticAttrs;
-use crate::counter::Counter;
-use crate::descriptor::{MetricsDescriptor, MetricsField, MetricsKind};
+use crate::descriptor::{MetricsDescriptor, MetricsField};
 use crate::error::Error;
-use crate::registry::{MetricsRegistry, MetricsKey, MetricsRegistryHandle};
+use crate::registry::MetricsRegistry;
+use std::any::Any;
 
 /// Type representing a snapshot of multivariate metrics.
 pub type MetricsSnapshot = Box<dyn MultivariateMetrics + Send + Sync>;
 
 /// Trait for types that can aggregate their metrics into a `MetricsRegistry`.
-pub trait MultivariateMetrics {
+pub trait MultivariateMetrics: Any + Send + Sync {
     /// Register the current multivariate metrics into the metrics registry.
     #[doc(hidden)]
     fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs);
@@ -25,8 +27,15 @@ pub trait MultivariateMetrics {
     /// Iterate over (descriptor_field, current_value) pairs in defined order.
     fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_>;
 
-    /// Aggregates the metrics of this type to the provided registry.
-    fn aggregate_into(&self, registry: &mut MetricsRegistryHandle) -> Result<(), Error>;
+    /// Merges the values from `other` into `self`.
+    ///
+    /// Implementations MUST assume `other` is of the same concrete type. Callers should ensure
+    /// type compatibility using `descriptor()` or by trying a downcast.
+    fn merge_from_same_kind(&mut self, other: &dyn MultivariateMetrics);
+
+    /// Aggregates the metrics of this type into the provided registry (identified by a key that
+    /// must have been set at registration time by the implementer).
+    fn aggregate_into(&self, registry: &mut crate::registry::MetricsRegistryHandle) -> Result<(), Error>;
 
     /// Resets all metrics to zero / default.
     fn zero(&mut self);
@@ -35,355 +44,70 @@ pub trait MultivariateMetrics {
     fn has_non_zero(&self) -> bool {
         self.field_values().any(|(_, v)| v != 0)
     }
-}
 
-/// OTLP receiver metrics.
-#[repr(C, align(64))]
-#[derive(Debug, Default, Clone)]
-pub struct OtlpReceiverMetrics {
-    /// A unique key set at the registration of these metrics.
-    key: Option<MetricsKey>,
-
-    /// Total bytes received by the receiver.
-    pub bytes_received: Counter<u64>,
-    /// Total messages received by the receiver.
-    pub messages_received: Counter<u64>,
-}
-
-const OTLP_RECEIVER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
-    name: "otlp.receiver.metrics",
-    fields: &[
-        MetricsField {
-            name: "bytes.received",
-            unit: "By",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "messages.received",
-            unit: "{msg}",
-            kind: MetricsKind::Counter,
-        },
-    ],
-};
-
-/// OTLP exporter metrics.
-#[repr(C, align(64))]
-#[derive(Debug, Default, Clone)]
-pub struct OtlpExporterMetrics {
-    /// A unique key set at the registration of these metrics.
-    key: Option<MetricsKey>,
-
-    /// Number of export log requests received by the exporter.
-    pub export_logs_request_received: Counter<u64>,
-    /// Number of export log requests that succeeded.
-    pub export_logs_request_success: Counter<u64>,
-    /// Number of export log requests that failed.
-    pub export_logs_request_failure: Counter<u64>,
-
-    /// Number of export metrics requests received by the exporter.
-    pub export_metrics_request_received: Counter<u64>,
-    /// Number of export metrics requests that succeeded.
-    pub export_metrics_request_success: Counter<u64>,
-    /// Number of export metrics requests that failed.
-    pub export_metrics_request_failure: Counter<u64>,
-
-    /// Number of export traces requests received by the exporter.
-    pub export_traces_request_received: Counter<u64>,
-    /// Number of export traces requests that succeeded.
-    pub export_traces_request_success: Counter<u64>,
-    /// Number of export traces requests that failed.
-    pub export_traces_request_failure: Counter<u64>,
-}
-
-const OTLP_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
-    name: "otlp.exporter.metrics",
-    fields: &[
-        MetricsField {
-            name: "export.logs.request.received",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.logs.request.success",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.logs.request.failure",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.metrics.request.received",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.metrics.request.success",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.metrics.request.failure",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.traces.request.received",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.traces.request.success",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "export.traces.request.failure",
-            unit: "{req}",
-            kind: MetricsKind::Counter,
-        }
-    ],
-};
-
-/// Pdata-oriented metrics for the OTAP PerfExporter.
-#[repr(C, align(64))]
-#[derive(Debug, Default, Clone)]
-pub struct PerfExporterPdataMetrics {
-    /// A unique key set at the registration of these metrics.
-    key: Option<MetricsKey>,
-
-    /// Number of pdata batches received.
-    pub batches: Counter<u64>,
-    /// Number of invalid pdata batches received.
-    pub invalid_batches: Counter<u64>,
-    /// Number of arrow records received.
-    pub arrow_records: Counter<u64>,
-    /// Number of logs received.
-    pub logs: Counter<u64>,
-    /// Number of spans received.
-    pub spans: Counter<u64>,
-    /// Number of metrics received.
-    pub metrics: Counter<u64>,
-}
-
-const PERF_EXPORTER_METRICS_DESC: MetricsDescriptor = MetricsDescriptor {
-    name: "perf.exporter.pdata.metrics",
-    fields: &[
-        MetricsField {
-            name: "batches",
-            unit: "{msg}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "invalid.batches",
-            unit: "{msg}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "arrow.records",
-            unit: "{record}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "logs",
-            unit: "{log}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "spans",
-            unit: "{span}",
-            kind: MetricsKind::Counter,
-        },
-        MetricsField {
-            name: "metrics",
-            unit: "{metric}",
-            kind: MetricsKind::Counter,
-        },
-    ],
-};
-
-impl MultivariateMetrics for OtlpReceiverMetrics {
-    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
-        let key = registry.otlp_receiver_metrics.insert((OtlpReceiverMetrics::default(), attrs));
-        self.key = Some(key);
-    }
-
-    fn descriptor(&self) -> &'static MetricsDescriptor {
-        &OTLP_RECEIVER_METRICS_DESC
-    }
-
-    fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> {
-        let desc = self.descriptor();
-        let values = [self.bytes_received.get(), self.messages_received.get()];
-        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f, v)| (f, v)))
-    }
-
-    fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
-        if let Some(key) = self.key {
-            aggregator.add_otlp_receiver_metrics(key, self);
-            Ok(())
-        } else {
-            Err(Error::MetricsNotRegistered {
-                descriptor: self.descriptor()
-            })
-        }
-    }
-
-    fn zero(&mut self) {
-        self.bytes_received.set(0);
-        self.messages_received.set(0);
-    }
-
-    fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
-        self.bytes_received.get() != 0 || self.messages_received.get() != 0
-    }
-}
-
-impl MultivariateMetrics for OtlpExporterMetrics {
-    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
-        let key = registry.otlp_exporter_metrics.insert((OtlpExporterMetrics::default(), attrs));
-        self.key = Some(key);
-    }
-
-    fn descriptor(&self) -> &'static MetricsDescriptor {
-        &OTLP_EXPORTER_METRICS_DESC
-    }
-
-    fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> {
-        let desc = self.descriptor();
-        let values = [
-            self.export_logs_request_received.get(),
-            self.export_logs_request_success.get(),
-            self.export_logs_request_failure.get(),
-            self.export_metrics_request_received.get(),
-            self.export_metrics_request_success.get(),
-            self.export_metrics_request_failure.get(),
-            self.export_traces_request_received.get(),
-            self.export_traces_request_success.get(),
-            self.export_traces_request_failure.get(),
-        ];
-        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f, v)| (f, v)))
-    }
-
-    fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
-        if let Some(key) = self.key {
-            aggregator.add_otlp_exporter_metrics(key, self);
-            Ok(())
-        } else {
-            Err(Error::MetricsNotRegistered {
-                descriptor: self.descriptor()
-            })
-        }
-    }
-
-    fn zero(&mut self) {
-        self.export_logs_request_received.set(0);
-        self.export_logs_request_success.set(0);
-        self.export_logs_request_failure.set(0);
-        self.export_metrics_request_received.set(0);
-        self.export_metrics_request_success.set(0);
-        self.export_metrics_request_failure.set(0);
-        self.export_traces_request_received.set(0);
-        self.export_traces_request_success.set(0);
-        self.export_traces_request_failure.set(0);
-    }
-
-    fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
-        self.export_logs_request_received.get() != 0
-            || self.export_logs_request_success.get() != 0
-            || self.export_logs_request_failure.get() != 0
-            || self.export_metrics_request_received.get() != 0
-            || self.export_metrics_request_success.get() != 0
-            || self.export_metrics_request_failure.get() != 0
-            || self.export_traces_request_received.get() != 0
-            || self.export_traces_request_success.get() != 0
-            || self.export_traces_request_failure.get() != 0
-    }
-}
-
-impl MultivariateMetrics for PerfExporterPdataMetrics {
-    fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
-        let key = registry.perf_exporter_metrics.insert((PerfExporterPdataMetrics::default(), attrs));
-        self.key = Some(key);
-    }
-
-    fn descriptor(&self) -> &'static MetricsDescriptor {
-        &PERF_EXPORTER_METRICS_DESC
-    }
-
-    fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> {
-        let desc = self.descriptor();
-        let values = [
-            self.batches.get(),
-            self.invalid_batches.get(),
-            self.arrow_records.get(),
-            self.logs.get(),
-            self.spans.get(),
-            self.metrics.get(),
-        ];
-        Box::new(desc.fields.iter().zip(values.into_iter()).map(|(f, v)| (f, v)))
-    }
-
-    fn aggregate_into(&self, aggregator: &mut MetricsRegistryHandle) -> Result<(), Error> {
-        if let Some(key) = self.key {
-            aggregator.add_perf_exporter_metrics(key, self);
-            Ok(())
-        } else {
-            Err(Error::MetricsNotRegistered {
-                descriptor: self.descriptor()
-            })
-        }
-    }
-
-    fn zero(&mut self) {
-        self.batches.set(0);
-        self.invalid_batches.set(0);
-        self.arrow_records.set(0);
-        self.logs.set(0);
-        self.spans.set(0);
-        self.metrics.set(0);
-    }
-
-    fn has_non_zero(&self) -> bool { // override for efficiency (no iterator boxing)
-        self.batches.get() != 0
-            || self.invalid_batches.get() != 0
-            || self.arrow_records.get() != 0
-            || self.logs.get() != 0
-            || self.spans.get() != 0
-            || self.metrics.get() != 0
-    }
+    /// Downcast helper for dynamic dispatch.
+    fn as_any(&self) -> &dyn Any;
+    /// Downcast helper for dynamic dispatch (mutable).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::metrics::{PerfExporterPdataMetrics, OtlpReceiverMetrics, MultivariateMetrics};
+    use super::*;
+    use crate::descriptor::{MetricsDescriptor, MetricsField, MetricsKind};
+    use crate::registry::{MetricsKey, MetricsRegistry, MetricsRegistryHandle};
+    use crate::attributes::NodeStaticAttrs;
 
-    #[test]
-    fn test_perf_exporter_metrics() {
-        let mut metrics = PerfExporterPdataMetrics::default();
-        assert!(!metrics.has_non_zero());
+    #[derive(Clone, Default)]
+    struct TestMetrics {
+        key: Option<MetricsKey>,
+        v: u64,
+    }
 
-        metrics.logs.add(10);
-        metrics.metrics.inc();
+    const TEST_DESC: MetricsDescriptor = MetricsDescriptor {
+        name: "test.metrics",
+        fields: &[MetricsField { name: "v", unit: "{unit}", kind: MetricsKind::Counter }],
+    };
 
-        metrics.logs.inc();
-
-        assert!(metrics.has_non_zero());
-        assert_eq!(metrics.logs.get(), 11);
-        assert_eq!(metrics.metrics.get(), 1);
-
-        metrics.zero();
-        assert!(!metrics.has_non_zero());
+    impl MultivariateMetrics for TestMetrics {
+        fn register_into(&mut self, registry: &mut MetricsRegistry, attrs: NodeStaticAttrs) {
+            let key = registry.insert_default::<Self>(attrs);
+            self.key = Some(key);
+        }
+        fn descriptor(&self) -> &'static MetricsDescriptor { &TEST_DESC }
+        fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_> {
+            Box::new(TEST_DESC.fields.iter().zip([self.v].into_iter()).map(|(f, v)| (f, v)))
+        }
+        fn merge_from_same_kind(&mut self, other: &dyn MultivariateMetrics) {
+            let other = other.as_any().downcast_ref::<Self>().unwrap();
+            self.v += other.v;
+        }
+        fn aggregate_into(&self, registry: &mut MetricsRegistryHandle) -> Result<(), Error> {
+            if let Some(key) = self.key { registry.add_metrics(key, self); Ok(()) } else { Err(Error::MetricsNotRegistered { descriptor: self.descriptor() }) }
+        }
+        fn zero(&mut self) { self.v = 0; }
+        fn as_any(&self) -> &dyn Any { self }
+        fn as_any_mut(&mut self) -> &mut dyn Any { self }
     }
 
     #[test]
-    fn test_receiver_metrics_has_non_zero() {
-        let mut metrics = OtlpReceiverMetrics::default();
-        assert!(!metrics.has_non_zero());
-        metrics.bytes_received.add(5);
-        assert!(metrics.has_non_zero());
-        metrics.zero();
-        assert!(!metrics.has_non_zero());
+    fn test_trait_basics() {
+        let mut reg = MetricsRegistryHandle::new();
+        let mut m = TestMetrics::default();
+        reg.register(&mut m, NodeStaticAttrs { node_id: "n".into(), node_type: "t".into(), pipeline_id: "p".into(), core_id: 0, numa_node_id: 0, process_id: 0 });
+        m.v = 10;
+        m.aggregate_into(&mut reg).unwrap();
+        assert_eq!(reg.len(), 1);
+        // flush loop should see non-zero then zero them
+        let mut seen = 0;
+        reg.for_each_changed_and_zero(|mm, _| {
+            for (_, val) in mm.field_values() { assert_eq!(val, 10); }
+            seen += 1;
+        });
+        assert_eq!(seen, 1);
+        // second pass: zeros
+        seen = 0;
+        reg.for_each_changed_and_zero(|_, _| { seen += 1; });
+        assert_eq!(seen, 0);
     }
 }

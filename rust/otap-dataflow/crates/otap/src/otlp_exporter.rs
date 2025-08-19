@@ -15,11 +15,13 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
+use otap_df_telemetry_macros::telemetry_metrics;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::metrics::OtlpExporterMetrics;
+use otap_df_telemetry::counter::Counter;
+use otap_df_telemetry::registry::MetricsKey;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -67,6 +69,40 @@ impl OTLPExporter {
 
         Ok(Self { config, metrics })
     }
+}
+
+/// OTLP exporter metrics moved into the node module.
+#[telemetry_metrics(name = "otlp.exporter.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct OtlpExporterMetrics {
+    key: Option<MetricsKey>,
+    /// Number of OTLP logs request received
+    #[metric(name = "export.logs.request.received", unit = "{req}")]
+    pub export_logs_request_received: Counter<u64>,
+    /// Number of OTLP logs request successful
+    #[metric(name = "export.logs.request.success", unit = "{req}")]
+    pub export_logs_request_success: Counter<u64>,
+    /// Number of OTLP logs request failed
+    #[metric(name = "export.logs.request.failure", unit = "{req}")]
+    pub export_logs_request_failure: Counter<u64>,
+    /// Number of OTLP metrics request received
+    #[metric(name = "export.metrics.request.received", unit = "{req}")]
+    pub export_metrics_request_received: Counter<u64>,
+    /// Number of OTLP metrics request successful
+    #[metric(name = "export.metrics.request.success", unit = "{req}")]
+    pub export_metrics_request_success: Counter<u64>,
+    /// Number of OTLP metrics request failed
+    #[metric(name = "export.metrics.request.failure", unit = "{req}")]
+    pub export_metrics_request_failure: Counter<u64>,
+    /// Number of OTLP traces request received
+    #[metric(name = "export.traces.request.received", unit = "{req}")]
+    pub export_traces_request_received: Counter<u64>,
+    /// Number of OTLP traces request successful
+    #[metric(name = "export.traces.request.success", unit = "{req}")]
+    pub export_traces_request_success: Counter<u64>,
+    /// Number of OTLP traces request failed
+    #[metric(name = "export.traces.request.failure", unit = "{req}")]
+    pub export_traces_request_failure: Counter<u64>,
 }
 
 #[async_trait(?Send)]

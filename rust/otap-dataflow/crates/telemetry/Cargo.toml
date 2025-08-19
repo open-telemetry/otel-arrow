@@ -22,3 +22,4 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 slotmap = "1.0.7"
 parking_lot = "0.12.4"
+otap-df-telemetry-macros = { path = "../telemetry-macros", optional = true }

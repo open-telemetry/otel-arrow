@@ -15,6 +15,9 @@ use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
+use otap_df_telemetry::counter::Counter;
+use otap_df_telemetry_macros::telemetry_metrics;
+use otap_df_telemetry::registry::MetricsKey;
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -36,6 +39,7 @@ pub struct Config {
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
 pub struct OTLPReceiver {
     config: Config,
+    metrics: OtlpReceiverMetrics,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory
@@ -55,25 +59,43 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 
 impl OTLPReceiver {
     /// Creates a new OTLPReceiver from a configuration object
-    pub fn from_config(_pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
 
-        Ok(OTLPReceiver { config })
+        // Register OTLP receiver metrics for this node.
+        let mut metrics = OtlpReceiverMetrics::default();
+        pipeline.register_metrics(&mut metrics);
+
+        Ok(OTLPReceiver { config, metrics })
     }
+}
+
+/// OTLP receiver metrics moved into the node module.
+#[telemetry_metrics(name = "otlp.receiver.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct OtlpReceiverMetrics {
+    key: Option<MetricsKey>,
+    /// Number of bytes received.
+    #[metric(name = "bytes.received", unit = "By")]
+    pub bytes_received: Counter<u64>,
+    /// Number of messages received.
+    #[metric(name = "messages.received", unit = "{msg}")]
+    pub messages_received: Counter<u64>,
 }
 
 #[async_trait]
 impl shared::Receiver<OtapPdata> for OTLPReceiver {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<(), Error<OtapPdata>> {
-        let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+        // Make the receiver mutable so we can update metrics on telemetry collection.
+    let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
 
         loop {
@@ -103,6 +125,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::Shutdown {..}) => {
                             break;
+                        },
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            // Report current receiver metrics.
+                            _ = metrics_reporter.report(&mut self.metrics).await;
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -363,6 +389,7 @@ mod tests {
                     listening_addr: addr,
                     compression_method: None,
                 },
+                metrics: OtlpReceiverMetrics::default(),
             },
             node_config,
             test_runtime.config(),

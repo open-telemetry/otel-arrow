@@ -11,10 +11,10 @@ pub mod registry;
 pub mod metrics;
 pub mod collector;
 pub mod counter;
-mod descriptor;
+pub mod descriptor;
 pub mod attributes;
 pub mod reporter;
-mod error;
+pub mod error;
 pub(crate) mod pipeline;
 
 /// The main telemetry system that aggregates and reports metrics.

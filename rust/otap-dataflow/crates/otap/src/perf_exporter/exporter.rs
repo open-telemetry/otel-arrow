@@ -24,7 +24,9 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
-use otap_df_telemetry::metrics::PerfExporterPdataMetrics;
+use otap_df_telemetry::counter::Counter;
+use otap_df_telemetry_macros::telemetry_metrics;
+use otap_df_telemetry::registry::MetricsKey;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -109,7 +111,7 @@ impl PerfExporter {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let mut metrics = PerfExporterPdataMetrics::default();
+    let mut metrics = PerfExporterPdataMetrics::default();
         pipeline_ctx.register_metrics(&mut metrics);
         Ok(PerfExporter {
             config: serde_json::from_value(config.clone()).map_err(|e| {
@@ -121,6 +123,31 @@ impl PerfExporter {
             metrics,
         })
     }
+}
+
+/// Pdata-oriented metrics for the OTAP PerfExporter moved into the node module.
+#[telemetry_metrics(name = "perf.exporter.pdata.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct PerfExporterPdataMetrics {
+    key: Option<MetricsKey>,
+    /// Number of pdata batches received.
+    #[metric(name = "batches", unit = "{msg}")]
+    pub batches: Counter<u64>,
+    /// Number of invalid pdata batches received.
+    #[metric(name = "invalid.batches", unit = "{msg}")]
+    pub invalid_batches: Counter<u64>,
+    /// Number of Arrow records received.
+    #[metric(name = "arrow.records", unit = "{record}")]
+    pub arrow_records: Counter<u64>,
+    /// Number of logs received.
+    #[metric(name = "logs", unit = "{log}")]
+    pub logs: Counter<u64>,
+    /// Number of spans received.
+    #[metric(name = "spans", unit = "{span}")]
+    pub spans: Counter<u64>,
+    /// Number of metrics received.
+    #[metric(name = "metrics", unit = "{metric}")]
+    pub metrics: Counter<u64>,
 }
 
 #[async_trait(?Send)]
