@@ -395,6 +395,7 @@ mod test {
     }
 
     #[test]
+    #[ignore] // https://github.com/open-telemetry/otel-arrow/issues/967
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
