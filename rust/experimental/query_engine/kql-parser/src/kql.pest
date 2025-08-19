@@ -10,7 +10,8 @@
 WHITESPACE = _{ " " | NEWLINE | "\t" }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
-// Tokens
+
+// Math Tokens
 minus_token = { "-" }
 plus_token = { "+" }
 multiply_token = { "*" }
@@ -18,6 +19,8 @@ divide_token = { "/" }
 modulo_token = { "%" }
 positive_infinity_token = { "+inf" }
 negative_infinity_token = { "-inf" }
+
+// Logical Tokens
 equals_token = @{ "==" }
 equals_insensitive_token = @{ "=~" }
 not_equals_token = @{ "!=" }
@@ -28,6 +31,8 @@ less_than_token = @{ "<" ~ !"=" }
 less_than_or_equal_to_token = @{ "<=" }
 and_token = @{ "and" }
 or_token = @{ "or" }
+
+// Misc Tokens
 contains_token = @{ "contains" }
 contains_cs_token = @{ "contains_cs" }
 has_token = @{ "has" }
