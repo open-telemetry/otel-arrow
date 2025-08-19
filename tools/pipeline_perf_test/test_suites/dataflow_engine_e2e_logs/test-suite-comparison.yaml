@@ -28,14 +28,14 @@ components:
     deployment:
       process:
         # Path to your otel collector binary
-        command: otelcol --config ./test_suites/dataflow_engine_e2e_logs/collector-config-without-batch-processor.yaml
+        command: /tmp/otelcol --config ./test_suites/dataflow_engine_e2e_logs/collector-config-without-batch-processor.yaml
     monitoring:
       # The process_component monitoring strategy uses the psutil lib to monitoring container cpu, memory, network.
       process_component: {}
   dataflow-engine:
     deployment:
       process:
-        command: ../../rust/otap-dataflow/target/release/examples/engine
+        command: ../../rust/otap-dataflow/target/release/df_engine --pipeline ../../rust/otap-dataflow/configs/otlp-otlp.yaml
     monitoring:
       process_component: {}
   backend-service:
