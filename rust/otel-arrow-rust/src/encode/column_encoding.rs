@@ -266,7 +266,12 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
             UInt16,
             AttributeQuasiDelta
         )],
-        ArrowPayloadType::SpanEventAttrs | ArrowPayloadType::SpanLinkAttrs => &[col_encoding!(
+        ArrowPayloadType::SpanEventAttrs
+        | ArrowPayloadType::SpanLinkAttrs
+        | ArrowPayloadType::SummaryDpAttrs
+        | ArrowPayloadType::NumberDpAttrs
+        | ArrowPayloadType::HistogramDpAttrs
+        | ArrowPayloadType::ExpHistogramDpAttrs => &[col_encoding!(
             consts::PARENT_ID,
             UInt32,
             AttributeQuasiDelta
@@ -318,7 +323,11 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
         | ArrowPayloadType::MetricAttrs
         | ArrowPayloadType::LogAttrs
         | ArrowPayloadType::SpanEventAttrs
-        | ArrowPayloadType::SpanLinkAttrs => &[
+        | ArrowPayloadType::SpanLinkAttrs
+        | ArrowPayloadType::SummaryDpAttrs
+        | ArrowPayloadType::NumberDpAttrs
+        | ArrowPayloadType::HistogramDpAttrs
+        | ArrowPayloadType::ExpHistogramDpAttrs => &[
             consts::ATTRIBUTE_TYPE,
             consts::ATTRIBUTE_KEY,
             consts::ATTRIBUTE_STR,
