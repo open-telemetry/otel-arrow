@@ -39,7 +39,16 @@ use crate::{
 /// identifier for column encoding
 #[derive(Clone, Copy)]
 enum Encoding {
+    /// Delta encoding. Note that to use this encoding, the column must already be sorted.
+    /// Otherwise `DeltaRemapped` is more appropriate
     Delta,
+
+    /// this encoding specifies to create a new delta encoded ID column, but also create new IDs
+    /// instead of just delta encoding the original IDs. The parent IDs which point at IDs that
+    /// have been replaced will need to be remapped. This is used to add delta encoding to columns
+    /// that are not already sorted by the ID, since most ID columns are unsigned ints which means
+    /// no negative deltas are allowed
+    DeltaRemapped,
 
     /// this is the transport optimized encoding that is applied to the parent_id column
     /// of attribute record batches where where subsequent rows of matching attribute type,
@@ -208,7 +217,7 @@ fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding:
 
     if let Some((idx, field)) = found_field {
         let encoding = match encoding {
-            Encoding::Delta => consts::metadata::encodings::DELTA,
+            Encoding::Delta | Encoding::DeltaRemapped => consts::metadata::encodings::DELTA,
             Encoding::AttributeQuasiDelta | Encoding::ColumnarQuasiDelta(_) => {
                 consts::metadata::encodings::QUASI_DELTA
             }
@@ -262,8 +271,15 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
             UInt32,
             AttributeQuasiDelta
         )],
+        ArrowPayloadType::SummaryDataPoints
+        | ArrowPayloadType::NumberDataPoints
+        | ArrowPayloadType::HistogramDataPoints
+        | ArrowPayloadType::ExpHistogramDataPoints => &[
+            col_encoding!(consts::ID, UInt32, DeltaRemapped),
+            col_encoding!(consts::PARENT_ID, UInt16, Delta),
+        ],
         ArrowPayloadType::SpanEvents => &[
-            col_encoding!(consts::ID, UInt32, Delta),
+            col_encoding!(consts::ID, UInt32, DeltaRemapped),
             //TODO if you have time, fix macro so it will accept this
             ColumnEncoding {
                 path: consts::PARENT_ID,
@@ -272,7 +288,7 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
             },
         ],
         ArrowPayloadType::SpanLinks => &[
-            col_encoding!(consts::ID, UInt32, Delta),
+            col_encoding!(consts::ID, UInt32, DeltaRemapped),
             //TODO if you have time, fix macro so it will accept this
             ColumnEncoding {
                 path: consts::PARENT_ID,
@@ -282,9 +298,9 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
         ],
         ArrowPayloadType::Logs | &ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::Spans => {
             &[
-                col_encoding!(consts::ID, UInt16, Delta),
-                col_encoding!(RESOURCE_ID_COL_PATH, UInt16, Delta),
-                col_encoding!(SCOPE_ID_COL_PATH, UInt16, Delta),
+                col_encoding!(consts::ID, UInt16, DeltaRemapped),
+                col_encoding!(RESOURCE_ID_COL_PATH, UInt16, DeltaRemapped),
+                col_encoding!(SCOPE_ID_COL_PATH, UInt16, DeltaRemapped),
             ]
         }
         _ => &[],
@@ -312,6 +328,10 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
             consts::ATTRIBUTE_BYTES,
             consts::PARENT_ID,
         ],
+        ArrowPayloadType::SummaryDataPoints
+        | ArrowPayloadType::NumberDataPoints
+        | ArrowPayloadType::HistogramDataPoints
+        | ArrowPayloadType::ExpHistogramDataPoints => &[consts::PARENT_ID],
         ArrowPayloadType::SpanEvents => &[consts::NAME, consts::PARENT_ID],
         ArrowPayloadType::SpanLinks => &[consts::TRACE_ID, consts::PARENT_ID],
         ArrowPayloadType::Logs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],
@@ -728,7 +748,10 @@ pub fn apply_column_encodings(
                             actual: column.data_type().clone(),
                         })?;
                 match column_encoding.encoding {
-                    Encoding::Delta => create_new_delta_encoded_column_from::<UInt16Type>(column),
+                    Encoding::DeltaRemapped => {
+                        create_new_delta_encoded_column_from::<UInt16Type>(column)
+                    }
+
                     Encoding::AttributeQuasiDelta => {
                         let new_column =
                             transport_encode_parent_id_for_attributes::<u16>(&record_batch)?;
@@ -740,6 +763,19 @@ pub fn apply_column_encodings(
                     Encoding::ColumnarQuasiDelta(columns) => {
                         let new_column =
                             transport_encode_parent_id_for_columns::<u16>(&record_batch, columns)?;
+                        Ok(EncodedColumnResult {
+                            new_column,
+                            remapping: None,
+                        })
+                    }
+                    Encoding::Delta => {
+                        // TODO this is a bit of a hack. This will effectively produce a delta
+                        // encoded column because it's working like quasi-delta encoding except
+                        // that there are no columns to check equality between rows which would
+                        // break the sequence of delta encodings. It would probably be faster to
+                        // create a dedicated function to just do the straight delta encoding.
+                        let new_column =
+                            transport_encode_parent_id_for_columns::<u16>(&record_batch, &[])?;
                         Ok(EncodedColumnResult {
                             new_column,
                             remapping: None,
@@ -757,7 +793,9 @@ pub fn apply_column_encodings(
                             actual: column.data_type().clone(),
                         })?;
                 match column_encoding.encoding {
-                    Encoding::Delta => create_new_delta_encoded_column_from::<UInt32Type>(column),
+                    Encoding::DeltaRemapped => {
+                        create_new_delta_encoded_column_from::<UInt32Type>(column)
+                    }
                     Encoding::AttributeQuasiDelta => {
                         let new_column =
                             transport_encode_parent_id_for_attributes::<u32>(&record_batch)?;
@@ -769,6 +807,15 @@ pub fn apply_column_encodings(
                     Encoding::ColumnarQuasiDelta(columns) => {
                         let new_column =
                             transport_encode_parent_id_for_columns::<u32>(&record_batch, columns)?;
+                        Ok(EncodedColumnResult {
+                            new_column,
+                            remapping: None,
+                        })
+                    }
+                    Encoding::Delta => {
+                        // TODO this is a hack. See the comments about in the u16 block
+                        let new_column =
+                            transport_encode_parent_id_for_columns::<u32>(&record_batch, &[])?;
                         Ok(EncodedColumnResult {
                             new_column,
                             remapping: None,
@@ -832,7 +879,7 @@ mod test {
         let mut column_encoding = ColumnEncoding {
             path: "a",
             data_type: DataType::UInt8,
-            encoding: Encoding::Delta,
+            encoding: Encoding::DeltaRemapped,
         };
 
         let column = column_encoding
@@ -876,7 +923,7 @@ mod test {
         let mut column_encoding = ColumnEncoding {
             path: RESOURCE_ID_COL_PATH,
             data_type: DataType::UInt8,
-            encoding: Encoding::Delta,
+            encoding: Encoding::DeltaRemapped,
         };
 
         let column = column_encoding
@@ -904,7 +951,7 @@ mod test {
         let mut column_encoding = ColumnEncoding {
             path: RESOURCE_ID_COL_PATH,
             data_type: DataType::UInt8,
-            encoding: Encoding::Delta,
+            encoding: Encoding::DeltaRemapped,
         };
 
         // assert what happens if the struct isn't present
@@ -933,7 +980,7 @@ mod test {
         let mut column_encoding = ColumnEncoding {
             path: "a",
             data_type: DataType::UInt16,
-            encoding: Encoding::Delta,
+            encoding: Encoding::DeltaRemapped,
         };
 
         assert!(!column_encoding.is_column_encoded(&schema).unwrap());
@@ -963,7 +1010,7 @@ mod test {
         let mut column_encoding = ColumnEncoding {
             path: RESOURCE_ID_COL_PATH,
             data_type: DataType::UInt16,
-            encoding: Encoding::Delta,
+            encoding: Encoding::DeltaRemapped,
         };
 
         assert!(!column_encoding.is_column_encoded(&schema).unwrap());

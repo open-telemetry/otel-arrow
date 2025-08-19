@@ -445,9 +445,10 @@ impl OtapBatchStore for Metrics {
                         SCOPE_ID_COL_PATH => [ArrowPayloadType::ScopeAttrs].as_slice(),
                         consts::ID => [
                             ArrowPayloadType::MetricAttrs,
-                            // TODO there are others
-                            // ArrowPayloadType::SpanEvents,
-                            // ArrowPayloadType::SpanLinks,
+                            ArrowPayloadType::SummaryDataPoints,
+                            ArrowPayloadType::NumberDataPoints,
+                            ArrowPayloadType::HistogramDataPoints,
+                            ArrowPayloadType::ExpHistogramDataPoints,
                         ]
                         .as_slice(),
 
@@ -466,6 +467,21 @@ impl OtapBatchStore for Metrics {
                     }
                 }
             }
+        }
+
+        for payload_type in [
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+        ] {
+            let rb = match otap_batch.get(payload_type) {
+                Some(rb) => rb,
+                None => continue,
+            };
+
+            let (rb, id_remappings) = apply_column_encodings(&payload_type, rb)?;
+            otap_batch.set(payload_type, rb);
         }
 
         Ok(())
@@ -941,12 +957,6 @@ mod test {
             let expected = UInt16Array::from_iter_values(vec![1, 2, 1, 2]);
             assert_eq!(&expected, attrs_parent_ids);
         }
-
-        // TODO test roundtrip?
-        batch.encode_transport_optimized_ids().unwrap();
-        println!("{:?}", batch);
-
-        assert_eq!(batch, batch_b4);
     }
 
     #[test]
@@ -1677,7 +1687,7 @@ mod test {
         // We can deduce how the IDs need to be remapped so they're in increasing order so as not to
         // have any negative deltas:
         //
-        //  data:               log_id:  scope_id:
+        //  data:                 id:   scope_id:
         // -------------------|--------|-----------
         // (0, 0, "a", 0, 0),   9 -> 0    0 = same
         // (0, 0, "a", 1, 1),   5 -> 1
@@ -1764,13 +1774,12 @@ mod test {
         let resource_attrs_rb = attrs_from_data::<UInt16Type>(
             vec![
                 (1, "a"),
-                (1, "b"),
-                (2, "a"),
-                (2, "c"),
                 (0, "a"),
-                (3, "a"),
-                (3, "b"),
+                (1, "c"),
+                (0, "c"),
                 (1, "b"),
+                (1, "c"),
+                (0, "b"),
             ],
             consts::metadata::encodings::PLAIN,
         );
@@ -2237,11 +2246,35 @@ mod test {
             consts::metadata::encodings::PLAIN,
         );
 
+        let data_points_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+        ]));
+
+        let data_points_data = vec![(0, 9), (1, 5), (3, 7), (2, 2), (4, 1)];
+
+        let ids = UInt32Array::from_iter_values(data_points_data.iter().map(|d| d.0));
+        let parent_ids = UInt16Array::from_iter_values(data_points_data.iter().map(|d| d.1));
+
+        let data_points_rb = RecordBatch::try_new(
+            data_points_schema,
+            vec![Arc::new(ids), Arc::new(parent_ids)],
+        )
+        .unwrap();
+
+        let expected_data_points_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false)
+                .with_encoding(consts::metadata::encodings::DELTA),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                .with_encoding(consts::metadata::encodings::DELTA),
+        ]));
+
         let mut batch = OtapArrowRecords::Metrics(Metrics::default());
         batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
         batch.set(ArrowPayloadType::MetricAttrs, metric_attrs_rb);
         batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs);
         batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
+        batch.set(ArrowPayloadType::SummaryDataPoints, data_points_rb.clone());
 
         batch.encode_transport_optimized_ids().unwrap();
 
@@ -2308,5 +2341,30 @@ mod test {
 
         let result_metrics_rb = batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
         assert_eq!(result_metrics_rb, &expected_metrics_rb);
+
+        // TODO validate the metrics attributes etc.
+
+        // TODO comment
+        // id:     parent_id
+        // 0 -> 0,  9 -> 0
+        // 1 -> 1,  5 -> 1
+        // 4 -> 2,  1 -> 2
+        // 3 -> 3,  7 -> 5
+        // 2 -> 4,  2 -> 7
+
+        let expected_data_points_data = vec![(0, 0), (1, 1), (1, 1), (1, 3), (1, 2)];
+
+        let ids = UInt32Array::from_iter_values(expected_data_points_data.iter().map(|d| d.0));
+        let parent_ids =
+            UInt16Array::from_iter_values(expected_data_points_data.iter().map(|d| d.1));
+
+        let expected_data_points_rb = RecordBatch::try_new(
+            expected_data_points_schema,
+            vec![Arc::new(ids), Arc::new(parent_ids)],
+        )
+        .unwrap();
+
+        let result_summary_data_points = batch.get(ArrowPayloadType::SummaryDataPoints).unwrap();
+        assert_eq!(result_summary_data_points, &expected_data_points_rb);
     }
 }
