@@ -243,7 +243,7 @@ mod tests {
             Box::pin(async move {
                 // no scenario to run here as scenario is already defined in the configuration
                 // wait for the scenario to finish running
-                sleep(Duration::from_millis(999)).await;
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
                     .await
