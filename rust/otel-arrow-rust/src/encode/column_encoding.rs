@@ -271,7 +271,10 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
         | ArrowPayloadType::SummaryDpAttrs
         | ArrowPayloadType::NumberDpAttrs
         | ArrowPayloadType::HistogramDpAttrs
-        | ArrowPayloadType::ExpHistogramDpAttrs => &[col_encoding!(
+        | ArrowPayloadType::ExpHistogramDpAttrs
+        | ArrowPayloadType::NumberDpExemplarAttrs
+        | ArrowPayloadType::HistogramDpExemplarAttrs
+        | ArrowPayloadType::ExpHistogramDpExemplarAttrs => &[col_encoding!(
             consts::PARENT_ID,
             UInt32,
             AttributeQuasiDelta
@@ -283,6 +286,18 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
             col_encoding!(consts::ID, UInt32, DeltaRemapped),
             col_encoding!(consts::PARENT_ID, UInt16, Delta),
         ],
+
+        ArrowPayloadType::NumberDpExemplars
+        | ArrowPayloadType::HistogramDpExemplars
+        | ArrowPayloadType::ExpHistogramDpExemplars => &[
+            col_encoding!(consts::ID, UInt32, DeltaRemapped),
+            ColumnEncoding {
+                path: consts::PARENT_ID,
+                data_type: DataType::UInt32,
+                encoding: Encoding::ColumnarQuasiDelta(&[consts::INT_VALUE, consts::DOUBLE_VALUE]),
+            },
+        ],
+
         ArrowPayloadType::SpanEvents => &[
             col_encoding!(consts::ID, UInt32, DeltaRemapped),
             //TODO if you have time, fix macro so it will accept this
@@ -327,7 +342,10 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
         | ArrowPayloadType::SummaryDpAttrs
         | ArrowPayloadType::NumberDpAttrs
         | ArrowPayloadType::HistogramDpAttrs
-        | ArrowPayloadType::ExpHistogramDpAttrs => &[
+        | ArrowPayloadType::ExpHistogramDpAttrs
+        | ArrowPayloadType::NumberDpExemplarAttrs
+        | ArrowPayloadType::HistogramDpExemplarAttrs
+        | ArrowPayloadType::ExpHistogramDpExemplarAttrs => &[
             consts::ATTRIBUTE_TYPE,
             consts::ATTRIBUTE_KEY,
             consts::ATTRIBUTE_STR,
@@ -341,6 +359,13 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
         | ArrowPayloadType::NumberDataPoints
         | ArrowPayloadType::HistogramDataPoints
         | ArrowPayloadType::ExpHistogramDataPoints => &[consts::PARENT_ID],
+
+        ArrowPayloadType::NumberDpExemplars
+        | ArrowPayloadType::HistogramDpExemplars
+        | ArrowPayloadType::ExpHistogramDpExemplars => {
+            &[consts::INT_VALUE, consts::DOUBLE_VALUE, consts::PARENT_ID]
+        }
+
         ArrowPayloadType::SpanEvents => &[consts::NAME, consts::PARENT_ID],
         ArrowPayloadType::SpanLinks => &[consts::TRACE_ID, consts::PARENT_ID],
         ArrowPayloadType::Logs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],

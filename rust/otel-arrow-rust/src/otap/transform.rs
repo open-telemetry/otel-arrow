@@ -511,6 +511,7 @@ where
     // the values in each column are equal (index offset by 1). If some column doesn't exist, in
     // this case assume this means null values which are equal
     let mut eq_next: BooleanArray = std::iter::repeat_n(Some(true), parent_ids.len() - 1).collect();
+
     for column_name in equality_column_names {
         if let Some(column) = record_batch.column_by_name(column_name) {
             let eq_next_column = create_next_element_equality_array(column)?;

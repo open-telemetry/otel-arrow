@@ -20,7 +20,7 @@ use crate::{
     },
     error::Result,
     otap,
-    proto::opentelemetry::arrow::v1::ArrowPayloadType,
+    proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType},
     schema::consts,
 };
 
@@ -472,19 +472,31 @@ impl OtapBatchStore for Metrics {
         for (payload_type, child_payload_types) in [
             (
                 ArrowPayloadType::SummaryDataPoints,
-                [ArrowPayloadType::SummaryDpAttrs],
+                [ArrowPayloadType::SummaryDpAttrs].as_slice(),
             ),
             (
                 ArrowPayloadType::NumberDataPoints,
-                [ArrowPayloadType::NumberDpAttrs],
+                [
+                    ArrowPayloadType::NumberDpAttrs,
+                    ArrowPayloadType::NumberDpExemplars,
+                ]
+                .as_slice(),
             ),
             (
                 ArrowPayloadType::HistogramDataPoints,
-                [ArrowPayloadType::HistogramDpAttrs],
+                [
+                    ArrowPayloadType::HistogramDpAttrs,
+                    ArrowPayloadType::HistogramDpExemplars,
+                ]
+                .as_slice(),
             ),
             (
                 ArrowPayloadType::ExpHistogramDataPoints,
-                [ArrowPayloadType::ExpHistogramDpAttrs],
+                [
+                    ArrowPayloadType::ExpHistogramDpAttrs,
+                    ArrowPayloadType::ExpHistogramDpExemplars,
+                ]
+                .as_slice(),
             ),
         ] {
             let rb = match otap_batch.get(payload_type) {
@@ -507,14 +519,58 @@ impl OtapBatchStore for Metrics {
                 }
 
                 for child_payload_type in child_payload_types {
-                    if let Some(child_rb) = otap_batch.get(child_payload_type) {
+                    if let Some(child_rb) = otap_batch.get(*child_payload_type) {
                         let rb = remap_parent_ids(
                             &child_payload_type,
                             child_rb,
                             &id_remapping.remapped_ids,
                         )?;
-                        otap_batch.set(child_payload_type, rb);
+                        otap_batch.set(*child_payload_type, rb);
                     }
+                }
+            }
+        }
+
+        for (payload_type, child_payload_type) in [
+            (
+                ArrowPayloadType::NumberDpExemplars,
+                ArrowPayloadType::NumberDpExemplarAttrs,
+            ),
+            (
+                ArrowPayloadType::HistogramDpExemplars,
+                ArrowPayloadType::HistogramDpExemplarAttrs,
+            ),
+            (
+                ArrowPayloadType::ExpHistogramDpExemplars,
+                ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ),
+        ] {
+            let rb = match otap_batch.get(payload_type) {
+                Some(rb) => rb,
+                None => continue,
+            };
+
+            let (rb, id_remappings) = apply_column_encodings(&payload_type, rb)?;
+            otap_batch.set(payload_type, rb);
+
+            let id_remappings = match id_remappings {
+                Some(id_remappings) => id_remappings,
+                None => continue,
+            };
+
+            for id_remapping in id_remappings {
+                if id_remapping.column_path != consts::ID {
+                    // TODO this would be unusual?
+                    continue;
+                }
+
+                if let Some(child_rb) = otap_batch.get(child_payload_type) {
+                    let rb = remap_parent_ids(
+                        &child_payload_type,
+                        child_rb,
+                        &id_remapping.remapped_ids,
+                    )?;
+                    otap_batch.set(child_payload_type, rb);
                 }
             }
         }
@@ -526,6 +582,9 @@ impl OtapBatchStore for Metrics {
             ArrowPayloadType::NumberDpAttrs,
             ArrowPayloadType::HistogramDpAttrs,
             ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let (rb, _) = apply_column_encodings(&payload_type, rb)?;
@@ -753,8 +812,8 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        ArrowPrimitiveType, FixedSizeBinaryArray, Int64Array, PrimitiveArray, RecordBatch,
-        StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
+        ArrowPrimitiveType, FixedSizeBinaryArray, Float64Array, Int64Array, PrimitiveArray,
+        RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Fields, Schema};
     use std::sync::Arc;
@@ -2311,6 +2370,8 @@ mod test {
         )
         .unwrap();
 
+        // generate one record batch that can be used to test the data point attributes
+        // for all metric types
         let data_point_attrs_rb = attrs_from_data::<UInt32Type>(
             vec![
                 (1, "a"),
@@ -2321,6 +2382,59 @@ mod test {
                 (2, "a"),
                 (3, "b"),
                 (0, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
+        // generate one record batch that can be used to test the exemplars for all
+        // the metric types
+        let exemplars_data = vec![
+            // id, int value, double value, parent_id
+            (9, None, None, 2),
+            (1, Some(1), None, 1),
+            (3, None, Some(2.0), 3),
+            (2, Some(3), None, 3),
+            (4, Some(4), None, 4),
+            (5, None, Some(1.0), 1),
+            (7, None, Some(3.0), 2),
+            (6, Some(2), None, 4),
+            (0, None, Some(3.0), 4),
+            (8, None, None, 1),
+        ];
+
+        let exemplar_ids = UInt32Array::from_iter_values(exemplars_data.iter().map(|d| d.0));
+        let exemplar_ints = Int64Array::from_iter(exemplars_data.iter().map(|d| d.1));
+        let exemplar_doubles = Float64Array::from_iter(exemplars_data.iter().map(|d| d.2));
+        let exemplar_parent_ids = UInt32Array::from_iter_values(exemplars_data.iter().map(|d| d.3));
+        let exemplars_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
+            Field::new(consts::INT_VALUE, DataType::Int64, true),
+            Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+            Field::new(consts::PARENT_ID, DataType::UInt32, false).with_plain_encoding(),
+        ]));
+
+        let exemplar_rb = RecordBatch::try_new(
+            exemplars_schema,
+            vec![
+                Arc::new(exemplar_ids),
+                Arc::new(exemplar_ints),
+                Arc::new(exemplar_doubles),
+                Arc::new(exemplar_parent_ids),
+            ],
+        )
+        .unwrap();
+
+        let exemplar_attrs_rb = attrs_from_data::<UInt32Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (0, "b"),
+                (3, "a"),
+                (2, "b"),
+                (4, "a"),
+                (9, "b"),
+                (1, "c"),
+                (8, "d"),
             ],
             consts::metadata::encodings::PLAIN,
         );
@@ -2345,6 +2459,22 @@ mod test {
             ArrowPayloadType::ExpHistogramDpAttrs,
         ] {
             batch.set(payload_type, data_point_attrs_rb.clone());
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+        ] {
+            batch.set(payload_type, exemplar_rb.clone());
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ] {
+            batch.set(payload_type, exemplar_attrs_rb.clone());
         }
 
         batch.encode_transport_optimized_ids().unwrap();
@@ -2482,6 +2612,106 @@ mod test {
         ] {
             let result_dp_attrs_rb = batch.get(payload_type).unwrap();
             assert_eq!(result_dp_attrs_rb, &expected_dp_attrs_rb);
+        }
+
+        // expected exemplar data:
+        // TODO comments
+        //
+        //  id      int val,  double val, parent_id, quasi-delta parent id
+        // 1 -> 0,  1,        None,       1 -> 1     1
+        // 6 -> 1,  2,        None,       4 -> 2     2
+        // 2 -> 2,  3,        None,       3 -> 3     3
+        // 4 -> 3,  4,        None,       4 -> 2     2
+        // 5 -> 4,  None,     1.0,        1 -> 1     1
+        // 3 -> 5,  None,     2.0,        3 -> 3     3
+        // 0 -> 6,  None,     3.0,        4 -> 2     2
+        // 7 -> 7,  None,     3.0,        2 -> 4     2
+        // 8 -> 8   None,     None,       1 -> 1     1
+        // 9 -> 9   None,     None,       2 -> 4     3
+
+        let expected_exemplar_data = vec![
+            (0, Some(1), None, 1),
+            (1, Some(2), None, 2),
+            (1, Some(3), None, 3),
+            (1, Some(4), None, 2),
+            (1, None, Some(1.0), 1),
+            (1, None, Some(2.0), 3),
+            (1, None, Some(3.0), 2),
+            (1, None, Some(3.0), 2),
+            (1, None, None, 1),
+            (1, None, None, 3),
+        ];
+        let exemplar_ids =
+            UInt32Array::from_iter_values(expected_exemplar_data.iter().map(|d| d.0));
+        let exemplar_int_vals = Int64Array::from_iter(expected_exemplar_data.iter().map(|d| d.1));
+        let exemplar_double_vals =
+            Float64Array::from_iter(expected_exemplar_data.iter().map(|d| d.2));
+        let exemplar_parent_ids =
+            UInt32Array::from_iter_values(expected_exemplar_data.iter().map(|d| d.3));
+
+        let expected_exemplar_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false)
+                .with_encoding(consts::metadata::encodings::DELTA),
+            Field::new(consts::INT_VALUE, DataType::Int64, true),
+            Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+            Field::new(consts::PARENT_ID, DataType::UInt32, false)
+                .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+        ]));
+
+        let expected_exemplar_rb = RecordBatch::try_new(
+            expected_exemplar_schema,
+            vec![
+                Arc::new(exemplar_ids),
+                Arc::new(exemplar_int_vals),
+                Arc::new(exemplar_double_vals),
+                Arc::new(exemplar_parent_ids),
+            ],
+        )
+        .unwrap();
+
+        for payload_type in [
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+        ] {
+            let result_exemplar_rb = batch.get(payload_type).unwrap();
+            assert_eq!(result_exemplar_rb, &expected_exemplar_rb);
+        }
+
+        // expected exemplar attributes:
+        //
+        // original parent_id --> remapped parent_id, val --> quasi-delta parent ID
+        // 1 -> 0, "a" -> 0
+        // 4 -> 3, "a" -> 3
+        // 3 -> 5, "a" -> 2
+        // 0 -> 6, "a" -> 1
+        // 2 -> 2, "b" -> 2
+        // 0 -> 6, "b" -> 4
+        // 9 -> 9, "b" -> 3
+        // 1 -> 0, "c" -> 0
+        // 8 -> 8, "d" -> 8
+
+        let expected_exemplar_attrs_rb = attrs_from_data::<UInt32Type>(
+            vec![
+                (0, "a"),
+                (3, "a"),
+                (2, "a"),
+                (1, "a"),
+                (2, "b"),
+                (4, "b"),
+                (3, "b"),
+                (0, "c"),
+                (8, "d"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        for payload_type in [
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ] {
+            let result_exemplar_attrs_rb = batch.get(payload_type).unwrap();
+            assert_eq!(result_exemplar_attrs_rb, &expected_exemplar_attrs_rb);
         }
     }
 }
