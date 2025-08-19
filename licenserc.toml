@@ -1,6 +1,12 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
+# Note, to run this locally, use:
+# 1. cargo install hawkeye
+# 2. hawkeye (check | format)
+# Check shows files that do not conform with expectation
+# Format updates those files with the inlineHeader below
+
 inlineHeader = """Copyright The OpenTelemetry Authors
 SPDX-License-Identifier: Apache-2.0"""
 
