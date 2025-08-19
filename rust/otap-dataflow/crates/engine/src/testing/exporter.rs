@@ -16,7 +16,7 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataReceiver;
 use crate::shared::message::{SharedReceiver, SharedSender};
-use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
+use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_channel::error::SendError;
 use serde_json::Value;
 use std::fmt::Debug;
@@ -226,7 +226,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         exporter
-            .set_pdata_receiver(self.config.name, pdata_rx)
+            .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
         let run_exporter_handle = self
             .local_tasks

@@ -5,10 +5,13 @@
 
 use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
-use crate::node::Node;
+use crate::node::{
+    Node, NodeDefs, NodeId, NodeIndex, NodeType, NodeWithPDataReceiver, NodeWithPDataSender,
+};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
-use otap_df_config::{NodeId, pipeline::PipelineConfig};
+
+use otap_df_config::pipeline::PipelineConfig;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
@@ -22,45 +25,40 @@ pub struct RuntimePipeline<PData: Debug> {
     /// The pipeline configuration that defines the structure and behavior of the pipeline.
     config: PipelineConfig,
     /// A map node id to receiver runtime node.
-    receivers: HashMap<NodeId, ReceiverWrapper<PData>>,
+    receivers: Vec<ReceiverWrapper<PData>>,
     /// A map node id to processor runtime node.
-    processors: HashMap<NodeId, ProcessorWrapper<PData>>,
+    processors: Vec<ProcessorWrapper<PData>>,
     /// A map node id to exporter runtime node.
-    exporters: HashMap<NodeId, ExporterWrapper<PData>>,
-    /// A precomputed map of all node IDs to their Node trait objects for efficient access
-    nodes: HashMap<NodeId, NodeType>,
+    exporters: Vec<ExporterWrapper<PData>>,
+
+    /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
+    /// Indexed by NodeIndex
+    nodes: NodeDefs<PData, PipeNode>,
 }
 
-/// Enum to identify the type of a node for registry lookups
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeType {
-    /// Represents a node that acts as a receiver, receiving data from an external source.
-    Receiver,
-    /// Represents a node that processes data, transforming or analyzing it.
-    Processor,
-    /// Represents a node that exports data to an external destination.
-    Exporter,
+/// PipeNode contains runtime-specific info.
+pub(crate) struct PipeNode {
+    index: usize, // NodeIndex into the appropriate vector w/ offset precomputed
 }
 
-impl<PData: 'static + Debug> RuntimePipeline<PData> {
+impl PipeNode {
+    /// Construct a pipe node with index referring to one an entry in
+    /// the appropriate RuntimePipeline Vec.
+    pub(crate) fn new(index: usize) -> Self {
+        Self { index }
+    }
+}
+
+impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         config: PipelineConfig,
-        receivers: HashMap<NodeId, ReceiverWrapper<PData>>,
-        processors: HashMap<NodeId, ProcessorWrapper<PData>>,
-        exporters: HashMap<NodeId, ExporterWrapper<PData>>,
+        receivers: Vec<ReceiverWrapper<PData>>,
+        processors: Vec<ProcessorWrapper<PData>>,
+        exporters: Vec<ExporterWrapper<PData>>,
+        nodes: NodeDefs<PData, PipeNode>,
     ) -> Self {
-        let mut nodes = HashMap::new();
-        for id in receivers.keys() {
-            _ = nodes.insert(id.clone(), NodeType::Receiver);
-        }
-        for id in processors.keys() {
-            _ = nodes.insert(id.clone(), NodeType::Processor);
-        }
-        for id in exporters.keys() {
-            _ = nodes.insert(id.clone(), NodeType::Exporter);
-        }
         Self {
             config,
             receivers,
@@ -103,22 +101,22 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
 
         // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.
-        for (node_id, exporter) in self.exporters {
-            _ = control_senders.insert(node_id, exporter.control_sender());
+        for exporter in self.exporters {
+            _ = control_senders.insert(exporter.node_id().index, exporter.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { exporter.start(pipeline_ctrl_msg_tx).await }),
             );
         }
-        for (node_id, processor) in self.processors {
-            _ = control_senders.insert(node_id, processor.control_sender());
+        for processor in self.processors {
+            _ = control_senders.insert(processor.node_id().index, processor.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { processor.start(pipeline_ctrl_msg_tx).await }),
             );
         }
-        for (node_id, receiver) in self.receivers {
-            _ = control_senders.insert(node_id, receiver.control_sender());
+        for receiver in self.receivers {
+            _ = control_senders.insert(receiver.node_id().index, receiver.control_sender());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             futures.push(
                 local_tasks.spawn_local(async move { receiver.start(pipeline_ctrl_msg_tx).await }),
@@ -166,29 +164,98 @@ impl<PData: 'static + Debug> RuntimePipeline<PData> {
 
     /// Gets a reference to any node by its ID as a Node trait object
     #[must_use]
-    pub fn get_node(&self, node_id: &NodeId) -> Option<&dyn Node> {
-        match self.nodes.get(node_id)? {
-            NodeType::Receiver => self.receivers.get(node_id).map(|r| r as &dyn Node),
-            NodeType::Processor => self.processors.get(node_id).map(|p| p as &dyn Node),
-            NodeType::Exporter => self.exporters.get(node_id).map(|e| e as &dyn Node),
+    pub fn get_node(&self, node: NodeIndex) -> Option<&dyn Node> {
+        let ndef = self.nodes.get(node)?;
+
+        match ndef.ntype {
+            NodeType::Receiver => self.receivers.get(ndef.inner.index).map(|r| r as &dyn Node),
+            NodeType::Processor => self
+                .processors
+                .get(ndef.inner.index)
+                .map(|p| p as &dyn Node),
+            NodeType::Exporter => self.exporters.get(ndef.inner.index).map(|e| e as &dyn Node),
+        }
+    }
+
+    /// Gets a mutable NodeWithPDataSender reference (processors and receivers).
+    #[must_use]
+    pub fn get_mut_node_with_pdata_sender(
+        &mut self,
+        node: NodeIndex,
+    ) -> Option<&mut dyn NodeWithPDataSender<PData>> {
+        let ndef = self.nodes.get(node)?;
+
+        match ndef.ntype {
+            NodeType::Receiver => self
+                .receivers
+                .get_mut(ndef.inner.index)
+                .map(|r| r as &mut dyn NodeWithPDataSender<PData>),
+            NodeType::Processor => self
+                .processors
+                .get_mut(ndef.inner.index)
+                .map(|p| p as &mut dyn NodeWithPDataSender<PData>),
+            NodeType::Exporter => None,
+        }
+    }
+
+    /// Gets a mutable NodeWithPDataReceiver reference (processors and exporters).
+    #[must_use]
+    pub fn get_mut_node_with_pdata_receiver(
+        &mut self,
+        node: NodeIndex,
+    ) -> Option<&mut dyn NodeWithPDataReceiver<PData>> {
+        let ndef = self.nodes.get(node)?;
+
+        match ndef.ntype {
+            NodeType::Receiver => None,
+            NodeType::Processor => self
+                .processors
+                .get_mut(ndef.inner.index)
+                .map(|p| p as &mut dyn NodeWithPDataReceiver<PData>),
+            NodeType::Exporter => self
+                .exporters
+                .get_mut(ndef.inner.index)
+                .map(|e| e as &mut dyn NodeWithPDataReceiver<PData>),
         }
     }
 
     /// Sends a node control message to the specified node.
     pub async fn send_node_control_message(
         &self,
-        node_id: NodeId,
+        node_id: &NodeId,
         ctrl_msg: NodeControlMsg,
     ) -> Result<(), Error<PData>> {
-        if let Some(node) = self.get_node(&node_id) {
-            node.send_control_msg(ctrl_msg)
-                .await
-                .map_err(|e| Error::NodeControlMsgSendError {
-                    node: node_id.clone(),
-                    error: e,
-                })
-        } else {
-            Err(Error::UnknownNode { node_id })
+        match self.nodes.get(node_id.index) {
+            Some(ndef) => match ndef.ntype {
+                NodeType::Receiver => {
+                    self.receivers
+                        .get(ndef.inner.index)
+                        .expect("precomputed")
+                        .send_control_msg(ctrl_msg)
+                        .await
+                }
+                NodeType::Processor => {
+                    self.processors
+                        .get(ndef.inner.index)
+                        .expect("precomputed")
+                        .send_control_msg(ctrl_msg)
+                        .await
+                }
+                NodeType::Exporter => {
+                    self.exporters
+                        .get(ndef.inner.index)
+                        .expect("precomputed")
+                        .send_control_msg(ctrl_msg)
+                        .await
+                }
+            }
+            .map_err(|e| Error::NodeControlMsgSendError {
+                node: node_id.clone(),
+                error: e,
+            }),
+            None => Err(Error::InternalError {
+                message: format!("node {node_id:?}"),
+            }),
         }
     }
 }

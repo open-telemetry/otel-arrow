@@ -306,7 +306,10 @@ mod tests {
     use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -824,6 +827,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(listening_addr),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -848,7 +852,12 @@ mod tests {
         receiver.protocol = Protocol::Tcp;
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
-        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
+        let receiver_wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime
@@ -870,7 +879,12 @@ mod tests {
         receiver.protocol = Protocol::Tcp;
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYLOG_CEF_RECEIVER_URN));
-        let receiver_wrapper = ReceiverWrapper::local(receiver, node_config, test_runtime.config());
+        let receiver_wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime

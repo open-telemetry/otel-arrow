@@ -7,8 +7,9 @@
 //! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
 use crate::control::{NodeControlMsg, PipelineControlMsg};
+use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
-use otap_df_config::{NodeId, PortName, Urn};
+use otap_df_config::{PortName, Urn};
 use std::borrow::Cow;
 
 /// All errors that can occur in the pipeline engine infrastructure.
@@ -146,10 +147,10 @@ pub enum Error<T> {
     },
 
     /// Unknown node.
-    #[error("Unknown node `{node_id}`")]
+    #[error("Unknown node `{node}`")]
     UnknownNode {
-        /// The id of the unknown node.
-        node_id: NodeId,
+        /// The name of the unknown node.
+        node: NodeName,
     },
 
     /// Pdata receiver is not supported for receiver nodes. Receiver nodes only support
@@ -195,4 +196,8 @@ pub enum Error<T> {
         /// An internal error message.
         message: String,
     },
+
+    /// Too many nodes are configured.
+    #[error("Too many nodes defined")]
+    TooManyNodes {},
 }

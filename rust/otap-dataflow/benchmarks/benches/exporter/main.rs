@@ -9,11 +9,12 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
-use otap_df_engine::node::NodeWithPDataReceiver;
 use otap_df_engine::{
     config::ExporterConfig,
     exporter::ExporterWrapper,
     message::{Receiver, Sender},
+    node::NodeWithPDataReceiver,
+    testing::test_node,
 };
 use otap_df_otap::{
     grpc::OtapArrowBytes,
@@ -397,6 +398,7 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         PerfExporter::new(config, None),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -409,7 +411,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
                     // start the exporter
                     let local = LocalSet::new();
@@ -447,6 +449,7 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         PerfExporter::new(config, None),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -459,7 +462,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
 
                     // start the exporter
@@ -501,6 +504,7 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         OTAPExporter::new(grpc_endpoint, None),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -513,7 +517,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
 
                     // start the exporter
@@ -554,6 +558,7 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
                     let mut exporter = ExporterWrapper::local(
                         OTLPExporter::new(grpc_endpoint, None),
+                        test_node("exporter"),
                         node_config,
                         &exporter_config,
                     );
@@ -565,7 +570,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
 
                     exporter
-                        .set_pdata_receiver(exporter_config.name, pdata_receiver)
+                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
                         .expect("Failed to set PData receiver");
                     let control_sender = exporter.control_sender();
 
