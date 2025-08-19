@@ -15,6 +15,43 @@ use std::any::Any;
 /// Type representing a snapshot of multivariate metrics.
 pub type MetricsSnapshot = Box<dyn MultivariateMetrics + Send + Sync>;
 
+/// Type representing a set of multivariate metrics with a unique key.
+#[derive(Clone)]
+pub struct MvMetrics<M: MultivariateMetrics> {
+    /// The metrics key for this set of metrics.
+    pub(crate) key: MetricsKey,
+    /// The actual multivariate metrics instance.
+    pub metrics: M,
+}
+
+impl<M: MultivariateMetrics> Deref for MvMetrics<M> {
+    type Target = M;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metrics
+    }
+}
+
+impl<M: MultivariateMetrics> DerefMut for MvMetrics<M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.metrics
+    }
+}
+
+/// A snapshot of multivariate metrics.
+pub struct MvMetricsSnapshot {
+    /// The metrics key for this set of metrics.
+    pub(crate) key: MetricsKey,
+    /// The values of the metrics in the order defined by the descriptor.
+    pub(crate) metric_values: Vec<u64>
+}
+
+impl MvMetricsSnapshot {
+    pub fn new<MV: MultivariateMetrics>(key: MetricsKey, mv_metrics: MV) -> Self {
+        Self { key, metric_values: mv_metrics.to_vec() }
+    }
+}
+
 /// Trait for types that can aggregate their metrics into a `MetricsRegistry`.
 pub trait MultivariateMetrics: Any + Send + Sync {
     /// Register the current multivariate metrics into the metrics registry.
@@ -26,6 +63,19 @@ pub trait MultivariateMetrics: Any + Send + Sync {
 
     /// Iterate over (descriptor_field, current_value) pairs in defined order.
     fn field_values(&self) -> Box<dyn Iterator<Item=(&'static MetricsField, u64)> + '_>;
+
+    /// Returns the current metric values collected into a Vec<u64>.
+    ///
+    /// The order of values matches the order of fields in `descriptor().fields`.
+    /// Implementors using the derive/attribute macro get an optimized implementation;
+    /// the default uses `field_values()`.
+    fn to_vec(&self) -> Vec<u64> {
+        let mut out = Vec::with_capacity(self.descriptor().fields.len());
+        for (_, v) in self.field_values() {
+            out.push(v);
+        }
+        out
+    }
 
     /// Merges the values from `other` into `self`.
     ///
@@ -58,7 +108,7 @@ mod tests {
     use crate::registry::{MetricsKey, MetricsRegistry, MetricsRegistryHandle};
     use crate::attributes::NodeStaticAttrs;
 
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, Debug)]
     struct TestMetrics {
         key: Option<MetricsKey>,
         v: u64,
@@ -102,6 +152,8 @@ mod tests {
         let mut seen = 0;
         reg.for_each_changed_and_zero(|mm, _| {
             for (_, val) in mm.field_values() { assert_eq!(val, 10); }
+            // also check to_vec order/content
+            assert_eq!(mm.to_vec(), vec![10]);
             seen += 1;
         });
         assert_eq!(seen, 1);

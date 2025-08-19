@@ -108,6 +108,13 @@ pub fn derive_multivariate_metrics(input: TokenStream) -> TokenStream {
                 Box::new(self.descriptor().fields.iter().zip(vals.into_iter()).map(|(f,v)| (f, v)))
             }
 
+            fn to_vec(&self) -> ::std::vec::Vec<u64> {
+                // Efficient implementation: preallocate exact size and push in descriptor order
+                let mut out = ::std::vec::Vec::with_capacity(self.descriptor().fields.len());
+                #( out.push(self.#metric_field_idents.get()); )*
+                out
+            }
+
             fn merge_from_same_kind(&mut self, other: &dyn otap_df_telemetry::metrics::MultivariateMetrics) {
                 let o = other.as_any().downcast_ref::<Self>().expect("type mismatch in merge_from_same_kind");
                 #( self.#metric_field_idents.add(o.#metric_field_idents.get()); )*

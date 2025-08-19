@@ -233,7 +233,7 @@ mod tests {
         );
 
         // Change only one perf exporter field and ensure it's still flushed.
-        perf.invalid_batches += 7;
+        perf.v += 7;
         perf.aggregate_into(&mut registry)?;
         let mut flushed = Vec::new();
         registry.for_each_changed_and_zero(|_, attrs| flushed.push(attrs.node_id.clone()));
