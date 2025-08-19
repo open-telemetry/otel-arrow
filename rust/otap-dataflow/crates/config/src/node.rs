@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Node configuration specification.
 //!
 //! A node is a fundamental unit in our data processing pipeline, representing either a receiver

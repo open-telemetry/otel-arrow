@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //!
 //! Defines the necessary service traits that could be used in a test gRPC server to confirm client activity
 //!

@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Note from @lquerel: This is an old experimental module that I keep around for reference.
 //! Please do not use it in new code and do not remove it for now.
 

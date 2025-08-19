@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Retry Processor Performance Benchmarks
 //!
 //! This benchmark suite measures the performance characteristics of the retry processor

@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Set of traits and structures used to implement receivers.
 //!
 //! A receiver is an ingress node that feeds a pipeline with data from external sources while

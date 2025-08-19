@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Set of traits and structures used to implement processors.
 //!
 //! A processor is a node in the pipeline that transforms, filters, or otherwise processes messages

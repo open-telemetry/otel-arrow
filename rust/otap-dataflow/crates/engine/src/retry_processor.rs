@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Retry Processor with ACK/NACK Feedback Loop
 //!
 //! The retry processor implements reliable message delivery through an ACK/NACK feedback system.

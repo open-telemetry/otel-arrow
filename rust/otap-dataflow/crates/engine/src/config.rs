@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Set of system configuration structures used by the engine, for example, to define channel sizes.
 //!
 //! Note: This type of system configuration is distinct from the pipeline configuration, which

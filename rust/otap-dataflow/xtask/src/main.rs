@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! See <https://github.com/matklad/cargo-xtask/>.
 //!
 //! This binary defines various auxiliary build commands, which are not

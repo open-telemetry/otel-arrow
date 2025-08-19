@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Test utilities for exporters.
 //!
 //! These utilities are designed to make testing exporters simpler by abstracting away common

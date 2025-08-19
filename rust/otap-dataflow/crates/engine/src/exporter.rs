@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Exporter wrapper used to provide a unified interface to the pipeline engine that abstracts over
 //! the fact that exporter implementations may be `!Send` or `Send`.
 //!

@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Set of traits defining the common properties between all types of nodes in the pipeline engine.
 //!
 //! Receivers, processors, and exporters implement the [`Node`] trait.

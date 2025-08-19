@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Testing utilities for processors.
 //!
 //! These utilities are designed to make testing processors simpler by abstracting away common

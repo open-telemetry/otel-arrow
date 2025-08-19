@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Errors for the pipeline engine.
 //!
 //! Important note: It is important not to use `!Send` data types in errors (e.g. avoid using Rc) to

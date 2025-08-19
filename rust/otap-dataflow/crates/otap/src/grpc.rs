@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //!
 //! Provides a set of structs and enums that interact with the gRPC Server with BiDirectional streaming
 //!

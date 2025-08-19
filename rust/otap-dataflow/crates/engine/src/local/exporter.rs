@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Trait and structures used to implement local exporters (!Send).
 //!
 //! An exporter is an egress node that sends data from a pipeline to external systems, performing

@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //!
 //! Defines a compression enum to abstract from tonic and allows the exporter and receiver to get the respective tonic equivalent
 //!

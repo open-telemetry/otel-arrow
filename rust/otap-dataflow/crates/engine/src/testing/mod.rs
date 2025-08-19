@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Common testing utilities for engine components.
 //!
 //! This module provides shared testing constructs used across tests for receivers,

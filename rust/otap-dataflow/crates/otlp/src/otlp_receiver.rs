@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Implementation of the OTLP receiver node
 //!
 //! ToDo: implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back

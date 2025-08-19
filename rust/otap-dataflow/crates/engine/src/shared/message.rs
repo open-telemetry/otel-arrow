@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Abstraction to represent generic shared senders and receivers.
 
 use otap_df_channel::error::{RecvError, SendError};

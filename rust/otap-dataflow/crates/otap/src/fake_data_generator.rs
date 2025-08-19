@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! A fake data generator receiver.
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!

@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! OTAP Dataflow Engine Controller
 //!
 //! This controller manages and monitors the execution of pipelines within the current process.

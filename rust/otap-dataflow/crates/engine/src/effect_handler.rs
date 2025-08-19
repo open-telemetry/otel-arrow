@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Common foundation of all effect handlers.
 
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};

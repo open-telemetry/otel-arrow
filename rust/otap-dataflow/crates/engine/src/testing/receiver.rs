@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! Test utilities for receivers.
 //!
 //! These utilities are designed to make testing receivers simpler by abstracting away common

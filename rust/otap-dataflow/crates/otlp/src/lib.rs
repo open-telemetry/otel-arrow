@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
-
 //! # OTLP Crate
 //!
 //! This crate provides OpenTelemetry Protocol (OTLP) support for the OTAP dataflow system.
