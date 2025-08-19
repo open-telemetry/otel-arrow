@@ -35,10 +35,11 @@
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
+use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use otap_df_config::{NodeId, PortName};
+use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;

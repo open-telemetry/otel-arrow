@@ -27,6 +27,7 @@ use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use serde::{Deserialize, Serialize};
@@ -62,9 +63,10 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTLP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTLPReceiver::from_config(&node_config.config)?,
+            node,
             node_config,
             receiver_config,
         ))
@@ -197,7 +199,10 @@ mod tests {
     };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -315,6 +320,7 @@ mod tests {
         // create our receiver
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver::new(addr, None),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

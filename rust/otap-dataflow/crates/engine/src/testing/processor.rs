@@ -13,7 +13,7 @@ use crate::message::{Message, Receiver, Sender};
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
-use crate::testing::{CtrlMsgCounters, setup_test_runtime};
+use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -176,7 +176,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         };
 
         // Set the output sender for the processor
-        let _ = processor.set_pdata_sender("test_processor".into(), "output".into(), pdata_sender);
+        let _ = processor.set_pdata_sender(
+            test_node(self.config().name.clone()),
+            "out".into(),
+            pdata_sender,
+        );
         // Set a dummy input receiver (not used in these tests since we call process directly)
         // We need this because prepare_runtime expects both to be set
         let dummy_receiver = match &processor {
@@ -189,7 +193,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 Receiver::Shared(SharedReceiver::MpscReceiver(receiver))
             }
         };
-        let _ = processor.set_pdata_receiver("test_processor".into(), dummy_receiver);
+        let _ = processor.set_pdata_receiver(test_node(self.config().name.clone()), dummy_receiver);
 
         TestPhase {
             rt: self.rt,
