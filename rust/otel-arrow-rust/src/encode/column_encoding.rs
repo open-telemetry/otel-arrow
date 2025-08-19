@@ -240,21 +240,23 @@ macro_rules! col_encoding {
 /// given payload type
 fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
     match payload_type {
-        ArrowPayloadType::ResourceAttrs => &[col_encoding!(
+        // ArrowPayloadType::ResourceAttrs => &[col_encoding!(
+        //     consts::PARENT_ID,
+        //     UInt16,
+        //     AttributeQuasiDelta
+        // )],
+        ArrowPayloadType::ResourceAttrs
+        | ArrowPayloadType::ScopeAttrs
+        | ArrowPayloadType::LogAttrs => &[col_encoding!(
             consts::PARENT_ID,
             UInt16,
             AttributeQuasiDelta
         )],
-        ArrowPayloadType::ScopeAttrs => &[col_encoding!(
-            consts::PARENT_ID,
-            UInt16,
-            AttributeQuasiDelta
-        )],
-        ArrowPayloadType::LogAttrs => &[col_encoding!(
-            consts::PARENT_ID,
-            UInt16,
-            AttributeQuasiDelta
-        )],
+        // ArrowPayloadType::LogAttrs => &[col_encoding!(
+        //     consts::PARENT_ID,
+        //     UInt16,
+        //     AttributeQuasiDelta
+        // )],
         // ArrowPayloadType::SpanAttrs => &[col_encoding!(
         //     consts::PARENT_ID,
         //     UInt16,
@@ -265,7 +267,7 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
         //     UInt16,
         //     AttributeQuasiDelta
         // )],
-        ArrowPayloadType::Logs => &[
+        ArrowPayloadType::Logs | ArrowPayloadType::Spans => &[
             col_encoding!(consts::ID, UInt16, Delta),
             col_encoding!(RESOURCE_ID_COL_PATH, UInt16, Delta),
             col_encoding!(SCOPE_ID_COL_PATH, UInt16, Delta),
@@ -294,6 +296,12 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
             consts::PARENT_ID,
         ],
         ArrowPayloadType::Logs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],
+        ArrowPayloadType::Spans => &[
+            RESOURCE_ID_COL_PATH,
+            SCOPE_ID_COL_PATH,
+            consts::NAME,
+            consts::TRACE_ID,
+        ],
         _ => &[],
     }
 }
