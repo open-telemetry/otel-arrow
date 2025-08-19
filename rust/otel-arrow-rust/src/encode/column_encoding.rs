@@ -19,7 +19,7 @@ use arrow::{
         UInt32Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
-    compute::take_record_batch,
+    compute::{SortOptions, sort_to_indices, take_record_batch},
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt16Type, UInt32Type},
     row::{RowConverter, SortField},
 };
@@ -286,10 +286,10 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
         | ArrowPayloadType::LogAttrs => &[
             consts::ATTRIBUTE_TYPE,
             consts::ATTRIBUTE_KEY,
+            consts::ATTRIBUTE_STR,
             consts::ATTRIBUTE_INT,
             consts::ATTRIBUTE_DOUBLE,
             consts::ATTRIBUTE_BOOL,
-            consts::ATTRIBUTE_STR,
             consts::ATTRIBUTE_BYTES,
             consts::PARENT_ID,
         ],
@@ -307,6 +307,7 @@ fn sort_record_batch(
 ) -> Result<RecordBatch> {
     let sort_columns_paths = get_sort_column_paths(payload_type);
     // TODO, here maybe we should check if this is empty?
+    // ^^ this would only ever be empty if there were no sort columns configured for some payload type
 
     let schema = record_batch.schema_ref();
     let mut sort_inputs = vec![];
@@ -317,17 +318,34 @@ fn sort_record_batch(
         }
     }
 
-    // TODO, here if sort_inputs.len() == 1, we could probably skip the row conversion and just use
-    // the sort_to_indices kernel
-
-    if sort_inputs.len() > 0 {
-        // use row converter to convert the rows. For multi-column sort, it is faster to use the
-        // row model for sorting. See here for more discussion:
+    if sort_inputs.len() == 0 {
+        Ok(record_batch.clone())
+    } else if sort_inputs.len() == 1 {
+        let indices = sort_to_indices(
+            &sort_inputs[0],
+            Some(SortOptions {
+                descending: false,
+                nulls_first: false,
+            }),
+            None,
+        )
+        .unwrap();
+        Ok(take_record_batch(record_batch, &indices).unwrap())
+    } else {
+        // multi-column sort .. using row converter to convert the rows.
+        //
+        // For multi-column sort, it is faster to use the row model for sorting and compare the
+        // row bytes directly instead of having to fetch & compare the values from multiple columns
+        // See here for more discussion:
         // https://arrow.apache.org/blog/2022/11/07/multi-column-sorts-in-arrow-rust-part-1/
 
+        let sort_options = SortOptions {
+            nulls_first: false,
+            descending: false,
+        };
         let sort_fields = sort_inputs
             .iter()
-            .map(|col| SortField::new(col.data_type().clone()))
+            .map(|col| SortField::new_with_options(col.data_type().clone(), sort_options.clone()))
             .collect();
         let converter = RowConverter::new(sort_fields).unwrap();
         let rows = converter.convert_columns(&sort_inputs).unwrap();
@@ -336,8 +354,6 @@ fn sort_record_batch(
         sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
         let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
         Ok(take_record_batch(record_batch, &indices).unwrap())
-    } else {
-        Ok(record_batch.clone())
     }
 }
 
@@ -432,6 +448,8 @@ impl ParentIdRemapping {
 }
 
 /// TODO comments
+/// should explain what this field represents e.g. a vec where indices are the old
+/// ids and values are the new ones
 #[allow(missing_docs)]
 #[derive(Debug, PartialEq)]
 pub enum RemappedParentIds {
@@ -451,15 +469,19 @@ impl From<Vec<u16>> for RemappedParentIds {
     }
 }
 
-/// TODO comments
-// TODO could this be a method on ParentIdRemapping?
+/// Creates a new parent_id column on the passed record batch according to the passed remapping.
+///
+/// The remapping should contain a vector that has the same type as the parent ID column. For
+/// example if the parent_id column is a UInt32Array, then remapping should be the UInt32 variant.
+///
+/// The payload type should match the type of record batch that is passed. This is because this
+/// argument is used to determine the proper way to materialize possibly encoded parent IDs before
+/// remapping them.
 pub fn remap_parent_ids(
-    // TODO comment that this is the payload type of the record batch
     payload_type: &ArrowPayloadType,
     record_batch: &RecordBatch,
     remapping: &RemappedParentIds,
 ) -> Result<RecordBatch> {
-    // check if the column is already encoded
     let schema = record_batch.schema_ref();
     let field_idx = match schema.index_of(consts::PARENT_ID) {
         Ok(idx) => idx,
@@ -469,7 +491,7 @@ pub fn remap_parent_ids(
         }
     };
 
-    // check if the column is plain encoded. If not, we'll need to remove any encoding
+    // Check if the column is plain encoded. If not, we'll need to remove any encoding
     // before we remap the IDs
     let field = schema.field(field_idx);
     let metadata = field.metadata();
@@ -477,10 +499,10 @@ pub fn remap_parent_ids(
         metadata.get(consts::metadata::COLUMN_ENCODING).map(String::as_str),
         Some(enc) if enc == consts::metadata::encodings::PLAIN
     );
-    let record_batch = if !is_plain_encoded {
-        remove_parent_id_column_encoding(payload_type, record_batch)?
-    } else {
+    let record_batch = if is_plain_encoded {
         record_batch.clone()
+    } else {
+        remove_parent_id_column_encoding(payload_type, record_batch)?
     };
 
     // reassign schema to the new record batch schema, which may have updated metadata due to
@@ -519,8 +541,11 @@ pub fn remap_parent_ids(
         }
     });
 
-    // TODO explain why we can expect here
-    Ok(RecordBatch::try_new(schema, new_columns.collect()).expect("TODO"))
+    // Safety: this is safe because we have replaced a column with another column of the same type
+    // (which means the schema matches the columns), and the column we're replacing has the same
+    // length as the replacement
+    Ok(RecordBatch::try_new(schema, new_columns.collect())
+        .expect("could not create new record batch"))
 }
 
 fn remap_parent_id_col<T: ArrowPrimitiveType>(
@@ -712,15 +737,17 @@ pub fn apply_column_encodings(
 
 #[cfg(test)]
 mod test {
-    use arrow::{
-        array::{FixedSizeBinaryArray, StringArray, StructArray, UInt8Array, UInt16Array},
-        datatypes::{Field, Fields},
-    };
-    use prost::Name;
+    use std::vec;
 
-    use crate::{
-        encode::column_encoding, otlp::attributes::store::AttributeValueType, schema::FieldExt,
+    use arrow::{
+        array::{
+            FixedSizeBinaryArray, Int64Array, StringArray, StructArray, TimestampNanosecondArray,
+            UInt8Array, UInt16Array,
+        },
+        datatypes::{Field, Fields, TimeUnit},
     };
+
+    use crate::{otlp::attributes::store::AttributeValueType, schema::FieldExt};
 
     use super::*;
 
@@ -925,15 +952,199 @@ mod test {
 
     #[test]
     fn test_sort_columns_none_present() {
-        // test that we handle the case when sorting the columns where none of the columns we're
-        // planning to sort by are present
-        todo!()
+        // Sometimes the sorting columns in the record batch will be optional, in which case
+        // there might be none present and so the sorting should be basically a noop
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt8, true),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values(vec![4, 1, 8])),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![5, 1, 4])),
+            ],
+        )
+        .unwrap();
+
+        let result = sort_record_batch(&ArrowPayloadType::Logs, &input).unwrap();
+        assert_eq!(result, input)
     }
 
     #[test]
     fn test_sort_columns_single_column() {
-        // TODO
-        todo!()
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt8, true),
+            Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values(vec![4, 1, 8])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![5u128, 1, 4].into_iter().map(|i| i.to_be_bytes()),
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        // this should now be sorted by trace_id
+        let result = sort_record_batch(&ArrowPayloadType::Logs, &input).unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values(vec![1, 8, 4])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![1u128, 4, 5].into_iter().map(|i| i.to_be_bytes()),
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sort_multi_columns_with_nulls() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+        ]));
+        let data = vec![
+            (AttributeValueType::Str as u8, "a", Some("a"), None),
+            (AttributeValueType::Str as u8, "a", None, None),
+            (AttributeValueType::Int as u8, "a", None, Some(1)),
+            (AttributeValueType::Int as u8, "a", None, Some(2)),
+            (AttributeValueType::Str as u8, "b", Some("c"), None),
+            (AttributeValueType::Int as u8, "a", None, None),
+            (AttributeValueType::Str as u8, "b", Some("a"), None),
+            (AttributeValueType::Str as u8, "b", Some("b"), None),
+            (AttributeValueType::Str as u8, "b", None, None),
+            (AttributeValueType::Str as u8, "a", Some("c"), None),
+            (AttributeValueType::Int as u8, "b", None, Some(1)),
+            (AttributeValueType::Str as u8, "a", Some("b"), None),
+            (AttributeValueType::Int as u8, "b", None, Some(2)),
+            (AttributeValueType::Int as u8, "a", None, Some(3)),
+            (AttributeValueType::Int as u8, "b", None, Some(3)),
+            (AttributeValueType::Int as u8, "b", None, None),
+        ];
+
+        let attr_types = UInt8Array::from_iter_values(data.iter().map(|d| d.0));
+        let attr_keys = StringArray::from_iter_values(data.iter().map(|d| d.1));
+        let attr_strs = StringArray::from_iter(data.iter().map(|d| d.2));
+        let attr_ints = Int64Array::from_iter(data.iter().map(|d| d.3));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(attr_types),
+                Arc::new(attr_keys),
+                Arc::new(attr_strs),
+                Arc::new(attr_ints),
+            ],
+        )
+        .unwrap();
+
+        let result = sort_record_batch(&ArrowPayloadType::ResourceAttrs, &input).unwrap();
+
+        let expected_data = vec![
+            (AttributeValueType::Str as u8, "a", Some("a"), None),
+            (AttributeValueType::Str as u8, "a", Some("b"), None),
+            (AttributeValueType::Str as u8, "a", Some("c"), None),
+            (AttributeValueType::Str as u8, "a", None, None),
+            (AttributeValueType::Str as u8, "b", Some("a"), None),
+            (AttributeValueType::Str as u8, "b", Some("b"), None),
+            (AttributeValueType::Str as u8, "b", Some("c"), None),
+            (AttributeValueType::Str as u8, "b", None, None),
+            (AttributeValueType::Int as u8, "a", None, Some(1)),
+            (AttributeValueType::Int as u8, "a", None, Some(2)),
+            (AttributeValueType::Int as u8, "a", None, Some(3)),
+            (AttributeValueType::Int as u8, "a", None, None),
+            (AttributeValueType::Int as u8, "b", None, Some(1)),
+            (AttributeValueType::Int as u8, "b", None, Some(2)),
+            (AttributeValueType::Int as u8, "b", None, Some(3)),
+            (AttributeValueType::Int as u8, "b", None, None),
+        ];
+        let attr_types = UInt8Array::from_iter_values(expected_data.iter().map(|d| d.0));
+        let attr_keys = StringArray::from_iter_values(expected_data.iter().map(|d| d.1));
+        let attr_strs = StringArray::from_iter(expected_data.iter().map(|d| d.2));
+        let attr_ints = Int64Array::from_iter(expected_data.iter().map(|d| d.3));
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(attr_types),
+                Arc::new(attr_keys),
+                Arc::new(attr_strs),
+                Arc::new(attr_ints),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sort_single_column_with_nulls() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt8, true),
+            Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values(vec![4, 1, 8, 3])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                        vec![Some(5u128), None, Some(1), Some(4)]
+                            .into_iter()
+                            .map(|i| i.map(|i| i.to_be_bytes())),
+                        16,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        // this should now be sorted by trace_id
+        let result = sort_record_batch(&ArrowPayloadType::Logs, &input).unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values(vec![8, 3, 4, 1])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                        vec![Some(1u128), Some(4), Some(5), None]
+                            .into_iter()
+                            .map(|i| i.map(|i| i.to_be_bytes())),
+                        16,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -1132,62 +1343,102 @@ mod test {
         // in order to remap the parent IDs, if the column is delta encoded then we need to turn it
         // back into a plain encoded column. This test ensures we do that properly
 
-        // TODO we might need to expand this to all payload types ...
+        fn do_test_generic<T: ArrowPrimitiveType>(payload_type: ArrowPayloadType)
+        where
+            Vec<<T as ArrowPrimitiveType>::Native>: Into<RemappedParentIds>,
+            <T as ArrowPrimitiveType>::Native: From<u8>,
+        {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, T::DATA_TYPE, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ]));
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-        ]));
+            // this delta encoded column represents
+            // 0, 1, 2, 3, 4, 5
+            let parent_ids = PrimitiveArray::<T>::from_iter_values(
+                [0, 1, 1, 1, 1, 1].into_iter().map(T::Native::from),
+            );
+            let attr_types =
+                UInt8Array::from_iter_values(std::iter::repeat_n(AttributeValueType::Str as u8, 6));
+            let attr_keys = StringArray::from_iter_values(std::iter::repeat_n("a", 6));
+            let attr_vals = StringArray::from_iter_values(std::iter::repeat_n("a", 6));
+            let record_batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(parent_ids.clone()),
+                    Arc::new(attr_types.clone()),
+                    Arc::new(attr_keys.clone()),
+                    Arc::new(attr_vals.clone()),
+                ],
+            )
+            .unwrap();
 
-        // this delta encoded column represents
-        // 0, 1, 2, 3, 4, 5
-        let parent_ids = UInt16Array::from_iter_values([0, 1, 1, 1, 1, 1]);
-        let attr_types =
-            UInt8Array::from_iter_values(std::iter::repeat_n(AttributeValueType::Str as u8, 6));
-        let attr_keys = StringArray::from_iter_values(std::iter::repeat_n("a", 6));
-        let attr_vals = StringArray::from_iter_values(std::iter::repeat_n("a", 6));
-        let record_batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(parent_ids.clone()),
-                Arc::new(attr_types.clone()),
-                Arc::new(attr_keys.clone()),
-                Arc::new(attr_vals.clone()),
-            ],
-        )
-        .unwrap();
+            // represents remapped IDs like
+            // original -> new
+            // 0 -> 4,
+            // 1 -> 2,
+            // 2 -> 1,
+            // 3 -> 0,
+            // 4 -> 5,
+            // 5 -> 3
+            let remapping: RemappedParentIds = vec![4, 2, 1, 0, 5, 3]
+                .into_iter()
+                .map(T::Native::from)
+                .collect::<Vec<_>>()
+                .into();
+            let result = remap_parent_ids(&payload_type, &record_batch, &remapping).unwrap();
 
-        // represents remapped IDs like
-        // original -> new
-        // 0 -> 4,
-        // 1 -> 2,
-        // 2 -> 1,
-        // 3 -> 0,
-        // 4 -> 5,
-        // 5 -> 3
-        let remapping = RemappedParentIds::UInt16(vec![4, 2, 1, 0, 5, 3]);
-        let result =
-            remap_parent_ids(&ArrowPayloadType::LogAttrs, &record_batch, &remapping).unwrap();
+            let expected_schema = Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, T::DATA_TYPE, false).with_plain_encoding(),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ]));
+            let expected_parent_ids = PrimitiveArray::<T>::from_iter_values(
+                [4, 2, 1, 0, 5, 3].into_iter().map(T::Native::from),
+            );
+            let expected = RecordBatch::try_new(
+                expected_schema,
+                vec![
+                    Arc::new(expected_parent_ids),
+                    Arc::new(attr_types.clone()),
+                    Arc::new(attr_keys.clone()),
+                    Arc::new(attr_vals.clone()),
+                ],
+            )
+            .unwrap();
 
-        let expected_schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-        ]));
-        let expected = RecordBatch::try_new(
-            expected_schema,
-            vec![
-                Arc::new(UInt16Array::from_iter_values([4, 2, 1, 0, 5, 3])),
-                Arc::new(attr_types.clone()),
-                Arc::new(attr_keys.clone()),
-                Arc::new(attr_vals.clone()),
-            ],
-        )
-        .unwrap();
+            assert_eq!(result, expected)
+        }
 
-        assert_eq!(result, expected)
+        // check for every attribute type to make sure we've covered them all with the correct
+        // decoding function
+        let u16_test_cases = [
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::MetricAttrs,
+            ArrowPayloadType::SpanAttrs,
+        ];
+        for payload_type in u16_test_cases {
+            do_test_generic::<UInt16Type>(payload_type);
+        }
+
+        let u32_test_cases = [
+            ArrowPayloadType::SpanLinkAttrs,
+            ArrowPayloadType::SpanEventAttrs,
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::SummaryDpAttrs,
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ];
+        for payload_type in u32_test_cases {
+            do_test_generic::<UInt32Type>(payload_type);
+        }
     }
 }

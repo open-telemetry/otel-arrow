@@ -184,7 +184,7 @@ impl FieldExt for Field {
         self
     }
 
-    fn with_plain_encoding(mut self) -> Self {
+    fn with_plain_encoding(self) -> Self {
         self.with_encoding(consts::metadata::encodings::PLAIN)
     }
 }
