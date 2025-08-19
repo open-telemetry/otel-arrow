@@ -103,6 +103,12 @@ cargo test --workspace
 cargo run --example <example_name>
 ```
 
+**With Docker**:
+
+```bash
+docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+```
+
 ## Contributing
 
 - [Contribution Guidelines](CONTRIBUTING.md)
