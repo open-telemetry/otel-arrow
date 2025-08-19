@@ -19,6 +19,7 @@ use crate::{
         RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_column_encodings, remap_parent_ids,
     },
     error::Result,
+    otap,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::consts,
 };
@@ -517,6 +518,56 @@ impl OtapBatchStore for Traces {
         if let Some(rb) = otap_batch.get(ArrowPayloadType::Spans) {
             let (rb, id_remappings) = apply_column_encodings(&ArrowPayloadType::Spans, rb)?;
             otap_batch.set(ArrowPayloadType::Spans, rb);
+
+            // remap any of the child IDs if necessary ...
+            if let Some(id_remappings) = id_remappings {
+                for id_remapping in id_remappings {
+                    let child_payload_types = match id_remapping.column_path {
+                        RESOURCE_ID_COL_PATH => [ArrowPayloadType::ResourceAttrs].as_slice(),
+                        SCOPE_ID_COL_PATH => [ArrowPayloadType::ScopeAttrs].as_slice(),
+                        consts::ID => [
+                            ArrowPayloadType::SpanAttrs,
+                            ArrowPayloadType::SpanEvents,
+                            ArrowPayloadType::SpanLinks,
+                        ]
+                        .as_slice(),
+
+                        // TODO this would be an unusual situation? Something clearly wrong ..
+                        _ => continue,
+                    };
+                    for child_payload_type in child_payload_types.into_iter() {
+                        if let Some(child_rb) = otap_batch.get(*child_payload_type) {
+                            println!("payload type = {:?}", child_payload_type);
+                            println!("child rb = {:?}", child_rb);
+
+                            let rb = remap_parent_ids(
+                                &child_payload_type,
+                                child_rb,
+                                &id_remapping.remapped_ids,
+                            )?;
+                            otap_batch.set(*child_payload_type, rb);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::SpanEvents) {
+            let (rb, id_remappings) = apply_column_encodings(&ArrowPayloadType::SpanEvents, rb)?;
+            otap_batch.set(ArrowPayloadType::SpanEvents, rb);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::SpanEventAttrs,
+            ArrowPayloadType::SpanLinkAttrs,
+        ] {
+            if let Some(rb) = otap_batch.get(payload_type) {
+                let (rb, _) = apply_column_encodings(&payload_type, rb)?;
+                otap_batch.set(payload_type, rb);
+            }
         }
 
         Ok(())
@@ -593,9 +644,12 @@ mod test {
     /// helper function for easily constructing a record batch of attributes. In this particular
     /// generated batch, all the types will be string with the same key. The argument is an array
     /// of `(parent_id, attr value)` tuples
-    fn attrs_from_data<T: ArrowPrimitiveType>(data: Vec<(T::Native, &'static str)>) -> RecordBatch {
+    fn attrs_from_data<T: ArrowPrimitiveType>(
+        data: Vec<(T::Native, &'static str)>,
+        encoding: &'static str,
+    ) -> RecordBatch {
         let attrs_schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, T::DATA_TYPE, false).with_plain_encoding(),
+            Field::new(consts::PARENT_ID, T::DATA_TYPE, false).with_encoding(encoding.into()),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -921,37 +975,46 @@ mod test {
         )
         .unwrap();
 
-        let log_attrs_rb = attrs_from_data::<UInt16Type>(vec![
-            (1, "a"),
-            (2, "a"),
-            (1, "c"),
-            (2, "c"),
-            (5, "c"),
-            (7, "c"),
-            (2, "b"),
-            (4, "b"),
-        ]);
+        let log_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (2, "a"),
+                (1, "c"),
+                (2, "c"),
+                (5, "c"),
+                (7, "c"),
+                (2, "b"),
+                (4, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
 
-        let scope_attrs = attrs_from_data::<UInt16Type>(vec![
-            (1, "a"),
-            (1, "b"),
-            (2, "a"),
-            (2, "c"),
-            (0, "a"),
-            (3, "a"),
-            (3, "b"),
-            (1, "b"),
-        ]);
+        let scope_attrs = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (1, "b"),
+                (2, "a"),
+                (2, "c"),
+                (0, "a"),
+                (3, "a"),
+                (3, "b"),
+                (1, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
 
-        let resource_attrs_rb = attrs_from_data::<UInt16Type>(vec![
-            (1, "a"),
-            (0, "a"),
-            (1, "c"),
-            (0, "c"),
-            (1, "b"),
-            (1, "c"),
-            (0, "b"),
-        ]);
+        let resource_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (0, "a"),
+                (1, "c"),
+                (0, "c"),
+                (1, "b"),
+                (1, "c"),
+                (0, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
 
         let mut batch = OtapArrowRecords::Logs(Logs::default());
         batch.set(ArrowPayloadType::Logs, logs_rb);
@@ -1024,33 +1087,6 @@ mod test {
         let result_logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(result_logs_rb, &expected_logs_rb);
 
-        let expected_attrs_from_data = |data: Vec<(u16, &'static str)>| -> RecordBatch {
-            let attrs_schema = Arc::new(Schema::new(vec![
-                Field::new(consts::PARENT_ID, DataType::UInt16, false)
-                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
-                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-            ]));
-            let parent_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.0));
-            let attr_vals = StringArray::from_iter_values(data.iter().map(|d| d.1));
-            let attr_keys = StringArray::from_iter_values(std::iter::repeat_n("a", data.len()));
-            let attr_types = UInt8Array::from_iter_values(std::iter::repeat_n(
-                AttributeValueType::Str as u8,
-                data.len(),
-            ));
-            RecordBatch::try_new(
-                attrs_schema,
-                vec![
-                    Arc::new(parent_ids),
-                    Arc::new(attr_types),
-                    Arc::new(attr_keys),
-                    Arc::new(attr_vals),
-                ],
-            )
-            .unwrap()
-        };
-
         // expected logs_attr is calculated like - Note after remapping IDs, the attribute record
         // batches get sorted by:
         // (type, key, value, parent_id)
@@ -1065,16 +1101,19 @@ mod test {
         // 7 --> 3, "c" --> 2
         // 5 --> 4, "c" --> 1
 
-        let expected_log_attrs_rb = expected_attrs_from_data(vec![
-            (0, "a"),
-            (1, "a"),
-            (1, "b"),
-            (5, "b"),
-            (0, "c"),
-            (1, "c"),
-            (2, "c"),
-            (1, "c"),
-        ]);
+        let expected_log_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (1, "b"),
+                (5, "b"),
+                (0, "c"),
+                (1, "c"),
+                (2, "c"),
+                (1, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
         let result_log_attrs_rb = batch.get(ArrowPayloadType::LogAttrs).unwrap();
         assert_eq!(result_log_attrs_rb, &expected_log_attrs_rb);
 
@@ -1089,16 +1128,19 @@ mod test {
         // 1 -> 2, "b" -> 0
         // 3 -> 3, "b" -> 1
         // 2 -> 1, "c" -> 1
-        let expected_scope_attrs_rb = expected_attrs_from_data(vec![
-            (0, "a"),
-            (1, "a"),
-            (1, "a"),
-            (1, "a"),
-            (2, "b"),
-            (0, "b"),
-            (1, "b"),
-            (1, "c"),
-        ]);
+        let expected_scope_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (1, "a"),
+                (1, "a"),
+                (2, "b"),
+                (0, "b"),
+                (1, "b"),
+                (1, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
         let result_scope_attrs_rb = batch.get(ArrowPayloadType::ScopeAttrs).unwrap();
         assert_eq!(result_scope_attrs_rb, &expected_scope_attrs_rb);
 
@@ -1117,15 +1159,18 @@ mod test {
         // 1, c -> 1
         // 1, c -> 0
         //
-        let expected_resource_attrs_rb = expected_attrs_from_data(vec![
-            (0, "a"),
-            (1, "a"),
-            (0, "b"),
-            (1, "b"),
-            (0, "c"),
-            (1, "c"),
-            (0, "c"),
-        ]);
+        let expected_resource_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (0, "b"),
+                (1, "b"),
+                (0, "c"),
+                (1, "c"),
+                (0, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
         let result_resource_attrs_rb = batch.get(ArrowPayloadType::ResourceAttrs).unwrap();
         assert_eq!(result_resource_attrs_rb, &expected_resource_attrs_rb);
     }
@@ -1629,8 +1674,83 @@ mod test {
         )
         .unwrap();
 
+        let span_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (2, "a"),
+                (1, "c"),
+                (2, "c"),
+                (5, "c"),
+                (7, "c"),
+                (2, "b"),
+                (4, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
+        let scope_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (1, "b"),
+                (2, "a"),
+                (2, "c"),
+                (0, "a"),
+                (3, "a"),
+                (3, "b"),
+                (1, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
+        let resource_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (0, "a"),
+                (1, "c"),
+                (0, "c"),
+                (1, "b"),
+                (1, "c"),
+                (0, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
+        let span_event_data = vec![
+            (0, 1, "b"),
+            (2, 2, "d"),
+            (1, 3, "c"),
+            (3, 5, "a"),
+            (2, 4, "a"),
+            (6, 7, "a"),
+            (4, 2, "b"),
+        ];
+
+        let span_events_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true).with_plain_encoding(),
+                Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::NAME, DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(
+                    span_event_data.iter().map(|d| d.0),
+                )),
+                Arc::new(UInt16Array::from_iter_values(
+                    span_event_data.iter().map(|d| d.1),
+                )),
+                Arc::new(StringArray::from_iter_values(
+                    span_event_data.iter().map(|d| d.2),
+                )),
+            ],
+        )
+        .unwrap();
+
         let mut batch = OtapArrowRecords::Traces(Traces::default());
         batch.set(ArrowPayloadType::Spans, spans_rb);
+        batch.set(ArrowPayloadType::SpanAttrs, span_attrs_rb);
+        batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb);
+        batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
+        batch.set(ArrowPayloadType::SpanEvents, span_events_rb);
 
         batch.encode_transport_optimized_ids().unwrap();
 
@@ -1699,5 +1819,136 @@ mod test {
 
         let result_spans_rb = batch.get(ArrowPayloadType::Spans).unwrap();
         assert_eq!(result_spans_rb, &expected_spans_rb);
+
+        // attr record batches will get sorted by key, then have the parent IDs remapped
+        //
+        // original parent_id --> remapped parent_id, val --> quasi-delta parent ID
+        // 1 -> 2, "a" -> 2
+        // 2 -> 7, "a" -> 5
+        // 4 -> 6, "b" -> 6
+        // 2 -> 7, "b" -> 1
+        // 5 -> 1, "c" -> 1
+        // 1 -> 2, "c" -> 1
+        // 7 -> 5, "c" -> 3
+        // 2 -> 7, "c" -> 2
+        let expected_span_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (2, "a"),
+                (5, "a"),
+                (6, "b"),
+                (1, "b"),
+                (1, "c"),
+                (1, "c"),
+                (3, "c"),
+                (2, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        let result_span_attrs_rb = batch.get(ArrowPayloadType::SpanAttrs).unwrap();
+        assert_eq!(result_span_attrs_rb, &expected_span_attrs_rb);
+
+        // expected scope attrs
+        //
+        // original parent_id --> remapped parent_id, val --> quasi-delta parent ID
+        // 0 -> 0, "a" -> 0
+        // 2 -> 1, "a" -> 1
+        // 1 -> 2, "a" -> 1
+        // 3 -> 3, "a" -> 1
+        // 1 -> 2, "b" -> 2
+        // 1 -> 2, "b" -> 0
+        // 3 -> 3, "b" -> 1
+        // 2 -> 1, "c" -> 1
+        let expected_scope_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (1, "a"),
+                (1, "a"),
+                (2, "b"),
+                (0, "b"),
+                (1, "b"),
+                (1, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        let result_scope_attrs_rb = batch.get(ArrowPayloadType::ScopeAttrs).unwrap();
+        assert_eq!(result_scope_attrs_rb, &expected_scope_attrs_rb);
+
+        // expected resource attrs
+        //
+        // note that because the record batch gets sorted by resource ID as the primary sort column
+        // that there are no remapped IDs, so this is just the original resource attribute batch
+        // sorted
+        //
+        // parent_id, val -> quasi-delta parent ID
+        // 0, a -> 0
+        // 1, a -> 1
+        // 0, b -> 0
+        // 1, b -> 1
+        // 0, c -> 0
+        // 1, c -> 1
+        // 1, c -> 0
+        //
+        let expected_resource_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (0, "b"),
+                (1, "b"),
+                (0, "c"),
+                (1, "c"),
+                (0, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        let result_resource_attrs_rb = batch.get(ArrowPayloadType::ResourceAttrs).unwrap();
+        assert_eq!(result_resource_attrs_rb, &expected_resource_attrs_rb);
+
+        // span events get sorted by name,parent_id and have the parent ID remapped. after sorting
+        //  and ID remapping, we expect the record batch to look like this:
+        //
+        //  id:     parent_id:   name:   quasi-delta parent_id
+        // (3 -> 0,  5 -> 1,     "a"     1
+        // (6 -> 1,  7 -> 5,     "a"     4
+        // (2 -> 2,  4 -> 6,     "a"     2
+        // (0 -> 3,  1 -> 2,     "b"     2
+        // (4 -> 4,  2 -> 7,     "b"     5
+        // (1 -> 5,  3 -> 3,     "c"     3
+        // (2 -> 6,  2 -> 7,     "d"     7
+        //
+        // then the IDs will get replaced
+        //
+        let expected_span_events_data = vec![
+            (0, 1, "a"),
+            (1, 4, "a"),
+            (1, 2, "a"),
+            (1, 2, "b"),
+            (1, 5, "b"),
+            (1, 3, "c"),
+            (1, 7, "d"),
+        ];
+        let expected_span_events_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true)
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                Field::new(consts::PARENT_ID, DataType::UInt16, true),
+                Field::new(consts::NAME, DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(
+                    expected_span_events_data.iter().map(|d| d.0),
+                )),
+                Arc::new(UInt16Array::from_iter_values(
+                    expected_span_events_data.iter().map(|d| d.1),
+                )),
+                Arc::new(StringArray::from_iter_values(
+                    expected_span_events_data.iter().map(|d| d.2),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let result_span_events_rb = batch.get(ArrowPayloadType::SpanEvents).unwrap();
+        assert_eq!(result_span_events_rb, &expected_span_events_rb);
     }
 }
