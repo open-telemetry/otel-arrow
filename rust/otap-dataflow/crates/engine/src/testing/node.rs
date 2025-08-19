@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Test helpers to create NodeId values.
 
 use crate::node::{NodeDefs, NodeId, NodeName, NodeType};
