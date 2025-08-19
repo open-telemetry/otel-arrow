@@ -284,6 +284,7 @@ where
 
     // TODO write tests for this
     if record_batch.num_rows() == 0 {
+        // TODO avoid creating new arc here by reusing current IDs
         return Ok(Arc::new(parent_id_arr.clone()));
     }
 
@@ -311,8 +312,7 @@ where
     let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
-    let mut materialized_parent_ids =
-        PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
+    let mut encoded_parent_ids = PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
 
     // below we're iterating through the record batch and each time we find a contiguous range
     // where all the types & attribute keys are the same, we use the "eq" compute kernel to
@@ -351,7 +351,7 @@ where
                 // safety: there's a check at the beginning of this function to ensure that
                 // the batch is not empty
                 .expect("expect the batch not to be empty");
-            materialized_parent_ids.append_value(first_parent_id);
+            encoded_parent_ids.append_value(first_parent_id);
 
             if let Some(value_arr) = value_arr {
                 // if we have a value array here, we want the parent ID to be delta encoded
@@ -373,14 +373,13 @@ where
                         // otherwise, we break the delta encoding
                         curr_parent_id
                     };
-                    materialized_parent_ids.append_value(parent_id_or_delta);
+                    encoded_parent_ids.append_value(parent_id_or_delta);
                 }
             } else {
                 // if we're here, we've determined that the parent ID values are not delta encoded
                 // because the type doesn't support it
                 for batch_idx in (curr_range_start + 1)..(idx + 1) {
-                    materialized_parent_ids
-                        .append_value(parent_id_arr.value_at_or_default(batch_idx));
+                    encoded_parent_ids.append_value(parent_id_arr.value_at_or_default(batch_idx));
                 }
             }
 
@@ -388,8 +387,8 @@ where
         }
     }
 
-    let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
-    Ok(materialized_parent_ids)
+    let encoded_parent_ids = Arc::new(encoded_parent_ids.finish());
+    Ok(encoded_parent_ids)
 }
 
 /// Materialize quasi-delta encoded record batch. Subsequent parent IDs are considered
@@ -471,6 +470,77 @@ where
         materialized_parent_ids,
         metadata::encodings::PLAIN,
     )
+}
+
+/// TODO comments
+pub fn transport_encode_parent_id_for_columns<'a, T>(
+    record_batch: &RecordBatch,
+    equality_column_names: &[&str],
+) -> Result<ArrayRef>
+where
+    T: ParentId,
+    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native:
+        Sub<Output = <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native>,
+{
+    let parent_ids = T::get_parent_id_column(record_batch)?;
+
+    // if the record batch is empty, nothing to decode so return early
+    if record_batch.num_rows() == 0 {
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("TODO")
+            .clone());
+    }
+
+    // check that the column hasn't already been decoded
+    let column_encoding = get_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        metadata::COLUMN_ENCODING,
+    );
+    if let Some(metadata::encodings::QUASI_DELTA) = column_encoding {
+        // column already decoded, nothing to do
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("TODO")
+            .clone());
+    }
+
+    // here we're building up the next-element equality array for multiple columns by 'and'ing
+    // the equality array for each column together. This gives us an array that is true if all
+    // the values in each column are equal (index offset by 1). If some column doesn't exist, in
+    // this case assume this means null values which are equal
+    let mut eq_next: BooleanArray = std::iter::repeat_n(Some(true), parent_ids.len() - 1).collect();
+    for column_name in equality_column_names {
+        if let Some(column) = record_batch.column_by_name(column_name) {
+            let eq_next_column = create_next_element_equality_array(column)?;
+            eq_next =
+                and(&eq_next_column, &eq_next).expect("can 'and' arrays together of same length")
+        }
+    }
+
+    let mut encoded_parent_ids =
+        PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
+
+    // safety: there's a check at the beginning of this method that the batch is not empty
+    let first_parent_id = parent_ids
+        .value_at(0)
+        .expect("expect batch not to be empty");
+    encoded_parent_ids.append_value(first_parent_id);
+
+    for i in 1..record_batch.num_rows() {
+        let curr_parent_id = parent_ids.value(i);
+        let parent_id_or_delta = if eq_next.value(i - 1) {
+            let prev_parent_id = parent_ids.value_at_or_default(i - 1);
+            curr_parent_id - prev_parent_id
+        } else {
+            curr_parent_id
+        };
+        encoded_parent_ids.append_value(parent_id_or_delta);
+    }
+
+    let encoded_parent_ids = Arc::new(encoded_parent_ids.finish());
+    Ok(encoded_parent_ids)
 }
 
 /// Decodes the quasi-delta encoded Parent IDs field for a record batch of exemplars.

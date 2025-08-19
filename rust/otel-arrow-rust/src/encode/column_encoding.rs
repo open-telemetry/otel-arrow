@@ -30,7 +30,7 @@ use crate::{
     otap::transform::{
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
         materialize_parent_ids_by_columns, remove_delta_encoding,
-        transport_encode_parent_id_for_attributes,
+        transport_encode_parent_id_for_attributes, transport_encode_parent_id_for_columns,
     },
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::{FieldExt, consts},
@@ -41,9 +41,16 @@ use crate::{
 enum Encoding {
     Delta,
 
-    /// this is the transport optimized encoding that is applied to the parent_id column where
-    /// where subsequent rows of some matching columns will cause this column to be delta encoded
-    QuasiDelta,
+    /// this is the transport optimized encoding that is applied to the parent_id column
+    /// of attribute record batches where where subsequent rows of matching attribute type,
+    /// key and value will have delta encoded parent IDs
+    AttributeQuasiDelta,
+
+    /// This is similar to AttributeQuasiDelta, but applied to non-attribute record batches like
+    /// Span Events and Span Links. In this case, instead of looking at attribute columns to
+    /// determine runs of delta encoding, we consider the values in arbitrary columns (the names of
+    /// which are contained within this enum variant).
+    ColumnarQuasiDelta(&'static [&'static str]),
 }
 
 // for the majority of columns, we'll be able to identify the path within the record batch as
@@ -202,7 +209,9 @@ fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding:
     if let Some((idx, field)) = found_field {
         let encoding = match encoding {
             Encoding::Delta => consts::metadata::encodings::DELTA,
-            Encoding::QuasiDelta => consts::metadata::encodings::QUASI_DELTA,
+            Encoding::AttributeQuasiDelta | Encoding::ColumnarQuasiDelta(_) => {
+                consts::metadata::encodings::QUASI_DELTA
+            }
         };
         let new_field = field.as_ref().clone().with_encoding(encoding);
         fields[idx] = Arc::new(new_field)
@@ -239,34 +248,28 @@ macro_rules! col_encoding {
 /// given payload type
 fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
     match payload_type {
-        // ArrowPayloadType::ResourceAttrs => &[col_encoding!(
-        //     consts::PARENT_ID,
-        //     UInt16,
-        //     AttributeQuasiDelta
-        // )],
         ArrowPayloadType::ResourceAttrs
         | ArrowPayloadType::ScopeAttrs
         | ArrowPayloadType::SpanAttrs
         | ArrowPayloadType::MetricAttrs
-        | ArrowPayloadType::LogAttrs => &[col_encoding!(consts::PARENT_ID, UInt16, QuasiDelta)],
-        // ArrowPayloadType::LogAttrs => &[col_encoding!(
-        //     consts::PARENT_ID,
-        //     UInt16,
-        //     AttributeQuasiDelta
-        // )],
-        // ArrowPayloadType::SpanAttrs => &[col_encoding!(
-        //     consts::PARENT_ID,
-        //     UInt16,
-        //     AttributeQuasiDelta
-        // )],
-        // ArrowPayloadType::MetricAttrs => &[col_encoding!(
-        //     consts::PARENT_ID,
-        //     UInt16,
-        //     AttributeQuasiDelta
-        // )],
+        | ArrowPayloadType::LogAttrs => &[col_encoding!(
+            consts::PARENT_ID,
+            UInt16,
+            AttributeQuasiDelta
+        )],
+        ArrowPayloadType::SpanEventAttrs | ArrowPayloadType::SpanLinkAttrs => &[col_encoding!(
+            consts::PARENT_ID,
+            UInt32,
+            AttributeQuasiDelta
+        )],
         ArrowPayloadType::SpanEvents => &[
             col_encoding!(consts::ID, UInt32, Delta),
-            col_encoding!(consts::PARENT_ID, UInt16, QuasiDelta),
+            //TODO if you have time, fix macro so it will accept this
+            ColumnEncoding {
+                path: consts::PARENT_ID,
+                data_type: DataType::UInt16,
+                encoding: Encoding::ColumnarQuasiDelta(&[consts::NAME]),
+            },
         ],
         ArrowPayloadType::Logs | ArrowPayloadType::Spans => &[
             col_encoding!(consts::ID, UInt16, Delta),
@@ -286,7 +289,9 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
         | ArrowPayloadType::ScopeAttrs
         | ArrowPayloadType::SpanAttrs
         | ArrowPayloadType::MetricAttrs
-        | ArrowPayloadType::LogAttrs => &[
+        | ArrowPayloadType::LogAttrs
+        | ArrowPayloadType::SpanEventAttrs
+        | ArrowPayloadType::SpanLinkAttrs => &[
             consts::ATTRIBUTE_TYPE,
             consts::ATTRIBUTE_KEY,
             consts::ATTRIBUTE_STR,
@@ -706,11 +711,19 @@ pub fn apply_column_encodings(
                         })?;
                 match column_encoding.encoding {
                     Encoding::Delta => create_new_delta_encoded_column_from::<UInt16Type>(column),
-                    Encoding::QuasiDelta => {
-                        let new_col =
+                    Encoding::AttributeQuasiDelta => {
+                        let new_column =
                             transport_encode_parent_id_for_attributes::<u16>(&record_batch)?;
                         Ok(EncodedColumnResult {
-                            new_column: new_col,
+                            new_column,
+                            remapping: None,
+                        })
+                    }
+                    Encoding::ColumnarQuasiDelta(columns) => {
+                        let new_column =
+                            transport_encode_parent_id_for_columns::<u16>(&record_batch, columns)?;
+                        Ok(EncodedColumnResult {
+                            new_column,
                             remapping: None,
                         })
                     }
@@ -727,8 +740,21 @@ pub fn apply_column_encodings(
                         })?;
                 match column_encoding.encoding {
                     Encoding::Delta => create_new_delta_encoded_column_from::<UInt32Type>(column),
-                    _ => {
-                        todo!()
+                    Encoding::AttributeQuasiDelta => {
+                        let new_column =
+                            transport_encode_parent_id_for_attributes::<u32>(&record_batch)?;
+                        Ok(EncodedColumnResult {
+                            new_column,
+                            remapping: None,
+                        })
+                    }
+                    Encoding::ColumnarQuasiDelta(columns) => {
+                        let new_column =
+                            transport_encode_parent_id_for_columns::<u32>(&record_batch, columns)?;
+                        Ok(EncodedColumnResult {
+                            new_column,
+                            remapping: None,
+                        })
                     }
                 }
             }

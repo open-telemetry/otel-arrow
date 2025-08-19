@@ -537,9 +537,6 @@ impl OtapBatchStore for Traces {
                     };
                     for child_payload_type in child_payload_types.into_iter() {
                         if let Some(child_rb) = otap_batch.get(*child_payload_type) {
-                            println!("payload type = {:?}", child_payload_type);
-                            println!("child rb = {:?}", child_rb);
-
                             let rb = remap_parent_ids(
                                 &child_payload_type,
                                 child_rb,
@@ -555,6 +552,20 @@ impl OtapBatchStore for Traces {
         if let Some(rb) = otap_batch.get(ArrowPayloadType::SpanEvents) {
             let (rb, id_remappings) = apply_column_encodings(&ArrowPayloadType::SpanEvents, rb)?;
             otap_batch.set(ArrowPayloadType::SpanEvents, rb);
+            if let Some(id_remappings) = id_remappings {
+                for id_remapping in id_remappings {
+                    if id_remapping.column_path == consts::ID {
+                        if let Some(child_rb) = otap_batch.get(ArrowPayloadType::SpanEventAttrs) {
+                            let rb = remap_parent_ids(
+                                &ArrowPayloadType::SpanEventAttrs,
+                                child_rb,
+                                &id_remapping.remapped_ids,
+                            )?;
+                            otap_batch.set(ArrowPayloadType::SpanEventAttrs, rb);
+                        }
+                    }
+                }
+            }
         }
 
         for payload_type in [
@@ -1745,12 +1756,26 @@ mod test {
         )
         .unwrap();
 
+        let span_events_attrs_rb = attrs_from_data::<UInt32Type>(
+            vec![
+                (1, "a"),
+                (3, "a"),
+                (4, "a"),
+                (2, "b"),
+                (3, "b"),
+                (2, "a"),
+                (0, "a"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
         let mut batch = OtapArrowRecords::Traces(Traces::default());
         batch.set(ArrowPayloadType::Spans, spans_rb);
         batch.set(ArrowPayloadType::SpanAttrs, span_attrs_rb);
         batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb);
         batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
         batch.set(ArrowPayloadType::SpanEvents, span_events_rb);
+        batch.set(ArrowPayloadType::SpanEventAttrs, span_events_attrs_rb);
 
         batch.encode_transport_optimized_ids().unwrap();
 
@@ -1910,7 +1935,7 @@ mod test {
         //  id:     parent_id:   name:   quasi-delta parent_id
         // (3 -> 0,  5 -> 1,     "a"     1
         // (6 -> 1,  7 -> 5,     "a"     4
-        // (2 -> 2,  4 -> 6,     "a"     2
+        // (2 -> 2,  4 -> 6,     "a"     1
         // (0 -> 3,  1 -> 2,     "b"     2
         // (4 -> 4,  2 -> 7,     "b"     5
         // (1 -> 5,  3 -> 3,     "c"     3
@@ -1921,7 +1946,7 @@ mod test {
         let expected_span_events_data = vec![
             (0, 1, "a"),
             (1, 4, "a"),
-            (1, 2, "a"),
+            (1, 1, "a"),
             (1, 2, "b"),
             (1, 5, "b"),
             (1, 3, "c"),
@@ -1930,8 +1955,9 @@ mod test {
         let expected_span_events_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new(consts::ID, DataType::UInt32, true)
+                    .with_encoding(consts::metadata::encodings::DELTA),
+                Field::new(consts::PARENT_ID, DataType::UInt16, true)
                     .with_encoding(consts::metadata::encodings::QUASI_DELTA),
-                Field::new(consts::PARENT_ID, DataType::UInt16, true),
                 Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
@@ -1950,5 +1976,30 @@ mod test {
 
         let result_span_events_rb = batch.get(ArrowPayloadType::SpanEvents).unwrap();
         assert_eq!(result_span_events_rb, &expected_span_events_rb);
+
+        // expected span attributes
+        //
+        // parent_id -> remapped parent_id, val -> quasi-delta parent ID
+        // 3 -> 0, "a"  -> 0
+        // 0 -> 3, "a"  -> 3
+        // 4 -> 4, "a"  -> 1
+        // 1 -> 5, "a"  -> 1
+        // 2 -> 6, "a"  -> 1
+        // 3 -> 0, "b"  -> 0
+        // 2 -> 6, "b"  -> 6
+        let expected_span_events_attrs_rb = attrs_from_data::<UInt32Type>(
+            vec![
+                (0, "a"),
+                (3, "a"),
+                (1, "a"),
+                (1, "a"),
+                (1, "a"),
+                (0, "b"),
+                (6, "b"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        let result_span_events_attrs_rb = batch.get(ArrowPayloadType::SpanEventAttrs).unwrap();
+        assert_eq!(result_span_events_attrs_rb, &expected_span_events_attrs_rb);
     }
 }
