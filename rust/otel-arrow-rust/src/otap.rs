@@ -431,7 +431,44 @@ impl OtapBatchStore for Metrics {
     }
 
     fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
-        todo!()
+        // TODO handle multi variate metrics
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
+            let (rb, id_remappings) =
+                apply_column_encodings(&ArrowPayloadType::UnivariateMetrics, rb)?;
+            otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb);
+
+            // remap any of the child IDs if necessary ...
+            if let Some(id_remappings) = id_remappings {
+                for id_remapping in id_remappings {
+                    let child_payload_types = match id_remapping.column_path {
+                        RESOURCE_ID_COL_PATH => [ArrowPayloadType::ResourceAttrs].as_slice(),
+                        SCOPE_ID_COL_PATH => [ArrowPayloadType::ScopeAttrs].as_slice(),
+                        consts::ID => [
+                            ArrowPayloadType::MetricAttrs,
+                            // TODO there are others
+                            // ArrowPayloadType::SpanEvents,
+                            // ArrowPayloadType::SpanLinks,
+                        ]
+                        .as_slice(),
+
+                        // TODO this would be an unusual situation? Something clearly wrong ..
+                        _ => continue,
+                    };
+                    for child_payload_type in child_payload_types.into_iter() {
+                        if let Some(child_rb) = otap_batch.get(*child_payload_type) {
+                            let rb = remap_parent_ids(
+                                &child_payload_type,
+                                child_rb,
+                                &id_remapping.remapped_ids,
+                            )?;
+                            otap_batch.set(*child_payload_type, rb);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -549,10 +586,12 @@ impl OtapBatchStore for Traces {
             }
         }
 
-
         for (payload_type, child_payload_type) in [
-            (ArrowPayloadType::SpanEvents, ArrowPayloadType::SpanEventAttrs),
-            (ArrowPayloadType::SpanLinks, ArrowPayloadType::SpanLinkAttrs)
+            (
+                ArrowPayloadType::SpanEvents,
+                ArrowPayloadType::SpanEventAttrs,
+            ),
+            (ArrowPayloadType::SpanLinks, ArrowPayloadType::SpanLinkAttrs),
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let (rb, id_remappings) = apply_column_encodings(&payload_type, rb)?;
@@ -661,7 +700,9 @@ mod test {
 
     /// helper function for easily constructing a record batch of attributes. In this particular
     /// generated batch, all the types will be string with the same key. The argument is an array
-    /// of `(parent_id, attr value)` tuples
+    /// of `(parent_id, attr value)` tuples. It will also set the "encoding" on the field metadata
+    /// which makes this useful for generating both test input, and the expected result of
+    /// attribute that will be encoded or decoded.
     fn attrs_from_data<T: ArrowPrimitiveType>(
         data: Vec<(T::Native, &'static str)>,
         encoding: &'static str,
@@ -1723,12 +1764,13 @@ mod test {
         let resource_attrs_rb = attrs_from_data::<UInt16Type>(
             vec![
                 (1, "a"),
-                (0, "a"),
-                (1, "c"),
-                (0, "c"),
                 (1, "b"),
-                (1, "c"),
-                (0, "b"),
+                (2, "a"),
+                (2, "c"),
+                (0, "a"),
+                (3, "a"),
+                (3, "b"),
+                (1, "b"),
             ],
             consts::metadata::encodings::PLAIN,
         );
@@ -1801,9 +1843,12 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values(
                     span_links_data.iter().map(|d| d.1),
                 )),
-                Arc::new(FixedSizeBinaryArray::try_from_iter(
-                    span_links_data.iter().map(|d| u128::to_be_bytes(d.2))
-                ).unwrap()),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        span_links_data.iter().map(|d| u128::to_be_bytes(d.2)),
+                    )
+                    .unwrap(),
+                ),
             ],
         )
         .unwrap();
@@ -2046,16 +2091,20 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values(
                     expected_span_links_data.iter().map(|d| d.1),
                 )),
-                Arc::new(FixedSizeBinaryArray::try_from_iter(
-                    expected_span_links_data.iter().map(|d| u128::to_be_bytes(d.2)),
-                ).unwrap()),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        expected_span_links_data
+                            .iter()
+                            .map(|d| u128::to_be_bytes(d.2)),
+                    )
+                    .unwrap(),
+                ),
             ],
         )
         .unwrap();
 
         let result_span_links_rb = batch.get(ArrowPayloadType::SpanLinks).unwrap();
         assert_eq!(result_span_links_rb, &expected_span_links_rb);
-
 
         // expected span attributes
         //
@@ -2087,5 +2136,177 @@ mod test {
         let expected_span_link_attrs_rb = expected_span_events_attrs_rb.clone();
         let result_span_links_attrs_rb = batch.get(ArrowPayloadType::SpanLinkAttrs).unwrap();
         assert_eq!(result_span_links_attrs_rb, &expected_span_link_attrs_rb);
+    }
+
+    #[test]
+    fn test_metric_encode_transport_optimized_ids() {
+        let struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+        ]);
+
+        let metrics_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(
+                consts::RESOURCE,
+                DataType::Struct(struct_fields.clone()),
+                true,
+            ),
+            Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+            Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+            Field::new(consts::NAME, DataType::Utf8, true),
+        ]));
+
+        // TODO comments
+        let metrics_data = vec![
+            (0, 0, 0, "a", 9),
+            (0, 0, 0, "b", 5),
+            (0, 0, 1, "a", 1),
+            (0, 0, 1, "b", 3),
+            (0, 2, 0, "a", 0),
+            (0, 2, 0, "b", 7),
+            (0, 2, 1, "a", 4),
+            (0, 2, 1, "b", 2),
+            (1, 1, 0, "a", 6),
+            (1, 3, 0, "a", 8),
+        ];
+
+        let resource_ids = UInt16Array::from_iter_values(metrics_data.iter().map(|d| d.0));
+        let scope_ids = UInt16Array::from_iter_values(metrics_data.iter().map(|d| d.1));
+        let metric_types = UInt8Array::from_iter_values(metrics_data.iter().map(|d| d.2));
+        let metric_names = StringArray::from_iter_values(metrics_data.iter().map(|d| d.3));
+        let ids = UInt16Array::from_iter_values(metrics_data.iter().map(|d| d.4));
+
+        let metrics_rb = RecordBatch::try_new(
+            metrics_schema.clone(),
+            vec![
+                Arc::new(ids),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(resource_ids)],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(scope_ids)],
+                    None,
+                )),
+                Arc::new(metric_types),
+                Arc::new(metric_names),
+            ],
+        )
+        .unwrap();
+
+        let metric_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (2, "a"),
+                (1, "c"),
+                (2, "c"),
+                (5, "c"),
+                (7, "c"),
+                (2, "b"),
+                (4, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
+        let scope_attrs = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (1, "b"),
+                (2, "a"),
+                (2, "c"),
+                (0, "a"),
+                (3, "a"),
+                (3, "b"),
+                (1, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
+        let resource_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (1, "a"),
+                (0, "a"),
+                (1, "c"),
+                (0, "c"),
+                (1, "b"),
+                (1, "c"),
+                (0, "b"),
+            ],
+            consts::metadata::encodings::PLAIN,
+        );
+
+        let mut batch = OtapArrowRecords::Metrics(Metrics::default());
+        batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
+        batch.set(ArrowPayloadType::MetricAttrs, metric_attrs_rb);
+        batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs);
+        batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
+
+        batch.encode_transport_optimized_ids().unwrap();
+
+        let expected_metrics_data = vec![
+            (0, 0, 0, "a", 0),
+            (0, 0, 0, "b", 1),
+            (0, 0, 1, "a", 1),
+            (0, 0, 1, "b", 1),
+            (0, 1, 0, "a", 1),
+            (0, 0, 0, "b", 1),
+            (0, 0, 1, "a", 1),
+            (0, 0, 1, "b", 1),
+            (1, 1, 0, "a", 1),
+            (0, 1, 0, "a", 1),
+        ];
+
+        let resource_ids = UInt16Array::from_iter_values(expected_metrics_data.iter().map(|d| d.0));
+        let scope_ids = UInt16Array::from_iter_values(expected_metrics_data.iter().map(|d| d.1));
+        let metric_types = UInt8Array::from_iter_values(expected_metrics_data.iter().map(|d| d.2));
+        let metric_names = StringArray::from_iter_values(expected_metrics_data.iter().map(|d| d.3));
+        let ids = UInt16Array::from_iter_values(expected_metrics_data.iter().map(|d| d.4));
+
+        let expected_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, false)
+                .with_encoding(consts::metadata::encodings::DELTA),
+        ]);
+
+        let expected_metrics_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, true)
+                .with_encoding(consts::metadata::encodings::DELTA),
+            Field::new(
+                consts::RESOURCE,
+                DataType::Struct(expected_struct_fields.clone()),
+                true,
+            ),
+            Field::new(
+                consts::SCOPE,
+                DataType::Struct(expected_struct_fields.clone()),
+                true,
+            ),
+            Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+            Field::new(consts::NAME, DataType::Utf8, true),
+        ]));
+
+        let expected_metrics_rb = RecordBatch::try_new(
+            expected_metrics_schema.clone(),
+            vec![
+                Arc::new(ids),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(resource_ids)],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(scope_ids)],
+                    None,
+                )),
+                Arc::new(metric_types),
+                Arc::new(metric_names),
+            ],
+        )
+        .unwrap();
+
+        let result_metrics_rb = batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
+        assert_eq!(result_metrics_rb, &expected_metrics_rb);
     }
 }

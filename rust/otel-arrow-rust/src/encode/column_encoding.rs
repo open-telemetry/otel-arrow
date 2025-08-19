@@ -273,18 +273,20 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
         ],
         ArrowPayloadType::SpanLinks => &[
             col_encoding!(consts::ID, UInt32, Delta),
-           //TODO if you have time, fix macro so it will accept this                
+            //TODO if you have time, fix macro so it will accept this
             ColumnEncoding {
                 path: consts::PARENT_ID,
                 data_type: DataType::UInt16,
                 encoding: Encoding::ColumnarQuasiDelta(&[consts::TRACE_ID]),
             },
         ],
-        ArrowPayloadType::Logs | ArrowPayloadType::Spans => &[
-            col_encoding!(consts::ID, UInt16, Delta),
-            col_encoding!(RESOURCE_ID_COL_PATH, UInt16, Delta),
-            col_encoding!(SCOPE_ID_COL_PATH, UInt16, Delta),
-        ],
+        ArrowPayloadType::Logs | &ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::Spans => {
+            &[
+                col_encoding!(consts::ID, UInt16, Delta),
+                col_encoding!(RESOURCE_ID_COL_PATH, UInt16, Delta),
+                col_encoding!(SCOPE_ID_COL_PATH, UInt16, Delta),
+            ]
+        }
         _ => &[],
     }
 }
@@ -318,6 +320,12 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
             SCOPE_ID_COL_PATH,
             consts::NAME,
             consts::TRACE_ID,
+        ],
+        ArrowPayloadType::UnivariateMetrics => &[
+            RESOURCE_ID_COL_PATH,
+            SCOPE_ID_COL_PATH,
+            consts::METRIC_TYPE,
+            consts::NAME,
         ],
         _ => &[],
     }
@@ -779,6 +787,7 @@ pub fn apply_column_encodings(
         if let Some(remapping) = encoding_result.remapping {
             remapped_parent_ids.push(ParentIdRemapping::new(column_encoding.path, remapping));
         }
+
         // TODO the order of arguments between this and the next method call are not consistent
         replace_column(
             column_encoding.path,
