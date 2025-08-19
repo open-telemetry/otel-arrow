@@ -39,6 +39,11 @@ not_in_token = @{ "!in" }
 not_in_insensitive_token = @{ "!in~" }
 statement_end_token = { &";" }
 
+// Add arithmetic tokens after existing tokens
+multiply_token = { "*" }
+divide_token = { "/" }
+modulo_token = { "%" }
+
 // Literals
 true_literal = @{ "true" | "True" | "TRUE" }
 false_literal = @{ "false" | "False" | "FALSE" }
@@ -123,8 +128,17 @@ string_expressions = _{
     | substring_expression
 }
 
+arithmetic_factor = {
+    scalar_expression ~ ((multiply_token | divide_token | modulo_token) ~ scalar_expression)*
+}
+arithmetic_expression = {
+    (minus_token | plus_token)? ~ arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
+}
+
+// Modify scalar_expression to include arithmetic_expression as first option
 scalar_expression = {
-    null_literal
+    ("(" ~ arithmetic_expression ~ ")")
+    | null_literal
     | real_expression
     | datetime_expression
     | conditional_expression

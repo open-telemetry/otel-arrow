@@ -1,3 +1,4 @@
+pub(crate) mod arithmetic_scalar_expression;
 pub(crate) mod convert_scalar_expression;
 pub(crate) mod math_scalar_expression;
 pub(crate) mod parse_scalar_expression;
@@ -6,6 +7,7 @@ pub(crate) mod statics;
 pub(crate) mod temporal_scalar_expression;
 pub(crate) mod text_scalar_expression;
 
+pub use arithmetic_scalar_expression::*;
 pub use convert_scalar_expression::*;
 pub use math_scalar_expression::*;
 pub use parse_scalar_expression::*;
