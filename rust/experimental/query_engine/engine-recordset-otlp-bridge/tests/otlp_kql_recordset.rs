@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 use data_engine_recordset_otlp_bridge::*;
