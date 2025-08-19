@@ -549,19 +549,26 @@ impl OtapBatchStore for Traces {
             }
         }
 
-        if let Some(rb) = otap_batch.get(ArrowPayloadType::SpanEvents) {
-            let (rb, id_remappings) = apply_column_encodings(&ArrowPayloadType::SpanEvents, rb)?;
-            otap_batch.set(ArrowPayloadType::SpanEvents, rb);
-            if let Some(id_remappings) = id_remappings {
-                for id_remapping in id_remappings {
-                    if id_remapping.column_path == consts::ID {
-                        if let Some(child_rb) = otap_batch.get(ArrowPayloadType::SpanEventAttrs) {
-                            let rb = remap_parent_ids(
-                                &ArrowPayloadType::SpanEventAttrs,
-                                child_rb,
-                                &id_remapping.remapped_ids,
-                            )?;
-                            otap_batch.set(ArrowPayloadType::SpanEventAttrs, rb);
+
+        for (payload_type, child_payload_type) in [
+            (ArrowPayloadType::SpanEvents, ArrowPayloadType::SpanEventAttrs),
+            (ArrowPayloadType::SpanLinks, ArrowPayloadType::SpanLinkAttrs)
+        ] {
+            if let Some(rb) = otap_batch.get(payload_type) {
+                let (rb, id_remappings) = apply_column_encodings(&payload_type, rb)?;
+                otap_batch.set(payload_type, rb);
+
+                if let Some(id_remappings) = id_remappings {
+                    for id_remapping in id_remappings {
+                        if id_remapping.column_path == consts::ID {
+                            if let Some(child_rb) = otap_batch.get(child_payload_type) {
+                                let rb = remap_parent_ids(
+                                    &child_payload_type,
+                                    child_rb,
+                                    &id_remapping.remapped_ids,
+                                )?;
+                                otap_batch.set(child_payload_type, rb);
+                            }
                         }
                     }
                 }
@@ -1769,6 +1776,39 @@ mod test {
             consts::metadata::encodings::PLAIN,
         );
 
+        // for span links, we'll use basically the same ordering of IDs and attributes values
+        // as span events, which will make asserting on it a bit easier. The only difference is,
+        // we replace the span name with a trace_id that will sort in the same order.
+        let span_links_data = vec![
+            (0, 1, 2),
+            (2, 2, 4),
+            (1, 3, 3),
+            (3, 5, 1),
+            (2, 4, 1),
+            (6, 7, 1),
+            (4, 2, 2),
+        ];
+        let span_links_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true).with_plain_encoding(),
+                Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(
+                    span_links_data.iter().map(|d| d.0),
+                )),
+                Arc::new(UInt16Array::from_iter_values(
+                    span_links_data.iter().map(|d| d.1),
+                )),
+                Arc::new(FixedSizeBinaryArray::try_from_iter(
+                    span_links_data.iter().map(|d| u128::to_be_bytes(d.2))
+                ).unwrap()),
+            ],
+        )
+        .unwrap();
+        let span_links_attrs_rb = span_events_attrs_rb.clone();
+
         let mut batch = OtapArrowRecords::Traces(Traces::default());
         batch.set(ArrowPayloadType::Spans, spans_rb);
         batch.set(ArrowPayloadType::SpanAttrs, span_attrs_rb);
@@ -1776,6 +1816,8 @@ mod test {
         batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
         batch.set(ArrowPayloadType::SpanEvents, span_events_rb);
         batch.set(ArrowPayloadType::SpanEventAttrs, span_events_attrs_rb);
+        batch.set(ArrowPayloadType::SpanLinks, span_links_rb);
+        batch.set(ArrowPayloadType::SpanLinkAttrs, span_links_attrs_rb);
 
         batch.encode_transport_optimized_ids().unwrap();
 
@@ -1977,6 +2019,44 @@ mod test {
         let result_span_events_rb = batch.get(ArrowPayloadType::SpanEvents).unwrap();
         assert_eq!(result_span_events_rb, &expected_span_events_rb);
 
+        // because span links for this test case was constructed in a way that should sort and
+        // remap the IDs in basically the same ways as span events, see the comment above that
+        // expected record batch for comments about why this is data is expected
+        let expected_span_links_data = vec![
+            (0, 1, 1),
+            (1, 4, 1),
+            (1, 1, 1),
+            (1, 2, 2),
+            (1, 5, 2),
+            (1, 3, 3),
+            (1, 7, 4),
+        ];
+        let expected_span_links_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true)
+                    .with_encoding(consts::metadata::encodings::DELTA),
+                Field::new(consts::PARENT_ID, DataType::UInt16, true)
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(
+                    expected_span_links_data.iter().map(|d| d.0),
+                )),
+                Arc::new(UInt16Array::from_iter_values(
+                    expected_span_links_data.iter().map(|d| d.1),
+                )),
+                Arc::new(FixedSizeBinaryArray::try_from_iter(
+                    expected_span_links_data.iter().map(|d| u128::to_be_bytes(d.2)),
+                ).unwrap()),
+            ],
+        )
+        .unwrap();
+
+        let result_span_links_rb = batch.get(ArrowPayloadType::SpanLinks).unwrap();
+        assert_eq!(result_span_links_rb, &expected_span_links_rb);
+
+
         // expected span attributes
         //
         // parent_id -> remapped parent_id, val -> quasi-delta parent ID
@@ -2001,5 +2081,11 @@ mod test {
         );
         let result_span_events_attrs_rb = batch.get(ArrowPayloadType::SpanEventAttrs).unwrap();
         assert_eq!(result_span_events_attrs_rb, &expected_span_events_attrs_rb);
+
+        // we've constructed span links and span link attributes in a very similar way to span
+        // events and span event attrs, so this check should also pass:
+        let expected_span_link_attrs_rb = expected_span_events_attrs_rb.clone();
+        let result_span_links_attrs_rb = batch.get(ArrowPayloadType::SpanLinkAttrs).unwrap();
+        assert_eq!(result_span_links_attrs_rb, &expected_span_link_attrs_rb);
     }
 }

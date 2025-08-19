@@ -271,6 +271,15 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
                 encoding: Encoding::ColumnarQuasiDelta(&[consts::NAME]),
             },
         ],
+        ArrowPayloadType::SpanLinks => &[
+            col_encoding!(consts::ID, UInt32, Delta),
+           //TODO if you have time, fix macro so it will accept this                
+            ColumnEncoding {
+                path: consts::PARENT_ID,
+                data_type: DataType::UInt16,
+                encoding: Encoding::ColumnarQuasiDelta(&[consts::TRACE_ID]),
+            },
+        ],
         ArrowPayloadType::Logs | ArrowPayloadType::Spans => &[
             col_encoding!(consts::ID, UInt16, Delta),
             col_encoding!(RESOURCE_ID_COL_PATH, UInt16, Delta),
@@ -302,6 +311,7 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
             consts::PARENT_ID,
         ],
         ArrowPayloadType::SpanEvents => &[consts::NAME, consts::PARENT_ID],
+        ArrowPayloadType::SpanLinks => &[consts::TRACE_ID, consts::PARENT_ID],
         ArrowPayloadType::Logs => &[RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::TRACE_ID],
         ArrowPayloadType::Spans => &[
             RESOURCE_ID_COL_PATH,
