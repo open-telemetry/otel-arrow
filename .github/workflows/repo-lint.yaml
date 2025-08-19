@@ -53,3 +53,9 @@ jobs:
 
     - name: Validate Renovate config
       run: npx --yes --package renovate -- renovate-config-validator --strict
+
+  license-header-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: korandoru/hawkeye@cdc68d9c8ace500aefcd8f4dd39b915cd06305dd # v6.1.1

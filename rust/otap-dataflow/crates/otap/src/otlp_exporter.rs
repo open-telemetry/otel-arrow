@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};

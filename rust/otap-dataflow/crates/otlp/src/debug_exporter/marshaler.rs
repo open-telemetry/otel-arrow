@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTLPMarshaler for converting OTLP messages to structured string reports.

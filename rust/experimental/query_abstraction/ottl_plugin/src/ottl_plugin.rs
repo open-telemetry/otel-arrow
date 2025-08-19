@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::ottl_parser::{OttlParser, Rule};
 use intermediate_language::{
     grammar_objects::*,

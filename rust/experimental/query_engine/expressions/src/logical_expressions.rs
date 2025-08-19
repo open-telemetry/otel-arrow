@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::{
     Expression, ExpressionError, PipelineExpression, QueryLocation, ScalarExpression,
     resolved_static_scalar_expression::ResolvedStaticScalarExpression,

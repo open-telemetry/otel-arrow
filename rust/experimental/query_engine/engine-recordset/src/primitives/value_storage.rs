@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashMap, fmt::Debug, mem};
 
 use chrono::{DateTime, FixedOffset};

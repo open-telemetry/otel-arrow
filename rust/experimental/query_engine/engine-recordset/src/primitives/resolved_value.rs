@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{cell::Ref, fmt::Display};
 
 use data_engine_expressions::*;

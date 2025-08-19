@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Handles mapping attributes defined in a resolved registry to a KeyValue pair for a otlp signal

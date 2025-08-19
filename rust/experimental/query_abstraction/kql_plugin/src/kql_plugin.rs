@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::kql_parser::{KqlParser, Rule};
 use intermediate_language::{
     grammar_objects::*,
