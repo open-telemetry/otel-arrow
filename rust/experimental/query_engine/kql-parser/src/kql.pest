@@ -13,6 +13,9 @@ COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 // Tokens
 minus_token = { "-" }
 plus_token = { "+" }
+multiply_token = { "*" }
+divide_token = { "/" }
+modulo_token = { "%" }
 positive_infinity_token = { "+inf" }
 negative_infinity_token = { "-inf" }
 equals_token = @{ "==" }
@@ -38,11 +41,6 @@ not_has_cs_token = @{ "!has_cs" }
 not_in_token = @{ "!in" }
 not_in_insensitive_token = @{ "!in~" }
 statement_end_token = { &";" }
-
-// Add arithmetic tokens after existing tokens
-multiply_token = { "*" }
-divide_token = { "/" }
-modulo_token = { "%" }
 
 // Literals
 true_literal = @{ "true" | "True" | "TRUE" }

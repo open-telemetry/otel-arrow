@@ -133,11 +133,11 @@ fn parse_arithmetic_factor(
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&factor_rule);
     let mut inner_rules = factor_rule.into_inner();
-    let mut current_expr = parse_arithmetic_atom(inner_rules.next().unwrap(), state)?;
+    let mut current_expr = parse_scalar_expression(inner_rules.next().unwrap(), state)?;
 
     // Process multiplication/division/modulo operations
     while let Some(op_rule) = inner_rules.next() {
-        let right = parse_arithmetic_atom(inner_rules.next().unwrap(), state)?;
+        let right = parse_scalar_expression(inner_rules.next().unwrap(), state)?;
 
         current_expr = match op_rule.as_rule() {
             Rule::multiply_token => ScalarExpression::Math(MathScalarExpression::Multiply(
@@ -154,14 +154,6 @@ fn parse_arithmetic_factor(
     }
 
     Ok(current_expr)
-}
-
-fn parse_arithmetic_atom(
-    atom_rule: Pair<Rule>,
-    state: &ParserState,
-) -> Result<ScalarExpression, ParserError> {
-    // Reuse the existing parse_scalar_expression for all base cases
-    parse_scalar_expression(atom_rule, state)
 }
 
 #[cfg(test)]
