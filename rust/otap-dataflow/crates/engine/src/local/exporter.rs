@@ -36,8 +36,8 @@
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
+use crate::node::NodeId;
 use async_trait::async_trait;
-use otap_df_config::NodeId;
 use std::marker::PhantomData;
 use std::time::Duration;
 

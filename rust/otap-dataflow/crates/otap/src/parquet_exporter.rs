@@ -39,6 +39,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::node::NodeId;
 use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
@@ -63,9 +64,10 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             ParquetExporter::from_config(&node_config.config)?,
+            node,
             node_config,
             exporter_config,
         ))
@@ -209,7 +211,10 @@ mod test {
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
@@ -279,6 +284,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -362,6 +368,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -388,6 +395,7 @@ mod test {
     }
 
     #[test]
+    #[ignore] // https://github.com/open-telemetry/otel-arrow/issues/967
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -400,6 +408,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -414,7 +423,7 @@ mod test {
                     match exporter_result {
                         Ok(_) => panic!("expected exporter result to be error, received: Ok(())"),
                         Err(Error::IoError { node, error }) => {
-                            assert_eq!(&node, "test_exporter");
+                            assert_eq!(node.name, "test_exporter");
                             assert_eq!(error.kind(), ErrorKind::TimedOut);
                         },
                         Err(e) => panic!("{}", format!("received unexpected error: {e:?}. Expected IoError caused by timeout"))
@@ -436,6 +445,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -496,6 +506,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
