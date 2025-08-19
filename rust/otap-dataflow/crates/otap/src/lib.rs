@@ -41,6 +41,9 @@ mod mock;
 #[cfg(test)]
 mod fixtures;
 
+/// OTAP batch processor (skeleton)
+pub mod otap_batch_processor;
+
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
 
