@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // SPDX-License-Identifier: Apache-2.0
 
 //! This benchmark compares the performance of different perf exporter configurations

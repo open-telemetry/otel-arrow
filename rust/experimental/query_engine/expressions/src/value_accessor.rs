@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::ScalarExpression;
 
 /// Contains the rules used to resolve data from a target
