@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Receiver wrapper used to provide a unified interface to the pipeline engine that abstracts over
