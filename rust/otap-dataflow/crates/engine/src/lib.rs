@@ -350,7 +350,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Second pass: perform all assignments
         for assignment in assignments {
             let src_node = pipeline
-                .get_mut_sender(assignment.source_id.index)
+                .get_mut_node_with_pdata_sender(assignment.source_id.index)
                 .ok_or_else(|| Error::UnknownNode {
                     node: assignment.source_id.name.clone(),
                 })?;
@@ -360,12 +360,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 assignment.sender,
             )?;
             for (dest, receiver) in assignment.destinations {
-                let dest_node =
-                    pipeline
-                        .get_mut_receiver(dest.index)
-                        .ok_or_else(|| Error::UnknownNode {
-                            node: dest.name.clone(),
-                        })?;
+                let dest_node = pipeline
+                    .get_mut_node_with_pdata_receiver(dest.index)
+                    .ok_or_else(|| Error::UnknownNode {
+                        node: dest.name.clone(),
+                    })?;
                 dest_node.set_pdata_receiver(dest, receiver)?;
             }
         }

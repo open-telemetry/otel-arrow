@@ -179,7 +179,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a mutable NodeWithPDataSender reference (processors and receivers).
     #[must_use]
-    pub fn get_mut_sender(
+    pub fn get_mut_node_with_pdata_sender(
         &mut self,
         node: NodeIndex,
     ) -> Option<&mut dyn NodeWithPDataSender<PData>> {
@@ -200,7 +200,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a mutable NodeWithPDataReceiver reference (processors and exporters).
     #[must_use]
-    pub fn get_mut_receiver(
+    pub fn get_mut_node_with_pdata_receiver(
         &mut self,
         node: NodeIndex,
     ) -> Option<&mut dyn NodeWithPDataReceiver<PData>> {
