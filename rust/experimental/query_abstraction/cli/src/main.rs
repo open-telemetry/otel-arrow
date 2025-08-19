@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use intermediate_language::query_processor::QueryProcessor;
 use kql_plugin::kql_plugin::KqlPlugin;
 use ottl_plugin::ottl_plugin::OttlPlugin;
