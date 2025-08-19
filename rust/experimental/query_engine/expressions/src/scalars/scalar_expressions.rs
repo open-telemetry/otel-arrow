@@ -2,6 +2,8 @@ use crate::{primitives::*, resolved_static_scalar_expression::ResolvedStaticScal
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
+    /// Resolve a value from an immutable record attached to a query.
+    ///
     /// Attached data is related to the query source but not necessarily owned.
     /// For example when processing an OpenTelemetry LogRecord it is common to
     /// inspect the Resource and/or Instrumentation Scope associated with the
