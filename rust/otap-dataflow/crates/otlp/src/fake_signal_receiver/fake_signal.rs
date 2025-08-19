@@ -25,223 +25,198 @@ use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
 
 /// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]
-pub fn fake_otlp_traces(
-    resource_count: usize,
-    scope_count: usize,
-    registry: &ResolvedRegistry,
-) -> TracesData {
-    let mut resources: Vec<ResourceSpans> = vec![];
-
-    for _ in 0..resource_count {
-        let mut scopes: Vec<ScopeSpans> = vec![];
-        for _ in 0..scope_count {
-            scopes.push(
-                ScopeSpans::build(
-                    InstrumentationScope::build(get_scope_name())
-                        .version(get_scope_version())
-                        .finish(),
-                )
-                .spans(spans(registry))
+pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> TracesData {
+    let scopes: Vec<ScopeSpans> = vec![
+        ScopeSpans::build(
+            InstrumentationScope::build(get_scope_name())
+                .version(get_scope_version())
                 .finish(),
-            );
-        }
+        )
+        .spans(spans(signal_count, registry))
+        .finish(),
+    ];
 
-        resources.push(
-            ResourceSpans::build(Resource::default())
-                .scope_spans(scopes)
-                .finish(),
-        );
-    }
-
+    let resources: Vec<ResourceSpans> = vec![
+        ResourceSpans::build(Resource::default())
+            .scope_spans(scopes)
+            .finish(),
+    ];
     TracesData::new(resources)
 }
 
 /// Generates LogsData with the specified resource/scope count and defined events (structured logs) in the registry
 #[must_use]
-pub fn fake_otlp_logs(
-    resource_count: usize,
-    scope_count: usize,
-    registry: &ResolvedRegistry,
-) -> LogsData {
-    let mut resources: Vec<ResourceLogs> = vec![];
-
-    for _ in 0..resource_count {
-        let mut scopes: Vec<ScopeLogs> = vec![];
-        for _ in 0..scope_count {
-            scopes.push(
-                ScopeLogs::build(
-                    InstrumentationScope::build(get_scope_name())
-                        .version(get_scope_version())
-                        .finish(),
-                )
-                .log_records(logs(registry))
+pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsData {
+    let scopes: Vec<ScopeLogs> = vec![
+        ScopeLogs::build(
+            InstrumentationScope::build(get_scope_name())
+                .version(get_scope_version())
                 .finish(),
-            );
-        }
+        )
+        .log_records(logs(signal_count, registry))
+        .finish(),
+    ];
 
-        resources.push(
-            ResourceLogs::build(Resource::default())
-                .scope_logs(scopes)
-                .finish(),
-        );
-    }
+    let resources: Vec<ResourceLogs> = vec![
+        ResourceLogs::build(Resource::default())
+            .scope_logs(scopes)
+            .finish(),
+    ];
 
     LogsData::new(resources)
 }
 
 /// Generates MetricsData with the specified resource/scope count and defined metrics in the registry
 #[must_use]
-pub fn fake_otlp_metrics(
-    resource_count: usize,
-    scope_count: usize,
-    registry: &ResolvedRegistry,
-) -> MetricsData {
-    let mut resources: Vec<ResourceMetrics> = vec![];
-
-    for _ in 0..resource_count {
-        let mut scopes: Vec<ScopeMetrics> = vec![];
-        for _ in 0..scope_count {
-            scopes.push(
-                ScopeMetrics::build(
-                    InstrumentationScope::build(get_scope_name())
-                        .version(get_scope_version())
-                        .finish(),
-                )
-                .metrics(metrics(registry))
+pub fn fake_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> MetricsData {
+    let scopes: Vec<ScopeMetrics> = vec![
+        ScopeMetrics::build(
+            InstrumentationScope::build(get_scope_name())
+                .version(get_scope_version())
                 .finish(),
-            );
-        }
+        )
+        .metrics(metrics(signal_count, registry))
+        .finish(),
+    ];
 
-        resources.push(
-            ResourceMetrics::build(Resource::default())
-                .scope_metrics(scopes)
-                .finish(),
-        );
-    }
+    let resources: Vec<ResourceMetrics> = vec![
+        ResourceMetrics::build(Resource::default())
+            .scope_metrics(scopes)
+            .finish(),
+    ];
 
     MetricsData::new(resources)
 }
 
 /// generate each span defined in the resolved registry
 #[must_use]
-fn spans(registry: &ResolvedRegistry) -> Vec<Span> {
+fn spans(signal_count: usize, registry: &ResolvedRegistry) -> Vec<Span> {
     // Emit each span to the OTLP receiver.
     let mut spans = vec![];
-    for group in registry.groups.iter() {
-        if group.r#type == GroupType::Span {
-            let start_time = current_time();
-            // todo add random delay (configurable via annotations?)
-            let end_time = start_time + delay();
-            spans.push(
-                Span::build(gen_trace_id(), gen_span_id(), group.id.clone(), start_time)
-                    .attributes(
-                        group
-                            .attributes
-                            .iter()
-                            .map(get_attribute_name_value)
-                            .collect::<Vec<_>>(),
-                    )
-                    .events(
-                        group
-                            .events
-                            .iter()
-                            .map(|event_name| Event::new(event_name, current_time()))
-                            .collect::<Vec<_>>(),
-                    )
-                    .kind(otel_span_kind(group.span_kind.as_ref()))
-                    .end_time_unix_nano(end_time)
-                    .finish(),
-            );
-        }
+    for group in registry
+        .groups
+        .iter()
+        .filter(|g| g.r#type == GroupType::Span)
+        .cycle()
+        .take(signal_count)
+    {
+        let start_time = current_time();
+        // todo add random delay (configurable via annotations?)
+        let end_time = start_time + delay();
+        spans.push(
+            Span::build(gen_trace_id(), gen_span_id(), group.id.clone(), start_time)
+                .attributes(
+                    group
+                        .attributes
+                        .iter()
+                        .map(get_attribute_name_value)
+                        .collect::<Vec<_>>(),
+                )
+                .events(
+                    group
+                        .events
+                        .iter()
+                        .map(|event_name| Event::new(event_name, current_time()))
+                        .collect::<Vec<_>>(),
+                )
+                .kind(otel_span_kind(group.span_kind.as_ref()))
+                .end_time_unix_nano(end_time)
+                .finish(),
+        );
     }
     spans
 }
 
 /// generate each metric defined in the resolved registry
 #[must_use]
-fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
+fn metrics(signal_count: usize, registry: &ResolvedRegistry) -> Vec<Metric> {
     let mut metrics = vec![];
-    for group in registry.groups.iter() {
-        if group.r#type == GroupType::Metric {
-            if let Some(instrument) = &group.instrument {
-                let metric_name = group.metric_name.clone().unwrap_or("".to_owned());
-                let unit = group.unit.clone().unwrap_or("".to_owned());
-                let description = group.brief.clone();
 
-                let attributes = group
-                    .attributes
-                    .iter()
-                    .map(get_attribute_name_value)
-                    .collect::<Vec<_>>();
+    for group in registry
+        .groups
+        .iter()
+        .filter(|g| g.r#type == GroupType::Metric)
+        .cycle()
+        .take(signal_count)
+    {
+        if let Some(instrument) = &group.instrument {
+            let metric_name = group.metric_name.clone().unwrap_or("".to_owned());
+            let unit = group.unit.clone().unwrap_or("".to_owned());
+            let description = group.brief.clone();
 
-                // build the metrics here
-                // todo add configurable datapoint_count
-                // todo add configurable value range, distrubution
-                match instrument {
-                    InstrumentSpec::UpDownCounter => {
-                        let datapoints = vec![
-                            NumberDataPoint::build_double(current_time(), 1.0)
-                                .attributes(attributes)
-                                .finish(),
-                        ];
-                        // is not monotonic
-                        metrics.push(
-                            Metric::build_sum(
-                                metric_name,
-                                Sum::new(AggregationTemporality::Unspecified, false, datapoints),
-                            )
+            let attributes = group
+                .attributes
+                .iter()
+                .map(get_attribute_name_value)
+                .collect::<Vec<_>>();
+
+            // build the metrics here
+            // todo add configurable datapoint_count
+            // todo add configurable value range, distrubution
+            match instrument {
+                InstrumentSpec::UpDownCounter => {
+                    let datapoints = vec![
+                        NumberDataPoint::build_double(current_time(), 1.0)
+                            .attributes(attributes)
+                            .finish(),
+                    ];
+                    // is not monotonic
+                    metrics.push(
+                        Metric::build_sum(
+                            metric_name,
+                            Sum::new(AggregationTemporality::Unspecified, false, datapoints),
+                        )
+                        .description(description)
+                        .unit(unit)
+                        .finish(),
+                    );
+                }
+                InstrumentSpec::Counter => {
+                    let datapoints = vec![
+                        NumberDataPoint::build_double(current_time(), 1.0)
+                            .attributes(attributes)
+                            .finish(),
+                    ];
+                    // is monotonic
+                    metrics.push(
+                        Metric::build_sum(
+                            metric_name,
+                            Sum::new(AggregationTemporality::Unspecified, true, datapoints),
+                        )
+                        .description(description)
+                        .unit(unit)
+                        .finish(),
+                    );
+                }
+                InstrumentSpec::Gauge => {
+                    let datapoints = vec![
+                        NumberDataPoint::build_double(current_time(), 1.0)
+                            .attributes(attributes)
+                            .finish(),
+                    ];
+
+                    metrics.push(
+                        Metric::build_gauge(metric_name, Gauge::new(datapoints))
                             .description(description)
                             .unit(unit)
                             .finish(),
-                        );
-                    }
-                    InstrumentSpec::Counter => {
-                        let datapoints = vec![
-                            NumberDataPoint::build_double(current_time(), 1.0)
-                                .attributes(attributes)
-                                .finish(),
-                        ];
-                        // is monotonic
-                        metrics.push(
-                            Metric::build_sum(
-                                metric_name,
-                                Sum::new(AggregationTemporality::Unspecified, true, datapoints),
-                            )
-                            .description(description)
-                            .unit(unit)
+                    );
+                }
+                InstrumentSpec::Histogram => {
+                    let datapoints = vec![
+                        HistogramDataPoint::build(current_time(), vec![], vec![])
+                            .attributes(attributes)
                             .finish(),
-                        );
-                    }
-                    InstrumentSpec::Gauge => {
-                        let datapoints = vec![
-                            NumberDataPoint::build_double(current_time(), 1.0)
-                                .attributes(attributes)
-                                .finish(),
-                        ];
-
-                        metrics.push(
-                            Metric::build_gauge(metric_name, Gauge::new(datapoints))
-                                .description(description)
-                                .unit(unit)
-                                .finish(),
-                        );
-                    }
-                    InstrumentSpec::Histogram => {
-                        let datapoints = vec![
-                            HistogramDataPoint::build(current_time(), vec![], vec![])
-                                .attributes(attributes)
-                                .finish(),
-                        ];
-                        metrics.push(
-                            Metric::build_histogram(
-                                metric_name,
-                                Histogram::new(AggregationTemporality::Unspecified, datapoints),
-                            )
-                            .description(description)
-                            .unit(unit)
-                            .finish(),
-                        );
-                    }
+                    ];
+                    metrics.push(
+                        Metric::build_histogram(
+                            metric_name,
+                            Histogram::new(AggregationTemporality::Unspecified, datapoints),
+                        )
+                        .description(description)
+                        .unit(unit)
+                        .finish(),
+                    );
                 }
             }
         }
@@ -251,36 +226,40 @@ fn metrics(registry: &ResolvedRegistry) -> Vec<Metric> {
 
 /// generate each span defined in the resolved registry
 #[must_use]
-fn logs(registry: &ResolvedRegistry) -> Vec<LogRecord> {
+fn logs(signal_count: usize, registry: &ResolvedRegistry) -> Vec<LogRecord> {
     let mut log_records = vec![];
-    for group in registry.groups.iter() {
+    for group in registry
+        .groups
+        .iter()
+        .filter(|g| g.r#type == GroupType::Event)
+        .cycle()
+        .take(signal_count)
+    {
         // events are structured logs
-        if group.r#type == GroupType::Event {
-            let timestamp = current_time();
-            // extract the body
-            let body_text = match &group.body {
-                Some(body) => body.to_string(),
-                None => "".to_string(),
-            };
+        let timestamp = current_time();
+        // extract the body
+        let body_text = match &group.body {
+            Some(body) => body.to_string(),
+            None => "".to_string(),
+        };
 
-            log_records.push(
-                LogRecord::build(
-                    timestamp,
-                    SeverityNumber::Unspecified,
-                    group.name.clone().unwrap_or("".to_owned()),
-                )
-                .attributes(
-                    group
-                        .attributes
-                        .iter()
-                        .map(get_attribute_name_value)
-                        .collect::<Vec<_>>(),
-                )
-                .body(AnyValue::new_string(body_text))
-                .observed_time_unix_nano(timestamp)
-                .finish(),
-            );
-        }
+        log_records.push(
+            LogRecord::build(
+                timestamp,
+                SeverityNumber::Unspecified,
+                group.name.clone().unwrap_or("".to_owned()),
+            )
+            .attributes(
+                group
+                    .attributes
+                    .iter()
+                    .map(get_attribute_name_value)
+                    .collect::<Vec<_>>(),
+            )
+            .body(AnyValue::new_string(body_text))
+            .observed_time_unix_nano(timestamp)
+            .finish(),
+        );
     }
     log_records
 }

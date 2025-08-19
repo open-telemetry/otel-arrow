@@ -9,7 +9,12 @@ use otel_arrow_rust::proto::opentelemetry::{
 };
 use serde::{Deserialize, Serialize};
 
+use weaver_common::result::WResult;
+use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_forge::registry::ResolvedRegistry;
+use weaver_resolver::SchemaResolver;
+use weaver_semconv::registry::SemConvRegistry;
+use weaver_semconv::registry_repo::RegistryRepo;
 
 /// Temp pdata
 #[derive(Clone, Debug)]
@@ -24,121 +29,159 @@ pub enum OTLPSignal {
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
-    // A ordered list of steps defining various signals to emit
-    steps: Vec<ScenarioStep>,
+    // Configuration of the traffic to generate
+    traffic_config: TrafficConfig,
+    #[serde(default = "default_registry_path")]
+    registry_path: VirtualDirectoryPath,
+}
 
-    resolved_registry: ResolvedRegistry,
+/// Configuration to describe the traffic being sent
+#[derive(Clone, Deserialize, Serialize)]
+pub struct TrafficConfig {
+    #[serde(default = "default_signals_per_second")]
+    signals_per_second: Option<usize>,
+    #[serde(default = "default_max_signal")]
+    max_signal_count: Option<u64>,
+    #[serde(default = "default_weight")]
+    metric_weight: u32,
+    #[serde(default = "default_weight")]
+    trace_weight: u32,
+    #[serde(default = "default_weight")]
+    log_weight: u32,
 }
 
 impl Config {
     /// Create a new config given a name and a vector of scenario steps
     #[must_use]
-    pub fn new(steps: Vec<ScenarioStep>, resolved_registry: ResolvedRegistry) -> Self {
+    pub fn new(traffic_config: TrafficConfig, registry_path: VirtualDirectoryPath) -> Self {
         Self {
-            steps,
-            resolved_registry,
+            traffic_config,
+            registry_path,
         }
     }
     /// Provide a reference to the vector of scenario steps
     #[must_use]
-    pub fn get_steps(&self) -> &Vec<ScenarioStep> {
-        &self.steps
+    pub fn get_traffic_config(&self) -> &TrafficConfig {
+        &self.traffic_config
     }
     /// Provide a reference to the ResolvedRegistry
-    #[must_use]
-    pub fn get_registry(&self) -> &ResolvedRegistry {
-        &self.resolved_registry
+    pub fn get_registry(&self) -> Result<ResolvedRegistry, String> {
+        let registry_repo =
+            RegistryRepo::try_new("main", &self.registry_path).map_err(|err| err.to_string())?;
+
+        // Load the semantic convention specs
+        let semconv_specs = match SchemaResolver::load_semconv_specs(&registry_repo, true, false) {
+            WResult::Ok(semconv_specs) => semconv_specs,
+            WResult::OkWithNFEs(semconv_specs, _) => semconv_specs,
+            WResult::FatalErr(err) => return Err(err.to_string()),
+        };
+
+        // Resolve the main registry
+        let mut registry = SemConvRegistry::from_semconv_specs(&registry_repo, semconv_specs)
+            .map_err(|err| err.to_string())?;
+        // Resolve the semantic convention specifications.
+        // If there are any resolution errors, they should be captured into the ongoing list of
+        // diagnostic messages and returned immediately because there is no point in continuing
+        // as the resolution is a prerequisite for the next stages.
+        let resolved_schema =
+            match SchemaResolver::resolve_semantic_convention_registry(&mut registry, true) {
+                WResult::Ok(resolved_schema) => resolved_schema,
+                WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                WResult::FatalErr(err) => return Err(err.to_string()),
+            };
+
+        let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
+            &resolved_schema.registry,
+            resolved_schema.catalog(),
+        )
+        .map_err(|err| err.to_string())?;
+
+        Ok(resolved_registry)
     }
 }
 
-/// A scenario step will contain a configuration
-#[derive(Clone, Deserialize, Serialize)]
-pub struct ScenarioStep {
-    /// delay in ms
-    #[serde(default = "default_delay_between_batches_ms")]
-    delay_between_batches_ms: u64,
-    #[serde(default = "default_batches_to_generate")]
-    batches_to_generate: u64,
-    signal_type: SignalType,
+impl TrafficConfig {
+    /// create a new traffic config which describes the output traffic of the receiver
+    #[must_use]
+    pub fn new(
+        signals_per_second: Option<usize>,
+        max_signal_count: Option<u64>,
+        metric_weight: u32,
+        trace_weight: u32,
+        log_weight: u32,
+    ) -> Self {
+        Self {
+            signals_per_second,
+            max_signal_count,
+            metric_weight,
+            trace_weight,
+            log_weight,
+        }
+    }
+
+    /// return the specified message rate
+    #[must_use]
+    pub fn get_signal_rate(&self) -> Option<usize> {
+        self.signals_per_second
+    }
+
+    /// get the config describing how big the metric signal is
+    #[must_use]
+    pub fn calculate_signal_count(&self) -> (usize, usize, usize) {
+        if let Some(rate_limit) = self.signals_per_second {
+            // ToDo: Handle case where the total signal count don't add up the signals being sent per second
+            let total_weight: f32 =
+                (self.trace_weight + self.metric_weight + self.log_weight) as f32;
+
+            let metric_percent: f32 = self.metric_weight as f32 / total_weight;
+            let trace_percent: f32 = self.trace_weight as f32 / total_weight;
+            let log_percent: f32 = self.log_weight as f32 / total_weight;
+
+            let metric_count: usize = (metric_percent * rate_limit as f32) as usize;
+            let trace_count: usize = (trace_percent * rate_limit as f32) as usize;
+            let log_count: usize = (log_percent * rate_limit as f32) as usize;
+
+            let _remaining_count = rate_limit - (metric_count + trace_count + log_count);
+            // ToDo: Update signal count using by distributing the remaining count
+            // if remaining_count > 0 {
+            //     // we need to add to the remaining signal counts here to the counts
+
+            // }
+
+            (metric_count, trace_count, log_count)
+        } else {
+            // if no rate limit is set than the weights will be used as the signal count (batch size)
+            (
+                self.metric_weight as usize,
+                self.trace_weight as usize,
+                self.log_weight as usize,
+            )
+        }
+    }
+
+    /// returns the max amounts of signals that should be sent
+    #[must_use]
+    pub fn get_max_signal_count(&self) -> Option<u64> {
+        self.max_signal_count
+    }
 }
 
-fn default_delay_between_batches_ms() -> u64 {
+fn default_signals_per_second() -> Option<usize> {
+    Some(30)
+}
+
+fn default_max_signal() -> Option<u64> {
+    None
+}
+
+fn default_weight() -> u32 {
     0
 }
 
-fn default_batches_to_generate() -> u64 {
-    1
-}
-
-impl ScenarioStep {
-    /// create a new step
-    #[must_use]
-    pub fn new(
-        signal_type: SignalType,
-        batches_to_generate: u64,
-        delay_between_batches_ms: u64,
-    ) -> Self {
-        Self {
-            signal_type,
-            batches_to_generate,
-            delay_between_batches_ms,
-        }
+fn default_registry_path() -> VirtualDirectoryPath {
+    VirtualDirectoryPath::GitRepo {
+        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+        sub_folder: Some("model".to_owned()),
+        refspec: None,
     }
-    /// return the signal type stored inside the scenario step
-    #[must_use]
-    pub fn get_signal_type(&self) -> &SignalType {
-        &self.signal_type
-    }
-
-    /// return the number of batches to generate
-    #[must_use]
-    pub const fn get_batches_to_generate(&self) -> u64 {
-        self.batches_to_generate
-    }
-
-    /// return the delay in ms
-    #[must_use]
-    pub const fn get_delay_between_batches_ms(&self) -> u64 {
-        self.delay_between_batches_ms
-    }
-}
-
-/// Struct to describe how large the signal request should be
-#[derive(Clone, Deserialize, Serialize)]
-pub struct Load {
-    resource_count: usize,
-    scope_count: usize,
-}
-
-impl Load {
-    /// create new Load struct
-    #[must_use]
-    pub fn new(resource_count: usize, scope_count: usize) -> Self {
-        Self {
-            resource_count,
-            scope_count,
-        }
-    }
-
-    /// Provide a reference to the vector of scenario steps
-    #[must_use]
-    pub const fn resource_count(&self) -> usize {
-        self.resource_count
-    }
-    /// Provide a reference to the vector of scenario steps
-    #[must_use]
-    pub const fn scope_count(&self) -> usize {
-        self.scope_count
-    }
-}
-
-/// Describes what signals to generate and the signal size
-#[derive(Clone, Deserialize, Serialize)]
-pub enum SignalType {
-    /// metrics signals
-    Metrics(Load),
-    /// logs signals
-    Logs(Load),
-    /// traces signals
-    Traces(Load),
 }
