@@ -98,14 +98,8 @@ fn parse_arithmetic_expression(
 
     // Apply unary minus if present
     if has_unary_minus {
-        current_expr = ScalarExpression::Math(MathScalarExpression::Multiply(
-            BinaryMathmaticalScalarExpression::new(
-                query_location.clone(),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(query_location.clone(), -1),
-                )),
-                current_expr,
-            ),
+        current_expr = ScalarExpression::Math(MathScalarExpression::Negate(
+            UnaryMathmaticalScalarExpression::new(query_location.clone(), current_expr),
         ));
     }
 
@@ -871,12 +865,9 @@ mod tests {
         // Test unary minus
         run_test_success(
             "(-5)",
-            ScalarExpression::Math(MathScalarExpression::Multiply(
-                BinaryMathmaticalScalarExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Negate(
+                UnaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
-                    )),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
                     )),
