@@ -10,7 +10,6 @@
 WHITESPACE = _{ " " | NEWLINE | "\t" }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
-
 // Math Tokens
 minus_token = { "-" }
 plus_token = { "+" }
