@@ -268,13 +268,13 @@ mod tests {
                         OTLPSignal::Metrics(metric) => {
                             // loop and check count
                             let resource_count = metric.resource_metrics.len();
-                            assert!(resource_count == RESOURCE_COUNT);
+                            assert_eq!(resource_count, RESOURCE_COUNT);
                             for resource in metric.resource_metrics.iter() {
                                 let scope_count = resource.scope_metrics.len();
-                                assert!(scope_count == SCOPE_COUNT);
+                                assert_eq!(scope_count, SCOPE_COUNT);
                                 for scope in resource.scope_metrics.iter() {
                                     let metric_count = scope.metrics.len();
-                                    assert!(metric_count == MESSAGE_COUNT);
+                                    assert_eq!(metric_count, MESSAGE_COUNT);
                                     for metric in scope.metrics.iter() {
                                         let metric_definition = resolved_registry
                                             .groups
@@ -338,13 +338,13 @@ mod tests {
                         }
                         OTLPSignal::Traces(span) => {
                             let resource_count = span.resource_spans.len();
-                            assert!(resource_count == RESOURCE_COUNT);
+                            assert_eq!(resource_count, RESOURCE_COUNT);
                             for resource in span.resource_spans.iter() {
                                 let scope_count = resource.scope_spans.len();
-                                assert!(scope_count == SCOPE_COUNT);
+                                assert_eq!(scope_count, SCOPE_COUNT);
                                 for scope in resource.scope_spans.iter() {
                                     let span_count = scope.spans.len();
-                                    assert!(span_count == MESSAGE_COUNT);
+                                    assert_eq!(span_count, MESSAGE_COUNT);
                                     for span in scope.spans.iter() {
                                         let span_definition = resolved_registry
                                             .groups
@@ -382,13 +382,13 @@ mod tests {
                         }
                         OTLPSignal::Logs(log) => {
                             let resource_count = log.resource_logs.len();
-                            assert!(resource_count == RESOURCE_COUNT);
+                            assert_eq!(resource_count, RESOURCE_COUNT);
                             for resource in log.resource_logs.iter() {
                                 let scope_count = resource.scope_logs.len();
-                                assert!(scope_count == SCOPE_COUNT);
+                                assert_eq!(scope_count, SCOPE_COUNT);
                                 for scope in resource.scope_logs.iter() {
                                     let log_record_count = scope.log_records.len();
-                                    assert!(log_record_count == MESSAGE_COUNT);
+                                    assert_eq!(log_record_count, MESSAGE_COUNT);
                                     for log_record in scope.log_records.iter() {
                                         let log_record_definition = resolved_registry
                                             .groups
@@ -555,7 +555,7 @@ mod tests {
                         }
                     }
                 }
-                assert!(received_messages as u64 == MAX_SIGNALS);
+                assert_eq!(received_messages as u64, MAX_SIGNALS);
             })
         }
     }
