@@ -576,8 +576,9 @@ impl OtapBatchStore for Metrics {
         }
 
         for payload_type in [
-            // TODO resource, metric & scope attrs
-            // TODO exemplar attrs also
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::MetricAttrs,
             ArrowPayloadType::SummaryDpAttrs,
             ArrowPayloadType::NumberDpAttrs,
             ArrowPayloadType::HistogramDpAttrs,
@@ -2543,7 +2544,89 @@ mod test {
         let result_metrics_rb = batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
         assert_eq!(result_metrics_rb, &expected_metrics_rb);
 
-        // TODO validate the metrics attributes etc.
+        // attr record batches will get sorted by type,key,val then have the parent IDs remapped
+        //
+        // original parent_id --> remapped parent_id, val --> quasi-delta parent ID
+        // 1 -> 2, "a" -> 2
+        // 2 -> 7, "a" -> 5
+        // 4 -> 6, "b" -> 6
+        // 2 -> 7, "b" -> 1
+        // 5 -> 1, "c" -> 1
+        // 1 -> 2, "c" -> 1
+        // 7 -> 5, "c" -> 3
+        // 2 -> 7, "c" -> 2
+        let expected_metrics_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (2, "a"),
+                (5, "a"),
+                (6, "b"),
+                (1, "b"),
+                (1, "c"),
+                (1, "c"),
+                (3, "c"),
+                (2, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        let result_metrics_attrs_rb = batch.get(ArrowPayloadType::MetricAttrs).unwrap();
+        assert_eq!(result_metrics_attrs_rb, &expected_metrics_attrs_rb);
+
+        // expected scope attrs
+        //
+        // original parent_id --> remapped parent_id, val --> quasi-delta parent ID
+        // 0 -> 0, "a" -> 0
+        // 2 -> 1, "a" -> 1
+        // 1 -> 2, "a" -> 1
+        // 3 -> 3, "a" -> 1
+        // 1 -> 2, "b" -> 2
+        // 1 -> 2, "b" -> 0
+        // 3 -> 3, "b" -> 1
+        // 2 -> 1, "c" -> 1
+        let expected_scope_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (1, "a"),
+                (1, "a"),
+                (2, "b"),
+                (0, "b"),
+                (1, "b"),
+                (1, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        let result_scope_attrs_rb = batch.get(ArrowPayloadType::ScopeAttrs).unwrap();
+        assert_eq!(result_scope_attrs_rb, &expected_scope_attrs_rb);
+
+        // expected resource attrs
+        //
+        // note that because the record batch gets sorted by resource ID as the primary sort column
+        // that there are no remapped IDs, so this is just the original resource attribute batch
+        // sorted
+        //
+        // parent_id, val -> quasi-delta parent ID
+        // 0, a -> 0
+        // 1, a -> 1
+        // 0, b -> 0
+        // 1, b -> 1
+        // 0, c -> 0
+        // 1, c -> 1
+        // 1, c -> 0
+        //
+        let expected_resource_attrs_rb = attrs_from_data::<UInt16Type>(
+            vec![
+                (0, "a"),
+                (1, "a"),
+                (0, "b"),
+                (1, "b"),
+                (0, "c"),
+                (1, "c"),
+                (0, "c"),
+            ],
+            consts::metadata::encodings::QUASI_DELTA,
+        );
+        let result_resource_attrs_rb = batch.get(ArrowPayloadType::ResourceAttrs).unwrap();
+        assert_eq!(result_resource_attrs_rb, &expected_resource_attrs_rb);
 
         // TODO comment
         // id:     parent_id
