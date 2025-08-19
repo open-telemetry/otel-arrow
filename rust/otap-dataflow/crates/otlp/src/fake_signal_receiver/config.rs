@@ -38,7 +38,9 @@ pub struct Config {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TrafficConfig {
     #[serde(default = "default_signals_per_second")]
-    signals_per_second: usize,
+    signals_per_second: Option<usize>,
+    #[serde(default = "default_max_signal")]
+    max_signal_count: Option<u64>,
     #[serde(default = "default_weight")]
     metric_weight: u32,
     #[serde(default = "default_weight")]
@@ -62,7 +64,6 @@ impl Config {
         &self.traffic_config
     }
     /// Provide a reference to the ResolvedRegistry
-    #[must_use]
     pub fn get_registry(&self) -> Result<ResolvedRegistry, String> {
         let registry_repo =
             RegistryRepo::try_new("main", &self.registry_path).map_err(|err| err.to_string())?;
@@ -102,13 +103,15 @@ impl TrafficConfig {
     /// create a new traffic config which describes the output traffic of the receiver
     #[must_use]
     pub fn new(
-        signals_per_second: usize,
+        signals_per_second: Option<usize>,
+        max_signal_count: Option<u64>,
         metric_weight: u32,
         trace_weight: u32,
         log_weight: u32,
     ) -> Self {
         Self {
             signals_per_second,
+            max_signal_count,
             metric_weight,
             trace_weight,
             log_weight,
@@ -117,29 +120,57 @@ impl TrafficConfig {
 
     /// return the specified message rate
     #[must_use]
-    pub fn get_message_rate(&self) -> usize {
+    pub fn get_signal_rate(&self) -> Option<usize> {
         self.signals_per_second
     }
 
     /// get the config describing how big the metric signal is
     #[must_use]
     pub fn calculate_signal_count(&self) -> (usize, usize, usize) {
-        // ToDo: Handle case where the total signal count don't add up the the signals being sent per second
-        let total_weight: f32 = (self.trace_weight + self.metric_weight + self.log_weight) as f32;
+        if let Some(rate_limit) = self.signals_per_second {
+            // ToDo: Handle case where the total signal count don't add up the the signals being sent per second
+            let total_weight: f32 =
+                (self.trace_weight + self.metric_weight + self.log_weight) as f32;
 
-        let metric_percent: f32 = self.metric_weight as f32 / total_weight;
-        let trace_percent: f32 = self.trace_weight as f32 / total_weight;
-        let log_percent: f32 = self.log_weight as f32 / total_weight;
+            let metric_percent: f32 = self.metric_weight as f32 / total_weight;
+            let trace_percent: f32 = self.trace_weight as f32 / total_weight;
+            let log_percent: f32 = self.log_weight as f32 / total_weight;
 
-        let metric_count: usize = (metric_percent * self.signals_per_second as f32) as usize;
-        let trace_count: usize = (trace_percent * self.signals_per_second as f32) as usize;
-        let log_count: usize = (log_percent * self.signals_per_second as f32) as usize;
-        (metric_count, trace_count, log_count)
+            let metric_count: usize = (metric_percent * rate_limit as f32) as usize;
+            let trace_count: usize = (trace_percent * rate_limit as f32) as usize;
+            let log_count: usize = (log_percent * rate_limit as f32) as usize;
+
+            let _remaining_count = rate_limit - (metric_count + trace_count + log_count);
+            // ToDo: Update signal count using by distributing the remaining count
+            // if remaining_count > 0 {
+            //     // we need to add to the remaining signal counts here to the counts
+
+            // }
+
+            (metric_count, trace_count, log_count)
+        } else {
+            // if no rate limit is set than the weights will be used as the signal count (batch size)
+            (
+                self.metric_weight as usize,
+                self.trace_weight as usize,
+                self.log_weight as usize,
+            )
+        }
+    }
+
+    /// returns the max amounts of signals that should be sent
+    #[must_use]
+    pub fn get_max_signal_count(&self) -> Option<u64> {
+        self.max_signal_count
     }
 }
 
-fn default_signals_per_second() -> usize {
-    30
+fn default_signals_per_second() -> Option<usize> {
+    Some(30)
+}
+
+fn default_max_signal() -> Option<u64> {
+    None
 }
 
 fn default_weight() -> u32 {

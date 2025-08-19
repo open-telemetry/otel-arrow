@@ -77,6 +77,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error<OtapPdata>> {
         //start event loop
+        let traffic_config = self.config.get_traffic_config();
         let registry = self
             .config
             .get_registry()
@@ -85,8 +86,12 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                 error: err,
             })?;
 
-        let (metric_count, trace_count, log_count) =
-            self.config.get_traffic_config().calculate_signal_count();
+        let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
+
+        let max_signal_count = traffic_config.get_max_signal_count();
+        let signals_per_second = traffic_config.get_signal_rate();
+
+        let mut signal_count: u64 = 0;
 
         let one_second_duration = Duration::from_secs(1);
         loop {
@@ -108,15 +113,29 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         }
                     }
                 }
-                // run scenario based on provided configuration
-                _ = generate_signal(effect_handler.clone(), metric_count, trace_count, log_count, &registry) => {
-                    // calculate how much time we need to sleep
-                    let remaining_time = wait_till - Instant::now();
-                    if remaining_time.as_secs_f64() > 0.0 {
-                        sleep(remaining_time).await;
+                // generate and send signal based on provided configuration
+                signal_status = generate_signal(effect_handler.clone(), max_signal_count, &mut signal_count, metric_count, trace_count, log_count, &registry), if max_signal_count.is_none_or(|max| max > signal_count) => {
+                    // if signals per second is set then we should rate limit
+                    match signal_status {
+                        Ok(_) => {
+                            if signals_per_second.is_some() {
+                                // check if need to sleep
+                                let remaining_time = wait_till - Instant::now();
+                                if remaining_time.as_secs_f64() > 0.0 {
+                                    sleep(remaining_time).await;
+                                }
+                                // ToDo: Handle negative time, not able to keep up with specified rate limit
+                            }
+                        }
+                        Err(e) => {
+                            return Err(Error::ReceiverError {
+                                receiver: effect_handler.receiver_id(),
+                                error: e.to_string()
+                            });
+                        }
                     }
-                    // ToDo: handle negative time_till_next where we can't keep up with the specified message_rate
                 }
+
 
             }
         }
@@ -125,31 +144,81 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     }
 }
 
-/// Run the configured scenario steps
+/// generate and send signals
 async fn generate_signal(
     effect_handler: local::EffectHandler<OtapPdata>,
+    max_signal_count: Option<u64>,
+    signal_count: &mut u64,
     metric_count: usize,
     trace_count: usize,
     log_count: usize,
     registry: &ResolvedRegistry,
 ) -> Result<(), Error<OtapPdata>> {
-    // generate and send metric
-    if metric_count > 0 {
-        let signal = OTLPSignal::Metrics(fake_otlp_metrics(metric_count, registry));
-        effect_handler.send_message(signal.try_into()?).await?;
+    // ToDo: will need to check in if loop if generating signals will cause the signal count to be more than max
+    // this will allow us to generate some but not all signals
+    if let Some(max_count) = max_signal_count {
+        // don't generate signals if we reached max signal
+        let mut current_count = *signal_count;
+        if current_count >= max_count {
+            return Ok(());
+        }
+        // update the counts here to allow us to reach the max_signal_count
+
+        if metric_count > 0 && max_count >= current_count + metric_count as u64 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count, registry)).try_into()?,
+                )
+                .await?;
+            current_count += metric_count as u64;
+        }
+
+        // generate and send traces
+        if trace_count > 0 && max_count >= current_count + metric_count as u64 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count, registry)).try_into()?,
+                )
+                .await?;
+            current_count += trace_count as u64;
+        }
+
+        // generate and send logs
+        if log_count > 0 && max_count >= current_count + metric_count as u64 {
+            effect_handler
+                .send_message(OTLPSignal::Logs(fake_otlp_logs(log_count, registry)).try_into()?)
+                .await?;
+            current_count += log_count as u64;
+        }
+
+        *signal_count = current_count;
+    } else {
+        // generate and send metric
+        if metric_count > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count, registry)).try_into()?,
+                )
+                .await?;
+        }
+
+        // generate and send traces
+        if trace_count > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count, registry)).try_into()?,
+                )
+                .await?;
+        }
+
+        // generate and send logs
+        if log_count > 0 {
+            effect_handler
+                .send_message(OTLPSignal::Logs(fake_otlp_logs(log_count, registry)).try_into()?)
+                .await?;
+        }
     }
 
-    // generate and send traces
-    if trace_count > 0 {
-        let signal = OTLPSignal::Traces(fake_otlp_traces(trace_count, registry));
-        effect_handler.send_message(signal.try_into()?).await?;
-    }
-
-    // generate and send logs
-    if log_count > 0 {
-        let signal = OTLPSignal::Logs(fake_otlp_logs(log_count, registry));
-        effect_handler.send_message(signal.try_into()?).await?;
-    }
     Ok(())
 }
 
@@ -205,6 +274,7 @@ mod tests {
     const MESSAGE_COUNT: usize = 1;
     const RUN_TILL_SHUTDOWN: u64 = 999;
     const MESSAGE_PER_SECOND: usize = 3;
+    const MAX_SIGNALS: u64 = 3;
 
     impl From<OtapPdata> for OTLPSignal {
         fn from(value: OtapPdata) -> Self {
@@ -413,7 +483,7 @@ mod tests {
             refspec: None,
         };
 
-        let traffic_config = TrafficConfig::new(MESSAGE_PER_SECOND, 1, 1, 1);
+        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path);
         let registry = config.get_registry().expect("failed to get registry");
 
@@ -475,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fake_signal_receiver_message_rate() {
+    fn test_fake_signal_receiver_message_rate_only() {
         let test_runtime = TestRuntime::new();
 
         let registry_path = VirtualDirectoryPath::GitRepo {
@@ -484,7 +554,7 @@ mod tests {
             refspec: None,
         };
 
-        let traffic_config = TrafficConfig::new(MESSAGE_PER_SECOND, 1, 0, 0);
+        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, 1, 0, 0);
         let config = Config::new(traffic_config, registry_path);
 
         // create our receiver
@@ -503,5 +573,73 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario())
             .run_validation(validation_procedure_message_rate());
+    }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure_max_signal()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                let mut received_messages = 0;
+
+                while let Ok(received_signal) = ctx.recv().await {
+                    match received_signal.into() {
+                        OTLPSignal::Metrics(metric) => {
+                            // loop and check count
+                            for resource in metric.resource_metrics.iter() {
+                                for scope in resource.scope_metrics.iter() {
+                                    received_messages += scope.metrics.len();
+                                }
+                            }
+                        }
+                        OTLPSignal::Traces(span) => {
+                            for resource in span.resource_spans.iter() {
+                                for scope in resource.scope_spans.iter() {
+                                    received_messages += scope.spans.len();
+                                }
+                            }
+                        }
+                        OTLPSignal::Logs(log) => {
+                            for resource in log.resource_logs.iter() {
+                                for scope in resource.scope_logs.iter() {
+                                    received_messages += scope.log_records.len();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                assert!(received_messages as u64 == MAX_SIGNALS);
+            })
+        }
+    }
+    #[test]
+    fn test_fake_signal_receiver_max_signal_count_only() {
+        let test_runtime = TestRuntime::new();
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(None, Some(MAX_SIGNALS), 1, 0, 0);
+        let config = Config::new(traffic_config, registry_path);
+
+        // create our receiver
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        // create our receiver
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(config),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // run the test
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario())
+            .run_validation(validation_procedure_max_signal());
     }
 }

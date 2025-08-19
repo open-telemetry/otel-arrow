@@ -25,11 +25,7 @@ use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
 /// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]
 pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> TracesData {
-    let mut resources: Vec<ResourceSpans> = vec![];
-
-    let mut scopes: Vec<ScopeSpans> = vec![];
-
-    scopes.push(
+    let scopes: Vec<ScopeSpans> = vec![
         ScopeSpans::build(
             InstrumentationScope::build(get_scope_name())
                 .version(get_scope_version())
@@ -37,25 +33,20 @@ pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> Tra
         )
         .spans(spans(signal_count, registry))
         .finish(),
-    );
+    ];
 
-    resources.push(
+    let resources: Vec<ResourceSpans> = vec![
         ResourceSpans::build(Resource::default())
             .scope_spans(scopes)
             .finish(),
-    );
-
+    ];
     TracesData::new(resources)
 }
 
 /// Generates LogsData with the specified resource/scope count and defined events (structured logs) in the registry
 #[must_use]
 pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsData {
-    let mut resources: Vec<ResourceLogs> = vec![];
-
-    let mut scopes: Vec<ScopeLogs> = vec![];
-
-    scopes.push(
+    let scopes: Vec<ScopeLogs> = vec![
         ScopeLogs::build(
             InstrumentationScope::build(get_scope_name())
                 .version(get_scope_version())
@@ -63,13 +54,13 @@ pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsD
         )
         .log_records(logs(signal_count, registry))
         .finish(),
-    );
+    ];
 
-    resources.push(
+    let resources: Vec<ResourceLogs> = vec![
         ResourceLogs::build(Resource::default())
             .scope_logs(scopes)
             .finish(),
-    );
+    ];
 
     LogsData::new(resources)
 }
@@ -77,11 +68,7 @@ pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsD
 /// Generates MetricsData with the specified resource/scope count and defined metrics in the registry
 #[must_use]
 pub fn fake_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> MetricsData {
-    let mut resources: Vec<ResourceMetrics> = vec![];
-
-    let mut scopes: Vec<ScopeMetrics> = vec![];
-
-    scopes.push(
+    let scopes: Vec<ScopeMetrics> = vec![
         ScopeMetrics::build(
             InstrumentationScope::build(get_scope_name())
                 .version(get_scope_version())
@@ -89,13 +76,13 @@ pub fn fake_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> Me
         )
         .metrics(metrics(signal_count, registry))
         .finish(),
-    );
+    ];
 
-    resources.push(
+    let resources: Vec<ResourceMetrics> = vec![
         ResourceMetrics::build(Resource::default())
             .scope_metrics(scopes)
             .finish(),
-    );
+    ];
 
     MetricsData::new(resources)
 }
