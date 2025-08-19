@@ -88,6 +88,36 @@ pub(crate) fn parse_case_expression(
     )))
 }
 
+pub(crate) fn parse_coalesce_expression(
+    coalesce_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&coalesce_expression_rule);
+
+    let mut coalesce_rules = coalesce_expression_rule.into_inner();
+
+    let mut expressions = Vec::new();
+
+    expressions.push(parse_scalar_expression(
+        coalesce_rules.next().unwrap(),
+        state,
+    )?);
+
+    expressions.push(parse_scalar_expression(
+        coalesce_rules.next().unwrap(),
+        state,
+    )?);
+
+    for e in coalesce_rules {
+        expressions.push(parse_scalar_expression(e, state)?);
+    }
+
+    Ok(ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+        query_location,
+        expressions,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use pest::Parser;
@@ -318,6 +348,52 @@ mod tests {
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
                 )),
+            )),
+        );
+    }
+
+    #[test]
+    fn test_parse_coalesce_expression() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "coalesce('one', 'two')",
+            ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "one"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "two"),
+                    )),
+                ],
+            )),
+        );
+
+        run_test_success(
+            "coalesce('one', 'two', 'three')",
+            ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "one"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "two"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "three"),
+                    )),
+                ],
             )),
         );
     }
