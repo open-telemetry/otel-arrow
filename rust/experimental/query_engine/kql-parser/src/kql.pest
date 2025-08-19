@@ -97,8 +97,15 @@ accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
 boolean_expression = _{ true_literal | false_literal }
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
 datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
+
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
+coalesce_expression = { "coalesce" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
+conditional_expressions = _{
+    conditional_expression
+    | case_expression
+    | coalesce_expression
+}
 
 tostring_expression = { "tostring" ~ "(" ~ scalar_expression ~ ")" }
 toint_expression = { "toint" ~ "(" ~ scalar_expression ~ ")" }
@@ -122,10 +129,12 @@ conversion_expressions = _{
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
+parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
 string_expressions = _{
-	strlen_expression
+    strlen_expression
     | replace_string_expression
     | substring_expression
+    | parse_json_expression
 }
 
 arithmetic_factor = {
@@ -141,10 +150,9 @@ scalar_expression = {
     | null_literal
     | real_expression
     | datetime_expression
-    | conditional_expression
+    | conditional_expressions
     | conversion_expressions
     | string_expressions
-    | case_expression
     | boolean_expression
     | double_literal
     | integer_literal

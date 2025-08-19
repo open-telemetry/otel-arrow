@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 use data_engine_recordset_otlp_bridge::*;
@@ -357,4 +360,60 @@ fn test_substring_function() {
 
     run_test("substring(Attributes['greeting'], 6)", "world");
     run_test("substring(Attributes['greeting'], 0, 5)", "hello");
+}
+
+#[test]
+fn test_coalesce_function() {
+    let run_test = |statement: &str, expected: &str| {
+        let log = LogRecord::new()
+            .with_attribute("null_key1", AnyValue::Null)
+            .with_attribute(
+                "string_key1",
+                AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                    "hello world".into(),
+                ))),
+            );
+
+        let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+        );
+
+        let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(
+            format!("source | extend e = {statement}").as_str(),
+        )
+        .unwrap();
+
+        let engine = RecordSetEngine::new_with_options(
+            RecordSetEngineOptions::new()
+                .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+        );
+
+        let results = process_records(&pipeline, &engine, &mut request);
+
+        assert_eq!(results.included_records.len(), 1);
+        assert_eq!(results.dropped_records.len(), 0);
+
+        let log = results.included_records.first().unwrap().get_record();
+
+        assert_eq!(
+            expected,
+            log.attributes.get("e").unwrap().to_value().to_string()
+        );
+    };
+
+    run_test("coalesce('hello', 'world')", "hello");
+    run_test("coalesce(Attributes['null_key1'], 'world')", "world");
+    run_test(
+        "coalesce(Attributes['null_key1'], Attributes['null_key1'], 'world')",
+        "world",
+    );
+    run_test(
+        "coalesce(Attributes['null_key1'], Attributes['null_key1'], Attributes['null_key1'])",
+        "null",
+    );
+    run_test(
+        "coalesce(Attributes['null_key1'], Attributes['string_key1'])",
+        "hello world",
+    );
+    run_test("coalesce(tolong('invalid'), 18)", "18");
 }

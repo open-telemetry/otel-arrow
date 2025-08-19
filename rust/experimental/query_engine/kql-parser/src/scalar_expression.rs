@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
@@ -22,6 +25,8 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
         }
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
+        Rule::case_expression => parse_case_expression(scalar_rule, state)?,
+        Rule::coalesce_expression => parse_coalesce_expression(scalar_rule, state)?,
         Rule::tostring_expression => parse_tostring_expression(scalar_rule, state)?,
         Rule::toint_expression => parse_toint_expression(scalar_rule, state)?,
         Rule::tobool_expression => parse_tobool_expression(scalar_rule, state)?,
@@ -33,7 +38,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::strlen_expression => parse_strlen_expression(scalar_rule, state)?,
         Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
         Rule::substring_expression => parse_substring_expression(scalar_rule, state)?,
-        Rule::case_expression => parse_case_expression(scalar_rule, state)?,
+        Rule::parse_json_expression => parse_parse_json_expression(scalar_rule, state)?,
         Rule::true_literal | Rule::false_literal => {
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
