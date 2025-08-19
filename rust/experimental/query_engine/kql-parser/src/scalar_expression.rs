@@ -942,12 +942,12 @@ mod tests {
 
         // Test arithmetic with doubles
         run_test_success(
-            "(3.14 + 2.86)",
+            "(4.44 + 2.86)",
             ScalarExpression::Math(MathScalarExpression::Add(
                 BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Double(
-                        DoubleScalarExpression::new(QueryLocation::new_fake(), 3.14),
+                        DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
                     )),
                     ScalarExpression::Static(StaticScalarExpression::Double(
                         DoubleScalarExpression::new(QueryLocation::new_fake(), 2.86),
