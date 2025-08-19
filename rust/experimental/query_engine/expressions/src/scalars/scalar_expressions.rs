@@ -2,9 +2,6 @@ use crate::{primitives::*, resolved_static_scalar_expression::ResolvedStaticScal
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
-    /// Resolve a value from an immutable record attached to a query.
-    Arithmetic(ArithmeticScalarExpression),
-
     /// Attached data is related to the query source but not necessarily owned.
     /// For example when processing an OpenTelemetry LogRecord it is common to
     /// inspect the Resource and/or Instrumentation Scope associated with the
@@ -77,7 +74,6 @@ impl ScalarExpression {
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
             ScalarExpression::Source(s) => Ok(s.get_value_type()),
-            ScalarExpression::Arithmetic(a) => a.try_resolve_value_type(pipeline),
             ScalarExpression::Attached(_) => Ok(None),
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
@@ -107,7 +103,6 @@ impl ScalarExpression {
     {
         match self {
             ScalarExpression::Source(_) => Ok(None),
-            ScalarExpression::Arithmetic(l) => l.try_resolve_static(pipeline),
             ScalarExpression::Attached(_) => Ok(None),
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
@@ -132,7 +127,6 @@ impl Expression for ScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
             ScalarExpression::Source(s) => s.get_query_location(),
-            ScalarExpression::Arithmetic(a) => a.get_query_location(),
             ScalarExpression::Attached(a) => a.get_query_location(),
             ScalarExpression::Variable(v) => v.get_query_location(),
             ScalarExpression::Static(s) => s.get_query_location(),
@@ -156,7 +150,6 @@ impl Expression for ScalarExpression {
         match self {
             ScalarExpression::Source(_) => "ScalarExpression(Source)",
             ScalarExpression::Attached(_) => "ScalarExpression(Attached)",
-            ScalarExpression::Arithmetic(_) => "ScalarExpression(Arithmetic)",
             ScalarExpression::Variable(_) => "ScalarExpression(Variable)",
             ScalarExpression::Static(s) => s.get_name(),
             ScalarExpression::List(_) => "ScalarExpression(List)",

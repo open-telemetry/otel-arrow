@@ -93,8 +93,8 @@ fn parse_arithmetic_expression(
 
     // Apply unary minus if present
     if has_unary_minus {
-        current_expr = ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-            ArithmeticOperationExpression::new(
+        current_expr = ScalarExpression::Math(MathScalarExpression::Multiply(
+            BinaryMathmaticalScalarExpression::new(
                 query_location.clone(),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(query_location.clone(), -1),
@@ -109,14 +109,12 @@ fn parse_arithmetic_expression(
         let right = parse_arithmetic_factor(inner_rules.next().unwrap(), state)?;
 
         current_expr = match op_rule.as_rule() {
-            Rule::plus_token => ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                ArithmeticOperationExpression::new(query_location.clone(), current_expr, right),
+            Rule::plus_token => ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
             )),
-            Rule::minus_token => {
-                ScalarExpression::Arithmetic(ArithmeticScalarExpression::Subtract(
-                    ArithmeticOperationExpression::new(query_location.clone(), current_expr, right),
-                ))
-            }
+            Rule::minus_token => ScalarExpression::Math(MathScalarExpression::Subtract(
+                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
+            )),
             _ => panic!("Unexpected operator in arithmetic_expression: {op_rule}"),
         };
     }
@@ -137,16 +135,14 @@ fn parse_arithmetic_factor(
         let right = parse_arithmetic_atom(inner_rules.next().unwrap(), state)?;
 
         current_expr = match op_rule.as_rule() {
-            Rule::multiply_token => {
-                ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-                    ArithmeticOperationExpression::new(query_location.clone(), current_expr, right),
-                ))
-            }
-            Rule::divide_token => ScalarExpression::Arithmetic(ArithmeticScalarExpression::Divide(
-                ArithmeticOperationExpression::new(query_location.clone(), current_expr, right),
+            Rule::multiply_token => ScalarExpression::Math(MathScalarExpression::Multiply(
+                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
             )),
-            Rule::modulo_token => ScalarExpression::Arithmetic(ArithmeticScalarExpression::Modulo(
-                ArithmeticOperationExpression::new(query_location.clone(), current_expr, right),
+            Rule::divide_token => ScalarExpression::Math(MathScalarExpression::Divide(
+                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
+            )),
+            Rule::modulo_token => ScalarExpression::Math(MathScalarExpression::Modulus(
+                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
             )),
             _ => panic!("Unexpected operator in arithmetic_factor: {op_rule}"),
         };
@@ -750,8 +746,8 @@ mod tests {
         // Test simple addition
         run_test_success(
             "(5 + 3)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
@@ -766,8 +762,8 @@ mod tests {
         // Test simple subtraction
         run_test_success(
             "(10 - 4)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Subtract(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Subtract(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
@@ -782,8 +778,8 @@ mod tests {
         // Test simple multiplication
         run_test_success(
             "(6 * 7)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Multiply(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
@@ -798,8 +794,8 @@ mod tests {
         // Test simple division
         run_test_success(
             "(20 / 4)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Divide(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Divide(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
@@ -814,8 +810,8 @@ mod tests {
         // Test simple modulo
         run_test_success(
             "(10 % 3)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Modulo(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Modulus(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
@@ -830,14 +826,14 @@ mod tests {
         // Test operator precedence: multiplication before addition
         run_test_success(
             "(2 + 3 * 4)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
                     )),
-                    ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-                        ArithmeticOperationExpression::new(
+                    ScalarExpression::Math(MathScalarExpression::Multiply(
+                        BinaryMathmaticalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
@@ -854,11 +850,11 @@ mod tests {
         // Test parentheses override precedence
         run_test_success(
             "((2 + 3) * 4)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Multiply(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                        ArithmeticOperationExpression::new(
+                    ScalarExpression::Math(MathScalarExpression::Add(
+                        BinaryMathmaticalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
@@ -878,8 +874,8 @@ mod tests {
         // Test unary minus
         run_test_success(
             "(-5)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Multiply(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), -1),
@@ -902,17 +898,17 @@ mod tests {
         // Test complex expression with multiple operators
         run_test_success(
             "(10 + 20 / 4 - 3 * 2)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Subtract(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Subtract(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                        ArithmeticOperationExpression::new(
+                    ScalarExpression::Math(MathScalarExpression::Add(
+                        BinaryMathmaticalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
                             )),
-                            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Divide(
-                                ArithmeticOperationExpression::new(
+                            ScalarExpression::Math(MathScalarExpression::Divide(
+                                BinaryMathmaticalScalarExpression::new(
                                     QueryLocation::new_fake(),
                                     ScalarExpression::Static(StaticScalarExpression::Integer(
                                         IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
@@ -924,8 +920,8 @@ mod tests {
                             )),
                         ),
                     )),
-                    ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-                        ArithmeticOperationExpression::new(
+                    ScalarExpression::Math(MathScalarExpression::Multiply(
+                        BinaryMathmaticalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
@@ -942,8 +938,8 @@ mod tests {
         // Test arithmetic with doubles
         run_test_success(
             "(3.14 + 2.86)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Double(
                         DoubleScalarExpression::new(QueryLocation::new_fake(), 3.14),
@@ -958,8 +954,8 @@ mod tests {
         // Test arithmetic with variables
         run_test_success(
             "(x + y)",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -986,11 +982,11 @@ mod tests {
         // Test nested parentheses
         run_test_success(
             "((2 + 3) * (4 + 5))",
-            ScalarExpression::Arithmetic(ArithmeticScalarExpression::Multiply(
-                ArithmeticOperationExpression::new(
+            ScalarExpression::Math(MathScalarExpression::Multiply(
+                BinaryMathmaticalScalarExpression::new(
                     QueryLocation::new_fake(),
-                    ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                        ArithmeticOperationExpression::new(
+                    ScalarExpression::Math(MathScalarExpression::Add(
+                        BinaryMathmaticalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
@@ -1000,8 +996,8 @@ mod tests {
                             )),
                         ),
                     )),
-                    ScalarExpression::Arithmetic(ArithmeticScalarExpression::Add(
-                        ArithmeticOperationExpression::new(
+                    ScalarExpression::Math(MathScalarExpression::Add(
+                        BinaryMathmaticalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
@@ -1086,12 +1082,16 @@ mod tests {
         assert_eq!(evaluate_constant("(10 - 4)"), Some(6));
         assert_eq!(evaluate_constant("(6 * 7)"), Some(42));
         assert_eq!(evaluate_constant("(10 % 3)"), Some(1));
+        assert_eq!(evaluate_constant("(10 / 2)"), Some(5));
 
         // Test operator precedence
         assert_eq!(evaluate_constant("(2 + 3 * 4)"), Some(14)); // not 20
         assert_eq!(evaluate_constant("((2 + 3) * 4)"), Some(20));
         assert_eq!(evaluate_constant("(10 - 6 * 2)"), Some(-2));
         assert_eq!(evaluate_constant("((2 + 3) * (4 + 5))"), Some(45));
+        assert_eq!(evaluate_constant("(1 + 2 * 3 - 4 / 2 + 5 % 3)"), Some(7));
+        assert_eq!(evaluate_constant("(1 + 2 * 3 - 5 / 2 + 5 % 3)"), Some(7));
+        assert_eq!(evaluate_constant("(10 / 3)"), Some(3));
 
         // Test unary operators
         assert_eq!(evaluate_constant("(-5)"), Some(-5));
@@ -1121,9 +1121,11 @@ mod tests {
         };
 
         // Division always returns double
-        assert_eq!(evaluate_constant_double("(10 / 2)"), Some(5.0));
-        assert_eq!(evaluate_constant_double("(10 / 3)"), Some(10.0 / 3.0));
-        assert_eq!(evaluate_constant_double("(1 + 2 * 3 - 4 / 2 + 5 % 3)"), Some(7.0));
+        assert_eq!(evaluate_constant_double("(10.0 / 3)"), Some(10.0 / 3.0));
+        assert_eq!(
+            evaluate_constant_double("(1 + 2 * 3 - 5.0 / 2 + 5 % 3)"),
+            Some(6.5)
+        );
 
         // Double arithmetic
         assert_eq!(evaluate_constant_double("(3.14 + 2.86)"), Some(6.0));
