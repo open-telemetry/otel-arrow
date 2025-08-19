@@ -233,9 +233,8 @@ pub mod test {
     use otel_arrow_rust::schema::consts::metadata;
     use otel_arrow_rust::schema::get_schema_metadata;
 
-    use crate::parquet_exporter::test::datagen::SimpleDataGenOptions;
+    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
 
-    use super::super::test::datagen::create_simple_logs_arrow_record_batches;
     use super::*;
 
     #[test]

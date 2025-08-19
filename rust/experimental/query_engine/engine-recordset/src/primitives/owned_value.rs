@@ -18,52 +18,55 @@ pub enum OwnedValue {
 }
 
 impl OwnedValue {
-    pub fn from_json(input: &str) -> Option<OwnedValue> {
+    pub fn from_json(
+        query_location: &QueryLocation,
+        input: &str,
+    ) -> Result<OwnedValue, ExpressionError> {
         return match serde_json::from_str::<serde_json::Value>(input) {
-            Ok(v) => from_value(v),
-            Err(_) => None,
+            Ok(v) => from_value(query_location, v),
+            Err(e) => Err(ExpressionError::ParseError(
+                query_location.clone(),
+                format!("Input could not be parsed as JSON: {e}"),
+            )),
         };
 
-        fn from_value(value: serde_json::Value) -> Option<OwnedValue> {
+        fn from_value(
+            query_location: &QueryLocation,
+            value: serde_json::Value,
+        ) -> Result<OwnedValue, ExpressionError> {
             match value {
-                serde_json::Value::Null => Some(OwnedValue::Null),
-                serde_json::Value::Bool(b) => {
-                    Some(OwnedValue::Boolean(BooleanValueStorage::new(b)))
-                }
+                serde_json::Value::Null => Ok(OwnedValue::Null),
+                serde_json::Value::Bool(b) => Ok(OwnedValue::Boolean(BooleanValueStorage::new(b))),
                 serde_json::Value::Number(n) => {
                     if let Some(i) = n.as_i64() {
-                        Some(OwnedValue::Integer(IntegerValueStorage::new(i)))
+                        Ok(OwnedValue::Integer(IntegerValueStorage::new(i)))
                     } else {
-                        n.as_f64()
+                        match n
+                            .as_f64()
                             .map(|f| OwnedValue::Double(DoubleValueStorage::new(f)))
+                        {
+                            Some(v) => Ok(v),
+                            None => Err(ExpressionError::ParseError(
+                                query_location.clone(),
+                                format!("Input '{n}' could not be parsed as a number"),
+                            )),
+                        }
                     }
                 }
-                serde_json::Value::String(s) => {
-                    Some(OwnedValue::String(StringValueStorage::new(s)))
-                }
+                serde_json::Value::String(s) => Ok(OwnedValue::String(StringValueStorage::new(s))),
                 serde_json::Value::Array(v) => {
                     let mut values = Vec::new();
                     for value in v {
-                        match from_value(value) {
-                            Some(s) => {
-                                values.push(s);
-                            }
-                            None => return None,
-                        }
+                        values.push(from_value(query_location, value)?);
                     }
-                    Some(OwnedValue::Array(ArrayValueStorage::new(values)))
+                    Ok(OwnedValue::Array(ArrayValueStorage::new(values)))
                 }
                 serde_json::Value::Object(m) => {
                     let mut values = HashMap::new();
                     for (key, value) in m {
-                        match from_value(value) {
-                            Some(s) => {
-                                values.insert(key.into(), s);
-                            }
-                            None => return None,
-                        }
+                        values.insert(key.into(), from_value(query_location, value)?);
                     }
-                    Some(OwnedValue::Map(MapValueStorage::new(values)))
+                    Ok(OwnedValue::Map(MapValueStorage::new(values)))
                 }
             }
         }
@@ -100,16 +103,7 @@ impl AsStaticValueMut for OwnedValue {
 impl From<Value<'_>> for OwnedValue {
     fn from(value: Value<'_>) -> Self {
         match value {
-            Value::Array(a) => {
-                let mut values = Vec::new();
-
-                a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
-                    values.push(v.into());
-                    true
-                }));
-
-                OwnedValue::Array(ArrayValueStorage::new(values))
-            }
+            Value::Array(a) => OwnedValue::Array(a.into()),
             Value::Boolean(b) => OwnedValue::Boolean(BooleanValueStorage::new(b.get_value())),
             Value::DateTime(d) => OwnedValue::DateTime(DateTimeValueStorage::new(d.get_value())),
             Value::Double(d) => OwnedValue::Double(DoubleValueStorage::new(d.get_value())),
@@ -131,6 +125,19 @@ impl From<Value<'_>> for OwnedValue {
     }
 }
 
+impl From<&dyn ArrayValue> for ArrayValueStorage<OwnedValue> {
+    fn from(value: &dyn ArrayValue) -> Self {
+        let mut values = Vec::new();
+
+        value.get_items(&mut IndexValueClosureCallback::new(|_, v| {
+            values.push(v.into());
+            true
+        }));
+
+        ArrayValueStorage::new(values)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,9 +145,9 @@ mod tests {
     #[test]
     pub fn test_from_json() {
         let run_test = |input: &str| {
-            let value = OwnedValue::from_json(input);
+            let value = OwnedValue::from_json(&QueryLocation::new_fake(), input).unwrap();
 
-            assert_eq!(Some(input.into()), value.map(|v| v.to_value().to_string()));
+            assert_eq!(input, value.to_value().to_string());
         };
 
         run_test("true");
