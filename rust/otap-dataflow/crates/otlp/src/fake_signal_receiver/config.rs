@@ -128,7 +128,7 @@ impl TrafficConfig {
     #[must_use]
     pub fn calculate_signal_count(&self) -> (usize, usize, usize) {
         if let Some(rate_limit) = self.signals_per_second {
-            // ToDo: Handle case where the total signal count don't add up the the signals being sent per second
+            // ToDo: Handle case where the total signal count don't add up the signals being sent per second
             let total_weight: f32 =
                 (self.trace_weight + self.metric_weight + self.log_weight) as f32;
 
