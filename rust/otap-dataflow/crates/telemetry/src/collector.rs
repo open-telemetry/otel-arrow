@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Collector task for internal metrics.
+//! Task periodically collecting the metrics emitted by the engine and the pipelines.
 
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
@@ -8,6 +8,7 @@ use crate::pipeline::{LineProtocolPipeline, MetricsPipeline};
 use crate::registry::MetricsRegistryHandle;
 use crate::reporter::MetricsReporter;
 use tokio::time::{interval, Duration};
+use crate::config::Config;
 
 /// Metrics collector.
 ///
@@ -21,17 +22,21 @@ pub struct MetricsCollector {
     /// The message is a tuple of (MetricsKey, MultivariateMetrics).
     /// The metrics key is the aggregation key for the metrics,
     metrics_receiver: flume::Receiver<MetricSetSnapshot>,
+
+    /// The interval at which metrics are flushed and aggregated by the collector.
+    flush_interval: Duration,
 }
 
 impl MetricsCollector {
     /// Creates a new `MetricsAggregator`.
-    pub(crate) fn new(registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
-        let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(100);
+    pub(crate) fn new(config: Config, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
+        let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
 
         (
             Self {
                 registry,
                 metrics_receiver,
+                flush_interval: config.flush_interval,
             },
             MetricsReporter::new(metrics_sender),
         )
@@ -40,7 +45,7 @@ impl MetricsCollector {
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
     pub async fn run_collection_loop(self) -> Result<(), Error> {
-        let mut timer = interval(Duration::from_secs(1));
+        let mut timer = interval(self.flush_interval);
         let reporter = LineProtocolPipeline;
 
         loop {

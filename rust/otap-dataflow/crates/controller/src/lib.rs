@@ -56,7 +56,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<(), error::Error> {
         // Initialize a global metrics system and reporter.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let metrics_system = MetricsSystem::new();
+        let metrics_system = MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
 

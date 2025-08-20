@@ -8,7 +8,7 @@
 //! - [Phase 3 - Exploratory] Aggregated metrics could be processed and delivered by our own
 //!    pipeline engine. All processors and exporters could be used (OTLP, OTAP, ...).
 
-use crate::attributes::NodeStaticAttrs;
+use crate::attributes::StaticAttributeSet;
 use crate::descriptor::MetricsField;
 use crate::error::Error;
 use std::fmt::Write as _;
@@ -21,7 +21,7 @@ pub trait MetricsPipeline {
         &self,
         measurement: &'static str,
         fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-        attrs: &NodeStaticAttrs,
+        attrs: &StaticAttributeSet,
     ) -> Result<(), Error>;
 }
 
@@ -34,7 +34,7 @@ impl MetricsPipeline for LineProtocolPipeline {
         &self,
         measurement: &'static str,
         fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-        attrs: &NodeStaticAttrs,
+        attrs: &StaticAttributeSet,
     ) -> Result<(), Error> {
         let line = format_line_protocol_iter(measurement, fields, attrs);
         println!("{}", line);
@@ -58,7 +58,7 @@ fn escape_tag(s: &str) -> String {
 pub(crate) fn format_line_protocol_iter<'a>(
     measurement: &'static str,
     fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-    attrs: &NodeStaticAttrs,
+    attrs: &StaticAttributeSet,
 ) -> String {
     let mut line = String::with_capacity(192);
     line.push_str(measurement);

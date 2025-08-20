@@ -1,10 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Type-safe API and NUMA-aware telemetry data structures and utilities.
+//! Telemetry system used to instrument the OTAP engine. This system currently focuses on metrics
+//! but will be extended to cover events and traces.
 //!
-//! Note: The NUMA-aware design is not fully implemented yet.
-//! ToDo: First aggregation pass per NUMA node, then global aggregation.
+//! Our instrumentation framework follows a type-safe approach with the goals of being:
+//!
+//! * less error-prone: everything is encoded in the type system as structs, field names, and
+//!   annotations to provide metadata (e.g. unit).
+//! * more performant: a collection of metrics is encoded as a struct with fields of counter
+//!   type (no hashmap or other dynamic data structures). Several metrics that share the same
+//!   attributes don’t have to define those attributes multiple times.
+//! * compatible with the semantic conventions: the definition of the metrics produced by the engine
+//!   will be available in the semantic convention format.
+//!
+//! Future directions:
+//!
+//! * NUMA-aware architecture (soon)
+//! * Native support for events
+//! * Native support for traces
+//! * Export of a registry compatible with the semantic registry format
+//! * Client SDK generation with Weaver
 
+use crate::config::Config;
 use crate::registry::MetricsRegistryHandle;
 
 pub mod registry;
@@ -16,24 +33,25 @@ pub mod attributes;
 pub mod reporter;
 pub mod error;
 pub(crate) mod pipeline;
+mod config;
 
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {
-    /// The metrics registry that holds all registered metrics.
+    /// The metrics registry that holds all registered metrics (data + metadata).
     registry: MetricsRegistryHandle,
 
-    /// The metrics collector that aggregates metrics.
+    /// The process collecting metrics from the pipelines and aggregating them into the registry.
     collector: collector::MetricsCollector,
 
-    /// The reporter that sends metrics to the external system.
+    /// The process reporting metrics to an external system.
     reporter: reporter::MetricsReporter,
 }
 
 impl MetricsSystem {
     /// Creates a new `MetricsSystem`.
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
-        let (collector, reporter) = collector::MetricsCollector::new(metrics_registry.clone());
+        let (collector, reporter) = collector::MetricsCollector::new(config, metrics_registry.clone());
         Self {
             registry: metrics_registry,
             collector,
@@ -41,18 +59,27 @@ impl MetricsSystem {
         }
     }
 
-    /// Returns a handle to the metrics registry.
+    /// Returns a shareable/cloneable handle to the metrics registry.
     pub fn registry(&self) -> MetricsRegistryHandle {
         self.registry.clone()
     }
 
-    /// Returns a handle to the metrics reporter.
+    /// Returns a shareable/cloneable handle to the metrics reporter.
     pub fn reporter(&self) -> reporter::MetricsReporter {
         self.reporter.clone()
     }
 
-    /// Returns a handle to the metrics collector.
+    /// Runs the metrics collection loop, which collects metrics from the reporting channel
+    /// and aggregates them into the registry.
+    ///
+    /// This method runs indefinitely until the metrics channel is closed.
     pub async fn run_collection_loop(self) -> Result<(), error::Error> {
         self.collector.run_collection_loop().await
+    }
+}
+
+impl Default for MetricsSystem {
+    fn default() -> Self {
+        Self::new(Config::default())
     }
 }

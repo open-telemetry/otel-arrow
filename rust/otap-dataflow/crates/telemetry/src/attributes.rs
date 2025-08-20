@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Attributes for telemetry metrics.
-//!
-//! Note: Dynamic attributes are not yet supported.
+//! Interface defining a collection of attributes (pairs of key -> value) associated with a
+//! [`metrics::MetricSet`].
 
 use std::borrow::Cow;
 
 /// Immutable attributes for a specific instance of a node.
 #[derive(Debug, Clone, Default, Hash)]
-pub struct NodeStaticAttrs {
+pub struct StaticAttributeSet {
     /// Node unique identifier (in scope of the pipeline).
     pub node_id: Cow<'static, str>,
     /// Node type (e.g., "receiver", "processor", "exporter").

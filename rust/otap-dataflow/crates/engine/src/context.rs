@@ -3,7 +3,7 @@
 //! Context providing general information on the current controller and the current pipeline.
 
 use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
-use otap_df_telemetry::attributes::NodeStaticAttrs;
+use otap_df_telemetry::attributes::StaticAttributeSet;
 use otap_df_telemetry::metrics::{MetricSetHandler, MetricSet};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
@@ -83,7 +83,7 @@ impl PipelineContext {
         &self
     ) -> MetricSet<T> {
         self.controller_context.metrics_registry_handle.register::<T>(
-            NodeStaticAttrs {
+            StaticAttributeSet {
                 node_id: self.node_id.clone(),
                 node_type: self.node_kind.into(),
                 pipeline_id: self.pipeline_id.clone(),

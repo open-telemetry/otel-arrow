@@ -5,7 +5,7 @@
 //! Note: Concrete metrics live in their respective crates; this registry aggregates them via
 //! dynamic dispatch.
 
-use crate::attributes::NodeStaticAttrs;
+use crate::attributes::StaticAttributeSet;
 use crate::metrics::{MetricSetHandler, MetricSet};
 use parking_lot::Mutex;
 use slotmap::{SlotMap, new_key_type};
@@ -35,7 +35,7 @@ pub struct MetricsRegistryHandle {
 /// A metrics registry that maintains aggregated metrics for different set of static attributes.
 ///
 pub struct MetricsRegistry {
-    pub(crate) metrics: SlotMap<MetricsKey, (Vec<u64>, &'static MetricsDescriptor, NodeStaticAttrs)>,
+    pub(crate) metrics: SlotMap<MetricsKey, (Vec<u64>, &'static MetricsDescriptor, StaticAttributeSet)>,
 }
 
 impl Debug for MetricsRegistry {
@@ -47,7 +47,7 @@ impl Debug for MetricsRegistry {
 }
 
 impl MetricsRegistry {
-    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(&mut self, attrs: NodeStaticAttrs) -> MetricSet<T> {
+    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(&mut self, attrs: StaticAttributeSet) -> MetricSet<T> {
         let metrics = T::default();
         let descriptor = metrics.descriptor();
         let metrics_key = self.metrics.insert((metrics.snapshot_values(), descriptor, attrs));
@@ -74,7 +74,7 @@ impl MetricsRegistry {
     /// for only the non-zero entries, invokes `f`, then zeroes the metrics.
     pub(crate) fn for_each_changed_field_iter_and_zero<F>(&mut self, mut f: F)
     where
-        F: for<'a> FnMut(&'static str, Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>, &NodeStaticAttrs),
+        F: for<'a> FnMut(&'static str, Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>, &StaticAttributeSet),
     {
         for (values, descriptor, attrs) in self.metrics.values_mut() {
             if values.iter().any(|&v| v != 0) {
@@ -103,7 +103,7 @@ impl MetricsRegistryHandle {
     /// Registers a new multivariate metrics instance with the given static attributes.
     pub fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
-        attrs: NodeStaticAttrs,
+        attrs: StaticAttributeSet,
     ) -> MetricSet<T> {
         self.metric_registry.lock().register(attrs)
     }
@@ -121,7 +121,7 @@ impl MetricsRegistryHandle {
     /// Handle wrapper for `MetricsRegistry::for_each_changed_field_iter_and_zero`.
     pub fn for_each_changed_field_iter_and_zero<F>(&self, f: F)
     where
-        F: for<'a> FnMut(&'static str, Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>, &NodeStaticAttrs),
+        F: for<'a> FnMut(&'static str, Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>, &StaticAttributeSet),
     {
         let mut reg = self.metric_registry.lock();
         reg.for_each_changed_field_iter_and_zero(f);
