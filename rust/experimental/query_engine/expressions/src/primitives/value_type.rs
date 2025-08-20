@@ -12,4 +12,5 @@ pub enum ValueType {
     Null,
     Regex,
     String,
+    TimeSpan,
 }
