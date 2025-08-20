@@ -132,35 +132,51 @@ pub(crate) fn parse_timespan(input: &str) -> Result<TimeDelta, ()> {
     let iso = ISO_TIME_SPAN_REGEX.captures(input);
     if let Some(captures) = iso {
         let sign = captures.get(1);
-        let days = captures.get(2);
-        let hours = captures.get(3).unwrap().as_str().parse::<u64>().unwrap();
-        let minutes = captures.get(4).unwrap().as_str().parse::<u64>().unwrap();
-        let seconds = captures.get(5).unwrap().as_str().parse::<u64>().unwrap();
+        let days = if let Some(d) = captures.get(2) {
+            d.as_str().parse::<i64>().map_err(|_| ())?
+        } else {
+            0
+        };
+        let hours = captures
+            .get(3)
+            .unwrap()
+            .as_str()
+            .parse::<i64>()
+            .map_err(|_| ())?;
+        let minutes = captures
+            .get(4)
+            .unwrap()
+            .as_str()
+            .parse::<i64>()
+            .map_err(|_| ())?;
+        let seconds = captures
+            .get(5)
+            .unwrap()
+            .as_str()
+            .parse::<i64>()
+            .map_err(|_| ())?;
         let fraction_seconds = captures.get(6);
 
-        let total_seconds = (days.map_or(0, |d| d.as_str().parse::<u64>().unwrap()) * 24 * 3600)
-            + (hours * 3600)
-            + (minutes * 60)
-            + seconds;
+        let mut total_seconds = (days * 24 * 3600) + (hours * 3600) + (minutes * 60) + seconds;
 
-        let mut total_nanoseconds: u64 = total_seconds * 1_000_000_000;
+        if sign.is_some() {
+            total_seconds *= -1;
+        }
+
+        let mut total_nanoseconds: u32 = 0;
         if let Some(f) = fraction_seconds {
             let digits = f.as_str();
-            let mut n = 0u64;
+            let mut n = 0u32;
             let mut m = 100_000_000;
             for d in digits.bytes() {
                 let v = d - 48u8;
-                n += v as u64 * m;
+                n += v as u32 * m;
                 m /= 10;
             }
             total_nanoseconds += n;
         }
 
-        if sign.is_some() {
-            return Ok(TimeDelta::nanoseconds(-(total_nanoseconds as i64)));
-        }
-
-        return Ok(TimeDelta::nanoseconds(total_nanoseconds as i64));
+        return TimeDelta::new(total_seconds, total_nanoseconds).ok_or(());
     }
 
     Err(())
