@@ -52,6 +52,7 @@ impl MetricsRegistry {
         let descriptor = metrics.descriptor();
         let metrics_key = self.metrics.insert((metrics.snapshot_values(), descriptor, attrs));
 
+        dbg!(&descriptor);
         MetricSet { key: metrics_key, metrics }
     }
 

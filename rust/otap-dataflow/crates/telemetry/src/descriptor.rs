@@ -23,6 +23,8 @@ pub struct MetricsField {
     /// The unit in which the metric is measured matching
     /// [Unified Code for Units of Measure](https://unitsofmeasure.org/ucum.html).
     pub unit: &'static str,
+    /// Short human readable description extracted from the doc comment of the field.
+    pub brief: &'static str,
     /// The type of instrument used to record the metric.
     pub instrument: Instrument,
 }

@@ -18,7 +18,6 @@ use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
-use otap_df_telemetry::registry::MetricsKey;
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -78,7 +77,6 @@ impl OTLPReceiver {
 #[metric_set(name = "otlp.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
-    key: Option<MetricsKey>,
     /// Number of bytes received.
     #[metric(name = "bytes.received", unit = "By")]
     pub bytes_received: Counter<u64>,

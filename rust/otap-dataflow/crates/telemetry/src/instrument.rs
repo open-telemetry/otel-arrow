@@ -166,9 +166,11 @@ where T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>
 {
     /// Creates a new gauge initialized with the provided value.
     #[inline]
-    pub const fn new(v: T) -> Self {
-        Self(v)
-    }
+    pub const fn new(v: T) -> Self { Self(v) }
+
+    /// Reset the gauge to 0.
+    #[inline]
+    pub fn reset(&mut self) { self.0 = T::default(); }
 
     /// Sets the value of the gauge.
     #[inline]

@@ -62,24 +62,62 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
     let mut metric_field_idents = Vec::new();
     let mut metric_field_units = Vec::new();
     let mut metric_field_names = Vec::new();
+    let mut metric_field_briefs = Vec::new();
+    let mut metric_field_instruments: Vec<proc_macro2::TokenStream> = Vec::new();
 
     for field in fields {
         let ident = field.ident.clone().unwrap();
 
+        // Collect doc comments for brief (concatenate all lines)
+        let mut brief_lines: Vec<String> = Vec::new();
+        for attr in &field.attrs {
+            if attr.meta.path().is_ident("doc") {
+                if let syn::Meta::NameValue(nv) = &attr.meta {
+                    if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(ls), .. }) = &nv.value {
+                        let line = ls.value().trim().to_string();
+                        if !line.is_empty() { brief_lines.push(line); }
+                    }
+                }
+            }
+        }
+        let brief_combined = brief_lines.join(" ");
         // Find #[metric(...)]
         let mut name_attr: Option<String> = None;
         let mut unit_attr: Option<String> = None;
         for attr in &field.attrs {
-            if let Some((n, u)) = parse_metric_field_attr(attr) {
-                name_attr = Some(n);
-                unit_attr = Some(u);
-            }
+            if let Some((n, u)) = parse_metric_field_attr(attr) { name_attr = Some(n); unit_attr = Some(u); }
         }
 
+        // Only process fields with #[metric]; ignore others like internal keys
         if let (Some(name), Some(unit)) = (name_attr, unit_attr) {
+            // Validate type path and instrument kind
+            let instrument_variant = match &field.ty {
+                syn::Type::Path(tp) => {
+                    let seg_opt = tp.path.segments.last();
+                    if let Some(seg) = seg_opt {
+                        let ident_ty = seg.ident.to_string();
+                        // Expect generic arguments <u64>
+                        let is_u64 = match &seg.arguments { syn::PathArguments::AngleBracketed(ab) => {
+                            if ab.args.len() != 1 { false } else {
+                                matches!(ab.args.first(), Some(syn::GenericArgument::Type(syn::Type::Path(p)) ) if p.path.is_ident("u64"))
+                            }
+                        }, _ => false };
+                        if !is_u64 { return syn::Error::new(seg.ident.span(), "Metric field type must be one of Counter<u64>, UpDownCounter<u64>, Gauge<u64>").to_compile_error().into(); }
+                        match ident_ty.as_str() {
+                            "Counter" => quote!(otap_df_telemetry::descriptor::Instrument::Counter),
+                            "UpDownCounter" => quote!(otap_df_telemetry::descriptor::Instrument::UpDownCounter),
+                            "Gauge" => quote!(otap_df_telemetry::descriptor::Instrument::Gauge),
+                            other => return syn::Error::new(seg.ident.span(), format!("Unsupported metric instrument type: {other}" )).to_compile_error().into(),
+                        }
+                    } else { return syn::Error::new(field.ty.span(), "Unsupported metric field type").to_compile_error().into(); }
+                },
+                _ => return syn::Error::new(field.ty.span(), "Unsupported metric field type").to_compile_error().into(),
+            };
             metric_field_idents.push(ident);
             metric_field_units.push(unit);
             metric_field_names.push(name);
+            metric_field_briefs.push(brief_combined);
+            metric_field_instruments.push(instrument_variant);
         }
     }
 
@@ -91,7 +129,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                 static #desc_ident: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
                     name: #metrics_name,
                     fields: &[
-                        #( otap_df_telemetry::descriptor::MetricsField { name: #metric_field_names, unit: #metric_field_units, instrument: otap_df_telemetry::descriptor::Instrument::Counter } ),*
+                        #( otap_df_telemetry::descriptor::MetricsField { name: #metric_field_names, unit: #metric_field_units, brief: #metric_field_briefs, instrument: #metric_field_instruments } ),*
                     ],
                 };
                 &#desc_ident

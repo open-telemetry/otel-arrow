@@ -27,7 +27,6 @@ use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
-use otap_df_telemetry::registry::MetricsKey;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -68,6 +67,30 @@ impl OutputWriter {
 
 /// The URN for the OTAP Perf exporter
 pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
+
+/// Pdata-oriented metrics for the OTAP PerfExporter.
+#[metric_set(name = "perf.exporter.pdata.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct PerfExporterPdataMetrics {
+    /// Number of pdata batches received.
+    #[metric(unit = "{msg}")]
+    pub batches: Counter<u64>,
+    /// Number of invalid pdata batches received.
+    #[metric(name = "invalid.batches", unit = "{msg}")]
+    pub invalid_batches: Counter<u64>,
+    /// Number of Arrow records received.
+    #[metric(name = "arrow.records", unit = "{record}")]
+    pub arrow_records: Counter<u64>,
+    /// Number of logs received.
+    #[metric(name = "logs", unit = "{log}")]
+    pub logs: Counter<u64>,
+    /// Number of spans received.
+    #[metric(name = "spans", unit = "{span}")]
+    pub spans: Counter<u64>,
+    /// Number of metrics received.
+    #[metric(name = "metrics", unit = "{metric}")]
+    pub metrics: Counter<u64>,
+}
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
@@ -121,31 +144,6 @@ impl PerfExporter {
 
         )
     }
-}
-
-/// Pdata-oriented metrics for the OTAP PerfExporter moved into the node module.
-#[metric_set(name = "perf.exporter.pdata.metrics")]
-#[derive(Debug, Default, Clone)]
-pub struct PerfExporterPdataMetrics {
-    key: Option<MetricsKey>,
-    /// Number of pdata batches received.
-    #[metric(name = "batches", unit = "{msg}")]
-    pub batches: Counter<u64>,
-    /// Number of invalid pdata batches received.
-    #[metric(name = "invalid.batches", unit = "{msg}")]
-    pub invalid_batches: Counter<u64>,
-    /// Number of Arrow records received.
-    #[metric(name = "arrow.records", unit = "{record}")]
-    pub arrow_records: Counter<u64>,
-    /// Number of logs received.
-    #[metric(name = "logs", unit = "{log}")]
-    pub logs: Counter<u64>,
-    /// Number of spans received.
-    #[metric(name = "spans", unit = "{span}")]
-    pub spans: Counter<u64>,
-    /// Number of metrics received.
-    #[metric(name = "metrics", unit = "{metric}")]
-    pub metrics: Counter<u64>,
 }
 
 #[async_trait(?Send)]

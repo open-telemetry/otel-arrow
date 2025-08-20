@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use otap_df_engine::context::PipelineContext;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::registry::MetricsKey;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -75,7 +74,6 @@ impl OTLPExporter {
 #[metric_set(name = "otlp.exporter.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpExporterMetrics {
-    key: Option<MetricsKey>,
     /// Number of OTLP logs request received
     #[metric(name = "export.logs.request.received", unit = "{req}")]
     pub export_logs_request_received: Counter<u64>,
