@@ -410,7 +410,7 @@ fn replace_parent_id_column(
         schema.as_ref(),
         consts::PARENT_ID,
         metadata::COLUMN_ENCODING,
-        encoding.into(),
+        encoding,
     );
 
     RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| {

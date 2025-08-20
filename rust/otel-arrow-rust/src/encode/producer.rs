@@ -77,7 +77,7 @@ impl Producer {
         // TODO if we decide to also apply the encodings to the original batch, we can avoid
         // the clone here (even though the clone _should_ be relatively cheap...
         let mut otap_batch = otap_batch.clone();
-        otap_batch.encode_transport_optimized_ids()?;
+        otap_batch.encode_transport_optimized()?;
 
         let allowed_payloads = otap_batch.allowed_payload_types();
         let mut arrow_payloads = Vec::<ArrowPayload>::with_capacity(allowed_payloads.len());
@@ -87,34 +87,6 @@ impl Producer {
                 Some(rb) => rb,
                 None => continue,
             };
-
-            // // apply any column encodings to optimize transport
-            // // let record_batch = apply_column_encodings(payload_type, record_batch);
-            // let (record_batch, parent_id_remappings) =
-            //     apply_column_encodings(payload_type, record_batch)?;
-            // // TODO -- here you need to decide whether to modify the original otap_batch?
-            // // TODO why is this code very ugly looking?
-            // if let Some(parent_id_remappings) = parent_id_remappings {
-            //     for parent_id_remapping in parent_id_remappings {
-            //         if let Some(child_payload_type) = get_type_with_associated_parent_id(
-            //             payload_type,
-            //             parent_id_remapping.column_path,
-            //         ) {
-            //             if let Some(child_rb) = otap_batch.get(child_payload_type) {
-            //                 let new_child_rb = remap_parent_ids(
-            //                     payload_type,
-            //                     child_rb,
-            //                     &parent_id_remapping.remapped_ids,
-            //                 )?;
-            //                 otap_batch.set(child_payload_type, new_child_rb);
-            //             }
-            //         } else {
-            //             // TODO? handle this
-            //             // this would be unusual that we've got an ID column, but no associated
-            //             // child type with a matching parent id
-            //         }
-            //     }
-            // }
 
             let schema = record_batch.schema();
             let schema_id = self.schema_id_builder.build_id(&schema);
@@ -139,7 +111,7 @@ impl Producer {
                 Some(s) => s,
             };
 
-            let serialized_rb = stream_producer.serialize_batch(&record_batch)?;
+            let serialized_rb = stream_producer.serialize_batch(record_batch)?;
             arrow_payloads.push(ArrowPayload {
                 schema_id: format!("{}", stream_producer.schema_id),
                 r#type: *payload_type as i32,

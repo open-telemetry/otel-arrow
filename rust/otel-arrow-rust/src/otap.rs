@@ -4,20 +4,14 @@
 //! This module contains various types and methods for interacting with and manipulating
 //! OTAP data / record batches
 
-use arrow::{
-    array::RecordBatch,
-    datatypes::{UInt16Type, UInt32Type},
-};
-use transform::{
-    materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
-    materialize_parent_ids_by_columns, remove_delta_encoding,
-    transport_optimize::{
-        RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_column_encodings, remap_parent_ids,
-    },
+use arrow::array::RecordBatch;
+use transform::transport_optimize::{
+    RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_transport_optimized_encodings, remap_parent_ids,
 };
 
 use crate::{
     decode::record_message::RecordMessage, error::Result,
+    otap::transform::transport_optimize::remove_transport_optimized_encodings,
     proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts,
 };
 
@@ -82,12 +76,21 @@ impl OtapArrowRecords {
         }
     }
 
-    /// TODO
-    pub fn encode_transport_optimized_ids(&mut self) -> Result<()> {
+    /// Apply transport optimized encoding to the underlying record batches. Generally this would
+    /// be called before serializing the data into Arrow IPC for transport via gRPC.
+    ///
+    /// The exact transformations that are applied vary between the payload types contained within
+    /// the batch, but generally it involves sorting by various whose values are often repeated,
+    /// and then adding some form of delta encoding the ID columns.
+    ///
+    /// This operation is idempotent and is relatively cheap if the data is already optimized for
+    /// transport. This means callers can call this if/when they need transport optimized batches
+    /// without having to first check the encodings.
+    pub fn encode_transport_optimized(&mut self) -> Result<()> {
         match self {
-            Self::Logs(_) => Logs::encode_transport_optimized_ids(self),
-            Self::Metrics(_) => Metrics::encode_transport_optimized_ids(self),
-            Self::Traces(_) => Traces::encode_transport_optimized_ids(self),
+            Self::Logs(_) => Logs::encode_transport_optimized(self),
+            Self::Metrics(_) => Metrics::encode_transport_optimized(self),
+            Self::Traces(_) => Traces::encode_transport_optimized(self),
         }
     }
 }
@@ -111,13 +114,14 @@ trait OtapBatchStore: Sized + Default + Clone {
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
     /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs on each Arrow
-    /// Arrow Record Batch contained in this Otap Batch. Internally, implementers should
-    /// know which payloads use which types (u16 or u32) for ID/Parent ID fields as well
-    /// as how the IDs are encoded.
+    /// Arrow Record Batch contained in this Otap Batch.
     fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()>;
 
-    /// TODO comments
-    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()>;
+    /// Apply transport optimized encoding to all record batches contained within this
+    /// implementation of `OtapBatchStore`. The caller is responsible for calling this on
+    /// any contained record batches, as well as remapping parent IDs for any parent-child
+    /// relationship whose IDs may be changed during encoding.
+    fn encode_transport_optimized(otap_batch: &mut OtapArrowRecords) -> Result<()>;
 
     fn new() -> Self {
         Self::default()
@@ -244,18 +248,9 @@ impl OtapBatchStore for Logs {
     }
 
     fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
-        if let Some(logs_rb) = otap_batch.get(ArrowPayloadType::Logs) {
-            let rb = remove_delta_encoding::<UInt16Type>(logs_rb, consts::ID)?;
-            otap_batch.set(ArrowPayloadType::Logs, rb);
-        }
-
-        for payload_type in [
-            ArrowPayloadType::LogAttrs,
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-        ] {
-            if let Some(attrs_rb) = otap_batch.get(payload_type) {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_rb)?;
+        for payload_type in Self::allowed_payload_types().iter().copied() {
+            if let Some(rb) = otap_batch.get(payload_type) {
+                let rb = remove_transport_optimized_encodings(payload_type, rb)?;
                 otap_batch.set(payload_type, rb);
             }
         }
@@ -263,10 +258,11 @@ impl OtapBatchStore for Logs {
         Ok(())
     }
 
-    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
+    fn encode_transport_optimized(otap_batch: &mut OtapArrowRecords) -> Result<()> {
         // apply encoding to root logs record
         if let Some(rb) = otap_batch.get(ArrowPayloadType::Logs) {
-            let (rb, id_remappings) = apply_column_encodings(&ArrowPayloadType::Logs, rb)?;
+            let (rb, id_remappings) =
+                apply_transport_optimized_encodings(&ArrowPayloadType::Logs, rb)?;
             otap_batch.set(ArrowPayloadType::Logs, rb);
 
             // remap any of the child IDs if necessary ...
@@ -276,8 +272,6 @@ impl OtapBatchStore for Logs {
                         RESOURCE_ID_COL_PATH => ArrowPayloadType::ResourceAttrs,
                         SCOPE_ID_COL_PATH => ArrowPayloadType::ScopeAttrs,
                         consts::ID => ArrowPayloadType::LogAttrs,
-
-                        // TODO this would be an unusual situation? Something clearly wrong ..
                         _ => continue,
                     };
                     if let Some(child_rb) = otap_batch.get(child_payload_type) {
@@ -299,7 +293,7 @@ impl OtapBatchStore for Logs {
             ArrowPayloadType::ScopeAttrs,
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
-                let (rb, _) = apply_column_encodings(&payload_type, rb)?;
+                let (rb, _) = apply_transport_optimized_encodings(&payload_type, rb)?;
                 otap_batch.set(payload_type, rb);
             }
         }
@@ -368,58 +362,9 @@ impl OtapBatchStore for Metrics {
     }
 
     fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
-        if let Some(metrics_rb) = otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
-            let rb = remove_delta_encoding::<UInt16Type>(metrics_rb, consts::ID)?;
-            otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb);
-        }
-
-        for payload_type in [
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-            ArrowPayloadType::MetricAttrs,
-        ] {
-            if let Some(attrs_rb) = otap_batch.get(payload_type) {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_rb)?;
-                otap_batch.set(payload_type, rb);
-            }
-        }
-
-        for payload_type in [
-            ArrowPayloadType::NumberDataPoints,
-            ArrowPayloadType::SummaryDataPoints,
-            ArrowPayloadType::HistogramDataPoints,
-            ArrowPayloadType::ExpHistogramDataPoints,
-        ] {
+        for payload_type in Self::allowed_payload_types().iter().copied() {
             if let Some(rb) = otap_batch.get(payload_type) {
-                let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
-                let rb = remove_delta_encoding::<UInt16Type>(&rb, consts::PARENT_ID)?;
-                otap_batch.set(payload_type, rb);
-            }
-        }
-
-        for payload_type in [
-            ArrowPayloadType::NumberDpAttrs,
-            ArrowPayloadType::SummaryDpAttrs,
-            ArrowPayloadType::HistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            ArrowPayloadType::NumberDpExemplarAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-        ] {
-            if let Some(attrs_rb) = otap_batch.get(payload_type) {
-                let rb = materialize_parent_id_for_attributes::<u32>(attrs_rb)?;
-                otap_batch.set(payload_type, rb);
-            }
-        }
-
-        for payload_type in [
-            ArrowPayloadType::NumberDpExemplars,
-            ArrowPayloadType::HistogramDpExemplars,
-            ArrowPayloadType::ExpHistogramDpExemplars,
-        ] {
-            if let Some(rb) = otap_batch.get(payload_type) {
-                let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
-                let rb = materialize_parent_id_for_exemplars::<u32>(&rb)?;
+                let rb = remove_transport_optimized_encodings(payload_type, rb)?;
                 otap_batch.set(payload_type, rb);
             }
         }
@@ -427,11 +372,11 @@ impl OtapBatchStore for Metrics {
         Ok(())
     }
 
-    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
+    fn encode_transport_optimized(otap_batch: &mut OtapArrowRecords) -> Result<()> {
         // TODO handle multi variate metrics
         if let Some(rb) = otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
             let (rb, id_remappings) =
-                apply_column_encodings(&ArrowPayloadType::UnivariateMetrics, rb)?;
+                apply_transport_optimized_encodings(&ArrowPayloadType::UnivariateMetrics, rb)?;
             otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb);
 
             // remap any of the child IDs if necessary ...
@@ -448,14 +393,12 @@ impl OtapBatchStore for Metrics {
                             ArrowPayloadType::ExpHistogramDataPoints,
                         ]
                         .as_slice(),
-
-                        // TODO this would be an unusual situation? Something clearly wrong ..
                         _ => continue,
                     };
-                    for child_payload_type in child_payload_types.into_iter() {
+                    for child_payload_type in child_payload_types {
                         if let Some(child_rb) = otap_batch.get(*child_payload_type) {
                             let rb = remap_parent_ids(
-                                &child_payload_type,
+                                child_payload_type,
                                 child_rb,
                                 &id_remapping.remapped_ids,
                             )?;
@@ -501,7 +444,7 @@ impl OtapBatchStore for Metrics {
                 None => continue,
             };
 
-            let (rb, id_remappings) = apply_column_encodings(&payload_type, rb)?;
+            let (rb, id_remappings) = apply_transport_optimized_encodings(&payload_type, rb)?;
             otap_batch.set(payload_type, rb);
 
             let id_remappings = match id_remappings {
@@ -511,14 +454,13 @@ impl OtapBatchStore for Metrics {
 
             for id_remapping in id_remappings {
                 if id_remapping.column_path != consts::ID {
-                    // TODO this would be unusual?
                     continue;
                 }
 
                 for child_payload_type in child_payload_types {
                     if let Some(child_rb) = otap_batch.get(*child_payload_type) {
                         let rb = remap_parent_ids(
-                            &child_payload_type,
+                            child_payload_type,
                             child_rb,
                             &id_remapping.remapped_ids,
                         )?;
@@ -547,7 +489,7 @@ impl OtapBatchStore for Metrics {
                 None => continue,
             };
 
-            let (rb, id_remappings) = apply_column_encodings(&payload_type, rb)?;
+            let (rb, id_remappings) = apply_transport_optimized_encodings(&payload_type, rb)?;
             otap_batch.set(payload_type, rb);
 
             let id_remappings = match id_remappings {
@@ -557,7 +499,6 @@ impl OtapBatchStore for Metrics {
 
             for id_remapping in id_remappings {
                 if id_remapping.column_path != consts::ID {
-                    // TODO this would be unusual?
                     continue;
                 }
 
@@ -585,7 +526,7 @@ impl OtapBatchStore for Metrics {
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
-                let (rb, _) = apply_column_encodings(&payload_type, rb)?;
+                let (rb, _) = apply_transport_optimized_encodings(&payload_type, rb)?;
                 otap_batch.set(payload_type, rb);
             }
         }
@@ -632,40 +573,9 @@ impl OtapBatchStore for Traces {
     }
 
     fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
-        if let Some(spans_rb) = otap_batch.get(ArrowPayloadType::Spans) {
-            let rb = remove_delta_encoding::<UInt16Type>(spans_rb, consts::ID)?;
-            otap_batch.set(ArrowPayloadType::Spans, rb);
-        }
-
-        for payload_type in [
-            ArrowPayloadType::SpanAttrs,
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-        ] {
-            if let Some(attrs_rb) = otap_batch.get(payload_type) {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_rb)?;
-                otap_batch.set(payload_type, rb);
-            }
-        }
-
-        if let Some(rb) = otap_batch.get(ArrowPayloadType::SpanEvents) {
-            let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
-            let rb = materialize_parent_ids_by_columns::<u16>(&rb, [consts::NAME])?;
-            otap_batch.set(ArrowPayloadType::SpanEvents, rb);
-        }
-
-        if let Some(rb) = otap_batch.get(ArrowPayloadType::SpanLinks) {
-            let rb = remove_delta_encoding::<UInt32Type>(rb, consts::ID)?;
-            let rb = materialize_parent_ids_by_columns::<u16>(&rb, [consts::TRACE_ID])?;
-            otap_batch.set(ArrowPayloadType::SpanLinks, rb);
-        }
-
-        for payload_type in [
-            ArrowPayloadType::SpanLinkAttrs,
-            ArrowPayloadType::SpanEventAttrs,
-        ] {
-            if let Some(attrs_rb) = otap_batch.get(payload_type) {
-                let rb = materialize_parent_id_for_attributes::<u32>(attrs_rb)?;
+        for payload_type in Self::allowed_payload_types().iter().copied() {
+            if let Some(rb) = otap_batch.get(payload_type) {
+                let rb = remove_transport_optimized_encodings(payload_type, rb)?;
                 otap_batch.set(payload_type, rb);
             }
         }
@@ -673,9 +583,10 @@ impl OtapBatchStore for Traces {
         Ok(())
     }
 
-    fn encode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()> {
+    fn encode_transport_optimized(otap_batch: &mut OtapArrowRecords) -> Result<()> {
         if let Some(rb) = otap_batch.get(ArrowPayloadType::Spans) {
-            let (rb, id_remappings) = apply_column_encodings(&ArrowPayloadType::Spans, rb)?;
+            let (rb, id_remappings) =
+                apply_transport_optimized_encodings(&ArrowPayloadType::Spans, rb)?;
             otap_batch.set(ArrowPayloadType::Spans, rb);
 
             // remap any of the child IDs if necessary ...
@@ -690,14 +601,12 @@ impl OtapBatchStore for Traces {
                             ArrowPayloadType::SpanLinks,
                         ]
                         .as_slice(),
-
-                        // TODO this would be an unusual situation? Something clearly wrong ..
                         _ => continue,
                     };
-                    for child_payload_type in child_payload_types.into_iter() {
+                    for child_payload_type in child_payload_types {
                         if let Some(child_rb) = otap_batch.get(*child_payload_type) {
                             let rb = remap_parent_ids(
-                                &child_payload_type,
+                                child_payload_type,
                                 child_rb,
                                 &id_remapping.remapped_ids,
                             )?;
@@ -715,24 +624,30 @@ impl OtapBatchStore for Traces {
             ),
             (ArrowPayloadType::SpanLinks, ArrowPayloadType::SpanLinkAttrs),
         ] {
-            if let Some(rb) = otap_batch.get(payload_type) {
-                let (rb, id_remappings) = apply_column_encodings(&payload_type, rb)?;
-                otap_batch.set(payload_type, rb);
+            let rb = match otap_batch.get(payload_type) {
+                Some(rb) => rb,
+                None => continue,
+            };
+            let (rb, id_remappings) = apply_transport_optimized_encodings(&payload_type, rb)?;
+            otap_batch.set(payload_type, rb);
 
-                // TODO can rewrite with less nesting (like done in metrics)
-                if let Some(id_remappings) = id_remappings {
-                    for id_remapping in id_remappings {
-                        if id_remapping.column_path == consts::ID {
-                            if let Some(child_rb) = otap_batch.get(child_payload_type) {
-                                let rb = remap_parent_ids(
-                                    &child_payload_type,
-                                    child_rb,
-                                    &id_remapping.remapped_ids,
-                                )?;
-                                otap_batch.set(child_payload_type, rb);
-                            }
-                        }
-                    }
+            let id_remappings = match id_remappings {
+                Some(rb) => rb,
+                None => continue,
+            };
+
+            for id_remapping in id_remappings {
+                if id_remapping.column_path != consts::ID {
+                    continue;
+                }
+
+                if let Some(child_rb) = otap_batch.get(child_payload_type) {
+                    let rb = remap_parent_ids(
+                        &child_payload_type,
+                        child_rb,
+                        &id_remapping.remapped_ids,
+                    )?;
+                    otap_batch.set(child_payload_type, rb);
                 }
             }
         }
@@ -745,7 +660,7 @@ impl OtapBatchStore for Traces {
             ArrowPayloadType::SpanLinkAttrs,
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
-                let (rb, _) = apply_column_encodings(&payload_type, rb)?;
+                let (rb, _) = apply_transport_optimized_encodings(&payload_type, rb)?;
                 otap_batch.set(payload_type, rb);
             }
         }
@@ -813,7 +728,7 @@ mod test {
         ArrowPrimitiveType, FixedSizeBinaryArray, Float64Array, Int64Array, PrimitiveArray,
         RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
     };
-    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type, UInt32Type};
     use std::sync::Arc;
 
     use crate::otlp::attributes::store::AttributeValueType;
@@ -831,7 +746,7 @@ mod test {
         encoding: &'static str,
     ) -> RecordBatch {
         let attrs_schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, T::DATA_TYPE, false).with_encoding(encoding.into()),
+            Field::new(consts::PARENT_ID, T::DATA_TYPE, false).with_encoding(encoding),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -1196,7 +1111,7 @@ mod test {
         batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs);
         batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
 
-        batch.encode_transport_optimized_ids().unwrap();
+        batch.encode_transport_optimized().unwrap();
 
         let expected_struct_fields: Fields = vec![
             Field::new(consts::ID, DataType::UInt16, false)
@@ -1219,7 +1134,6 @@ mod test {
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
         ]));
 
-        // TODO maybe comment about how this was computed
         let expected_logs_data = vec![
             (0, 0, 0, 0),
             (0, 0, 1, 1),
@@ -1889,7 +1803,7 @@ mod test {
             consts::metadata::encodings::PLAIN,
         );
 
-        let span_event_data = vec![
+        let span_event_data = [
             (0, 1, "b"),
             (2, 2, "d"),
             (1, 3, "c"),
@@ -1978,7 +1892,7 @@ mod test {
         batch.set(ArrowPayloadType::SpanLinks, span_links_rb);
         batch.set(ArrowPayloadType::SpanLinkAttrs, span_links_attrs_rb);
 
-        batch.encode_transport_optimized_ids().unwrap();
+        batch.encode_transport_optimized().unwrap();
 
         let expected_struct_fields = Fields::from(vec![
             Field::new(consts::ID, DataType::UInt16, false)
@@ -2144,7 +2058,7 @@ mod test {
         //
         // then the IDs will get replaced
         //
-        let expected_span_events_data = vec![
+        let expected_span_events_data = [
             (0, 1, "a"),
             (1, 4, "a"),
             (1, 1, "a"),
@@ -2270,7 +2184,6 @@ mod test {
             Field::new(consts::NAME, DataType::Utf8, true),
         ]));
 
-        // TODO comments
         let metrics_data = vec![
             (0, 0, 0, "a", 9),
             (0, 0, 0, "b", 5),
@@ -2356,7 +2269,7 @@ mod test {
             Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
             Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         ]));
-        let data_points_data = vec![(0, 9), (1, 5), (3, 7), (2, 2), (4, 1)];
+        let data_points_data = [(0, 9), (1, 5), (3, 7), (2, 2), (4, 1)];
         let ids = UInt32Array::from_iter_values(data_points_data.iter().map(|d| d.0));
         let parent_ids = UInt16Array::from_iter_values(data_points_data.iter().map(|d| d.1));
         let data_points_rb = RecordBatch::try_new(
@@ -2472,7 +2385,7 @@ mod test {
             batch.set(payload_type, exemplar_attrs_rb.clone());
         }
 
-        batch.encode_transport_optimized_ids().unwrap();
+        batch.encode_transport_optimized().unwrap();
 
         let expected_metrics_data = vec![
             (0, 0, 0, "a", 0),
@@ -2622,7 +2535,11 @@ mod test {
         let result_resource_attrs_rb = batch.get(ArrowPayloadType::ResourceAttrs).unwrap();
         assert_eq!(result_resource_attrs_rb, &expected_resource_attrs_rb);
 
-        // TODO comment
+        // expected metrics data points data
+        //
+        // after sorting the data points by parent ID, and remapping the ID column, we end up
+        // with plain-encoded IDs like follows:
+        //
         // id:     parent_id
         // 0 -> 0,  9 -> 0
         // 1 -> 1,  5 -> 1
@@ -2630,7 +2547,7 @@ mod test {
         // 3 -> 3,  7 -> 5
         // 2 -> 4,  2 -> 7
 
-        let expected_data_points_data = vec![(0, 0), (1, 1), (1, 1), (1, 3), (1, 2)];
+        let expected_data_points_data = [(0, 0), (1, 1), (1, 1), (1, 3), (1, 2)];
 
         let ids = UInt32Array::from_iter_values(expected_data_points_data.iter().map(|d| d.0));
         let parent_ids =
@@ -2658,15 +2575,19 @@ mod test {
             assert_eq!(result_data_points, &expected_data_points_rb);
         }
 
-        // TODO comment
-        // 1 -> 1, "a"   1
-        // 3 -> 3, "a"   2
-        // 2 -> 4, "a"   1
-        // 0 -> 0, "b"   0
-        // 1 -> 1, "b"   1
-        // 3 -> 3, "b"   2
-        // 2 -> 4, "c"   4
-        // 0 -> 0, "d"   0
+        // expected data points attributes
+        //
+        // after remapping the IDs, and sorting by types/keys/values we end up with data like this:
+        //
+        // parent_id -> remapped parent id, value -> quasi-delta encoded parent ID
+        // 1 -> 1, "a" ->  1
+        // 3 -> 3, "a" ->  2
+        // 2 -> 4, "a" ->  1
+        // 0 -> 0, "b" ->  0
+        // 1 -> 1, "b" ->  1
+        // 3 -> 3, "b" ->  2
+        // 2 -> 4, "c" ->  4
+        // 0 -> 0, "d" ->  0
         let expected_dp_attrs_rb = attrs_from_data::<UInt32Type>(
             vec![
                 (1, "a"),
@@ -2692,7 +2613,9 @@ mod test {
         }
 
         // expected exemplar data:
-        // TODO comments
+        //
+        // After remapping the parent IDs, sorting by type, value, parent ID, then encoding the
+        // ID column, we end up with data like:
         //
         //  id      int val,  double val, parent_id, quasi-delta parent id
         // 1 -> 0,  1,        None,       1 -> 1     1
