@@ -99,6 +99,29 @@ accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
 boolean_expression = _{ true_literal | false_literal }
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
 datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
+time_units = @{
+    "day" ~ "s"?
+    | "hour" ~ "s"?
+    | "microsecond" ~ "s"?
+    | "millisecond" ~ "s"?
+    | "minute" ~ "s"?
+    | "second" ~ "s"?
+    | "tick" ~ "s"?
+    | "ms"
+    | "d"
+    | "h"
+    | "m"
+    | "s"
+}
+time_literal = {
+    "-"? ~ (ASCII_DIGIT+ ~ ".")? ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+}
+time_expression = {
+    (double_literal|integer_literal) ~ time_units
+    | "timespan(" ~ time_literal ~ ")"
+    | "timespan(" ~ integer_literal ~ ")"
+    | "timespan(" ~ (double_literal|integer_literal) ~ time_units ~ ")"
+}
 
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
@@ -117,6 +140,7 @@ tolong_expression = { "tolong" ~ "(" ~ scalar_expression ~ ")" }
 toreal_expression = { "toreal" ~ "(" ~ scalar_expression ~ ")" }
 todouble_expression = { "todouble" ~ "(" ~ scalar_expression ~ ")" }
 todatetime_expression = { "todatetime" ~ "(" ~ scalar_expression ~ ")" }
+totimespan_expression = { "totimespan" ~ "(" ~ scalar_expression ~ ")" }
 conversion_expressions = _{
     tostring_expression
     | toint_expression
@@ -126,6 +150,7 @@ conversion_expressions = _{
     | toreal_expression
     | todouble_expression
     | todatetime_expression
+    | totimespan_expression
 }
 
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
@@ -140,8 +165,10 @@ string_expressions = _{
 }
 
 negate_expression = { "-" ~ scalar_expression }
+bin_expression = { "bin" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 math_expressions = _{
     negate_expression
+    | bin_expression
 }
 
 arithmetic_factor = {
@@ -156,6 +183,7 @@ scalar_expression = {
     null_literal
     | real_expression
     | datetime_expression
+    | time_expression
     | conditional_expressions
     | conversion_expressions
     | string_expressions

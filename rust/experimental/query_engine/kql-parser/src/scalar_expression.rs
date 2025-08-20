@@ -24,6 +24,9 @@ pub(crate) fn parse_scalar_expression(
         Rule::datetime_expression => {
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
         }
+        Rule::time_expression => {
+            ScalarExpression::Static(parse_timespan_expression(scalar_rule)?)
+        }
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
         Rule::case_expression => parse_case_expression(scalar_rule, state)?,
         Rule::coalesce_expression => parse_coalesce_expression(scalar_rule, state)?,
@@ -35,6 +38,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::toreal_expression => parse_toreal_expression(scalar_rule, state)?,
         Rule::todouble_expression => parse_todouble_expression(scalar_rule, state)?,
         Rule::todatetime_expression => parse_todatetime_expression(scalar_rule, state)?,
+        Rule::totimespan_expression => parse_totimespan_expression(scalar_rule, state)?,
         Rule::strlen_expression => parse_strlen_expression(scalar_rule, state)?,
         Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
         Rule::substring_expression => parse_substring_expression(scalar_rule, state)?,

@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use chrono::TimeDelta;
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
@@ -86,6 +87,83 @@ pub(crate) fn parse_datetime_expression(
                 original_value.trim()
             ),
         )),
+    }
+}
+
+pub(crate) fn parse_timespan_expression(
+    time_expression_rule: Pair<Rule>,
+) -> Result<StaticScalarExpression, ParserError> {
+    let query_location = to_query_location(&time_expression_rule);
+
+    let mut inner_rules = time_expression_rule.into_inner();
+
+    let first_rule = inner_rules.next().unwrap();
+
+    match first_rule.as_rule() {
+        Rule::time_literal => {
+            todo!()
+        }
+        Rule::integer_literal => {
+            let i = first_rule.as_str().parse::<i64>().map_err(|_| ParserError::SyntaxError(
+                to_query_location(&first_rule),
+                format!("'{}' could not be parsed as a literal of type 'integer'", first_rule.as_str()),
+            ))?;
+
+            let units = inner_rules.next();
+
+            let nano_seconds = to_nano_seconds(i, 0.0, get_multiplier(units));
+
+            todo!()
+        }
+        Rule::double_literal => {
+            let d = first_rule.as_str().parse::<f64>().map_err(|_| ParserError::SyntaxError(
+                to_query_location(&first_rule),
+                format!("'{}' could not be parsed as a literal of type 'double'", first_rule.as_str()),
+            ))?;
+
+            let whole = d.trunc() as i64;
+            let fraction = d.fract().abs();
+
+            let units = inner_rules.next();
+
+            let nano_seconds = to_nano_seconds(whole, fraction, get_multiplier(units));
+
+            todo!()
+        }
+        _ => panic!("Unexpected rule in time_expression: {first_rule}"),
+    }
+
+    fn get_multiplier(rule: Option<Pair<Rule>>) -> u64 {
+        match rule.map(|r| r.as_str()) {
+            Some("millisecond") | Some("milliseconds") | Some("ms") => TimeDelta::milliseconds(1).num_nanoseconds().unwrap() as u64,
+            Some("hour") | Some("hours") | Some("h") => TimeDelta::hours(1).num_nanoseconds().unwrap() as u64,
+            Some("minute") | Some("minutes") | Some("m") => TimeDelta::minutes(1).num_nanoseconds().unwrap() as u64,
+            Some("second") | Some("seconds") | Some("s") => TimeDelta::seconds(1).num_nanoseconds().unwrap() as u64,
+            Some("microsecond") | Some("microseconds") => TimeDelta::microseconds(1).num_nanoseconds().unwrap() as u64,
+            Some("tick") | Some("ticks") => 100,
+            _ => TimeDelta::days(1).num_nanoseconds().unwrap() as u64
+        }
+    }
+
+    fn to_nano_seconds(mut whole: i64, fraction: f64, multiplier: u64) -> i64 {
+        let negate = if whole < 0 {
+            whole = whole.abs();
+            true
+        }
+        else {
+            false
+        };
+
+        let mut nanos = whole as u64 * multiplier;
+        if fraction > 0.0 {
+            nanos += multiplier * fraction as u64;
+        }
+
+        if negate {
+            -(nanos as i64)
+        } else {
+            nanos as i64
+        }
     }
 }
 

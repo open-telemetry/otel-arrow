@@ -134,6 +134,24 @@ pub(crate) fn parse_todatetime_expression(
     ))
 }
 
+pub(crate) fn parse_totimespan_expression(
+    totimespan_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&totimespan_rule);
+    let mut inner = totimespan_rule.into_inner();
+
+    let scalar_expr_rule = inner.next().unwrap();
+
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    Ok(ScalarExpression::Convert(
+        ConvertScalarExpression::TimeSpan(ConversionScalarExpression::new(
+            query_location,
+            inner_expr,
+        )),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
