@@ -19,13 +19,20 @@ pub enum ConvertScalarExpression {
 
     /// Converts the value returned by the inner scalar expression into a string or returns an empty string for invalid input.
     String(ConversionScalarExpression),
+
+    /// Converts the value returned by the inner scalar expression into a TimeSpan or returns null for invalid input.
+    TimeSpan(ConversionScalarExpression),
 }
 
 impl ConvertScalarExpression {
     pub(crate) fn is_always_convertable_to_numeric(value_type: &ValueType) -> bool {
         matches!(
             value_type,
-            ValueType::DateTime | ValueType::Boolean | ValueType::Integer | ValueType::Double
+            ValueType::Boolean
+                | ValueType::DateTime
+                | ValueType::Double
+                | ValueType::Integer
+                | ValueType::TimeSpan
         )
     }
 
@@ -67,6 +74,14 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::String(_) => Ok(Some(ValueType::String)),
+            ConvertScalarExpression::TimeSpan(t) => {
+                match t.get_inner_expression().try_resolve_value_type(pipeline)? {
+                    Some(v) if Self::is_always_convertable_to_numeric(&v) => {
+                        Ok(Some(ValueType::TimeSpan))
+                    }
+                    _ => Ok(None),
+                }
+            }
         }
     }
 
@@ -186,6 +201,26 @@ impl ConvertScalarExpression {
                     Ok(None)
                 }
             }
+            ConvertScalarExpression::TimeSpan(t) => {
+                if let Some(v) = t.get_inner_expression().try_resolve_static(pipeline)? {
+                    if let Some(ts) = v.to_value().convert_to_timespan() {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::TimeSpan(TimeSpanScalarExpression::new(
+                                t.query_location.clone(),
+                                ts,
+                            )),
+                        )))
+                    } else {
+                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                            StaticScalarExpression::Null(NullScalarExpression::new(
+                                t.query_location.clone(),
+                            )),
+                        )))
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 }
@@ -198,6 +233,7 @@ impl Expression for ConvertScalarExpression {
             ConvertScalarExpression::Double(c) => c.get_query_location(),
             ConvertScalarExpression::Integer(c) => c.get_query_location(),
             ConvertScalarExpression::String(c) => c.get_query_location(),
+            ConvertScalarExpression::TimeSpan(c) => c.get_query_location(),
         }
     }
 
@@ -208,6 +244,7 @@ impl Expression for ConvertScalarExpression {
             ConvertScalarExpression::Double(_) => "ConvertScalar(Double)",
             ConvertScalarExpression::Integer(_) => "ConvertScalar(Integer)",
             ConvertScalarExpression::String(_) => "ConvertScalar(String)",
+            ConvertScalarExpression::TimeSpan(_) => "ConvertScalar(TimeSpan)",
         }
     }
 }

@@ -8,7 +8,8 @@ use pest::iterators::Pair;
 use crate::{
     Rule, logical_expressions::parse_logical_expression,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
-    scalar_primitive_expressions::*, scalar_string_function_expressions::*,
+    scalar_mathematical_function_expressions::*, scalar_primitive_expressions::*,
+    scalar_string_function_expressions::*,
 };
 
 pub(crate) fn parse_scalar_expression(
@@ -48,6 +49,7 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
         }
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
+        Rule::negate_expression => parse_negate_expression(scalar_rule, state)?,
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so
@@ -57,6 +59,7 @@ pub(crate) fn parse_scalar_expression(
             // fold to iff([logical], String("constant1"), String("constant2")).
             parse_accessor_expression(scalar_rule, state, true)?
         }
+        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
         Rule::logical_expression => {
             let l = parse_logical_expression(scalar_rule, state)?;
 
@@ -66,7 +69,7 @@ pub(crate) fn parse_scalar_expression(
                 ScalarExpression::Logical(l.into())
             }
         }
-        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
+        Rule::arithmetic_expression => parse_arithmetic_expression(scalar_rule, state)?,
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 
