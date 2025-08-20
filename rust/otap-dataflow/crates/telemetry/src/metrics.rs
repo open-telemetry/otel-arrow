@@ -15,43 +15,6 @@ use std::any::Any;
 /// Type representing a snapshot of multivariate metrics.
 pub type MetricsSnapshot = Box<dyn MultivariateMetrics + Send + Sync>;
 
-/// Type representing a set of multivariate metrics with a unique key.
-#[derive(Clone)]
-pub struct MvMetrics<M: MultivariateMetrics> {
-    /// The metrics key for this set of metrics.
-    pub(crate) key: MetricsKey,
-    /// The actual multivariate metrics instance.
-    pub metrics: M,
-}
-
-impl<M: MultivariateMetrics> Deref for MvMetrics<M> {
-    type Target = M;
-
-    fn deref(&self) -> &Self::Target {
-        &self.metrics
-    }
-}
-
-impl<M: MultivariateMetrics> DerefMut for MvMetrics<M> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.metrics
-    }
-}
-
-/// A snapshot of multivariate metrics.
-pub struct MvMetricsSnapshot {
-    /// The metrics key for this set of metrics.
-    pub(crate) key: MetricsKey,
-    /// The values of the metrics in the order defined by the descriptor.
-    pub(crate) metric_values: Vec<u64>
-}
-
-impl MvMetricsSnapshot {
-    pub fn new<MV: MultivariateMetrics>(key: MetricsKey, mv_metrics: MV) -> Self {
-        Self { key, metric_values: mv_metrics.to_vec() }
-    }
-}
-
 /// Trait for types that can aggregate their metrics into a `MetricsRegistry`.
 pub trait MultivariateMetrics: Any + Send + Sync {
     /// Register the current multivariate metrics into the metrics registry.
