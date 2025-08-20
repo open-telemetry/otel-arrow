@@ -682,4 +682,38 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_parse_totimespan_expression() {
+        let test_cases = vec![
+            (
+                "totimespan(0)",
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            (
+                "totimespan('1.10:48:30.001')",
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "1.10:48:30.001"),
+                )),
+            ),
+        ];
+
+        for (input, value) in test_cases {
+            let state = ParserState::new(input);
+            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+                .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
+
+            let result = parse_scalar_expression(parsed.next().unwrap(), &state)
+                .unwrap_or_else(|_| panic!("Failed to parse expression: {input}"));
+
+            match result {
+                ScalarExpression::Convert(ConvertScalarExpression::TimeSpan(c)) => {
+                    assert_eq!(&value, c.get_inner_expression());
+                }
+                _ => panic!("Expected ConvertScalarExpression::TimeSpan"),
+            }
+        }
+    }
 }
