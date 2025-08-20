@@ -316,6 +316,263 @@ pub(crate) fn parse_where_expression(
     ))
 }
 
+pub(crate) fn parse_parse_expression(
+    parse_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<Vec<TransformExpression>, ParserError> {
+    let query_location = to_query_location(&parse_expression_rule);
+
+    let mut _kind = "simple"; // default - unused for now
+    let mut _flags: Option<String> = None; // unused for now
+    let mut input_expression: Option<ScalarExpression> = None;
+    let mut pattern_elements = Vec::new();
+
+    for rule in parse_expression_rule.into_inner() {
+        match rule.as_rule() {
+            Rule::parse_kind => {
+                if let Some(kind_rule) = rule.into_inner().next() {
+                    _kind = match kind_rule.as_str() {
+                        "simple" | "regex" | "relaxed" => kind_rule.as_str(),
+                        _ => {
+                            return Err(ParserError::SyntaxError(
+                                to_query_location(&kind_rule),
+                                format!("Unsupported parse kind: {}", kind_rule.as_str()),
+                            ));
+                        }
+                    };
+                }
+            }
+            Rule::string_literal => {
+                // This could be the flags parameter - extract the string value
+                let rule_location = to_query_location(&rule);
+                if let StaticScalarExpression::String(s) = parse_string_literal(rule) {
+                    _flags = Some(s.get_value().to_string());
+                } else {
+                    return Err(ParserError::SyntaxError(
+                        rule_location,
+                        "Expected string literal for flags".to_string(),
+                    ));
+                }
+            }
+            Rule::scalar_expression => {
+                input_expression = Some(parse_scalar_expression(rule, state)?);
+            }
+            Rule::parse_pattern => {
+                for pattern_element_rule in rule.into_inner() {
+                    pattern_elements.push(parse_parse_pattern_element(pattern_element_rule)?);
+                }
+            }
+            _ => panic!("Unexpected rule in parse_expression: {rule}"),
+        }
+    }
+
+    let input_expression = input_expression.ok_or_else(|| {
+        ParserError::SyntaxError(
+            query_location.clone(),
+            "Missing input expression".to_string(),
+        )
+    })?;
+
+    if pattern_elements.is_empty() {
+        return Err(ParserError::SyntaxError(
+            query_location,
+            "Parse pattern cannot be empty".to_string(),
+        ));
+    }
+
+    // Convert the pattern elements into proper parse expressions using ParseExtractScalarExpression
+    let mut set_expressions = Vec::new();
+
+    // Build the regex pattern from the pattern elements
+    let mut regex_pattern = String::new();
+    let mut capture_groups = Vec::new();
+
+    for element in &pattern_elements {
+        match element {
+            ParsePatternElement::Wildcard => {
+                regex_pattern.push_str(".*?");
+            }
+            ParsePatternElement::Literal(text) => {
+                // Escape regex special characters in literal text
+                regex_pattern.push_str(&regex::escape(text));
+            }
+            ParsePatternElement::Column { name, column_type } => {
+                // Create a named capture group for this column
+                // Use .* instead of .*? to capture greedily until the next literal or end of string
+                regex_pattern.push_str(&format!("(?P<{}>.*)", name));
+                capture_groups.push((name.clone(), column_type.clone()));
+            }
+        }
+    }
+
+    // Create text extract expressions for each column
+    for (group_name, column_type) in capture_groups {
+        let extract_expression = ScalarExpression::Text(TextScalarExpression::Extract(
+            ExtractTextScalarExpression::new(
+                query_location.clone(),
+                input_expression.clone(), // The input string to parse
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(query_location.clone(), &regex_pattern),
+                )), // The regex pattern with all capture groups
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(query_location.clone(), &group_name),
+                )), // The specific capture group name to extract
+            ),
+        ));
+
+        // Apply conversion based on column type
+        let parse_expression = match column_type.as_str() {
+            "int" | "long" => ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                ConversionScalarExpression::new(query_location.clone(), extract_expression),
+            )),
+            "real" | "double" => ScalarExpression::Convert(ConvertScalarExpression::Double(
+                ConversionScalarExpression::new(query_location.clone(), extract_expression),
+            )),
+            "bool" | "boolean" => ScalarExpression::Convert(ConvertScalarExpression::Boolean(
+                ConversionScalarExpression::new(query_location.clone(), extract_expression),
+            )),
+            "datetime" => ScalarExpression::Convert(ConvertScalarExpression::DateTime(
+                ConversionScalarExpression::new(query_location.clone(), extract_expression),
+            )),
+            "timespan" => ScalarExpression::Convert(ConvertScalarExpression::TimeSpan(
+                ConversionScalarExpression::new(query_location.clone(), extract_expression),
+            )),
+            "string" => extract_expression, // No conversion needed for strings
+            _ => extract_expression,        // Default to no conversion
+        };
+
+        // Create the set expression that uses the parse extract expression
+        // Use schema information to determine where to place the new column
+        let destination = if let Some(schema) = state.get_source_schema() {
+            if schema.get_schema_for_key(&group_name).is_some() {
+                // If the column is defined in the schema, use it directly
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location.clone(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            query_location.clone(),
+                            &group_name,
+                        )),
+                    )]),
+                ))
+            } else if let Some(default_map_key) = schema.get_default_map_key() {
+                // If not defined in schema, place it in the default map
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location.clone(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(query_location.clone(), default_map_key),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(query_location.clone(), &group_name),
+                        )),
+                    ]),
+                ))
+            } else {
+                // No schema or default map, place directly on source
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    query_location.clone(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            query_location.clone(),
+                            &group_name,
+                        )),
+                    )]),
+                ))
+            }
+        } else {
+            // No schema available, place directly on source
+            MutableValueExpression::Source(SourceScalarExpression::new(
+                query_location.clone(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        query_location.clone(),
+                        &group_name,
+                    )),
+                )]),
+            ))
+        };
+
+        let set_expression = TransformExpression::Set(SetTransformExpression::new(
+            query_location.clone(),
+            ImmutableValueExpression::Scalar(parse_expression),
+            destination,
+        ));
+
+        set_expressions.push(set_expression);
+    }
+
+    Ok(set_expressions)
+}
+
+fn parse_parse_pattern_element(
+    pattern_element_rule: Pair<Rule>,
+) -> Result<ParsePatternElement, ParserError> {
+    let rule_location = to_query_location(&pattern_element_rule);
+
+    match pattern_element_rule.as_rule() {
+        Rule::parse_pattern_element => {
+            if let Some(inner_rule) = pattern_element_rule.into_inner().next() {
+                match inner_rule.as_rule() {
+                    Rule::string_literal => {
+                        if let StaticScalarExpression::String(s) = parse_string_literal(inner_rule)
+                        {
+                            let value = s.get_value();
+                            if value == "*" {
+                                Ok(ParsePatternElement::Wildcard)
+                            } else {
+                                Ok(ParsePatternElement::Literal(value.to_string()))
+                            }
+                        } else {
+                            Err(ParserError::SyntaxError(
+                                rule_location,
+                                "Expected string literal".to_string(),
+                            ))
+                        }
+                    }
+                    Rule::parse_column_spec => {
+                        let mut parts = inner_rule.into_inner();
+                        let name_rule = parts.next().unwrap();
+                        let type_rule = parts.next().unwrap();
+
+                        Ok(ParsePatternElement::Column {
+                            name: name_rule.as_str().to_string(),
+                            column_type: type_rule.as_str().to_string(),
+                        })
+                    }
+                    _ => Err(ParserError::SyntaxError(
+                        rule_location,
+                        format!(
+                            "Unexpected inner parse pattern element: {:?} {}",
+                            inner_rule.as_rule(),
+                            inner_rule.as_str()
+                        ),
+                    )),
+                }
+            } else {
+                Err(ParserError::SyntaxError(
+                    rule_location,
+                    "Empty parse pattern element".to_string(),
+                ))
+            }
+        }
+        _ => Err(ParserError::SyntaxError(
+            rule_location,
+            format!(
+                "Expected parse_pattern_element rule, got {:?}",
+                pattern_element_rule.as_rule()
+            ),
+        )),
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ParsePatternElement {
+    Wildcard,
+    Literal(String),
+    Column { name: String, column_type: String },
+}
+
 pub(crate) fn parse_summarize_expression(
     summarize_expression_rule: Pair<Rule>,
     state: &ParserState,
@@ -419,6 +676,13 @@ pub(crate) fn parse_tabular_expression(
                 }
             }
             Rule::where_expression => expressions.push(parse_where_expression(rule, state)?),
+            Rule::parse_expression => {
+                let parse_expressions = parse_parse_expression(rule, state)?;
+
+                for e in parse_expressions {
+                    expressions.push(DataExpression::Transform(e));
+                }
+            }
             Rule::summarize_expression => {
                 expressions.push(parse_summarize_expression(rule, state)?)
             }
@@ -2147,6 +2411,187 @@ mod tests {
                 ),
             ),
         );
+    }
+
+    #[test]
+    pub fn test_parse_parse_expression() {
+        // Test pest grammar parsing
+        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+            Rule::parse_expression,
+            &[
+                "parse EventText with \"Event:\" resourceName:string",
+                "parse kind=simple EventText with \"*\" resourceName:string \"*\"",
+                "parse kind=regex EventText with \"Event: (.*?)\" resourceName:string",
+                "parse kind=relaxed EventText with \"Event:\" resourceName:string \", totalSlices=\" totalSlices:long",
+                "parse EventText with \"*\" col1:string \"*\" col2:string",
+                "parse EventText with \"name=\" name:string \", count=\" count:long \", value=\" value:double \", active=\" active:bool \", time=\" time:datetime",
+                "parse kind=regex flags=\"i\" EventText with \"(.*?)\" col:string",
+            ],
+            &[
+                "parse",                       // missing input expression
+                "parse EventText",             // missing 'with' keyword
+                "parse with \"*\" col:string", // missing input expression
+            ],
+        );
+
+        // Helper to test successful parsing and validate column extraction
+        let run_test = |input: &str, expected_columns: Vec<&str>| {
+            let state = ParserState::new(input);
+            let mut result = KqlPestParser::parse(Rule::parse_expression, input).unwrap();
+            let expressions = parse_parse_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(
+                expected_columns.len(),
+                expressions.len(),
+                "Wrong number of expressions for: {}",
+                input
+            );
+
+            for (i, expression) in expressions.iter().enumerate() {
+                if let TransformExpression::Set(set_expr) = expression {
+                    // Validate destination column name
+                    if let MutableValueExpression::Source(source_expr) = set_expr.get_destination()
+                    {
+                        let selectors = source_expr.get_value_accessor().get_selectors();
+                        if let ScalarExpression::Static(StaticScalarExpression::String(
+                            string_expr,
+                        )) = &selectors[0]
+                        {
+                            assert_eq!(string_expr.get_value(), expected_columns[i]);
+                        } else {
+                            panic!("Expected string selector for column name");
+                        }
+                    } else {
+                        panic!("Expected source expression as destination");
+                    }
+
+                    // Validate source is Text or Convert(Text)
+                    match set_expr.get_source() {
+                        ImmutableValueExpression::Scalar(ScalarExpression::Text(_)) => {
+                            // String type - no conversion needed
+                        }
+                        ImmutableValueExpression::Scalar(ScalarExpression::Convert(
+                            convert_expr,
+                        )) => {
+                            // Non-string type - should have conversion with Text inner expression
+                            let has_text_inner = match convert_expr {
+                                ConvertScalarExpression::Integer(c) => {
+                                    matches!(c.get_inner_expression(), ScalarExpression::Text(_))
+                                }
+                                ConvertScalarExpression::Double(c) => {
+                                    matches!(c.get_inner_expression(), ScalarExpression::Text(_))
+                                }
+                                ConvertScalarExpression::Boolean(c) => {
+                                    matches!(c.get_inner_expression(), ScalarExpression::Text(_))
+                                }
+                                ConvertScalarExpression::DateTime(c) => {
+                                    matches!(c.get_inner_expression(), ScalarExpression::Text(_))
+                                }
+                                ConvertScalarExpression::TimeSpan(c) => {
+                                    matches!(c.get_inner_expression(), ScalarExpression::Text(_))
+                                }
+                                ConvertScalarExpression::String(c) => {
+                                    matches!(c.get_inner_expression(), ScalarExpression::Text(_))
+                                }
+                            };
+                            assert!(has_text_inner, "Expected Text expression inside conversion");
+                        }
+                        _ => panic!("Expected Text or Convert expression as source"),
+                    }
+                } else {
+                    panic!("Expected Set transform expression");
+                }
+            }
+        };
+
+        // Test different parse modes
+        run_test(
+            "parse EventText with \"Event:\" resourceName:string",
+            vec!["resourceName"],
+        );
+        run_test(
+            "parse kind=simple EventText with \"*\" resourceName:string \"*\"",
+            vec!["resourceName"],
+        );
+        run_test(
+            "parse kind=regex EventText with \"Event: (.*?)\" resourceName:string",
+            vec!["resourceName"],
+        );
+        run_test(
+            "parse kind=relaxed EventText with \"Event:\" resourceName:string \", totalSlices=\" totalSlices:long",
+            vec!["resourceName", "totalSlices"],
+        );
+
+        // Test multiple columns and wildcards
+        run_test(
+            "parse EventText with \"*\" col1:string \"*\" col2:string",
+            vec!["col1", "col2"],
+        );
+        run_test(
+            "parse EventText with \"*\" col1:string \"*\" col2:string \"*\" col3:string \"*\"",
+            vec!["col1", "col2", "col3"],
+        );
+
+        // Test various column types
+        run_test(
+            "parse EventText with \"name=\" name:string \", count=\" count:long \", value=\" value:double \", active=\" active:bool \", time=\" time:datetime",
+            vec!["name", "count", "value", "active", "time"],
+        );
+
+        // Test regex flags
+        run_test(
+            "parse kind=regex flags=\"i\" EventText with \"(.*?)\" col:string",
+            vec!["col"],
+        );
+        run_test(
+            "parse kind=regex flags=\"Ui\" EventText with \"(.*?)\" col:string",
+            vec!["col"],
+        );
+
+        // Test complex patterns
+        run_test(
+            "parse EventText with \"resourceName=\" resourceName:string \", totalSlices=\" totalSlices:long \", sliceNumber=\" sliceNumber:long",
+            vec!["resourceName", "totalSlices", "sliceNumber"],
+        );
+
+        // Test specific type conversions with one detailed example
+        let input = "parse Severity with \"sevnum:\" SeverityNumber:int";
+        let state = ParserState::new(input);
+        let mut result = KqlPestParser::parse(Rule::parse_expression, input).unwrap();
+        let expressions = parse_parse_expression(result.next().unwrap(), &state).unwrap();
+
+        assert_eq!(1, expressions.len());
+        if let TransformExpression::Set(set_expr) = &expressions[0] {
+            // Verify integer conversion with correct pattern and group name
+            if let ImmutableValueExpression::Scalar(ScalarExpression::Convert(
+                ConvertScalarExpression::Integer(conversion),
+            )) = set_expr.get_source()
+            {
+                if let ScalarExpression::Text(TextScalarExpression::Extract(extract)) =
+                    conversion.get_inner_expression()
+                {
+                    if let ScalarExpression::Static(StaticScalarExpression::String(pattern)) =
+                        extract.get_pattern_expression()
+                    {
+                        assert_eq!(pattern.get_value(), "sevnum:(?P<SeverityNumber>.*)");
+                    }
+                    if let ScalarExpression::Static(StaticScalarExpression::String(group)) =
+                        extract.get_capture_name_or_index()
+                    {
+                        assert_eq!(group.get_value(), "SeverityNumber");
+                    }
+                }
+            }
+        }
+
+        // Test grammar errors
+        for invalid in ["parse", "parse EventText", "parse with \"*\" col:string"] {
+            assert!(
+                KqlPestParser::parse(Rule::parse_expression, invalid).is_err(),
+                "Expected parse error for: {}",
+                invalid
+            );
+        }
     }
 
     #[test]

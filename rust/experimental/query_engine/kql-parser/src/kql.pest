@@ -37,6 +37,7 @@ not_has_token = @{ "!has" }
 not_has_cs_token = @{ "!has_cs" }
 not_in_token = @{ "!in" }
 not_in_insensitive_token = @{ "!in~" }
+matches_regex_token = { "matches" ~ "regex" }
 statement_end_token = { &";" }
 
 // Literals
@@ -149,7 +150,7 @@ scalar_expression = {
 }
 
 comparison_expression = {
-    scalar_expression ~ (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token|equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression
+    scalar_expression ~ (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token|equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token|matches_regex_token) ~ scalar_expression
     | scalar_expression ~ (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
 }
 logical_expressions = _{ comparison_expression|scalar_expression }
@@ -162,6 +163,11 @@ project_expression = { "project" ~ (assignment_expression|accessor_expression) ~
 project_keep_expression = { "project-keep" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
 project_away_expression = { "project-away" ~ (identifier_or_pattern_literal|accessor_expression) ~ ("," ~ (identifier_or_pattern_literal|accessor_expression))* }
 where_expression = { "where" ~ logical_expression }
+parse_expression = { "parse" ~ ("kind" ~ "=" ~ parse_kind)? ~ ("flags" ~ "=" ~ string_literal)? ~ scalar_expression ~ "with" ~ parse_pattern }
+parse_kind = { "simple" | "regex" | "relaxed" }
+parse_pattern = { parse_pattern_element ~ (parse_pattern_element)* }
+parse_pattern_element = { "*" | string_literal | parse_column_spec }
+parse_column_spec = { identifier_literal ~ ":" ~ identifier_literal }
 
 average_aggregate_expression = {
     "avg" ~ "(" ~ scalar_expression ~ ")"
@@ -208,6 +214,7 @@ tabular_expressions = _{
     | project_keep_expression
     | project_away_expression
     | where_expression
+    | parse_expression
     | summarize_expression
 }
 

@@ -417,3 +417,112 @@ fn test_coalesce_function() {
     );
     run_test("coalesce(tolong('invalid'), 18)", "18");
 }
+
+#[test]
+fn test_parse_function() {
+    let log = LogRecord::new().with_attribute(
+        "message",
+        AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+            "Event: NotifySliceRelease".into(),
+        ))),
+    );
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "source | parse Attributes['message'] with \"Event:\" resourceName:string";
+
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(&query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    // This would validate that the parsed value was extracted and stored
+    assert_eq!(
+        " NotifySliceRelease",
+        log.attributes
+            .get("resourceName")
+            .unwrap()
+            .to_value()
+            .to_string()
+    );
+}
+
+#[test]
+fn test_matches_regex_function() {
+    let log1 = LogRecord::new().with_attribute(
+        "message",
+        AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+            "Event: NotifySliceRelease".into(),
+        ))),
+    );
+
+    let log2 = LogRecord::new().with_attribute(
+        "message",
+        AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+            "Warning: Something went wrong".into(),
+        ))),
+    );
+
+    let log3 = LogRecord::new().with_attribute(
+        "message",
+        AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+            "Event: DataProcessed".into(),
+        ))),
+    );
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(log1)
+                .with_log_record(log2)
+                .with_log_record(log3),
+        ),
+    );
+
+    let query = "source | where Attributes['message'] matches regex 'Event: .*'";
+
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(&query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    // Should include only the two logs that match the regex pattern
+    assert_eq!(results.included_records.len(), 2);
+    assert_eq!(results.dropped_records.len(), 1);
+
+    // Verify the included records contain the expected messages
+    let included_messages: Vec<String> = results
+        .included_records
+        .iter()
+        .map(|record| {
+            record
+                .get_record()
+                .attributes
+                .get("message")
+                .unwrap()
+                .to_value()
+                .to_string()
+        })
+        .collect();
+
+    assert!(included_messages.contains(&"Event: NotifySliceRelease".to_string()));
+    assert!(included_messages.contains(&"Event: DataProcessed".to_string()));
+    assert!(!included_messages.contains(&"Warning: Something went wrong".to_string()));
+}

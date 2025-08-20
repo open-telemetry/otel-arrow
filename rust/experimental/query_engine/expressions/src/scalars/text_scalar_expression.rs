@@ -8,6 +8,12 @@ pub enum TextScalarExpression {
     /// Returns a string with all occurrences of a lookup value replaced with a
     /// replacement value or null for invalid input.
     Replace(ReplaceTextScalarExpression),
+
+    /// Returns true if regex expression matches the input.
+    Match(MatchTextScalarExpression),
+
+    /// Returns the first string value for a named capture in a regex for the input string
+    Extract(ExtractTextScalarExpression),
 }
 
 impl TextScalarExpression {
@@ -17,6 +23,8 @@ impl TextScalarExpression {
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
             TextScalarExpression::Replace(r) => r.try_resolve_value_type(pipeline),
+            TextScalarExpression::Match(m) => m.try_resolve_value_type(pipeline),
+            TextScalarExpression::Extract(e) => e.try_resolve_value_type(pipeline),
         }
     }
 
@@ -30,6 +38,8 @@ impl TextScalarExpression {
     {
         match self {
             TextScalarExpression::Replace(r) => r.try_resolve_static(pipeline),
+            TextScalarExpression::Match(m) => m.try_resolve_static(pipeline),
+            TextScalarExpression::Extract(e) => e.try_resolve_static(pipeline),
         }
     }
 }
@@ -37,13 +47,17 @@ impl TextScalarExpression {
 impl Expression for TextScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
-            TextScalarExpression::Replace(u) => u.get_query_location(),
+            TextScalarExpression::Replace(r) => r.get_query_location(),
+            TextScalarExpression::Match(m) => m.get_query_location(),
+            TextScalarExpression::Extract(e) => e.get_query_location(),
         }
     }
 
     fn get_name(&self) -> &'static str {
         match self {
             TextScalarExpression::Replace(_) => "TextScalar(Replace)",
+            TextScalarExpression::Match(_) => "TextScalar(Match)",
+            TextScalarExpression::Extract(_) => "TextScalar(Extract)",
         }
     }
 }
@@ -162,6 +176,123 @@ impl Expression for ReplaceTextScalarExpression {
 
     fn get_name(&self) -> &'static str {
         "ReplaceTextScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchTextScalarExpression {
+    query_location: QueryLocation,
+    input_expression: Box<ScalarExpression>,
+    pattern: Box<ScalarExpression>,
+}
+
+impl MatchTextScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        input_expression: ScalarExpression,
+        pattern: ScalarExpression,
+    ) -> MatchTextScalarExpression {
+        Self {
+            query_location,
+            input_expression: input_expression.into(),
+            pattern: pattern.into(),
+        }
+    }
+
+    pub fn get_input_expression(&self) -> &ScalarExpression {
+        &self.input_expression
+    }
+
+    pub fn get_pattern(&self) -> &ScalarExpression {
+        &self.pattern
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        _pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        // Match always returns a boolean value (true if pattern matches, false otherwise)
+        Ok(Some(ValueType::Boolean))
+    }
+
+    pub(crate) fn try_resolve_static(
+        &self,
+        _pipeline: &PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+        // Match cannot be resolved statically since it depends on runtime input
+        Ok(None)
+    }
+}
+
+impl Expression for MatchTextScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "MatchTextScalarExpression"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtractTextScalarExpression {
+    query_location: QueryLocation,
+    input_expression: Box<ScalarExpression>,
+    pattern_expression: Box<ScalarExpression>,
+    capture_name_or_index: Box<ScalarExpression>,
+}
+
+impl ExtractTextScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        input_expression: ScalarExpression,
+        pattern_expression: ScalarExpression,
+        capture_name_or_index: ScalarExpression,
+    ) -> ExtractTextScalarExpression {
+        Self {
+            query_location,
+            input_expression: input_expression.into(),
+            pattern_expression: pattern_expression.into(),
+            capture_name_or_index: capture_name_or_index.into(),
+        }
+    }
+
+    pub fn get_input_expression(&self) -> &ScalarExpression {
+        &self.input_expression
+    }
+
+    pub fn get_pattern_expression(&self) -> &ScalarExpression {
+        &self.pattern_expression
+    }
+
+    pub fn get_capture_name_or_index(&self) -> &ScalarExpression {
+        &self.capture_name_or_index
+    }
+
+    pub(crate) fn try_resolve_value_type(
+        &self,
+        _pipeline: &PipelineExpression,
+    ) -> Result<Option<ValueType>, ExpressionError> {
+        // Extract always returns a string value (the extracted text)
+        Ok(Some(ValueType::String))
+    }
+
+    pub(crate) fn try_resolve_static(
+        &self,
+        _pipeline: &PipelineExpression,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+        // Extract cannot be resolved statically since it depends on runtime input
+        Ok(None)
+    }
+}
+
+impl Expression for ExtractTextScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ExtractTextScalarExpression"
     }
 }
 
@@ -285,5 +416,196 @@ mod tests {
                 Some(Value::Null),
             ),
         ]);
+    }
+
+    #[test]
+    pub fn test_match_text_scalar_expression_try_resolve() {
+        fn run_test_success(
+            input_expression: ScalarExpression,
+            pattern: ScalarExpression,
+            expected_type: Option<ValueType>,
+        ) {
+            let pipeline = Default::default();
+
+            let expression = MatchTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                input_expression,
+                pattern,
+            );
+
+            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            assert_eq!(expected_type, actual_type);
+
+            let actual_value = expression
+                .try_resolve_static(&pipeline)
+                .unwrap()
+                .map(|v| v.get_value_type());
+            // Match should always return None for static resolution
+            assert_eq!(None, actual_value);
+        }
+
+        // Test with static input and pattern - should always return Boolean type but no static value
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: NotifySliceRelease",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: .*",
+            ))),
+            Some(ValueType::Boolean),
+        );
+
+        // Test with dynamic input - should still return Boolean type
+        run_test_success(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "message",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: .*",
+            ))),
+            Some(ValueType::Boolean),
+        );
+    }
+
+    #[test]
+    pub fn test_extract_text_scalar_expression_try_resolve() {
+        fn run_test_success(
+            input_expression: ScalarExpression,
+            pattern: ScalarExpression,
+            capture_group: ScalarExpression,
+            expected_type: Option<ValueType>,
+        ) {
+            let pipeline = Default::default();
+
+            let expression = ExtractTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                input_expression,
+                pattern,
+                capture_group,
+            );
+
+            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            assert_eq!(expected_type, actual_type);
+
+            let actual_value = expression
+                .try_resolve_static(&pipeline)
+                .unwrap()
+                .map(|v| v.get_value_type());
+            // Extract should always return None for static resolution
+            assert_eq!(None, actual_value);
+        }
+
+        // Test with static input and pattern - should always return String type but no static value
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: NotifySliceRelease",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: (?P<resourceName>.*)",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "resourceName",
+            ))),
+            Some(ValueType::String),
+        );
+
+        // Test with integer index instead of string
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: NotifySliceRelease",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: (.*)",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+            )),
+            Some(ValueType::String),
+        );
+
+        // Test with dynamic input - should still return String type
+        run_test_success(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "message",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: (?P<resourceName>.*)",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "resourceName",
+            ))),
+            Some(ValueType::String),
+        );
+
+        // Test with dynamic pattern - should still return String type
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "Event: NotifySliceRelease",
+            ))),
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "pattern",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "resourceName",
+            ))),
+            Some(ValueType::String),
+        );
+
+        // Test with both dynamic - should still return String type
+        run_test_success(
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "input",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "pattern",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "name",
+            ))),
+            Some(ValueType::String),
+        );
     }
 }

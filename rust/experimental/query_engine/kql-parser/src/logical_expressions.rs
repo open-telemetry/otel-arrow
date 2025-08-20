@@ -181,6 +181,13 @@ pub(crate) fn parse_comparison_expression(
                         false,
                     )),
                 ))),
+                Rule::matches_regex_token => {
+                    // Create a MatchTextScalarExpression and wrap it in a LogicalExpression::Scalar
+                    let match_expr = ScalarExpression::Text(TextScalarExpression::Match(
+                        MatchTextScalarExpression::new(query_location.clone(), left, right),
+                    ));
+                    Ok(LogicalExpression::Scalar(match_expr))
+                }
 
                 _ => panic!("Unexpected rule in operation_rule: {operation_rule}"),
             }
@@ -502,6 +509,8 @@ mod tests {
                 "(true)",
                 "(true or variable['a'])",
                 "(variable['a'] == 'hello' or variable.b == 'world') and datetime(6/1/2025) > datetime(1/1/2025)",
+                "message matches regex 'Event: .*'",
+                "'hello' matches regex '[a-z]+'",
             ],
             &["!"],
         );
@@ -906,6 +915,55 @@ mod tests {
                     true, // !in~ is case_insensitive
                 )),
             )),
+        );
+    }
+
+    #[test]
+    fn test_parse_matches_regex_expression() {
+        let run_test_success = |input: &str, expected: LogicalExpression| {
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
+
+            let expression = parse_logical_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "source.message matches regex 'Event: .*'",
+            LogicalExpression::Scalar(ScalarExpression::Text(TextScalarExpression::Match(
+                MatchTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "message",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "Event: .*"),
+                    )),
+                ),
+            ))),
+        );
+
+        run_test_success(
+            "'hello world' matches regex '[a-z]+'",
+            LogicalExpression::Scalar(ScalarExpression::Text(TextScalarExpression::Match(
+                MatchTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "[a-z]+"),
+                    )),
+                ),
+            ))),
         );
     }
 }
