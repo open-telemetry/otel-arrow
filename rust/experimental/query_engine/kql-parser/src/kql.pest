@@ -167,7 +167,7 @@ parse_expression = { "parse" ~ ("kind" ~ "=" ~ parse_kind)? ~ ("flags" ~ "=" ~ s
 parse_kind = { "simple" | "regex" | "relaxed" }
 parse_pattern = { parse_pattern_element ~ (parse_pattern_element)* }
 parse_pattern_element = { "*" | string_literal | parse_column_spec }
-parse_column_spec = { identifier_literal ~ ":" ~ identifier_literal }
+parse_column_spec = { identifier_literal ~ (":" ~ identifier_literal)? }
 
 average_aggregate_expression = {
     "avg" ~ "(" ~ scalar_expression ~ ")"

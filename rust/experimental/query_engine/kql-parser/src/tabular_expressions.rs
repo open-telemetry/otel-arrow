@@ -533,11 +533,13 @@ fn parse_parse_pattern_element(
                     Rule::parse_column_spec => {
                         let mut parts = inner_rule.into_inner();
                         let name_rule = parts.next().unwrap();
-                        let type_rule = parts.next().unwrap();
+                        let type_rule = parts.next(); // Type is now optional
 
                         Ok(ParsePatternElement::Column {
                             name: name_rule.as_str().to_string(),
-                            column_type: type_rule.as_str().to_string(),
+                            column_type: type_rule
+                                .map(|r| r.as_str().to_string())
+                                .unwrap_or_else(|| "string".to_string()), // Default to string when not specified
                         })
                     }
                     _ => Err(ParserError::SyntaxError(
@@ -2426,6 +2428,10 @@ mod tests {
                 "parse EventText with \"*\" col1:string \"*\" col2:string",
                 "parse EventText with \"name=\" name:string \", count=\" count:long \", value=\" value:double \", active=\" active:bool \", time=\" time:datetime",
                 "parse kind=regex flags=\"i\" EventText with \"(.*?)\" col:string",
+                // Optional type tests
+                "parse EventText with \"data:\" field",
+                "parse EventText with \"*\" col1 \"*\" col2:int",
+                "parse EventText with \"name:\" userName \", id:\" userId:long",
             ],
             &[
                 "parse",                       // missing input expression
@@ -2583,6 +2589,14 @@ mod tests {
                 }
             }
         }
+
+        // Test optional column types (should default to string when not specified)
+        run_test("parse EventText with \"data:\" field", vec!["field"]);
+        run_test("parse EventText with \"*\" col1 \"*\" col2:int", vec!["col1", "col2"]);
+        run_test("parse EventText with \"name:\" userName \", id:\" userId:long", vec!["userName", "userId"]);
+
+        // Test that unsupported column types still default to string (no conversion)
+        run_test("parse EventText with \"data:\" field:unknown", vec!["field"]);
 
         // Test grammar errors
         for invalid in ["parse", "parse EventText", "parse with \"*\" col:string"] {
