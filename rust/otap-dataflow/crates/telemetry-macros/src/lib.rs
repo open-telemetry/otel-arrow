@@ -87,13 +87,7 @@ pub fn derive_multivariate_metrics(input: TokenStream) -> TokenStream {
 
     let generated = quote! {
         impl #generics otap_df_telemetry::metrics::MultivariateMetrics for #struct_ident #generics {
-            fn register_into(&mut self, registry: &mut otap_df_telemetry::registry::MetricsRegistry, attrs: otap_df_telemetry::attributes::NodeStaticAttrs) {
-                let k = registry.insert_default::<Self>(attrs);
-                self.key = Some(k);
-            }
-
             fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
-                // A single static descriptor per type
                 static #desc_ident: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
                     name: #metrics_name,
                     fields: &[
@@ -109,31 +103,14 @@ pub fn derive_multivariate_metrics(input: TokenStream) -> TokenStream {
             }
 
             fn to_vec(&self) -> ::std::vec::Vec<u64> {
-                // Efficient implementation: preallocate exact size and push in descriptor order
                 let mut out = ::std::vec::Vec::with_capacity(self.descriptor().fields.len());
                 #( out.push(self.#metric_field_idents.get()); )*
                 out
             }
 
-            fn merge_from_same_kind(&mut self, other: &dyn otap_df_telemetry::metrics::MultivariateMetrics) {
-                let o = other.as_any().downcast_ref::<Self>().expect("type mismatch in merge_from_same_kind");
-                #( self.#metric_field_idents.add(o.#metric_field_idents.get()); )*
-            }
+            fn zero(&mut self) { #( self.#metric_field_idents.set(0); )* }
 
-            fn aggregate_into(&self, registry: &mut otap_df_telemetry::registry::MetricsRegistryHandle) -> Result<(), otap_df_telemetry::error::Error> {
-                if let Some(k) = self.key { registry.add_metrics(k, self); Ok(()) } else { Err(otap_df_telemetry::error::Error::MetricsNotRegistered { descriptor: self.descriptor() }) }
-            }
-
-            fn zero(&mut self) {
-                #( self.#metric_field_idents.set(0); )*
-            }
-
-            fn has_non_zero(&self) -> bool {
-                self.field_values().any(|(_, v)| v != 0)
-            }
-
-            fn as_any(&self) -> &dyn std::any::Any { self }
-            fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+            fn has_non_zero(&self) -> bool { #( if self.#metric_field_idents.get() != 0 { return true; } )* false }
         }
     };
 

@@ -2,12 +2,12 @@
 
 //! Collector task for internal metrics.
 
-use crate::metrics::MetricsSnapshot;
-use crate::registry::MetricsRegistryHandle;
-use tokio::time::{interval, Duration};
 use crate::error::Error;
+use crate::metrics::MvMetricsSnapshot;
 use crate::pipeline::{LineProtocolPipeline, MetricsPipeline};
+use crate::registry::MetricsRegistryHandle;
 use crate::reporter::MetricsReporter;
+use tokio::time::{interval, Duration};
 
 /// Metrics collector.
 ///
@@ -20,14 +20,13 @@ pub struct MetricsCollector {
     /// Receiver for incoming metrics.
     /// The message is a tuple of (MetricsKey, MultivariateMetrics).
     /// The metrics key is the aggregation key for the metrics,
-    metrics_receiver: flume::Receiver<MetricsSnapshot>,
+    metrics_receiver: flume::Receiver<MvMetricsSnapshot>,
 }
 
 impl MetricsCollector {
     /// Creates a new `MetricsAggregator`.
     pub(crate) fn new(registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
-        let (metrics_sender, metrics_receiver) =
-            flume::bounded::<MetricsSnapshot>(100);
+        let (metrics_sender, metrics_receiver) = flume::bounded::<MvMetricsSnapshot>(100);
 
         (
             Self {
@@ -40,7 +39,7 @@ impl MetricsCollector {
 
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
-    pub async fn run_collection_loop(mut self) -> Result<(), Error> {
+    pub async fn run_collection_loop(self) -> Result<(), Error> {
         let mut timer = interval(Duration::from_secs(1));
         let reporter = LineProtocolPipeline;
 
@@ -48,15 +47,15 @@ impl MetricsCollector {
             tokio::select! {
                 // ToDo need to be moved into a CollectorExporter
                 _ = timer.tick() => {
-                    self.registry.for_each_changed_and_zero(|m, attrs| {
+                    self.registry.for_each_changed_field_iter_and_zero(|measurement, field_iter, attrs| {
                         // Ignore individual report errors for now; could log.
-                        let _ = reporter.report(m, attrs.clone());
+                        let _ = reporter.report_iter(measurement, field_iter, attrs);
                     });
                 }
                 result = self.metrics_receiver.recv_async() => {
                     match result {
                         Ok(metrics) => {
-                            metrics.aggregate_into(&mut self.registry)?;
+                            self.registry.add_metrics(metrics.key, &metrics.metrics);
                         }
                         Err(_) => {
                             // Channel closed, exit the loop

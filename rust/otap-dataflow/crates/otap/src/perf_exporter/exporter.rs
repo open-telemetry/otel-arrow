@@ -25,6 +25,7 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_telemetry::counter::Counter;
+use otap_df_telemetry::metrics::MvMetrics;
 use otap_df_telemetry_macros::telemetry_metrics;
 use otap_df_telemetry::registry::MetricsKey;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -73,7 +74,7 @@ pub struct PerfExporter {
     config: Config,
     output: Option<String>,
 
-    metrics: PerfExporterPdataMetrics,
+    metrics: MvMetrics<PerfExporterPdataMetrics>,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -98,11 +99,12 @@ pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 impl PerfExporter {
     /// creates a perf exporter with the provided config
     #[must_use]
-    pub fn new(config: Config, output: Option<String>) -> Self {
+    pub fn new(pipeline_ctx: PipelineContext, config: Config, output: Option<String>) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
         PerfExporter {
             config,
             output,
-            metrics: Default::default(),
+            metrics,
         }
     }
 
@@ -111,17 +113,13 @@ impl PerfExporter {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-    let mut metrics = PerfExporterPdataMetrics::default();
-        pipeline_ctx.register_metrics(&mut metrics);
-        Ok(PerfExporter {
-            config: serde_json::from_value(config.clone()).map_err(|e| {
+        Ok(PerfExporter::new(pipeline_ctx, serde_json::from_value(config.clone()).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
-            })?,
-            output: None,
-            metrics,
-        })
+            })?, None)
+
+        )
     }
 }
 
@@ -284,6 +282,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     for arrow_payload in &batch.arrow_payloads {
                         match ArrowPayloadType::try_from(arrow_payload.r#type) {
                             Ok(ArrowPayloadType::UnivariateMetrics) => {
+                                // Increment metrics counter (number of metric records)
                                 self.metrics.metrics.add(arrow_payload.record.len() as u64);
                                 break;
                             }
@@ -620,10 +619,12 @@ mod tests {
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
     use fluke_hpack::Encoder;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_telemetry::registry::{MetricsRegistry, MetricsRegistryHandle};
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
@@ -816,8 +817,11 @@ mod tests {
         let config = Config::new(1000, 0.3, true, true, true, true, true);
         let output_file = "perf_output.txt".to_string();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let exporter = ExporterWrapper::local(
-            PerfExporter::new(config, Some(output_file.clone())),
+            PerfExporter::new(pipeline_ctx, config, Some(output_file.clone())),
             node_config,
             test_runtime.config(),
         );

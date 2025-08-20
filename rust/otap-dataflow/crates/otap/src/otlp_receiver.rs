@@ -16,6 +16,7 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::counter::Counter;
+use otap_df_telemetry::metrics::MvMetrics;
 use otap_df_telemetry_macros::telemetry_metrics;
 use otap_df_telemetry::registry::MetricsKey;
 use serde::Deserialize;
@@ -39,7 +40,7 @@ pub struct Config {
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
 pub struct OTLPReceiver {
     config: Config,
-    metrics: OtlpReceiverMetrics,
+    metrics: MvMetrics<OtlpReceiverMetrics>,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory
@@ -59,7 +60,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 
 impl OTLPReceiver {
     /// Creates a new OTLPReceiver from a configuration object
-    pub fn from_config(pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -67,8 +68,7 @@ impl OTLPReceiver {
         })?;
 
         // Register OTLP receiver metrics for this node.
-        let mut metrics = OtlpReceiverMetrics::default();
-        pipeline.register_metrics(&mut metrics);
+        let metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
 
         Ok(OTLPReceiver { config, metrics })
     }

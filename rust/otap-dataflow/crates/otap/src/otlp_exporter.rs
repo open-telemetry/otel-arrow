@@ -15,6 +15,7 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
+use otap_df_telemetry::metrics::MvMetrics;
 use otap_df_telemetry_macros::telemetry_metrics;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -38,7 +39,7 @@ pub struct Config {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    metrics: OtlpExporterMetrics,
+    metrics: MvMetrics<OtlpExporterMetrics>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -58,8 +59,7 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 impl OTLPExporter {
     /// create a new instance of the `[OTLPExporter]` from json config value
     pub fn from_config(pipeline_ctx: PipelineContext, config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
-        let mut metrics = OtlpExporterMetrics::default();
-        pipeline_ctx.register_metrics(&mut metrics);
+        let metrics = pipeline_ctx.register_metrics::<OtlpExporterMetrics>();
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
