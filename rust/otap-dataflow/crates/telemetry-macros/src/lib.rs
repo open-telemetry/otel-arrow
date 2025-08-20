@@ -91,7 +91,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                 static #desc_ident: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
                     name: #metrics_name,
                     fields: &[
-                        #( otap_df_telemetry::descriptor::MetricsField { name: #metric_field_names, unit: #metric_field_units, kind: otap_df_telemetry::descriptor::MetricsKind::Counter } ),*
+                        #( otap_df_telemetry::descriptor::MetricsField { name: #metric_field_names, unit: #metric_field_units, instrument: otap_df_telemetry::descriptor::Instrument::Counter } ),*
                     ],
                 };
                 &#desc_ident
@@ -101,7 +101,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                 #( out.push(self.#metric_field_idents.get()); )*
                 out
             }
-            fn clear_values(&mut self) { #( self.#metric_field_idents.set(0); )* }
+            fn clear_values(&mut self) { #( self.#metric_field_idents.reset(); )* }
             fn needs_flush(&self) -> bool { #( if self.#metric_field_idents.get() != 0 { return true; } )* false }
         }
     };

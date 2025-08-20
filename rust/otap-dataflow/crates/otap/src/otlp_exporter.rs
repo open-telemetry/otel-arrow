@@ -21,7 +21,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::counter::Counter;
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::registry::MetricsKey;
 
 /// The URN for the OTLP exporter

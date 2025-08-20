@@ -2,22 +2,29 @@
 
 //! Metric and Attribute descriptor types for metrics reflection.
 
-/// Enumerates supported metric field kinds.
+/// The type of instrument used to record the metric. Must be one of the following variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetricsKind {
-    /// Monotonic counter (u64) aggregated by summation.
+pub enum Instrument {
+    /// A value that can only go up or be reset to 0, used for counts
     Counter,
+    /// A value that can go up and down, used for sizes or amount of items in a queue.
+    UpDownCounter,
+    /// A value that can arbitrarily go up and down, used for temperature or current memory usage
+    Gauge,
+    /// Distribution of recorded values, used for latencies or request sizes
+    Histogram,
 }
 
 /// Metadata describing a single field inside a metrics struct.
 #[derive(Debug, Clone, Copy)]
 pub struct MetricsField {
-    /// Canonical metric name (e.g., "bytes.rx").
+    /// Canonical metric name (e.g., "bytes.rx"). Uniquely identifies the metric.
     pub name: &'static str,
-    /// Unit (e.g., "bytes", "count").
+    /// The unit in which the metric is measured matching
+    /// [Unified Code for Units of Measure](https://unitsofmeasure.org/ucum.html).
     pub unit: &'static str,
-    /// Field kind (counter, etc.).
-    pub kind: MetricsKind,
+    /// The type of instrument used to record the metric.
+    pub instrument: Instrument,
 }
 
 /// Descriptor for a multivariate metrics.

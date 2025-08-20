@@ -15,7 +15,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
-use otap_df_telemetry::counter::Counter;
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use otap_df_telemetry::registry::MetricsKey;

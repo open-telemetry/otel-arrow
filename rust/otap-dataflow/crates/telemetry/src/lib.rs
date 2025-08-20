@@ -27,7 +27,7 @@ use crate::registry::MetricsRegistryHandle;
 pub mod registry;
 pub mod metrics;
 pub mod collector;
-pub mod counter;
+pub mod instrument;
 pub mod descriptor;
 pub mod attributes;
 pub mod reporter;
