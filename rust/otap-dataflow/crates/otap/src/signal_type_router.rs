@@ -162,8 +162,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_process_messages_pass_through() {
+    #[tokio::test]
+    async fn test_process_messages_pass_through() {
         use otap_df_config::node::NodeUserConfig;
         use std::sync::Arc;
 
@@ -176,27 +176,32 @@ mod tests {
             test_runtime.config(),
         );
 
-        let validation = test_runtime.set_processor(wrapper).run_test(|mut ctx| {
-            Box::pin(async move {
-                // Control message is handled and produces no output
-                ctx.process(Message::timer_tick_ctrl_msg())
-                    .await
-                    .expect("control processing failed");
-                assert!(ctx.drain_pdata().await.is_empty());
+        test_runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| {
+                Box::pin(async move {
+                    // Control message is handled and produces no output
+                    ctx.process(Message::timer_tick_ctrl_msg())
+                        .await
+                        .expect("control processing failed");
+                    assert!(ctx.drain_pdata().await.is_empty());
 
-                // Data message is forwarded
-                use crate::grpc::OtapArrowBytes;
-                use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-                let data = OtapArrowBytes::ArrowLogs(BatchArrowRecords::default());
-                ctx.process(Message::data_msg(data.into()))
-                    .await
-                    .expect("data processing failed");
-                let forwarded = ctx.drain_pdata().await;
-                assert_eq!(forwarded.len(), 1);
+                    // Data message is forwarded
+                    use crate::grpc::OtapArrowBytes;
+                    use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+                    let data = OtapArrowBytes::ArrowLogs(BatchArrowRecords::default());
+                    ctx.process(Message::data_msg(data.into()))
+                        .await
+                        .expect("data processing failed");
+                    let forwarded = ctx.drain_pdata().await;
+                    assert_eq!(forwarded.len(), 1);
+                    forwarded
+                })
             })
-        });
-
-        // No-op validation closure
-        validation.validate(|_| async {});
+            .await
+            .validate(|_| async {
+                // No-op validation closure
+            })
+            .await;
     }
 }

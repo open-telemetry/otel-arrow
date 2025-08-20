@@ -18,6 +18,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
 
@@ -28,8 +29,16 @@ pub struct TestContext<PData> {
 }
 
 /// Context used during the validation phase of a test.
-pub struct ValidateContext {
+pub struct ValidateContext<PData> {
     counters: CtrlMsgCounters,
+    output: Vec<PData>,
+}
+
+impl<PData: Clone> ValidateContext<PData> {
+    /// PData sent by the component before shutdown.
+    pub fn output(&self) -> Vec<PData> {
+        self.output.clone()
+    }
 }
 
 impl<PData> TestContext<PData> {
@@ -86,7 +95,7 @@ impl<PData> TestContext<PData> {
     }
 }
 
-impl ValidateContext {
+impl<PData> ValidateContext<PData> {
     /// Returns the control message counters.
     #[must_use]
     pub fn counters(&self) -> CtrlMsgCounters {
@@ -123,10 +132,11 @@ pub struct TestPhase<PData> {
 }
 
 /// Data and operations for the validation phase of a processor.
-pub struct ValidationPhase {
+pub struct ValidationPhase<PData> {
     rt: tokio::runtime::Runtime,
     local_tasks: LocalSet,
     counters: CtrlMsgCounters,
+    output: JoinHandle<Vec<PData>>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -213,13 +223,13 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 
 impl<PData: Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
-    pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase
+    pub async fn run_test<F, Fut>(self, f: F) -> ValidationPhase<PData>
     where
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
-        Fut: Future<Output = ()> + 'static,
+        Fut: Future<Output = Vec<PData>> + 'static,
     {
         // The entire scenario is run to completion before the validation phase
-        self.rt.block_on(async move {
+        let output = self.local_tasks.spawn_local(async move {
             let runtime = self
                 .processor
                 .prepare_runtime()
@@ -227,11 +237,12 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 .expect("Failed to prepare runtime");
             let mut context = TestContext::new(runtime);
             context.output_receiver = self.output_receiver;
-            f(context).await;
+            f(context).await
         });
 
         // Prepare for next phase
         ValidationPhase {
+            output,
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
@@ -239,7 +250,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     }
 }
 
-impl ValidationPhase {
+impl<PData> ValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///
@@ -252,13 +263,14 @@ impl ValidationPhase {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn validate<F, Fut, T>(self, future_fn: F) -> T
+    pub async fn validate<F, Fut, T>(self, future_fn: F) -> T
     where
-        F: FnOnce(ValidateContext) -> Fut,
+        F: FnOnce(ValidateContext<PData>) -> Fut,
         Fut: Future<Output = T>,
     {
         let context = ValidateContext {
             counters: self.counters,
+            output: self.output.await.unwrap(),
         };
 
         // First run all the spawned tasks to completion
