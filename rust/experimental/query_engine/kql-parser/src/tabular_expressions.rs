@@ -2592,11 +2592,20 @@ mod tests {
 
         // Test optional column types (should default to string when not specified)
         run_test("parse EventText with \"data:\" field", vec!["field"]);
-        run_test("parse EventText with \"*\" col1 \"*\" col2:int", vec!["col1", "col2"]);
-        run_test("parse EventText with \"name:\" userName \", id:\" userId:long", vec!["userName", "userId"]);
+        run_test(
+            "parse EventText with \"*\" col1 \"*\" col2:int",
+            vec!["col1", "col2"],
+        );
+        run_test(
+            "parse EventText with \"name:\" userName \", id:\" userId:long",
+            vec!["userName", "userId"],
+        );
 
         // Test that unsupported column types still default to string (no conversion)
-        run_test("parse EventText with \"data:\" field:unknown", vec!["field"]);
+        run_test(
+            "parse EventText with \"data:\" field:unknown",
+            vec!["field"],
+        );
 
         // Test grammar errors
         for invalid in ["parse", "parse EventText", "parse with \"*\" col:string"] {
