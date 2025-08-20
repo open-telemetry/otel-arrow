@@ -50,7 +50,7 @@ where
 
 fn execute_unary_operation<'a, 'b, TRecord: Record, F>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
-    unary_expression: &'a UnaryMathmaticalScalarExpression,
+    unary_expression: &'a UnaryMathematicalScalarExpression,
     op: F,
 ) -> Result<ResolvedValue<'b>, ExpressionError>
 where
@@ -74,7 +74,7 @@ where
 
 fn execute_binary_operation<'a, 'b, TRecord: Record, F>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
-    binary_expression: &'a BinaryMathmaticalScalarExpression,
+    binary_expression: &'a BinaryMathematicalScalarExpression,
     op: F,
 ) -> Result<ResolvedValue<'b>, ExpressionError>
 where
@@ -106,10 +106,10 @@ mod tests {
     fn test_execute_ceiling_floor_negate_math_scalar_expression() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, Value)>)
         where
-            F: Fn(UnaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(UnaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (inner, expected_value) in input {
-                let e = ScalarExpression::Math(build(UnaryMathmaticalScalarExpression::new(
+                let e = ScalarExpression::Math(build(UnaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     inner,
                 )));
@@ -236,10 +236,10 @@ mod tests {
     fn test_execute_add_subtract_multiply_divide_math_scalar_expression() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, ScalarExpression, Value)>)
         where
-            F: Fn(BinaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(BinaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (left, right, expected_value) in input {
-                let e = ScalarExpression::Math(build(BinaryMathmaticalScalarExpression::new(
+                let e = ScalarExpression::Math(build(BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     left,
                     right,
@@ -535,10 +535,10 @@ mod tests {
     fn test_execute_modulus_and_bin_math_scalar_expression() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, ScalarExpression, Value)>)
         where
-            F: Fn(BinaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(BinaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (left, right, expected_value) in input {
-                let e = ScalarExpression::Math(build(BinaryMathmaticalScalarExpression::new(
+                let e = ScalarExpression::Math(build(BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     left,
                     right,

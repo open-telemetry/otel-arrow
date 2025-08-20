@@ -20,7 +20,7 @@ pub(crate) fn parse_negate_expression(
     let scalar = parse_scalar_expression(scalar_expr_rule, state)?;
 
     Ok(ScalarExpression::Math(MathScalarExpression::Negate(
-        UnaryMathmaticalScalarExpression::new(query_location, scalar),
+        UnaryMathematicalScalarExpression::new(query_location, scalar),
     )))
 }
 
@@ -40,10 +40,18 @@ pub(crate) fn parse_arithmetic_expression(
 
         current_expr = match op_rule.as_rule() {
             Rule::plus_token => ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
+                BinaryMathematicalScalarExpression::new(
+                    query_location.clone(),
+                    current_expr,
+                    right,
+                ),
             )),
             Rule::minus_token => ScalarExpression::Math(MathScalarExpression::Subtract(
-                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
+                BinaryMathematicalScalarExpression::new(
+                    query_location.clone(),
+                    current_expr,
+                    right,
+                ),
             )),
             _ => panic!("Unexpected operator in arithmetic_expression: {op_rule}"),
         };
@@ -66,13 +74,25 @@ fn parse_arithmetic_factor(
 
         current_expr = match op_rule.as_rule() {
             Rule::multiply_token => ScalarExpression::Math(MathScalarExpression::Multiply(
-                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
+                BinaryMathematicalScalarExpression::new(
+                    query_location.clone(),
+                    current_expr,
+                    right,
+                ),
             )),
             Rule::divide_token => ScalarExpression::Math(MathScalarExpression::Divide(
-                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
+                BinaryMathematicalScalarExpression::new(
+                    query_location.clone(),
+                    current_expr,
+                    right,
+                ),
             )),
             Rule::modulo_token => ScalarExpression::Math(MathScalarExpression::Modulus(
-                BinaryMathmaticalScalarExpression::new(query_location.clone(), current_expr, right),
+                BinaryMathematicalScalarExpression::new(
+                    query_location.clone(),
+                    current_expr,
+                    right,
+                ),
             )),
             _ => panic!("Unexpected operator in arithmetic_factor: {op_rule}"),
         };
@@ -105,7 +125,7 @@ mod tests {
         run_test_success(
             "(5 + 3)",
             ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
@@ -121,7 +141,7 @@ mod tests {
         run_test_success(
             "(10 - 4)",
             ScalarExpression::Math(MathScalarExpression::Subtract(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
@@ -137,7 +157,7 @@ mod tests {
         run_test_success(
             "(6 * 7)",
             ScalarExpression::Math(MathScalarExpression::Multiply(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
@@ -153,7 +173,7 @@ mod tests {
         run_test_success(
             "(20 / 4)",
             ScalarExpression::Math(MathScalarExpression::Divide(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
@@ -169,7 +189,7 @@ mod tests {
         run_test_success(
             "(10 % 3)",
             ScalarExpression::Math(MathScalarExpression::Modulus(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
@@ -185,13 +205,13 @@ mod tests {
         run_test_success(
             "(2 + 3 * 4)",
             ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
                     )),
                     ScalarExpression::Math(MathScalarExpression::Multiply(
-                        BinaryMathmaticalScalarExpression::new(
+                        BinaryMathematicalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
@@ -209,10 +229,10 @@ mod tests {
         run_test_success(
             "((2 + 3) * 4)",
             ScalarExpression::Math(MathScalarExpression::Multiply(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Math(MathScalarExpression::Add(
-                        BinaryMathmaticalScalarExpression::new(
+                        BinaryMathematicalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
@@ -233,16 +253,16 @@ mod tests {
         run_test_success(
             "(10 + 20 / 4 - 3 * 2)",
             ScalarExpression::Math(MathScalarExpression::Subtract(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Math(MathScalarExpression::Add(
-                        BinaryMathmaticalScalarExpression::new(
+                        BinaryMathematicalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
                             )),
                             ScalarExpression::Math(MathScalarExpression::Divide(
-                                BinaryMathmaticalScalarExpression::new(
+                                BinaryMathematicalScalarExpression::new(
                                     QueryLocation::new_fake(),
                                     ScalarExpression::Static(StaticScalarExpression::Integer(
                                         IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
@@ -255,7 +275,7 @@ mod tests {
                         ),
                     )),
                     ScalarExpression::Math(MathScalarExpression::Multiply(
-                        BinaryMathmaticalScalarExpression::new(
+                        BinaryMathematicalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
@@ -273,7 +293,7 @@ mod tests {
         run_test_success(
             "(4.44 + 2.86)",
             ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::Double(
                         DoubleScalarExpression::new(QueryLocation::new_fake(), 4.44),
@@ -289,7 +309,7 @@ mod tests {
         run_test_success(
             "(x + y)",
             ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -317,10 +337,10 @@ mod tests {
         run_test_success(
             "((2 + 3) * (4 + 5))",
             ScalarExpression::Math(MathScalarExpression::Multiply(
-                BinaryMathmaticalScalarExpression::new(
+                BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Math(MathScalarExpression::Add(
-                        BinaryMathmaticalScalarExpression::new(
+                        BinaryMathematicalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
@@ -331,7 +351,7 @@ mod tests {
                         ),
                     )),
                     ScalarExpression::Math(MathScalarExpression::Add(
-                        BinaryMathmaticalScalarExpression::new(
+                        BinaryMathematicalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Static(StaticScalarExpression::Integer(
                                 IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
