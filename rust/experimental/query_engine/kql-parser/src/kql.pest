@@ -170,6 +170,11 @@ math_expressions = _{
     | bin_expression
 }
 
+now_expression = { "now" ~ "(" ~ scalar_expression? ~ ")" }
+temporal_expressions = _{
+    now_expression
+}
+
 arithmetic_factor = {
     scalar_expression ~ ((multiply_token | divide_token | modulo_token) ~ scalar_expression)*
 }
@@ -191,6 +196,7 @@ scalar_expression = {
     | integer_literal
     | string_literal
     | math_expressions
+    | temporal_expressions
     | accessor_expression
     | ("(" ~ scalar_expression ~ ")")
     | ("(" ~ logical_expression ~ ")")

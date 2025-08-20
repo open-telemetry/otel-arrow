@@ -9,7 +9,7 @@ use crate::{
     Rule, logical_expressions::parse_logical_expression,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
     scalar_mathematical_function_expressions::*, scalar_primitive_expressions::*,
-    scalar_string_function_expressions::*,
+    scalar_string_function_expressions::*, scalar_temporal_function_expressions::*,
 };
 
 pub(crate) fn parse_scalar_expression(
@@ -53,6 +53,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
         Rule::negate_expression => parse_negate_expression(scalar_rule, state)?,
         Rule::bin_expression => parse_bin_expression(scalar_rule, state)?,
+        Rule::now_expression => parse_now_expression(scalar_rule, state)?,
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so
