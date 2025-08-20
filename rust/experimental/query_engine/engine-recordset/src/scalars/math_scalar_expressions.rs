@@ -60,14 +60,7 @@ where
         execute_scalar_expression(execution_context, unary_expression.get_value_expression())?;
 
     match (op)(&value.to_value()) {
-        Some(i) => match i {
-            NumericValue::Integer(i) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
-                IntegerValueStorage::new(i),
-            ))),
-            NumericValue::Double(d) => Ok(ResolvedValue::Computed(OwnedValue::Double(
-                DoubleValueStorage::new(d),
-            ))),
-        },
+        Some(v) => Ok(numeric_value_to_resolved_value(v)),
         None => Ok(ResolvedValue::Computed(OwnedValue::Null)),
     }
 }
@@ -86,15 +79,25 @@ where
         execute_scalar_expression(execution_context, binary_expression.get_right_expression())?;
 
     match (op)(&left.to_value(), &right.to_value()) {
-        Some(v) => match v {
-            NumericValue::Integer(v) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
-                IntegerValueStorage::new(v),
-            ))),
-            NumericValue::Double(v) => Ok(ResolvedValue::Computed(OwnedValue::Double(
-                DoubleValueStorage::new(v),
-            ))),
-        },
+        Some(v) => Ok(numeric_value_to_resolved_value(v)),
         None => Ok(ResolvedValue::Computed(OwnedValue::Null)),
+    }
+}
+
+fn numeric_value_to_resolved_value<'a>(value: NumericValue) -> ResolvedValue<'a> {
+    match value {
+        NumericValue::Integer(i) => {
+            ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
+        }
+        NumericValue::DateTime(d) => {
+            ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
+        }
+        NumericValue::Double(d) => {
+            ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
+        }
+        NumericValue::TimeSpan(t) => {
+            ResolvedValue::Computed(OwnedValue::TimeSpan(TimeSpanValueStorage::new(t)))
+        }
     }
 }
 
