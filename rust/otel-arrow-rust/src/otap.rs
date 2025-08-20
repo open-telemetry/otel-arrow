@@ -11,17 +11,14 @@ use arrow::{
 use transform::{
     materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
     materialize_parent_ids_by_columns, remove_delta_encoding,
+    transport_optimize::{
+        RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_column_encodings, remap_parent_ids,
+    },
 };
 
 use crate::{
-    decode::record_message::RecordMessage,
-    encode::column_encoding::{
-        RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_column_encodings, remap_parent_ids,
-    },
-    error::Result,
-    otap,
-    proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType},
-    schema::consts,
+    decode::record_message::RecordMessage, error::Result,
+    proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts,
 };
 
 pub mod schema;

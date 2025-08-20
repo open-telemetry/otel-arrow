@@ -65,9 +65,11 @@ enum Encoding {
 // for the majority of columns, we'll be able to identify the path within the record batch as
 // the column name directly, but Resource ID and Scope ID, they're typically nested within a
 // struct on the root record so we treat these as special cases.
-/// TODO
+
+/// path within the record batch to the resource ID column
 pub const RESOURCE_ID_COL_PATH: &str = "resource.id";
-/// TODO
+
+/// path within the record batch to the scope ID column
 pub const SCOPE_ID_COL_PATH: &str = "scope.id";
 
 /// specification for encoding that should be applied to the column before it is IPC serialized
@@ -83,12 +85,6 @@ struct ColumnEncoding<'a> {
 }
 
 impl<'a> ColumnEncoding<'a> {
-    /// access the column associated with this [`ColumnEncoding`]
-    // TODO - possibly refactor? This might not need to be a member of this struct
-    fn access_column(&self, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
-        access_column(self.path, schema, columns)
-    }
-
     /// checks if the column associated with this [`ColumnEncoding`] has already had the column
     /// encoding applied.
     ///
@@ -125,7 +121,7 @@ impl<'a> ColumnEncoding<'a> {
     }
 }
 
-/// access the column associated for the possibly nested path
+/// Helper function for accessing the column associated for the (possibly nested) path
 fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
     // handle special case of accessing either the resource ID or scope ID which are nested
     // within a struct
@@ -143,6 +139,7 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
     columns.get(column_idx).cloned()
 }
 
+/// Replaces the column identified by `path` within the array of columns with the new column.
 fn replace_column(
     path: &str,
     encoding: Encoding,
@@ -184,7 +181,7 @@ fn replace_column(
     }
 }
 
-/// sets the encoding metadata on the field metadata for column at path
+/// Sets the encoding metadata on the field metadata for column at path.
 fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding: Encoding) {
     // TODO write tests for this
 
@@ -814,7 +811,7 @@ pub fn apply_column_encodings(
     let mut remapped_parent_ids = Vec::with_capacity(column_encodings.len());
 
     for column_encoding in to_apply {
-        let column = column_encoding.access_column(&schema, &columns).unwrap();
+        let column = access_column(column_encoding.path, &schema, &columns).unwrap();
 
         let encoding_result = match &column_encoding.data_type {
             DataType::UInt16 => {
@@ -946,10 +943,7 @@ mod test {
         datatypes::{Field, Fields, TimeUnit},
     };
 
-    use crate::{
-        otlp::attributes::{parent_id, store::AttributeValueType},
-        schema::FieldExt,
-    };
+    use crate::{otlp::attributes::store::AttributeValueType, schema::FieldExt};
 
     use super::*;
 
@@ -964,18 +958,12 @@ mod test {
             encoding: Encoding::DeltaRemapped,
         };
 
-        let column = column_encoding
-            .access_column(&schema, columns.as_ref())
-            .unwrap();
+        let column = access_column(column_encoding.path, &schema, columns.as_ref()).unwrap();
         assert_eq!(*column, *columns[0]);
 
         // assert what happens if the column isn't present
         column_encoding.path = "b";
-        assert!(
-            column_encoding
-                .access_column(&schema, columns.as_ref())
-                .is_none()
-        )
+        assert!(access_column(column_encoding.path, &schema, columns.as_ref()).is_none())
     }
 
     #[test]
@@ -1008,15 +996,11 @@ mod test {
             encoding: Encoding::DeltaRemapped,
         };
 
-        let column = column_encoding
-            .access_column(&schema, columns.as_ref())
-            .unwrap();
+        let column = access_column(column_encoding.path, &schema, columns.as_ref()).unwrap();
         assert_eq!(*column, resource_ids);
 
         column_encoding.path = SCOPE_ID_COL_PATH;
-        let column = column_encoding
-            .access_column(&schema, columns.as_ref())
-            .unwrap();
+        let column = access_column(column_encoding.path, &schema, columns.as_ref()).unwrap();
         assert_eq!(*column, scope_ids)
     }
 
@@ -1037,19 +1021,11 @@ mod test {
         };
 
         // assert what happens if the struct isn't present
-        assert!(
-            column_encoding
-                .access_column(&schema, columns.as_ref())
-                .is_none()
-        );
+        assert!(access_column(column_encoding.path, &schema, columns.as_ref()).is_none());
 
         // assert what happens if the struct is present, but the ID field isn't present
         column_encoding.path = SCOPE_ID_COL_PATH;
-        assert!(
-            column_encoding
-                .access_column(&schema, columns.as_ref())
-                .is_none()
-        );
+        assert!(access_column(column_encoding.path, &schema, columns.as_ref()).is_none());
     }
 
     #[test]
