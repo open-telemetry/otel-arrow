@@ -24,9 +24,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::datetime_expression => {
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
         }
-        Rule::time_expression => {
-            ScalarExpression::Static(parse_timespan_expression(scalar_rule)?)
-        }
+        Rule::time_expression => ScalarExpression::Static(parse_timespan_expression(scalar_rule)?),
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
         Rule::case_expression => parse_case_expression(scalar_rule, state)?,
         Rule::coalesce_expression => parse_coalesce_expression(scalar_rule, state)?,
@@ -54,6 +52,7 @@ pub(crate) fn parse_scalar_expression(
         }
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
         Rule::negate_expression => parse_negate_expression(scalar_rule, state)?,
+        Rule::bin_expression => parse_bin_expression(scalar_rule, state)?,
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so

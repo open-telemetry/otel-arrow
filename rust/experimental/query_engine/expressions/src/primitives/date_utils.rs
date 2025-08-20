@@ -129,8 +129,18 @@ pub(crate) fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> 
 }
 
 pub(crate) fn parse_timespan(input: &str) -> Result<TimeDelta, ()> {
+    let mut raw_value: String = input.into();
+
     let iso = ISO_TIME_SPAN_REGEX.captures(input);
     if let Some(captures) = iso {
+        let r = captures.get(0).unwrap().range();
+
+        raw_value.replace_range(r, "");
+
+        if !raw_value.trim().is_empty() {
+            return Err(());
+        }
+
         let sign = captures.get(1);
         let days = if let Some(d) = captures.get(2) {
             d.as_str().parse::<i64>().map_err(|_| ())?
@@ -159,10 +169,6 @@ pub(crate) fn parse_timespan(input: &str) -> Result<TimeDelta, ()> {
 
         let mut total_seconds = (days * 24 * 3600) + (hours * 3600) + (minutes * 60) + seconds;
 
-        if sign.is_some() {
-            total_seconds *= -1;
-        }
-
         let mut total_nanoseconds: u32 = 0;
         if let Some(f) = fraction_seconds {
             let digits = f.as_str();
@@ -174,6 +180,15 @@ pub(crate) fn parse_timespan(input: &str) -> Result<TimeDelta, ()> {
                 m /= 10;
             }
             total_nanoseconds += n;
+        }
+
+        if sign.is_some() {
+            if total_nanoseconds > 0 {
+                total_seconds = -total_seconds - 1;
+                total_nanoseconds = 1_000_000_000 - total_nanoseconds;
+            } else {
+                total_seconds *= -1;
+            }
         }
 
         return TimeDelta::new(total_seconds, total_nanoseconds).ok_or(());
@@ -334,6 +349,7 @@ mod tests {
         let now = Utc::now();
 
         run_test_success("12/31/2025", create_utc(2025, 12, 31, 0, 0, 0, 0));
+        run_test_success("   12/31/2025   ", create_utc(2025, 12, 31, 0, 0, 0, 0));
         run_test_success("12/31/50", create_utc(1950, 12, 31, 0, 0, 0, 0));
         run_test_success("12/31/49", create_utc(2049, 12, 31, 0, 0, 0, 0));
         run_test_success("2025/12/31", create_utc(2025, 12, 31, 0, 0, 0, 0));
@@ -447,7 +463,15 @@ mod tests {
             assert_eq!(expected, actual);
         };
 
+        let run_test_failure = |input: &str| {
+            parse_timespan(input).unwrap_err();
+        };
+
+        run_test_failure("hello world");
+        run_test_failure("hello 1.00:00:00 world");
+
         run_test("1.00:00:00", TimeDelta::days(1));
+        run_test("   1.00:00:00   ", TimeDelta::days(1));
         run_test("18.00:00:00", TimeDelta::days(18));
 
         run_test("01:00:00", TimeDelta::hours(1));
@@ -472,11 +496,31 @@ mod tests {
         );
 
         run_test(
-            "-1.23:59:59",
-            TimeDelta::days(-1)
-                - TimeDelta::hours(23)
-                - TimeDelta::minutes(59)
-                - TimeDelta::seconds(59),
+            "23:59:59",
+            TimeDelta::hours(23) + TimeDelta::minutes(59) + TimeDelta::seconds(59),
+        );
+
+        run_test(
+            "-23:59:59",
+            -(TimeDelta::hours(23) + TimeDelta::minutes(59) + TimeDelta::seconds(59)),
+        );
+
+        run_test(
+            "1.23:59:59.001",
+            TimeDelta::days(1)
+                + TimeDelta::hours(23)
+                + TimeDelta::minutes(59)
+                + TimeDelta::seconds(59)
+                + TimeDelta::milliseconds(1),
+        );
+
+        run_test(
+            "-1.23:59:59.001",
+            -(TimeDelta::days(1)
+                + TimeDelta::hours(23)
+                + TimeDelta::minutes(59)
+                + TimeDelta::seconds(59)
+                + TimeDelta::milliseconds(1)),
         );
 
         run_test(

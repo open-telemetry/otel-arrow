@@ -99,27 +99,43 @@ pub(crate) fn parse_timespan_expression(
 
     let first_rule = inner_rules.next().unwrap();
 
-    match first_rule.as_rule() {
+    let string_value = match first_rule.as_rule() {
+        Rule::string_literal => match parse_string_literal(first_rule) {
+            StaticScalarExpression::String(v) => v,
+            _ => panic!("Unexpected type returned from parse_string_literal"),
+        },
         Rule::time_literal => {
-            todo!()
+            StringScalarExpression::new(query_location.clone(), first_rule.as_str())
         }
         Rule::integer_literal => {
-            let i = first_rule.as_str().parse::<i64>().map_err(|_| ParserError::SyntaxError(
-                to_query_location(&first_rule),
-                format!("'{}' could not be parsed as a literal of type 'integer'", first_rule.as_str()),
-            ))?;
+            let i = first_rule.as_str().parse::<i64>().map_err(|_| {
+                ParserError::SyntaxError(
+                    to_query_location(&first_rule),
+                    format!(
+                        "'{}' could not be parsed as a literal of type 'integer'",
+                        first_rule.as_str()
+                    ),
+                )
+            })?;
 
             let units = inner_rules.next();
 
             let nano_seconds = to_nano_seconds(i, 0.0, get_multiplier(units));
 
-            todo!()
+            return Ok(StaticScalarExpression::TimeSpan(
+                TimeSpanScalarExpression::new(query_location, TimeDelta::nanoseconds(nano_seconds)),
+            ));
         }
         Rule::double_literal => {
-            let d = first_rule.as_str().parse::<f64>().map_err(|_| ParserError::SyntaxError(
-                to_query_location(&first_rule),
-                format!("'{}' could not be parsed as a literal of type 'double'", first_rule.as_str()),
-            ))?;
+            let d = first_rule.as_str().parse::<f64>().map_err(|_| {
+                ParserError::SyntaxError(
+                    to_query_location(&first_rule),
+                    format!(
+                        "'{}' could not be parsed as a literal of type 'double'",
+                        first_rule.as_str()
+                    ),
+                )
+            })?;
 
             let whole = d.trunc() as i64;
             let fraction = d.fract().abs();
@@ -128,42 +144,62 @@ pub(crate) fn parse_timespan_expression(
 
             let nano_seconds = to_nano_seconds(whole, fraction, get_multiplier(units));
 
-            todo!()
+            return Ok(StaticScalarExpression::TimeSpan(
+                TimeSpanScalarExpression::new(query_location, TimeDelta::nanoseconds(nano_seconds)),
+            ));
         }
         _ => panic!("Unexpected rule in time_expression: {first_rule}"),
-    }
+    };
 
-    fn get_multiplier(rule: Option<Pair<Rule>>) -> u64 {
+    return match Value::String(&string_value).convert_to_timespan() {
+        Some(t) => Ok(StaticScalarExpression::TimeSpan(
+            TimeSpanScalarExpression::new(query_location, t),
+        )),
+        _ => Err(ParserError::SyntaxError(
+            query_location,
+            format!(
+                "'{}' could not be parsed as a literal of type 'timespan'",
+                string_value.get_value()
+            ),
+        )),
+    };
+
+    fn get_multiplier(rule: Option<Pair<Rule>>) -> i64 {
         match rule.map(|r| r.as_str()) {
-            Some("millisecond") | Some("milliseconds") | Some("ms") => TimeDelta::milliseconds(1).num_nanoseconds().unwrap() as u64,
-            Some("hour") | Some("hours") | Some("h") => TimeDelta::hours(1).num_nanoseconds().unwrap() as u64,
-            Some("minute") | Some("minutes") | Some("m") => TimeDelta::minutes(1).num_nanoseconds().unwrap() as u64,
-            Some("second") | Some("seconds") | Some("s") => TimeDelta::seconds(1).num_nanoseconds().unwrap() as u64,
-            Some("microsecond") | Some("microseconds") => TimeDelta::microseconds(1).num_nanoseconds().unwrap() as u64,
+            Some("millisecond") | Some("milliseconds") | Some("ms") => {
+                TimeDelta::milliseconds(1).num_nanoseconds().unwrap()
+            }
+            Some("hour") | Some("hours") | Some("h") => {
+                TimeDelta::hours(1).num_nanoseconds().unwrap()
+            }
+            Some("minute") | Some("minutes") | Some("m") => {
+                TimeDelta::minutes(1).num_nanoseconds().unwrap()
+            }
+            Some("second") | Some("seconds") | Some("s") => {
+                TimeDelta::seconds(1).num_nanoseconds().unwrap()
+            }
+            Some("microsecond") | Some("microseconds") => {
+                TimeDelta::microseconds(1).num_nanoseconds().unwrap()
+            }
             Some("tick") | Some("ticks") => 100,
-            _ => TimeDelta::days(1).num_nanoseconds().unwrap() as u64
+            _ => TimeDelta::days(1).num_nanoseconds().unwrap(),
         }
     }
 
-    fn to_nano_seconds(mut whole: i64, fraction: f64, multiplier: u64) -> i64 {
+    fn to_nano_seconds(mut whole: i64, fraction: f64, multiplier: i64) -> i64 {
         let negate = if whole < 0 {
             whole = whole.abs();
             true
-        }
-        else {
+        } else {
             false
         };
 
-        let mut nanos = whole as u64 * multiplier;
+        let mut nanos = whole * multiplier;
         if fraction > 0.0 {
-            nanos += multiplier * fraction as u64;
+            nanos += (multiplier as f64 * fraction) as i64;
         }
 
-        if negate {
-            -(nanos as i64)
-        } else {
-            nanos as i64
-        }
+        if negate { -nanos } else { nanos }
     }
 }
 
@@ -761,6 +797,10 @@ mod tests {
             "datetime('12/31/2025')",
             create_utc(2025, 12, 31, 0, 0, 0, 0),
         );
+        run_test_success(
+            "datetime('   12/31/2025   ')",
+            create_utc(2025, 12, 31, 0, 0, 0, 0),
+        );
         run_test_success("datetime(12/31/2025)", create_utc(2025, 12, 31, 0, 0, 0, 0));
         run_test_success("datetime(12/31/50)", create_utc(1950, 12, 31, 0, 0, 0, 0));
         run_test_success("datetime(12/31/49)", create_utc(2049, 12, 31, 0, 0, 0, 0));
@@ -910,6 +950,107 @@ mod tests {
         run_test_success(
             "datetime(2014-11-08T15:05 GMT)",
             create_utc(2014, 11, 8, 15, 5, 0, 0),
+        );
+    }
+
+    #[test]
+    fn test_parse_timespan_expression() {
+        let run_test_success = |input: &str, expected: TimeDelta| {
+            let mut result = KqlPestParser::parse(Rule::time_expression, input).unwrap();
+
+            let d = parse_timespan_expression(result.next().unwrap());
+
+            assert!(d.is_ok());
+
+            match d.unwrap() {
+                StaticScalarExpression::TimeSpan(v) => assert_eq!(expected, v.get_value()),
+                _ => panic!("Unexpected type retured from parse_timespan_expression"),
+            }
+        };
+
+        let run_test_failure = |input: &str| {
+            let mut result = KqlPestParser::parse(Rule::time_expression, input).unwrap();
+
+            let d = parse_timespan_expression(result.next().unwrap());
+
+            assert!(d.is_err());
+        };
+
+        run_test_failure("timespan('hello world')");
+        run_test_failure("timespan('hello 09:01:00 world')");
+
+        run_test_success("timespan(1)", TimeDelta::days(1));
+        run_test_success("timespan(-1)", TimeDelta::days(-1));
+        run_test_success("timespan(1.5)", TimeDelta::days(1) + TimeDelta::hours(12));
+        run_test_success(
+            "timespan(-1.5)",
+            -(TimeDelta::days(1) + TimeDelta::hours(12)),
+        );
+        run_test_success("timespan(1 day)", TimeDelta::days(1));
+        run_test_success("timespan(-1 day)", TimeDelta::days(-1));
+        run_test_success("timespan(1 days)", TimeDelta::days(1));
+        run_test_success("timespan(-1 days)", TimeDelta::days(-1));
+        run_test_success("timespan(1.0:0:0)", TimeDelta::days(1));
+        run_test_success("timespan(-1.0:0:0)", TimeDelta::days(-1));
+        run_test_success("timespan( '1.0:0:0' )", TimeDelta::days(1));
+        run_test_success("timespan( '-1.0:0:0' )", TimeDelta::days(-1));
+        run_test_success("1d", TimeDelta::days(1));
+        run_test_success("1day", TimeDelta::days(1));
+        run_test_success("1days", TimeDelta::days(1));
+        run_test_success("-1.5 d", -(TimeDelta::days(1) + TimeDelta::hours(12)));
+        run_test_success("-1.5 day", -(TimeDelta::days(1) + TimeDelta::hours(12)));
+        run_test_success("-1.5 days", -(TimeDelta::days(1) + TimeDelta::hours(12)));
+
+        // Test fractional calculations
+        run_test_success("-1.5 h", -(TimeDelta::hours(1) + TimeDelta::minutes(30)));
+        run_test_success("-1.5 m", -(TimeDelta::minutes(1) + TimeDelta::seconds(30)));
+        run_test_success(
+            "-1.5 s",
+            -(TimeDelta::seconds(1) + TimeDelta::milliseconds(500)),
+        );
+        run_test_success(
+            "-1.5 ms",
+            -(TimeDelta::milliseconds(1) + TimeDelta::microseconds(500)),
+        );
+        run_test_success(
+            "-1.5 microseconds",
+            -(TimeDelta::microseconds(1) + TimeDelta::nanoseconds(500)),
+        );
+        run_test_success("-1.5 ticks", -(TimeDelta::nanoseconds(150)));
+
+        // Test unit parsing
+        run_test_success("1 h", TimeDelta::hours(1));
+        run_test_success("1 hour", TimeDelta::hours(1));
+        run_test_success("1 hours", TimeDelta::hours(1));
+
+        run_test_success("1 microsecond", TimeDelta::microseconds(1));
+        run_test_success("1 microseconds", TimeDelta::microseconds(1));
+
+        run_test_success("1 ms", TimeDelta::milliseconds(1));
+        run_test_success("1 millisecond", TimeDelta::milliseconds(1));
+        run_test_success("1 milliseconds", TimeDelta::milliseconds(1));
+
+        run_test_success("1 m", TimeDelta::minutes(1));
+        run_test_success("1 minute", TimeDelta::minutes(1));
+        run_test_success("1 minutes", TimeDelta::minutes(1));
+
+        run_test_success("1 s", TimeDelta::seconds(1));
+        run_test_success("1 second", TimeDelta::seconds(1));
+        run_test_success("1 seconds", TimeDelta::seconds(1));
+
+        run_test_success("1 tick", TimeDelta::nanoseconds(100));
+        run_test_success("1 ticks", TimeDelta::nanoseconds(100));
+
+        // Test full timespan string parsing. Note: There are a lot more tests
+        // in date_utils (inside expressions) which really owns the parsing
+        // logic. This is more of a sanity check.
+        run_test_success(
+            "timespan(-1.12:6:3.001)",
+            -(TimeDelta::days(1)
+                + TimeDelta::hours(12)
+                + TimeDelta::minutes(6)
+                + TimeDelta::seconds(3)
+                + TimeDelta::milliseconds(1)),
         );
     }
 

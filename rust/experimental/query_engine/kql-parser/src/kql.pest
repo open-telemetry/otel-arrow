@@ -118,9 +118,8 @@ time_literal = {
 }
 time_expression = {
     (double_literal|integer_literal) ~ time_units
-    | "timespan(" ~ time_literal ~ ")"
-    | "timespan(" ~ integer_literal ~ ")"
-    | "timespan(" ~ (double_literal|integer_literal) ~ time_units ~ ")"
+    | "timespan(" ~ (time_literal|string_literal) ~ ")"
+    | "timespan(" ~ (double_literal|integer_literal) ~ time_units? ~ ")"
 }
 
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
