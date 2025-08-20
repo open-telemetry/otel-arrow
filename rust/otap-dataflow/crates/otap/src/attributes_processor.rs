@@ -331,3 +331,407 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
             create_attributes_processor(node, config, proc_cfg)
         },
     };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use otap_df_engine::message::Message;
+    use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use prost::Message as _;
+    use serde_json::json;
+
+    use otel_arrow_rust::proto::opentelemetry::{
+        collector::logs::v1::ExportLogsServiceRequest,
+        common::v1::{AnyValue, InstrumentationScope, KeyValue},
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
+        resource::v1::Resource,
+    };
+
+    fn build_logs_with_attrs(
+        res_attrs: Vec<KeyValue>,
+        scope_attrs: Vec<KeyValue>,
+        log_attrs: Vec<KeyValue>,
+    ) -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource {
+                attributes: res_attrs,
+                ..Default::default()
+            })
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope {
+                    attributes: scope_attrs,
+                    ..Default::default()
+                })
+                .log_records(vec![
+                    LogRecord::build(1u64, SeverityNumber::Info, "")
+                        .attributes(log_attrs)
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ])
+    }
+
+    #[test]
+    fn test_config_from_json_parses_actions_and_apply_to_default() {
+        let cfg = json!({
+            "actions": [
+                {"action": "rename", "source_key": "a", "destination_key": "b"},
+                {"action": "delete", "key": "x"}
+            ]
+        });
+        let parsed = AttributesProcessor::from_config(&cfg).expect("config parse");
+        assert!(parsed.transform.rename.is_some());
+        assert!(parsed.transform.delete.is_some());
+        // default apply_to should include Signal
+        assert!(parsed.domains.contains(&ApplyDomain::Signal));
+        // and not necessarily Resource/Scope unless specified
+        assert!(!parsed.domains.contains(&ApplyDomain::Resource));
+        assert!(!parsed.domains.contains(&ApplyDomain::Scope));
+    }
+
+    #[test]
+    fn test_rename_applies_to_signal_only_by_default() {
+        // Prepare input with same key present in resource, scope, and log attrs
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new("a", AnyValue::new_string("rv"))],
+            vec![KeyValue::new("a", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "rename", "source_key": "a", "destination_key": "b"}
+            ]
+        });
+
+        // Set up processor test runtime and run one message
+        let node = test_node("attributes-processor-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = Vec::new();
+                input.encode(&mut bytes).expect("encode");
+                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                // capture output
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output");
+
+                // Convert output to OTLP bytes for easy assertions
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+
+                // Resource should still have key "a"
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(res_attrs.iter().any(|kv| kv.key == "a"));
+                assert!(!res_attrs.iter().any(|kv| kv.key == "b"));
+
+                // Scope should still have key "a"
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+                assert!(!scope_attrs.iter().any(|kv| kv.key == "b"));
+
+                // Log attrs should have renamed to "b"
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(log_attrs.iter().any(|kv| kv.key == "b"));
+                assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_delete_applies_to_signal_only_by_default() {
+        // Prepare input with same key present in resource, scope, and log attrs
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new("a", AnyValue::new_string("rv"))],
+            vec![KeyValue::new("a", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "delete", "key": "a"}
+            ]
+        });
+
+        let node = test_node("attributes-processor-delete-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = Vec::new();
+                input.encode(&mut bytes).expect("encode");
+                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output");
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+
+                // Resource should still have key "a"
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(res_attrs.iter().any(|kv| kv.key == "a"));
+
+                // Scope should still have key "a"
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+                // Log attrs should have deleted "a" but still contain other keys
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
+                assert!(log_attrs.iter().any(|kv| {
+                    if kv.key != "b" { return false; }
+                    match kv.value.as_ref().and_then(|v| v.value.as_ref()) {
+                        Some(otel_arrow_rust::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s == "keep",
+                        _ => false,
+                    }
+                }));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_delete_scoped_to_resource_only_logs() {
+        // Resource has 'a', scope has 'a', log has 'a' and another key to keep batch non-empty
+        let input = build_logs_with_attrs(
+            vec![
+                KeyValue::new("a", AnyValue::new_string("rv")),
+                KeyValue::new("r", AnyValue::new_string("keep")),
+            ],
+            vec![KeyValue::new("a", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [ {"action": "delete", "key": "a"} ],
+            "apply_to": ["resource"]
+        });
+
+        let node = test_node("attributes-processor-delete-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = Vec::new();
+                input.encode(&mut bytes).expect("encode");
+                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output");
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+
+                // Resource 'a' should be deleted
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(!res_attrs.iter().any(|kv| kv.key == "a"));
+                // Scope 'a' should remain
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+                // Log 'a' should remain
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(log_attrs.iter().any(|kv| kv.key == "a"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_delete_scoped_to_scope_only_logs() {
+        // Resource has 'a', scope has 'a' plus another key, log has 'a' and another key to keep batches non-empty
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new("a", AnyValue::new_string("rv"))],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("sv")),
+                KeyValue::new("s", AnyValue::new_string("keep")),
+            ],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [ {"action": "delete", "key": "a"} ],
+            "apply_to": ["scope"]
+        });
+
+        let node = test_node("attributes-processor-delete-scope");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = Vec::new();
+                input.encode(&mut bytes).expect("encode");
+                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output");
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+
+                // Resource 'a' should remain
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(res_attrs.iter().any(|kv| kv.key == "a"));
+                // Scope 'a' should be deleted
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(!scope_attrs.iter().any(|kv| kv.key == "a"));
+                // Log 'a' should remain
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(log_attrs.iter().any(|kv| kv.key == "a"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_delete_scoped_to_signal_and_resource() {
+        // Resource has 'a' and 'r', scope has 'a' and 's', log has 'a' and 'b'
+        // Deleting 'a' for [signal, resource] should remove it from resource and logs, keep in scope.
+        let input = build_logs_with_attrs(
+            vec![
+                KeyValue::new("a", AnyValue::new_string("rv")),
+                KeyValue::new("r", AnyValue::new_string("keep")),
+            ],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("sv")),
+                KeyValue::new("s", AnyValue::new_string("keep")),
+            ],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [ {"action": "delete", "key": "a"} ],
+            "apply_to": ["signal", "resource"]
+        });
+
+        let node = test_node("attributes-processor-delete-signal-and-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let proc = create_attributes_processor(node, &cfg, rt.config()).expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = Vec::new();
+                input.encode(&mut bytes).expect("encode");
+                let pdata_in: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output");
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+
+                // Resource 'a' should be deleted; 'r' should remain
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(!res_attrs.iter().any(|kv| kv.key == "a"));
+                assert!(res_attrs.iter().any(|kv| kv.key == "r"));
+
+                // Scope 'a' should remain
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+                assert!(scope_attrs.iter().any(|kv| kv.key == "s"));
+
+                // Log 'a' should be deleted; 'b' should remain
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
+                assert!(log_attrs.iter().any(|kv| kv.key == "b"));
+            })
+            .validate(|_| async move {});
+    }
+}
