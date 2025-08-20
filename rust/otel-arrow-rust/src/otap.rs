@@ -820,7 +820,6 @@ mod test {
     use std::sync::Arc;
 
     use crate::otlp::attributes::store::AttributeValueType;
-    use crate::proto::opentelemetry::metrics::v1::SummaryDataPoint;
     use crate::schema::FieldExt;
 
     use super::*;

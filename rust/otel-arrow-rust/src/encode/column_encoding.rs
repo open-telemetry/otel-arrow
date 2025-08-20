@@ -138,7 +138,7 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
         return struct_col.column_by_name(consts::ID).cloned();
     }
 
-    // otherwise just return column by nname
+    // otherwise just return column by name
     let column_idx = schema.index_of(path).ok()?;
     columns.get(column_idx).cloned()
 }
@@ -449,7 +449,13 @@ struct EncodedColumnResult {
     remapping: Option<RemappedParentIds>,
 }
 
-/// TODO
+/// Creates a new array of the same length where the array values are delta encoded.
+///
+/// This is typically used on the ID columns of various record batches. Because the OTAP record
+/// are typically not sorted by these ID and the ID columns are unsigned types, we cannot just
+/// apply delta encoding directly else we'd end up with negative deltas. To solve this, we create
+/// a new ID column and also possibly return a mapping of old IDs to new IDs (only if some IDs
+/// were assigned new values).
 fn create_new_delta_encoded_column_from<T>(
     column: &PrimitiveArray<T>,
 ) -> Result<EncodedColumnResult>
@@ -458,14 +464,15 @@ where
     <T as ArrowPrimitiveType>::Native: From<u8> + Add<Output = T::Native> + AddAssign + PartialOrd,
     RemappedParentIds: From<Vec<<T as ArrowPrimitiveType>::Native>>,
 {
-    // TODO need to check if column has at least one value
-    // TODO we can do nothing if the column contains only one value?
-    // TODO use a bunch of unsafe stuff here to build the new column
-
-    // TODO - there's an important optimization that can be made here where, if all the IDs
-    // from the original array equal their counterpart in the remappings, we can avoid returning
-    // a new column altogether, which will mean we save time not having to remap the Parent IDs of
-    // the child record batch
+    // check some early return conditions where we don't need to compute new column:
+    // - empty column
+    // - all nulls column
+    if column.is_empty() || column.null_count() == column.len() {
+        return Ok(EncodedColumnResult {
+            new_column: Arc::new(column.clone()),
+            remapping: None,
+        });
+    }
 
     let zero = T::Native::from(0u8);
     let one = T::Native::from(1u8);
@@ -474,7 +481,6 @@ where
     let mut remappings = vec![zero; remappings_len.as_usize()];
 
     let mut curr_id: T::Native = zero;
-
     let mut new_buffer = MutableBuffer::with_capacity(column.len() * size_of::<T::Native>());
 
     let mut prev_value = None;
@@ -483,9 +489,19 @@ where
             Some(val) => match prev_value {
                 Some(prev) => {
                     if val == prev {
-                        new_buffer.push(zero);
+                        // Safety: we've allocated enough space for the new value so calling
+                        // push_unchecked here is safe and saves us having to check the buffer
+                        // reservation on each push.
+                        #[allow(unsafe_code)]
+                        unsafe {
+                            new_buffer.push_unchecked(zero)
+                        };
                     } else {
-                        new_buffer.push(one);
+                        // Safety: see comments on push_unchecked call above
+                        #[allow(unsafe_code)]
+                        unsafe {
+                            new_buffer.push_unchecked(one)
+                        };
 
                         curr_id += one;
                         remappings[val.as_usize()] = curr_id;
@@ -499,10 +515,31 @@ where
             },
             None => {
                 // push the default value & we'll clone the null buffer later
-                new_buffer.push(zero);
+                // Safety: see comments on push_unchecked call above
+                #[allow(unsafe_code)]
+                unsafe {
+                    new_buffer.push_unchecked(zero)
+                };
             }
         }
     }
+
+    // Check if all the new IDs we've assigned are the same as the old IDs. This could happen
+    // if the passed column was already a sorted, incrementing sequence. This is an important
+    // optimization because it allows us to avoid creating a new column for the child's parent_id
+    // column if there were no changes
+    let mut all_ids_same = true;
+    for i in 0..remappings.len() {
+        if remappings[i].as_usize() != i {
+            all_ids_same = false;
+            break;
+        }
+    }
+    let remapping = if all_ids_same {
+        None
+    } else {
+        Some(RemappedParentIds::from(remappings))
+    };
 
     let nulls = column.nulls().cloned();
     let new_buffer = ScalarBuffer::<T::Native>::new(new_buffer.into(), 0, column.len());
@@ -510,7 +547,7 @@ where
 
     Ok(EncodedColumnResult {
         new_column: Arc::new(new_column),
-        remapping: Some(RemappedParentIds::from(remappings)),
+        remapping,
     })
 }
 
@@ -535,13 +572,21 @@ impl ParentIdRemapping {
     }
 }
 
-/// TODO comments
-/// should explain what this field represents e.g. a vec where indices are the old
-/// ids and values are the new ones
-#[allow(missing_docs)]
+/// This represents a mapping between ID values which may have been reassigned during encoding.
+/// Internally, the representation is a vector where the index would bethe old ID and the value
+/// at that index would be the new ID.
+///
+/// For example, if we had the following remappings of old ID -> new ID
+/// - 1 -> 2
+/// - 2 -> 0
+/// - 0 -> 1
+/// Then the values of the remapping would be `[1, 2, 0]`
+///
 #[derive(Debug, PartialEq)]
 pub enum RemappedParentIds {
+    /// remapping of IDs for a u16 type ID column
     UInt16(Vec<u16>),
+    /// remapping of IDs for a u32 type ID column
     UInt32(Vec<u32>),
 }
 
@@ -895,13 +940,16 @@ mod test {
 
     use arrow::{
         array::{
-            FixedSizeBinaryArray, Int64Array, StringArray, StructArray, TimestampNanosecondArray,
-            UInt8Array, UInt16Array,
+            FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, StructArray,
+            TimestampNanosecondArray, UInt8Array, UInt16Array,
         },
         datatypes::{Field, Fields, TimeUnit},
     };
 
-    use crate::{otlp::attributes::store::AttributeValueType, schema::FieldExt};
+    use crate::{
+        otlp::attributes::{parent_id, store::AttributeValueType},
+        schema::FieldExt,
+    };
 
     use super::*;
 
@@ -1306,10 +1354,36 @@ mod test {
         let test_cases = vec![
             (
                 // simple case:
-                [0, 1, 2, 3, 4, 5, 6, 7],
-                [0, 1, 1, 1, 1, 1, 1, 1],
-                [0u16, 1, 2, 3, 4, 5, 6, 7],
-            ), // TODO more test cases
+                vec![3, 1, 0, 2],
+                vec![0, 1, 1, 1],
+                Some(vec![2u16, 1, 3, 0]),
+            ),
+            (
+                // simple case with no remapping .. in this case, we can delta encode the column
+                // without remapping the IDs because it is already an incrementing sequence
+                // starting at 0
+                vec![0, 1, 2, 3],
+                vec![0, 1, 1, 1],
+                None,
+            ),
+            (
+                // test batch of single length
+                vec![0],
+                vec![0],
+                None,
+            ),
+            (
+                // test batch of single length with non zero start
+                vec![1],
+                vec![0],
+                Some(vec![0, 0]),
+            ),
+            (
+                // test empty batch
+                vec![],
+                vec![],
+                None,
+            ),
         ];
 
         for test_case in test_cases {
@@ -1322,11 +1396,33 @@ mod test {
                 .expect("Expected UInt16Array");
             let expected_column = UInt16Array::from_iter_values(test_case.1);
             assert_eq!(result_col, &expected_column);
-            assert_eq!(
-                &result.remapping.unwrap(),
-                &RemappedParentIds::from(test_case.2.to_vec())
-            );
+
+            match test_case.2 {
+                Some(remapping) => {
+                    assert_eq!(
+                        &result.remapping.unwrap(),
+                        &RemappedParentIds::from(remapping.to_vec())
+                    );
+                }
+                None => {
+                    assert!(result.remapping.is_none())
+                }
+            }
         }
+    }
+
+    #[test]
+    fn test_create_delta_encoded_column_all_nulls() {
+        let input = UInt16Array::from_iter(vec![None, None, None, None]);
+        let result = create_new_delta_encoded_column_from(&input).unwrap();
+        let result_col = result
+            .new_column
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .expect("Expected UInt16Array");
+
+        assert_eq!(result_col, &input);
+        assert!(result.remapping.is_none());
     }
 
     #[test]
@@ -1596,6 +1692,187 @@ mod test {
         ];
         for payload_type in u32_test_cases {
             do_test_generic::<UInt32Type>(payload_type);
+        }
+    }
+
+    #[test]
+    fn test_remap_parent_ids_with_decode_span_events() {
+        // this is the name & quasi-delta encoded parent ID
+        let data = vec![
+            ("a", 0), // id = 0
+            ("a", 1), // id = 1
+            ("a", 1), // id = 2
+            ("b", 0), // id = 0
+            ("b", 1), // id = 1
+            ("b", 2), // id = 3
+        ];
+
+        let names = StringArray::from_iter_values(data.iter().map(|d| d.0));
+        let parent_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.1));
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, true),
+                Field::new(consts::NAME, DataType::Utf8, true),
+            ])),
+            vec![Arc::new(parent_ids), Arc::new(names)],
+        )
+        .unwrap();
+
+        // remappings:
+        // 0 -> 1
+        // 1 -> 0
+        // 2 -> 3
+        // 3 -> 2
+        let remapings = RemappedParentIds::from(vec![1u16, 0, 3, 2]);
+        let result = remap_parent_ids(&ArrowPayloadType::SpanEvents, &input, &remapings).unwrap();
+
+        let expected_data = vec![("a", 1), ("a", 0), ("a", 3), ("b", 1), ("b", 0), ("b", 2)];
+
+        let names = StringArray::from_iter_values(expected_data.iter().map(|d| d.0));
+        let parent_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.1));
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::NAME, DataType::Utf8, true),
+            ])),
+            vec![Arc::new(parent_ids), Arc::new(names)],
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_remap_parent_ids_with_decode_span_links() {
+        // this is the name & quasi-delta encoded parent ID
+        let data = vec![
+            (0, 0), // id = 0
+            (0, 1), // id = 1
+            (0, 1), // id = 2
+            (1, 0), // id = 0
+            (1, 1), // id = 1
+            (1, 2), // id = 3
+        ];
+
+        let trace_ids =
+            FixedSizeBinaryArray::try_from_iter(data.iter().map(|d| u128::to_be_bytes(d.0)))
+                .unwrap();
+        let parent_ids = UInt16Array::from_iter_values(data.iter().map(|d| d.1));
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, true),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            ])),
+            vec![Arc::new(parent_ids), Arc::new(trace_ids)],
+        )
+        .unwrap();
+
+        // remappings:
+        // 0 -> 1
+        // 1 -> 0
+        // 2 -> 3
+        // 3 -> 2
+        let remapings = RemappedParentIds::from(vec![1u16, 0, 3, 2]);
+        let result = remap_parent_ids(&ArrowPayloadType::SpanLinks, &input, &remapings).unwrap();
+
+        let expected_data = vec![(0, 1), (0, 0), (0, 3), (1, 1), (1, 0), (1, 2)];
+
+        let trace_ids = FixedSizeBinaryArray::try_from_iter(
+            expected_data.iter().map(|d| u128::to_be_bytes(d.0)),
+        )
+        .unwrap();
+        let parent_ids = UInt16Array::from_iter_values(expected_data.iter().map(|d| d.1));
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            ])),
+            vec![Arc::new(parent_ids), Arc::new(trace_ids)],
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_remap_parent_ids_with_decode_exemplars() {
+        fn do_test(payload_type: ArrowPayloadType) {
+            let data = vec![
+                (None, None, 0),      // id = 0
+                (None, None, 1),      // id = 1
+                (None, None, 1),      // id = 2
+                (Some(1), None, 0),   // id = 0
+                (Some(1), None, 2),   // id = 2
+                (Some(1), None, 1),   // id = 3
+                (Some(2), None, 0),   // id = 0
+                (None, Some(1.0), 1), // id = 1
+                (None, Some(1.0), 1), // id = 2
+                (None, Some(2.0), 0), // id = 0
+            ];
+
+            let int_values = Int64Array::from_iter(data.iter().map(|d| d.0));
+            let double_values = Float64Array::from_iter(data.iter().map(|d| d.1));
+            let parent_ids = UInt32Array::from_iter_values(data.iter().map(|d| d.2));
+
+            let input = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(consts::PARENT_ID, DataType::UInt32, true),
+                    Field::new(consts::INT_VALUE, DataType::Int64, true),
+                    Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+                ])),
+                vec![
+                    Arc::new(parent_ids),
+                    Arc::new(int_values),
+                    Arc::new(double_values),
+                ],
+            )
+            .unwrap();
+
+            // remappings:
+            // 0 -> 1
+            // 1 -> 0
+            // 2 -> 3
+            // 3 -> 2
+            let remapings = RemappedParentIds::from(vec![1u32, 0, 3, 2]);
+            let result = remap_parent_ids(&payload_type, &input, &remapings).unwrap();
+
+            let expected_data = vec![
+                (None, None, 1),
+                (None, None, 0),
+                (None, None, 3),
+                (Some(1), None, 1),
+                (Some(1), None, 3),
+                (Some(1), None, 2),
+                (Some(2), None, 1),
+                (None, Some(1.0), 0),
+                (None, Some(1.0), 3),
+                (None, Some(2.0), 1),
+            ];
+            let expected = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(consts::PARENT_ID, DataType::UInt32, true).with_plain_encoding(),
+                    Field::new(consts::INT_VALUE, DataType::Int64, true),
+                    Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+                ])),
+                vec![
+                    Arc::new(UInt32Array::from_iter_values(
+                        expected_data.iter().map(|d| d.2),
+                    )),
+                    Arc::new(Int64Array::from_iter(expected_data.iter().map(|d| d.0))),
+                    Arc::new(Float64Array::from_iter(expected_data.iter().map(|d| d.1))),
+                ],
+            )
+            .unwrap();
+
+            assert_eq!(result, expected);
+        }
+
+        for payload_type in [
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+        ] {
+            do_test(payload_type);
         }
     }
 }
