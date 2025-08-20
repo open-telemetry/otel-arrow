@@ -6,32 +6,32 @@ use crate::*;
 #[derive(Debug, Clone, PartialEq)]
 pub enum MathScalarExpression {
     /// Returns the sum of two values.
-    Add(BinaryMathmaticalScalarExpression),
+    Add(BinaryMathematicalScalarExpression),
 
     /// Returns a value rounded down to the nearest multiple of a given bin
     /// size, effectively grouping similar values into buckets.
-    Bin(BinaryMathmaticalScalarExpression),
+    Bin(BinaryMathematicalScalarExpression),
 
     /// Returns the smallest integral value greater than or equal to the specified number.
-    Ceiling(UnaryMathmaticalScalarExpression),
+    Ceiling(UnaryMathematicalScalarExpression),
 
     /// Returns the result of dividing two values.
-    Divide(BinaryMathmaticalScalarExpression),
+    Divide(BinaryMathematicalScalarExpression),
 
     /// Returns the largest integral value less than or equal to the specified number.
-    Floor(UnaryMathmaticalScalarExpression),
+    Floor(UnaryMathematicalScalarExpression),
 
     /// Returns the remainder of a division operation between two values.
-    Modulus(BinaryMathmaticalScalarExpression),
+    Modulus(BinaryMathematicalScalarExpression),
 
     /// Returns the result of multiplying two values.
-    Multiply(BinaryMathmaticalScalarExpression),
+    Multiply(BinaryMathematicalScalarExpression),
 
     /// Negate the value returned by the inner scalar expression.
-    Negate(UnaryMathmaticalScalarExpression),
+    Negate(UnaryMathematicalScalarExpression),
 
     /// Returns the result of subtracting two values.
-    Subtract(BinaryMathmaticalScalarExpression),
+    Subtract(BinaryMathematicalScalarExpression),
 }
 
 impl MathScalarExpression {
@@ -225,7 +225,7 @@ impl MathScalarExpression {
 
     fn try_resolve_static_unary_operation<'a, F>(
         pipeline: &PipelineExpression,
-        unary_expression: &UnaryMathmaticalScalarExpression,
+        unary_expression: &UnaryMathematicalScalarExpression,
         op: F,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
     where
@@ -254,7 +254,7 @@ impl MathScalarExpression {
 
     fn try_resolve_static_binary_operation<'a, F>(
         pipeline: &PipelineExpression,
-        binary_expression: &BinaryMathmaticalScalarExpression,
+        binary_expression: &BinaryMathematicalScalarExpression,
         op: F,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
     where
@@ -346,16 +346,16 @@ impl Expression for MathScalarExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UnaryMathmaticalScalarExpression {
+pub struct UnaryMathematicalScalarExpression {
     query_location: QueryLocation,
     value_expression: Box<ScalarExpression>,
 }
 
-impl UnaryMathmaticalScalarExpression {
+impl UnaryMathematicalScalarExpression {
     pub fn new(
         query_location: QueryLocation,
         value_expression: ScalarExpression,
-    ) -> UnaryMathmaticalScalarExpression {
+    ) -> UnaryMathematicalScalarExpression {
         Self {
             query_location,
             value_expression: value_expression.into(),
@@ -367,29 +367,29 @@ impl UnaryMathmaticalScalarExpression {
     }
 }
 
-impl Expression for UnaryMathmaticalScalarExpression {
+impl Expression for UnaryMathematicalScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
 
     fn get_name(&self) -> &'static str {
-        "UnaryMathmaticalScalarExpression"
+        "UnaryMathematicalScalarExpression"
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BinaryMathmaticalScalarExpression {
+pub struct BinaryMathematicalScalarExpression {
     query_location: QueryLocation,
     left_expression: Box<ScalarExpression>,
     right_expression: Box<ScalarExpression>,
 }
 
-impl BinaryMathmaticalScalarExpression {
+impl BinaryMathematicalScalarExpression {
     pub fn new(
         query_location: QueryLocation,
         left_expression: ScalarExpression,
         right_expression: ScalarExpression,
-    ) -> BinaryMathmaticalScalarExpression {
+    ) -> BinaryMathematicalScalarExpression {
         Self {
             query_location,
             left_expression: left_expression.into(),
@@ -406,13 +406,13 @@ impl BinaryMathmaticalScalarExpression {
     }
 }
 
-impl Expression for BinaryMathmaticalScalarExpression {
+impl Expression for BinaryMathematicalScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
 
     fn get_name(&self) -> &'static str {
-        "BinaryMathmaticalScalarExpression"
+        "BinaryMathematicalScalarExpression"
     }
 }
 
@@ -428,10 +428,10 @@ mod tests {
     pub fn test_try_resolve_unary() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, Option<ValueType>, Option<Value>)>)
         where
-            F: Fn(UnaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(UnaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (inner, expected_type, expected_value) in input {
-                let e = build(UnaryMathmaticalScalarExpression::new(
+                let e = build(UnaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     inner,
                 ));
@@ -608,10 +608,10 @@ mod tests {
                 Option<Value>,
             )>,
         ) where
-            F: Fn(BinaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(BinaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (left, right, expected_type, expected_value) in input {
-                let e = build(BinaryMathmaticalScalarExpression::new(
+                let e = build(BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     left,
                     right,

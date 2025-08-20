@@ -10,11 +10,16 @@
 WHITESPACE = _{ " " | NEWLINE | "\t" }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
-// Tokens
+// Math Tokens
 minus_token = { "-" }
 plus_token = { "+" }
+multiply_token = { "*" }
+divide_token = { "/" }
+modulo_token = { "%" }
 positive_infinity_token = { "+inf" }
 negative_infinity_token = { "-inf" }
+
+// Logical Tokens
 equals_token = @{ "==" }
 equals_insensitive_token = @{ "=~" }
 not_equals_token = @{ "!=" }
@@ -25,6 +30,8 @@ less_than_token = @{ "<" ~ !"=" }
 less_than_or_equal_to_token = @{ "<=" }
 and_token = @{ "and" }
 or_token = @{ "or" }
+
+// Misc Tokens
 contains_token = @{ "contains" }
 contains_cs_token = @{ "contains_cs" }
 has_token = @{ "has" }
@@ -132,6 +139,19 @@ string_expressions = _{
     | parse_json_expression
 }
 
+negate_expression = { "-" ~ scalar_expression }
+math_expressions = _{
+    negate_expression
+}
+
+arithmetic_factor = {
+    scalar_expression ~ ((multiply_token | divide_token | modulo_token) ~ scalar_expression)*
+}
+arithmetic_expression = {
+    arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
+}
+
+// Modify scalar_expression to include arithmetic_expression as first option
 scalar_expression = {
     null_literal
     | real_expression
@@ -143,9 +163,11 @@ scalar_expression = {
     | double_literal
     | integer_literal
     | string_literal
+    | math_expressions
     | accessor_expression
     | ("(" ~ scalar_expression ~ ")")
     | ("(" ~ logical_expression ~ ")")
+    | ("(" ~ arithmetic_expression ~ ")")
 }
 
 comparison_expression = {
