@@ -75,31 +75,31 @@ impl OTLPExporter {
 #[derive(Debug, Default, Clone)]
 pub struct OtlpExporterMetrics {
     /// Number of OTLP logs request received
-    #[metric(name = "export.logs.request.received", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_logs_request_received: Counter<u64>,
     /// Number of OTLP logs request successful
-    #[metric(name = "export.logs.request.success", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_logs_request_success: Counter<u64>,
     /// Number of OTLP logs request failed
-    #[metric(name = "export.logs.request.failure", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_logs_request_failure: Counter<u64>,
     /// Number of OTLP metrics request received
-    #[metric(name = "export.metrics.request.received", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_metrics_request_received: Counter<u64>,
     /// Number of OTLP metrics request successful
-    #[metric(name = "export.metrics.request.success", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_metrics_request_success: Counter<u64>,
     /// Number of OTLP metrics request failed
-    #[metric(name = "export.metrics.request.failure", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_metrics_request_failure: Counter<u64>,
     /// Number of OTLP traces request received
-    #[metric(name = "export.traces.request.received", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_traces_request_received: Counter<u64>,
     /// Number of OTLP traces request successful
-    #[metric(name = "export.traces.request.success", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_traces_request_success: Counter<u64>,
     /// Number of OTLP traces request failed
-    #[metric(name = "export.traces.request.failure", unit = "{req}")]
+    #[metric(unit = "{req}")]
     pub export_traces_request_failure: Counter<u64>,
 }
 

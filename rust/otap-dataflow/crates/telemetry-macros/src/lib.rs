@@ -85,11 +85,11 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         let mut name_attr: Option<String> = None;
         let mut unit_attr: Option<String> = None;
         for attr in &field.attrs {
-            if let Some((n, u)) = parse_metric_field_attr(attr) { name_attr = Some(n); unit_attr = Some(u); }
+            if let Some((maybe_name, u)) = parse_metric_field_attr(attr) { if maybe_name.is_some() { name_attr = maybe_name; } unit_attr = Some(u); }
         }
-
-        // Only process fields with #[metric]; ignore others like internal keys
-        if let (Some(name), Some(unit)) = (name_attr, unit_attr) {
+        if let Some(unit) = unit_attr {
+            let derived_name = ident.to_string().replace('_', ".");
+            let final_name = name_attr.unwrap_or(derived_name);
             // Validate type path and instrument kind
             let instrument_variant = match &field.ty {
                 syn::Type::Path(tp) => {
@@ -115,7 +115,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
             };
             metric_field_idents.push(ident);
             metric_field_units.push(unit);
-            metric_field_names.push(name);
+            metric_field_names.push(final_name);
             metric_field_briefs.push(brief_combined);
             metric_field_instruments.push(instrument_variant);
         }
@@ -160,7 +160,7 @@ fn parse_metrics_name_attr(attr: &Attribute) -> Option<String> {
     out
 }
 
-fn parse_metric_field_attr(attr: &Attribute) -> Option<(String, String)> {
+fn parse_metric_field_attr(attr: &Attribute) -> Option<(Option<String>, String)> {
     if !attr.path().is_ident("metric") { return None; }
     let mut name: Option<String> = None;
     let mut unit: Option<String> = None;
@@ -174,7 +174,7 @@ fn parse_metric_field_attr(attr: &Attribute) -> Option<(String, String)> {
         }
         Ok(())
     });
-    match (name, unit) { (Some(n), Some(u)) => Some((n,u)), _ => None }
+    match unit { Some(u) => Some((name, u)), _ => None }
 }
 
 /// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MetricSetHandler derive

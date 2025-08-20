@@ -76,19 +76,19 @@ pub struct PerfExporterPdataMetrics {
     #[metric(unit = "{msg}")]
     pub batches: Counter<u64>,
     /// Number of invalid pdata batches received.
-    #[metric(name = "invalid.batches", unit = "{msg}")]
+    #[metric(unit = "{msg}")]
     pub invalid_batches: Counter<u64>,
     /// Number of Arrow records received.
-    #[metric(name = "arrow.records", unit = "{record}")]
+    #[metric(unit = "{record}")]
     pub arrow_records: Counter<u64>,
     /// Number of logs received.
-    #[metric(name = "logs", unit = "{log}")]
+    #[metric(unit = "{log}")]
     pub logs: Counter<u64>,
     /// Number of spans received.
-    #[metric(name = "spans", unit = "{span}")]
+    #[metric(unit = "{span}")]
     pub spans: Counter<u64>,
     /// Number of metrics received.
-    #[metric(name = "metrics", unit = "{metric}")]
+    #[metric(unit = "{metric}")]
     pub metrics: Counter<u64>,
 }
 

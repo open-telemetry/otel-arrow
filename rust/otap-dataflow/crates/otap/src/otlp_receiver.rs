@@ -78,10 +78,10 @@ impl OTLPReceiver {
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
     /// Number of bytes received.
-    #[metric(name = "bytes.received", unit = "By")]
+    #[metric(unit = "By")]
     pub bytes_received: Counter<u64>,
     /// Number of messages received.
-    #[metric(name = "messages.received", unit = "{msg}")]
+    #[metric(unit = "{msg}")]
     pub messages_received: Counter<u64>,
 }
 
