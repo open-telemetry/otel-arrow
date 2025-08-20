@@ -433,8 +433,7 @@ fn test_parse_function() {
 
     let query = "source | parse Attributes['message'] with \"Event:\" resourceName:string";
 
-    let pipeline =
-        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(&query).unwrap();
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -493,8 +492,7 @@ fn test_matches_regex_function() {
 
     let query = "source | where Attributes['message'] matches regex 'Event: .*'";
 
-    let pipeline =
-        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(&query).unwrap();
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
