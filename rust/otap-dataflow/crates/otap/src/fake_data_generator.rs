@@ -156,7 +156,7 @@ async fn generate_signal(
     log_count: usize,
     registry: &ResolvedRegistry,
 ) -> Result<(), Error<OtapPdata>> {
-// nothing to send
+    // nothing to send
     if max_batch_size == 0 {
         return Ok(());
     }
@@ -179,10 +179,10 @@ async fn generate_signal(
         for _ in 0..metric_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(OTLPSignal::Metrics(fake_otlp_metrics(
-                        max_batch_size,
-                        registry,
-                    )).try_into()?)
+                    .send_message(
+                        OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry))
+                            .try_into()?,
+                    )
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -195,10 +195,10 @@ async fn generate_signal(
                             error: "failed to convert u64 to usize".to_string(),
                         })?;
                 effect_handler
-                    .send_message(OTLPSignal::Metrics(fake_otlp_metrics(
-                        remaining_count,
-                        registry,
-                    )).try_into()?)
+                    .send_message(
+                        OTLPSignal::Metrics(fake_otlp_metrics(remaining_count, registry))
+                            .try_into()?,
+                    )
                     .await?;
 
                 // no more signals we have reached the max
@@ -209,10 +209,10 @@ async fn generate_signal(
         if metric_count_remainder > 0 && max_count >= current_count + metric_count_remainder as u64
         {
             effect_handler
-                .send_message(OTLPSignal::Metrics(fake_otlp_metrics(
-                    metric_count_remainder,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                        .try_into()?,
+                )
                 .await?;
             current_count += metric_count_remainder as u64;
         }
@@ -221,10 +221,10 @@ async fn generate_signal(
         for _ in 0..trace_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(OTLPSignal::Traces(fake_otlp_traces(
-                        max_batch_size,
-                        registry,
-                    )).try_into()?)
+                    .send_message(
+                        OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry))
+                            .try_into()?,
+                    )
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -236,10 +236,10 @@ async fn generate_signal(
                             error: "failed to convert u64 to usize".to_string(),
                         })?;
                 effect_handler
-                    .send_message(OTLPSignal::Traces(fake_otlp_traces(
-                        remaining_count,
-                        registry,
-                    )).try_into()?)
+                    .send_message(
+                        OTLPSignal::Traces(fake_otlp_traces(remaining_count, registry))
+                            .try_into()?,
+                    )
                     .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -248,10 +248,10 @@ async fn generate_signal(
         }
         if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
             effect_handler
-                .send_message(OTLPSignal::Traces(fake_otlp_traces(
-                    trace_count_remainder,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                        .try_into()?,
+                )
                 .await?;
             current_count += trace_count_remainder as u64;
         }
@@ -260,7 +260,9 @@ async fn generate_signal(
         for _ in 0..log_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?)
+                    .send_message(
+                        OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                    )
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -272,7 +274,9 @@ async fn generate_signal(
                             error: "failed to convert u64 to usize".to_string(),
                         })?;
                 effect_handler
-                    .send_message(OTLPSignal::Logs(fake_otlp_logs(remaining_count, registry)).try_into()?)
+                    .send_message(
+                        OTLPSignal::Logs(fake_otlp_logs(remaining_count, registry)).try_into()?,
+                    )
                     .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -281,10 +285,9 @@ async fn generate_signal(
         }
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             effect_handler
-                .send_message(OTLPSignal::Logs(fake_otlp_logs(
-                    log_count_remainder,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                )
                 .await?;
             current_count += log_count_remainder as u64;
         }
@@ -294,51 +297,50 @@ async fn generate_signal(
         // generate and send metric
         for _ in 0..metric_count_split {
             effect_handler
-                .send_message(OTLPSignal::Metrics(fake_otlp_metrics(
-                    max_batch_size,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry)).try_into()?,
+                )
                 .await?;
         }
         if metric_count_remainder > 0 {
             effect_handler
-                .send_message(OTLPSignal::Metrics(fake_otlp_metrics(
-                    metric_count_remainder,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                        .try_into()?,
+                )
                 .await?;
         }
 
         // generate and send traces
         for _ in 0..trace_count_split {
             effect_handler
-                .send_message(OTLPSignal::Traces(fake_otlp_traces(
-                    max_batch_size,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry)).try_into()?,
+                )
                 .await?;
         }
         if trace_count_remainder > 0 {
             effect_handler
-                .send_message(OTLPSignal::Traces(fake_otlp_traces(
-                    trace_count_remainder,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                        .try_into()?,
+                )
                 .await?;
         }
 
         // generate and send logs
         for _ in 0..log_count_split {
             effect_handler
-                .send_message(OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?)
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                )
                 .await?;
         }
         if log_count_remainder > 0 {
             effect_handler
-                .send_message(OTLPSignal::Logs(fake_otlp_logs(
-                    log_count_remainder,
-                    registry,
-                )).try_into()?)
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                )
                 .await?;
         }
     }

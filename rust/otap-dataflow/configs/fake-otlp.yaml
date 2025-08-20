@@ -26,3 +26,4 @@ nodes:
     plugin_urn: "urn:otel:otlp:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:4317"
+      
