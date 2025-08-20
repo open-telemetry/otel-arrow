@@ -109,7 +109,7 @@ func TestDecodingWithMissingOptionalTraceSpanIdFields(t *testing.T) {
 	require.Equal(t, 1, len(columnIndices))
 	spanIdColumnIndex := columnIndices[0]
 
-	// for column we're going to remove because traceID will get removed first below
+	// adjust index of column we're going to remove because traceID will get removed first below
 	if spanIdColumnIndex > traceIdColumnIndex {
 		spanIdColumnIndex -= 1
 	}
