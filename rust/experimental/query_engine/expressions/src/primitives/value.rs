@@ -1031,9 +1031,9 @@ pub trait TimeSpanValue: Debug {
             nano_seconds -= seconds * 1_000_000_000;
         }
 
-        let fraction_seconds = nano_seconds / 100;
-        if fraction_seconds > 0 {
-            let (trailing_zeros, mut significant) = count_trailing_zeros(fraction_seconds);
+        let remaining_ticks = nano_seconds / 100;
+        if remaining_ticks > 0 {
+            let (trailing_zeros, mut significant) = count_trailing_zeros(remaining_ticks);
 
             let mut buffer = [0x00u8; 7];
 
