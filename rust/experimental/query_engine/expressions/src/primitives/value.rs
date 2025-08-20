@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::fmt::{Debug, Display, Write};
 
 use chrono::{DateTime, FixedOffset, SecondsFormat, TimeDelta, TimeZone, Utc};

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::parser::{cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message};
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};

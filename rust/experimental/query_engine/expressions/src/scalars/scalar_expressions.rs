@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::{primitives::*, resolved_static_scalar_expression::ResolvedStaticScalarExpression, *};
 
 #[derive(Debug, Clone, PartialEq)]

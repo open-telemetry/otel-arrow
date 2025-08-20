@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Set of traits and structures used to implement processors.
@@ -33,9 +34,10 @@
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
+use crate::node::NodeId;
 use crate::shared::message::SharedSender;
 use async_trait::async_trait;
-use otap_df_config::{NodeId, PortName};
+use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::time::Duration;
 
