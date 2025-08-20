@@ -48,7 +48,7 @@ pub struct MetricsSystem {
 }
 
 impl MetricsSystem {
-    /// Creates a new `MetricsSystem`.
+    /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     pub fn new(config: Config) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
         let (collector, reporter) = collector::MetricsCollector::new(config, metrics_registry.clone());

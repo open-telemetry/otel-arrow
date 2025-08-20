@@ -4,7 +4,8 @@
 //!
 //! These instruments are designed to be used in thread-per-core scenarios.
 //!
-//! ToDo Histogram support
+//! ToDo Finish the implementation of UpDownCounter and Gauge (clean_values and needs_flush need some massage).
+//! ToDo Add histogram support
 
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
@@ -49,9 +50,7 @@ impl<T: Copy + Default> Counter<T> {
 
 impl Debug for Counter<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Counter")
-            .field("value", &self.0)
-            .finish()
+        f.debug_struct("Counter").field("value", &self.0).finish()
     }
 }
 
@@ -85,7 +84,8 @@ impl Counter<u64> {
 // =============================
 
 impl<T> UpDownCounter<T>
-where T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>
+where
+    T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>,
 {
     /// Creates a new up-down-counter initialized with the provided value.
     #[inline]
@@ -162,15 +162,20 @@ impl UpDownCounter<u64> {
 // =====================
 
 impl<T> Gauge<T>
-where T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>
+where
+    T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>,
 {
     /// Creates a new gauge initialized with the provided value.
     #[inline]
-    pub const fn new(v: T) -> Self { Self(v) }
+    pub const fn new(v: T) -> Self {
+        Self(v)
+    }
 
     /// Reset the gauge to 0.
     #[inline]
-    pub fn reset(&mut self) { self.0 = T::default(); }
+    pub fn reset(&mut self) {
+        self.0 = T::default();
+    }
 
     /// Sets the value of the gauge.
     #[inline]
@@ -199,9 +204,7 @@ where T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>
 
 impl Debug for Gauge<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Gauge")
-            .field("value", &self.0)
-            .finish()
+        f.debug_struct("Gauge").field("value", &self.0).finish()
     }
 }
 
