@@ -47,10 +47,10 @@ impl Debug for MetricsRegistry {
 }
 
 impl MetricsRegistry {
-    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(&mut self, attrs: StaticAttributeSet) -> MetricSet<T> {
+    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(&mut self, static_attrs: StaticAttributeSet) -> MetricSet<T> {
         let metrics = T::default();
         let descriptor = metrics.descriptor();
-        let metrics_key = self.metrics.insert((metrics.snapshot_values(), descriptor, attrs));
+        let metrics_key = self.metrics.insert((metrics.snapshot_values(), descriptor, static_attrs));
 
         dbg!(&descriptor);
         MetricSet { key: metrics_key, metrics }
