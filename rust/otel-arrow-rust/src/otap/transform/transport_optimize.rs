@@ -9,31 +9,33 @@
 //! for example, transmitting OTAP data via gRPC.
 
 use std::{
-    ops::{Add, AddAssign},
+    ops::{Add, AddAssign, Sub},
     sync::Arc,
 };
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, PrimitiveArray, RecordBatch, StructArray, UInt16Array,
-        UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, PrimitiveBuilder,
+        RecordBatch, StructArray, UInt16Array, UInt32Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
-    compute::{SortOptions, sort_to_indices, take_record_batch},
+    compute::{SortOptions, and, sort_to_indices, take_record_batch},
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt16Type, UInt32Type},
     row::{RowConverter, SortField},
 };
-use snafu::OptionExt;
+use snafu::{OptionExt, ResultExt};
 
 use crate::{
+    arrays::{NullableArrayAccessor, get_u8_array},
     error::{self, Result},
     otap::transform::{
+        create_next_element_equality_array, create_next_eq_array_for_array,
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
         materialize_parent_ids_by_columns, remove_delta_encoding,
-        transport_encode_parent_id_for_attributes, transport_encode_parent_id_for_columns,
     },
+    otlp::attributes::{parent_id::ParentId, store::AttributeValueType},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::{FieldExt, consts},
+    schema::{FieldExt, consts, get_field_metadata},
 };
 
 /// identifier for column encoding
@@ -147,7 +149,6 @@ fn replace_column(
     columns: &mut [ArrayRef],
     new_column: ArrayRef,
 ) {
-    // TODO write tests for this
     if let Some(struct_col_name) = struct_column_name(path) {
         let field_index = schema.index_of(struct_col_name).ok();
         if let Some(field_index) = field_index {
@@ -156,7 +157,7 @@ fn replace_column(
                 if let Some((struct_idx, _)) = struct_column.fields().find(consts::ID) {
                     // replace the encoding metadata on the struct field
                     let mut new_struct_fields = struct_column.fields().to_vec();
-                    update_field_encoding_metadata(&mut new_struct_fields, consts::ID, encoding);
+                    update_field_encoding_metadata(consts::ID, encoding, &mut new_struct_fields);
 
                     // build new struct array
                     let mut new_struct_columns = struct_column.columns().to_vec();
@@ -182,9 +183,7 @@ fn replace_column(
 }
 
 /// Sets the encoding metadata on the field metadata for column at path.
-fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding: Encoding) {
-    // TODO write tests for this
-
+fn update_field_encoding_metadata(path: &str, encoding: Encoding, fields: &mut [FieldRef]) {
     if let Some(struct_col_name) = struct_column_name(path) {
         // replace the field metadata in some nested struct
         let found_field = fields
@@ -195,7 +194,7 @@ fn update_field_encoding_metadata(fields: &mut [FieldRef], path: &str, encoding:
         if let Some((idx, field)) = found_field {
             if let DataType::Struct(struct_fields) = field.data_type() {
                 let mut new_struct_fields = struct_fields.to_vec();
-                update_field_encoding_metadata(&mut new_struct_fields, consts::ID, encoding);
+                update_field_encoding_metadata(consts::ID, encoding, &mut new_struct_fields);
 
                 let new_field = field
                     .as_ref()
@@ -238,18 +237,6 @@ fn struct_column_name(path: &str) -> Option<&'static str> {
     None
 }
 
-/// helper for initializing [`ColumnEncoding`] as it will be initialized many times in the function
-/// below, so this helps w/ brevity
-macro_rules! col_encoding {
-    ($path:expr, $dtype:ident, $enc:ident) => {
-        ColumnEncoding {
-            path: $path,
-            data_type: DataType::$dtype,
-            encoding: Encoding::$enc,
-        }
-    };
-}
-
 /// returns the list of transport-optimized encoding that should be applied to OTAP batches of a
 /// given payload type
 fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
@@ -258,11 +245,11 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
         | ArrowPayloadType::ScopeAttrs
         | ArrowPayloadType::SpanAttrs
         | ArrowPayloadType::MetricAttrs
-        | ArrowPayloadType::LogAttrs => &[col_encoding!(
-            consts::PARENT_ID,
-            UInt16,
-            AttributeQuasiDelta
-        )],
+        | ArrowPayloadType::LogAttrs => &[ColumnEncoding {
+            path: consts::PARENT_ID,
+            data_type: DataType::UInt16,
+            encoding: Encoding::AttributeQuasiDelta,
+        }],
         ArrowPayloadType::SpanEventAttrs
         | ArrowPayloadType::SpanLinkAttrs
         | ArrowPayloadType::SummaryDpAttrs
@@ -271,23 +258,35 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
         | ArrowPayloadType::ExpHistogramDpAttrs
         | ArrowPayloadType::NumberDpExemplarAttrs
         | ArrowPayloadType::HistogramDpExemplarAttrs
-        | ArrowPayloadType::ExpHistogramDpExemplarAttrs => &[col_encoding!(
-            consts::PARENT_ID,
-            UInt32,
-            AttributeQuasiDelta
-        )],
+        | ArrowPayloadType::ExpHistogramDpExemplarAttrs => &[ColumnEncoding {
+            path: consts::PARENT_ID,
+            data_type: DataType::UInt32,
+            encoding: Encoding::AttributeQuasiDelta,
+        }],
         ArrowPayloadType::SummaryDataPoints
         | ArrowPayloadType::NumberDataPoints
         | ArrowPayloadType::HistogramDataPoints
         | ArrowPayloadType::ExpHistogramDataPoints => &[
-            col_encoding!(consts::ID, UInt32, DeltaRemapped),
-            col_encoding!(consts::PARENT_ID, UInt16, Delta),
+            ColumnEncoding {
+                path: consts::ID,
+                data_type: DataType::UInt32,
+                encoding: Encoding::DeltaRemapped,
+            },
+            ColumnEncoding {
+                path: consts::PARENT_ID,
+                data_type: DataType::UInt16,
+                encoding: Encoding::Delta,
+            },
         ],
 
         ArrowPayloadType::NumberDpExemplars
         | ArrowPayloadType::HistogramDpExemplars
         | ArrowPayloadType::ExpHistogramDpExemplars => &[
-            col_encoding!(consts::ID, UInt32, DeltaRemapped),
+            ColumnEncoding {
+                path: consts::ID,
+                data_type: DataType::UInt32,
+                encoding: Encoding::DeltaRemapped,
+            },
             ColumnEncoding {
                 path: consts::PARENT_ID,
                 data_type: DataType::UInt32,
@@ -296,8 +295,11 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
         ],
 
         ArrowPayloadType::SpanEvents => &[
-            col_encoding!(consts::ID, UInt32, DeltaRemapped),
-            //TODO if you have time, fix macro so it will accept this
+            ColumnEncoding {
+                path: consts::ID,
+                data_type: DataType::UInt32,
+                encoding: Encoding::DeltaRemapped,
+            },
             ColumnEncoding {
                 path: consts::PARENT_ID,
                 data_type: DataType::UInt16,
@@ -305,22 +307,38 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
             },
         ],
         ArrowPayloadType::SpanLinks => &[
-            col_encoding!(consts::ID, UInt32, DeltaRemapped),
-            //TODO if you have time, fix macro so it will accept this
+            ColumnEncoding {
+                path: consts::ID,
+                data_type: DataType::UInt32,
+                encoding: Encoding::DeltaRemapped,
+            },
             ColumnEncoding {
                 path: consts::PARENT_ID,
                 data_type: DataType::UInt16,
                 encoding: Encoding::ColumnarQuasiDelta(&[consts::TRACE_ID]),
             },
         ],
-        ArrowPayloadType::Logs | &ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::Spans => {
-            &[
-                col_encoding!(consts::ID, UInt16, DeltaRemapped),
-                col_encoding!(RESOURCE_ID_COL_PATH, UInt16, DeltaRemapped),
-                col_encoding!(SCOPE_ID_COL_PATH, UInt16, DeltaRemapped),
-            ]
-        }
-        _ => &[],
+        ArrowPayloadType::Logs
+        | &ArrowPayloadType::UnivariateMetrics
+        | ArrowPayloadType::Spans
+        | ArrowPayloadType::MultivariateMetrics => &[
+            ColumnEncoding {
+                path: consts::ID,
+                data_type: DataType::UInt16,
+                encoding: Encoding::DeltaRemapped,
+            },
+            ColumnEncoding {
+                path: RESOURCE_ID_COL_PATH,
+                data_type: DataType::UInt16,
+                encoding: Encoding::DeltaRemapped,
+            },
+            ColumnEncoding {
+                path: SCOPE_ID_COL_PATH,
+                data_type: DataType::UInt16,
+                encoding: Encoding::DeltaRemapped,
+            },
+        ],
+        ArrowPayloadType::Unknown => &[],
     }
 }
 
@@ -328,7 +346,6 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
 /// before applying any column encodings
 fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
     match payload_type {
-        // TODO fill in this for all the other types
         ArrowPayloadType::ResourceAttrs
         | ArrowPayloadType::ScopeAttrs
         | ArrowPayloadType::SpanAttrs
@@ -372,13 +389,13 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
             consts::NAME,
             consts::TRACE_ID,
         ],
-        ArrowPayloadType::UnivariateMetrics => &[
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
             RESOURCE_ID_COL_PATH,
             SCOPE_ID_COL_PATH,
             consts::METRIC_TYPE,
             consts::NAME,
         ],
-        _ => &[],
+        ArrowPayloadType::Unknown => &[],
     }
 }
 
@@ -390,9 +407,8 @@ fn sort_record_batch(
     record_batch: &RecordBatch,
 ) -> Result<RecordBatch> {
     let sort_columns_paths = get_sort_column_paths(payload_type);
-    // TODO, here maybe we should check if this is empty?
-    // ^^ this would only ever be empty if there were no sort columns configured for some payload type
 
+    // choose which columns to sort by -- only sort by the columns that are present
     let schema = record_batch.schema_ref();
     let mut sort_inputs = vec![];
     let columns = record_batch.columns();
@@ -548,15 +564,17 @@ where
     })
 }
 
-/// context required to remap parent IDs. After an ID column has been encoded, the IDs may change
-/// so the parent IDs that pointed to these IDs also need to be renapped
-/// TODO can you write better commnents on this?
+/// Context required to remap parent IDs.
+///
+/// After an ID column has been encoded, the IDs may change so the parent ID columns on child
+/// batches will need to be remapped. This provides information to the caller about the new IDs
+/// and also which ID column they correspond to.
 #[derive(Debug, PartialEq)]
 pub struct ParentIdRemapping {
-    /// TODO commentaires
+    /// The path to the column that contains the parent IDs that have changed
     pub column_path: &'static str,
 
-    /// TODO commentaires
+    /// The remapped parent IDs
     pub remapped_ids: RemappedParentIds,
 }
 
@@ -773,13 +791,8 @@ pub fn apply_column_encodings(
 ) -> Result<(RecordBatch, Option<Vec<ParentIdRemapping>>)> {
     let column_encodings = get_column_encodings(payload_type);
 
-    // TODO revisit this check after filling in get_column_encodings b/c there might not be any
-    // payload types that have no encoded columns in practice, in which case this check is useless
-    // as it'll never be true.
-    if column_encodings.is_empty() {
-        // nothing to do
-        return Ok((record_batch.clone(), None));
-    }
+    // TODO -- need to reorganize the logic in this method to _first_  do sorting THEN check if column
+    // are encoded
 
     let schema = record_batch.schema();
 
@@ -911,7 +924,6 @@ pub fn apply_column_encodings(
             remapped_parent_ids.push(ParentIdRemapping::new(column_encoding.path, remapping));
         }
 
-        // TODO the order of arguments between this and the next method call are not consistent
         replace_column(
             column_encoding.path,
             column_encoding.encoding,
@@ -919,16 +931,239 @@ pub fn apply_column_encodings(
             &mut columns,
             encoding_result.new_column,
         );
-        // TODO could make this a method call on column_encoding?
-        update_field_encoding_metadata(&mut fields, column_encoding.path, column_encoding.encoding);
+        update_field_encoding_metadata(column_encoding.path, column_encoding.encoding, &mut fields);
     }
 
-    // Safety: TODO
+    // Safety: we should have a valid schema with matching columns where all columns are the
+    // same length, so it should be safe to call expect here
     let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .expect("TODO why we can expect here");
+        .expect("error constructing transport encoded record batch");
 
-    // TODO need to write tests for this
     Ok((record_batch, Some(remapped_parent_ids)))
+}
+
+/// Adds the quasi-delta/transport optimized encoding to the encoding to the parent ID column.
+///
+/// See the comments on [`super::materialize_parent_id_for_attributes`] for more information about
+/// the encoding scheme.
+pub fn transport_encode_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
+where
+    T: ParentId,
+    T::ArrayType: ArrowPrimitiveType,
+    <T::ArrayType as ArrowPrimitiveType>::Native:
+        Sub<Output = <T::ArrayType as ArrowPrimitiveType>::Native>,
+{
+    // downcast parent ID into an array of the primitive type
+    let parent_id_arr = T::get_parent_id_column(record_batch)?;
+
+    // TODO write tests for this
+    if record_batch.num_rows() == 0 {
+        // safety: we've already called `T::get_parent_id_column`, which checks that the column
+        // so it should be safe to call expect here
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("error accessing parent ID column")
+            .clone());
+    }
+
+    // TODO add tests for this?
+    // check that the column hasn't already been encoded. If so, we want to avoid re-encoding
+    let column_encoding = get_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        consts::metadata::COLUMN_ENCODING,
+    );
+    if let Some(consts::metadata::encodings::QUASI_DELTA) = column_encoding {
+        // safety: we've already called `T::get_parent_id_column`, which checks that the column
+        // so it should be safe to call expect here
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("error accessing parent ID column")
+            .clone());
+    }
+
+    let keys_arr =
+        record_batch
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .context(error::ColumnNotFoundSnafu {
+                name: consts::ATTRIBUTE_KEY,
+            })?;
+    let key_eq_next = create_next_eq_array_for_array(keys_arr);
+
+    let type_arr = record_batch
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .context(error::ColumnNotFoundSnafu {
+            name: consts::ATTRIBUTE_TYPE,
+        })?;
+    let types_eq_next = create_next_element_equality_array(type_arr)?;
+    let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
+
+    let val_str_arr = record_batch.column_by_name(consts::ATTRIBUTE_STR);
+    let val_int_arr = record_batch.column_by_name(consts::ATTRIBUTE_INT);
+    let val_double_arr = record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE);
+    let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
+    let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
+
+    let mut encoded_parent_ids = PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
+
+    // below we're iterating through the record batch and each time we find a contiguous range
+    // where all the types & attribute keys are the same, we use the "eq" compute kernel to
+    // compare all the values. Then we use the resulting next-element equality array for the
+    // values to determine if there should be delta encoding
+    let mut curr_range_start = 0;
+    for idx in 0..record_batch.num_rows() {
+        // check if we've found the end of a range of where all the type & attribute are the same
+        let found_range_end = if idx == types_eq_next.len() {
+            true // end of list
+        } else {
+            !types_eq_next.value(idx) || !key_eq_next.value(idx)
+        };
+
+        // when we find the range end, decode the parent ID values
+        if found_range_end {
+            let value_type = AttributeValueType::try_from(type_arr.value(curr_range_start))
+                .context(error::UnrecognizedAttributeValueTypeSnafu)?;
+            let value_arr = match value_type {
+                AttributeValueType::Str => val_str_arr,
+                AttributeValueType::Int => val_int_arr,
+                AttributeValueType::Bool => val_bool_arr,
+                AttributeValueType::Bytes => val_bytes_arr,
+                AttributeValueType::Double => val_double_arr,
+
+                // These types are always considered not equal for purposes of determining
+                // whether to delta encode parent ID
+                AttributeValueType::Map | AttributeValueType::Slice | AttributeValueType::Empty => {
+                    None
+                }
+            };
+
+            // add the first value from this range to the parent IDs
+            let first_parent_id = parent_id_arr
+                .value_at(curr_range_start)
+                // safety: there's a check at the beginning of this function to ensure that
+                // the batch is not empty
+                .expect("expect the batch not to be empty");
+            encoded_parent_ids.append_value(first_parent_id);
+
+            if let Some(value_arr) = value_arr {
+                // if we have a value array here, we want the parent ID to be delta encoded
+                let range_length = idx + 1 - curr_range_start;
+                let values_range = value_arr.slice(curr_range_start, range_length);
+                let values_eq_next = create_next_element_equality_array(&values_range)?;
+
+                for batch_idx in (curr_range_start + 1)..=idx {
+                    let curr_parent_id = parent_id_arr.value_at_or_default(batch_idx);
+                    let prev_value_range_idx = batch_idx - 1 - curr_range_start;
+
+                    let parent_id_or_delta = if values_eq_next.value(prev_value_range_idx)
+                        && !values_eq_next.is_null(prev_value_range_idx)
+                    {
+                        // value at current index equals previous so we're delta encoded
+                        let prev_parent_id = parent_id_arr.value_at_or_default(batch_idx - 1);
+                        curr_parent_id - prev_parent_id
+                    } else {
+                        // otherwise, we break the delta encoding
+                        curr_parent_id
+                    };
+                    encoded_parent_ids.append_value(parent_id_or_delta);
+                }
+            } else {
+                // if we're here, we've determined that the parent ID values are not delta encoded
+                // because the type doesn't support it
+                for batch_idx in (curr_range_start + 1)..(idx + 1) {
+                    encoded_parent_ids.append_value(parent_id_arr.value_at_or_default(batch_idx));
+                }
+            }
+
+            curr_range_start = idx + 1;
+        }
+    }
+
+    let encoded_parent_ids = Arc::new(encoded_parent_ids.finish());
+    Ok(encoded_parent_ids)
+}
+
+/// This function adds the quasi-delta encoding to the parent ID column. Subsequent parent IDs with
+/// column values that are equal to the previous row's column values will be delta encoded. The
+/// list of columns to check for equality is specified by `equality_column_names`.
+pub fn transport_encode_parent_id_for_columns<T>(
+    record_batch: &RecordBatch,
+    equality_column_names: &[&str],
+) -> Result<ArrayRef>
+where
+    T: ParentId,
+    T::ArrayType: ArrowPrimitiveType,
+    <T::ArrayType as ArrowPrimitiveType>::Native:
+        Sub<Output = <T::ArrayType as ArrowPrimitiveType>::Native>,
+{
+    let parent_ids = T::get_parent_id_column(record_batch)?;
+
+    // TODO add tests for this
+    // if the record batch is empty, nothing to decode so return early
+    if record_batch.num_rows() == 0 {
+        // safety: we've already called `T::get_parent_id_column`, which checks that the column
+        // so it should be safe to call expect here
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("error accessing parent ID column")
+            .clone());
+    }
+
+    // TODO add tests for this
+    // check that the column hasn't already been encoded. If so, we want to avoid re-encoding
+    let column_encoding = get_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        consts::metadata::COLUMN_ENCODING,
+    );
+    if let Some(consts::metadata::encodings::QUASI_DELTA) = column_encoding {
+        // safety: we've already called `T::get_parent_id_column`, which checks that the column
+        // so it should be safe to call expect here
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("error accessing parent ID column")
+            .clone());
+    }
+
+    // here we're building up the next-element equality array for multiple columns by 'and'ing
+    // the equality array for each column together. This gives us an array that is true if all
+    // the values in each column are equal (index offset by 1). If some column doesn't exist, in
+    // this case assume this means null values which are equal
+
+    // we start off with an array full of `true`, indicating all rows are equal. This is the
+    // assumption to make if none of the equality columns are present on the record batch.
+    let mut eq_next: BooleanArray = std::iter::repeat_n(Some(true), parent_ids.len() - 1).collect();
+
+    for column_name in equality_column_names {
+        if let Some(column) = record_batch.column_by_name(column_name) {
+            let eq_next_column = create_next_element_equality_array(column)?;
+            eq_next =
+                and(&eq_next_column, &eq_next).expect("can 'and' arrays together of same length")
+        }
+    }
+
+    let mut encoded_parent_ids =
+        PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
+
+    // safety: there's a check at the beginning of this method that the batch is not empty
+    let first_parent_id = parent_ids
+        .value_at(0)
+        .expect("expect batch not to be empty");
+    encoded_parent_ids.append_value(first_parent_id);
+
+    for i in 1..record_batch.num_rows() {
+        let curr_parent_id = parent_ids.value(i);
+        let parent_id_or_delta = if eq_next.value(i - 1) {
+            let prev_parent_id = parent_ids.value_at_or_default(i - 1);
+            curr_parent_id - prev_parent_id
+        } else {
+            curr_parent_id
+        };
+        encoded_parent_ids.append_value(parent_id_or_delta);
+    }
+
+    let encoded_parent_ids = Arc::new(encoded_parent_ids.finish());
+    Ok(encoded_parent_ids)
 }
 
 #[cfg(test)]
@@ -1099,8 +1334,6 @@ mod test {
             let trace_ids =
                 FixedSizeBinaryArray::try_from_iter(data.iter().map(|d| u128::to_be_bytes(d.2)))
                     .unwrap();
-
-            // TODO -- test sorting w/ nulls
 
             RecordBatch::try_new(
                 schema.clone(),
