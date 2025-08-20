@@ -10,13 +10,11 @@ use std::{collections::HashMap, io::Cursor};
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
-
 use snafu::ResultExt;
 
 use crate::error::{self, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
-
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 
 /// handles serializing the stream of record batches for some payload type
@@ -73,10 +71,9 @@ impl Producer {
     }
 
     /// produce `BatchArrowRecords` protobuf message from `OtapBatch`
-    pub fn produce_bar(&mut self, otap_batch: &OtapArrowRecords) -> Result<BatchArrowRecords> {
-        // TODO if we decide to also apply the encodings to the original batch, we can avoid
-        // the clone here (even though the clone _should_ be relatively cheap...
-        let mut otap_batch = otap_batch.clone();
+    pub fn produce_bar(&mut self, otap_batch: &mut OtapArrowRecords) -> Result<BatchArrowRecords> {
+        // apply transport optimized encoding so we can get better compression ratio when
+        // transmitting the serialized data
         otap_batch.encode_transport_optimized()?;
 
         let allowed_payloads = otap_batch.allowed_payload_types();
@@ -141,11 +138,13 @@ impl Default for Producer {
 mod test {
     use crate::Consumer;
     use crate::otap::{Logs, from_record_messages};
+    use crate::otlp::attributes::store::AttributeValueType;
+    use crate::schema::{FieldExt, consts};
 
     use super::*;
     use std::sync::Arc;
 
-    use arrow::array::{StringArray, UInt16Array, UInt32Array};
+    use arrow::array::{StringArray, UInt8Array, UInt16Array, UInt32Array};
     use arrow::datatypes::{DataType, Field, Schema};
 
     #[test]
@@ -174,7 +173,7 @@ mod test {
 
         let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
-        let mut bar = producer.produce_bar(&input).unwrap();
+        let mut bar = producer.produce_bar(&mut input).unwrap();
         let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
@@ -198,7 +197,7 @@ mod test {
 
         let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
-        let mut bar = producer.produce_bar(&input).unwrap();
+        let mut bar = producer.produce_bar(&mut input).unwrap();
         let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
@@ -220,10 +219,75 @@ mod test {
 
         let mut input = OtapArrowRecords::Logs(Logs::default());
         input.set(ArrowPayloadType::Logs, record_batch);
-        let mut bar = producer.produce_bar(&input).unwrap();
+        let mut bar = producer.produce_bar(&mut input).unwrap();
         let result = OtapArrowRecords::Logs(from_record_messages(
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);
+    }
+
+    #[test]
+    fn test_it_encodes_batches_with_transport_optimization() {
+        let data = [("a", 0), ("b", 0), ("a", 1), ("b", 1), ("a", 2), ("b", 2)];
+        let schema = Arc::new(Schema::new(vec![
+            // because the IDs have a plain encoding, this signals to the otap batch that it will
+            // need to be transport_encoded
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let attr_types = Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+            AttributeValueType::Str as u8,
+            data.len(),
+        )));
+        let attr_keys = Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            "key",
+            data.len(),
+        )));
+        let attr_vals = Arc::new(StringArray::from_iter_values(data.iter().map(|d| d.0)));
+        let parent_id = Arc::new(UInt16Array::from_iter_values(data.iter().map(|d| d.1)));
+
+        let log_attrs = RecordBatch::try_new(
+            schema,
+            vec![parent_id, attr_types.clone(), attr_keys.clone(), attr_vals],
+        )
+        .unwrap();
+
+        let mut input = OtapArrowRecords::Logs(Logs::default());
+        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+
+        let mut producer = Producer::new();
+        let mut bar = producer.produce_bar(&mut input).unwrap();
+
+        let mut consumer = Consumer::default();
+        let result = OtapArrowRecords::Logs(from_record_messages(
+            consumer.consume_bar(&mut bar).unwrap(),
+        ));
+        let result_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+
+        let expected_data = [("a", 0), ("a", 1), ("a", 1), ("b", 0), ("b", 1), ("b", 1)];
+        let attr_vals = Arc::new(StringArray::from_iter_values(
+            expected_data.iter().map(|d| d.0),
+        ));
+        let parent_id = Arc::new(UInt16Array::from_iter_values(
+            expected_data.iter().map(|d| d.1),
+        ));
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let expected_rb = RecordBatch::try_new(
+            expected_schema,
+            vec![parent_id, attr_types, attr_keys, attr_vals],
+        )
+        .unwrap();
+
+        assert_eq!(result_attrs, &expected_rb);
     }
 }
