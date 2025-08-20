@@ -45,14 +45,14 @@ enum Encoding {
     /// Otherwise `DeltaRemapped` is more appropriate
     Delta,
 
-    /// this encoding specifies to create a new delta encoded ID column, but also create new IDs
-    /// instead of just delta encoding the original IDs. The parent IDs which point at IDs that
-    /// have been replaced will need to be remapped. This is used to add delta encoding to columns
-    /// that are not already sorted by the ID, since most ID columns are unsigned ints which means
-    /// no negative deltas are allowed
+    /// This encoding creates a new delta encoded ID column, but also create new IDs instead of
+    /// simply delta encoding the original IDs. This is used to add delta encoding to columns that
+    /// are not already sorted by the ID, since most ID columns are unsigned ints which means no
+    /// negative deltas are allowed. The parent IDs which point at IDs that have been replaced will
+    /// need to be remapped.
     DeltaRemapped,
 
-    /// this is the transport optimized encoding that is applied to the parent_id column
+    /// This is the transport optimized encoding that is applied to the parent_id column
     /// of attribute record batches where where subsequent rows of matching attribute type,
     /// key and value will have delta encoded parent IDs
     AttributeQuasiDelta,
@@ -64,17 +64,15 @@ enum Encoding {
     ColumnarQuasiDelta(&'static [&'static str]),
 }
 
-// for the majority of columns, we'll be able to identify the path within the record batch as
+// For the majority of columns, we'll be able to identify the path within the record batch as
 // the column name directly, but Resource ID and Scope ID, they're typically nested within a
-// struct on the root record so we treat these as special cases.
-
+// struct on the root record so we treat these as special cases:/
 /// path within the record batch to the resource ID column
 pub const RESOURCE_ID_COL_PATH: &str = "resource.id";
-
 /// path within the record batch to the scope ID column
 pub const SCOPE_ID_COL_PATH: &str = "scope.id";
 
-/// specification for encoding that should be applied to the column before it is IPC serialized
+/// specification for encoding that should be applied to some column
 struct ColumnEncoding<'a> {
     /// path to the column within the record batch
     path: &'a str,
@@ -399,7 +397,7 @@ fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static 
     }
 }
 
-/// sort the record batch with this payload type by columns that will hopefully give us the best
+/// Sort the record batch with this payload type by columns that will hopefully give us the best
 /// compression ratio.
 fn sort_record_batch(
     payload_type: &ArrowPayloadType,
@@ -891,7 +889,7 @@ pub fn apply_transport_optimized_encodings(
     Ok((record_batch, Some(remapped_parent_ids)))
 }
 
-//
+/// Applies the specified column encoding to the record batch. Generic over the ID column type
 fn apply_encoding_for_id_type<T>(
     record_batch: &RecordBatch,
     column_encoding: &ColumnEncoding<'_>,
@@ -936,11 +934,12 @@ where
             })
         }
         Encoding::Delta => {
-            // TODO this is a bit of a hack. This will effectively produce a delta
-            // encoded column because it's working like quasi-delta encoding except
-            // that there are no columns to check equality between rows which would
-            // break the sequence of delta encodings. It would probably be faster to
-            // create a dedicated function to just do the straight delta encoding.
+            // Adding delta encoding here by repurposing adding quasi-delta encoding except that
+            // there are no columns to check equality between rows which would  break the sequence
+            // of delta encodings.
+            //
+            // TODO we might get slightly better performance by to creating a dedicated function to
+            // do the delta encoding directly.
             let new_column = transport_encode_parent_id_for_columns::<T>(record_batch, &[])?;
             Ok(EncodedColumnResult {
                 new_column,

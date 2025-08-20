@@ -80,12 +80,12 @@ impl OtapArrowRecords {
     /// be called before serializing the data into Arrow IPC for transport via gRPC.
     ///
     /// The exact transformations that are applied vary between the payload types contained within
-    /// the batch, but generally it involves sorting by various whose values are often repeated,
-    /// and then adding some form of delta encoding the ID columns.
+    /// the batch, but generally it involves sorting by various columns whose values are often
+    /// repeated, and then adding some form of delta encoding to the ID columns.
     ///
-    /// This operation is idempotent and is relatively cheap if the data is already optimized for
-    /// transport. This means callers can call this if/when they need transport optimized batches
-    /// without having to first check the encodings.
+    /// This operation is idempotent and is relatively inexpensive if the data is already optimized
+    /// for transport. This means callers can call this if/when they need transport optimized
+    /// batches without having to first check if the data is already encoded.
     pub fn encode_transport_optimized(&mut self) -> Result<()> {
         match self {
             Self::Logs(_) => Logs::encode_transport_optimized(self),
@@ -114,7 +114,7 @@ trait OtapBatchStore: Sized + Default + Clone {
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
     /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs on each Arrow
-    /// Arrow Record Batch contained in this Otap Batch.
+    /// Record Batch contained in this Otap Batch
     fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()>;
 
     /// Apply transport optimized encoding to all record batches contained within this

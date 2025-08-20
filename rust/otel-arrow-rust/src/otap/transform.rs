@@ -265,7 +265,7 @@ where
     let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
 
     // create new record batch but with parent column replaced
-    replace_parent_id_column(
+    replace_materialized_parent_id_column(
         record_batch,
         materialized_parent_ids,
         metadata::encodings::PLAIN,
@@ -346,7 +346,7 @@ where
 
     let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
 
-    replace_parent_id_column(
+    replace_materialized_parent_id_column(
         record_batch,
         materialized_parent_ids,
         metadata::encodings::PLAIN,
@@ -383,7 +383,7 @@ where
 /// the same type, nullability and length as the record batch, and it also expects the
 /// original record batch to have a parent_id column. If these conditions are not met,
 /// an error is returned.
-fn replace_parent_id_column(
+fn replace_materialized_parent_id_column(
     record_batch: &RecordBatch,
     materialized_parent_ids: ArrayRef,
     encoding: &'static str,
