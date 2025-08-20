@@ -244,7 +244,7 @@ pub(crate) fn parse_accessor_expression(
                     }
 
                     value_accessor.push_selector(ScalarExpression::Math(
-                        MathScalarExpression::Negate(UnaryMathmaticalScalarExpression::new(
+                        MathScalarExpression::Negate(UnaryMathematicalScalarExpression::new(
                             negate_location.unwrap(),
                             scalar,
                         )),
@@ -1064,7 +1064,7 @@ mod tests {
                         ValueAccessor::new()
                     )),
                     ScalarExpression::Math(MathScalarExpression::Negate(
-                        UnaryMathmaticalScalarExpression::new(
+                        UnaryMathematicalScalarExpression::new(
                             QueryLocation::new_fake(),
                             ScalarExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
