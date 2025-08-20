@@ -39,6 +39,8 @@ pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otap:processor:batch";
 /// Default configuration values (parity-aligned as we confirm Go defaults)
 pub const DEFAULT_SEND_BATCH_SIZE: usize = 8192;
 /// Default upper bound on batch size used to chunk oversized inputs (in number of items)
+/// Note: In Go batchprocessor, send_batch_max_size defaults to 0 which means "use send_batch_size".
+/// We mirror that behavior by leaving this unset in Default and normalizing at runtime.
 pub const DEFAULT_SEND_BATCH_MAX_SIZE: usize = 8192;
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
@@ -70,7 +72,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             send_batch_size: Some(DEFAULT_SEND_BATCH_SIZE),
-            send_batch_max_size: Some(DEFAULT_SEND_BATCH_MAX_SIZE),
+            // Go behavior: 0 (or missing) => use send_batch_size; we leave None and normalize later
+            send_batch_max_size: None,
             timeout: Some(DEFAULT_TIMEOUT_MS),
             metadata_keys: Vec::new(),
             metadata_cardinality_limit: None,
@@ -126,7 +129,8 @@ impl OtapBatchProcessor {
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut config: Config = serde_json::from_value(cfg.clone()).unwrap_or_default();
 
-        // Accept Go-style duration strings for timeout (e.g., "200ms", "2s", "1m") as well as numeric milliseconds.
+        // Accept Go-style duration strings for timeout (e.g., "200ms", "2s", "1m", "1m30s").
+        // If provided as a string, parse like Go's time.ParseDuration; if numeric, keep as ms.
         if let Some(timeout_val) = cfg.get("timeout") {
             if let Some(s) = timeout_val.as_str() {
                 if let Some(ms) = parse_duration_ms(s) {
@@ -139,11 +143,14 @@ impl OtapBatchProcessor {
         if config.send_batch_size.unwrap_or(0) == 0 {
             config.send_batch_size = Some(1);
         }
-        if let Some(max) = config.send_batch_max_size {
-            if max == 0 {
-                config.send_batch_max_size = Some(1);
-            }
-        }
+        // Go behavior: if send_batch_max_size is 0 or missing, use send_batch_size
+        let effective_sbs = config.send_batch_size.unwrap_or(DEFAULT_SEND_BATCH_SIZE);
+        let max = match config.send_batch_max_size.unwrap_or(0) {
+            0 => effective_sbs,
+            v => v,
+        };
+        config.send_batch_max_size = Some(max);
+
         if let Some(limit) = config.metadata_cardinality_limit {
             if limit == 0 {
                 config.metadata_cardinality_limit = Some(1);
@@ -310,26 +317,10 @@ fn item_count(_data: &OtapPdata) -> usize {
     1
 }
 
-/// Parses duration strings from Go-style configs (e.g., "200ms", "2s", "1m").
-/// If `s` is a plain number, it's treated as milliseconds for convenience.
+/// Parses duration strings using Go-like syntax (e.g., "200ms", "2s", "1m", "1m30s").
+/// Returns milliseconds. Bare numbers are NOT accepted here to mirror Go's time.ParseDuration.
 fn parse_duration_ms(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if let Some(ms) = s.strip_suffix("ms") {
-        return ms.trim().parse::<u64>().ok();
-    }
-    if let Some(sec) = s.strip_suffix('s') {
-        if !s.ends_with("ms") {
-            return sec.trim().parse::<u64>().ok().map(|v| v * 1000);
-        }
-    }
-    if let Some(min) = s.strip_suffix('m') {
-        return min.trim().parse::<u64>().ok().map(|v| v * 60_000);
-    }
-    // plain number? treat as ms
-    if let Ok(v) = s.parse::<u64>() {
-        return Some(v);
-    }
-    None
+    parse_duration::parse(s).ok().map(|d| d.as_millis() as u64)
 }
 
 #[cfg(test)]
@@ -510,5 +501,24 @@ mod tests {
         });
 
         validation.validate(|_vctx| async move {});
+    }
+    #[test]
+    fn test_max_defaults_to_size_when_zero_or_missing() {
+        let cfg = json!({
+            "send_batch_size": 7,
+            "send_batch_max_size": 0,
+            "timeout": "200ms"
+        });
+        let proc_cfg = ProcessorConfig::new("norm-max");
+        let res = OtapBatchProcessor::from_config(&cfg, &proc_cfg);
+        assert!(res.is_ok());
+
+        // Missing max -> also defaults to size
+        let cfg2 = json!({
+            "send_batch_size": 9,
+            "timeout": "200ms"
+        });
+        let res2 = OtapBatchProcessor::from_config(&cfg2, &proc_cfg);
+        assert!(res2.is_ok());
     }
 }
