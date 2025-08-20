@@ -3,7 +3,7 @@
 //! Collector task for internal metrics.
 
 use crate::error::Error;
-use crate::metrics::MvMetricsSnapshot;
+use crate::metrics::MetricSetSnapshot;
 use crate::pipeline::{LineProtocolPipeline, MetricsPipeline};
 use crate::registry::MetricsRegistryHandle;
 use crate::reporter::MetricsReporter;
@@ -20,13 +20,13 @@ pub struct MetricsCollector {
     /// Receiver for incoming metrics.
     /// The message is a tuple of (MetricsKey, MultivariateMetrics).
     /// The metrics key is the aggregation key for the metrics,
-    metrics_receiver: flume::Receiver<MvMetricsSnapshot>,
+    metrics_receiver: flume::Receiver<MetricSetSnapshot>,
 }
 
 impl MetricsCollector {
     /// Creates a new `MetricsAggregator`.
     pub(crate) fn new(registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
-        let (metrics_sender, metrics_receiver) = flume::bounded::<MvMetricsSnapshot>(100);
+        let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(100);
 
         (
             Self {

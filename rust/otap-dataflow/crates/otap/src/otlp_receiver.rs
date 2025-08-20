@@ -16,8 +16,8 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
 use otap_df_telemetry::counter::Counter;
-use otap_df_telemetry::metrics::MvMetrics;
-use otap_df_telemetry_macros::telemetry_metrics;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use otap_df_telemetry::registry::MetricsKey;
 use serde::Deserialize;
 use serde_json::Value;
@@ -40,7 +40,7 @@ pub struct Config {
 /// Receiver implementation that receives OTLP grpc service requests and decodes the data into OTAP.
 pub struct OTLPReceiver {
     config: Config,
-    metrics: MvMetrics<OtlpReceiverMetrics>,
+    metrics: MetricSet<OtlpReceiverMetrics>,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory
@@ -75,7 +75,7 @@ impl OTLPReceiver {
 }
 
 /// OTLP receiver metrics moved into the node module.
-#[telemetry_metrics(name = "otlp.receiver.metrics")]
+#[metric_set(name = "otlp.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
     key: Option<MetricsKey>,

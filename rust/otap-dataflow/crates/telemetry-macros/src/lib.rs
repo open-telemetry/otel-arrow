@@ -12,14 +12,14 @@ use quote::{format_ident, quote};
 use syn::{parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr};
 use syn::parse_quote;
 
-/// Derive implementation of `otap_df_telemetry::metrics::MultivariateMetrics` for a struct.
+/// Derive implementation of `otap_df_telemetry::metrics::MetricSetHandler` for a struct.
 ///
 /// Container attribute:
 ///   - `#[metrics(name = "my.metrics.name")]`
 /// Field attributes:
 ///   - `#[metric(name = "field.name", unit = "{unit}")]`
-#[proc_macro_derive(MultivariateMetrics, attributes(metrics, metric))]
-pub fn derive_multivariate_metrics(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(MetricSetHandler, attributes(metrics, metric))]
+pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     let input_span = input.span();
@@ -86,7 +86,7 @@ pub fn derive_multivariate_metrics(input: TokenStream) -> TokenStream {
     let desc_ident = format_ident!("DESCRIPTOR");
 
     let generated = quote! {
-        impl #generics otap_df_telemetry::metrics::MultivariateMetrics for #struct_ident #generics {
+        impl #generics otap_df_telemetry::metrics::MetricSetHandler for #struct_ident #generics {
             fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
                 static #desc_ident: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
                     name: #metrics_name,
@@ -96,21 +96,13 @@ pub fn derive_multivariate_metrics(input: TokenStream) -> TokenStream {
                 };
                 &#desc_ident
             }
-
-            fn field_values(&self) -> Box<dyn Iterator<Item = (&'static otap_df_telemetry::descriptor::MetricsField, u64)> + '_> {
-                let vals = [ #( self.#metric_field_idents.get() ),* ];
-                Box::new(self.descriptor().fields.iter().zip(vals.into_iter()).map(|(f,v)| (f, v)))
-            }
-
-            fn to_vec(&self) -> ::std::vec::Vec<u64> {
+            fn snapshot_values(&self) -> ::std::vec::Vec<u64> {
                 let mut out = ::std::vec::Vec::with_capacity(self.descriptor().fields.len());
                 #( out.push(self.#metric_field_idents.get()); )*
                 out
             }
-
-            fn zero(&mut self) { #( self.#metric_field_idents.set(0); )* }
-
-            fn has_non_zero(&self) -> bool { #( if self.#metric_field_idents.get() != 0 { return true; } )* false }
+            fn clear_values(&mut self) { #( self.#metric_field_idents.set(0); )* }
+            fn needs_flush(&self) -> bool { #( if self.#metric_field_idents.get() != 0 { return true; } )* false }
         }
     };
 
@@ -147,14 +139,13 @@ fn parse_metric_field_attr(attr: &Attribute) -> Option<(String, String)> {
     match (name, unit) { (Some(n), Some(u)) => Some((n,u)), _ => None }
 }
 
-/// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MultivariateMetrics derive
+/// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MetricSetHandler derive
 /// and descriptor name via a container attribute.
-///
 /// Usage:
-///   #[otap_df_telemetry_macros::telemetry_metrics(name = "my.metrics")]
+///   #[otap_df_telemetry_macros::metric_set(name = "my.metrics")]
 ///   pub struct MyMetrics { #[metric(name = "x", unit = "{unit}")] x: Counter<u64>, ... }
 #[proc_macro_attribute]
-pub fn telemetry_metrics(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse name argument
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
@@ -191,7 +182,7 @@ pub fn telemetry_metrics(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !has_repr { s.attrs.push(repr_attr); }
 
     // Ensure the MultivariateMetrics derive is attached FIRST to introduce helper attributes
-    let derive_attr: Attribute = parse_quote!(#[derive(otap_df_telemetry_macros::MultivariateMetrics)]);
+    let derive_attr: Attribute = parse_quote!(#[derive(otap_df_telemetry_macros::MetricSetHandler)]);
     s.attrs.push(derive_attr);
 
     // Add container descriptor attribute consumed by the derive

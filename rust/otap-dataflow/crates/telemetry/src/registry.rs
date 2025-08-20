@@ -6,7 +6,7 @@
 //! dynamic dispatch.
 
 use crate::attributes::NodeStaticAttrs;
-use crate::metrics::{MultivariateMetrics, MvMetrics};
+use crate::metrics::{MetricSetHandler, MetricSet};
 use parking_lot::Mutex;
 use slotmap::{SlotMap, new_key_type};
 use std::fmt::Debug;
@@ -47,12 +47,12 @@ impl Debug for MetricsRegistry {
 }
 
 impl MetricsRegistry {
-    fn register<T: MultivariateMetrics + Default + Debug + Send + Sync>(&mut self, attrs: NodeStaticAttrs) -> MvMetrics<T> {
+    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(&mut self, attrs: NodeStaticAttrs) -> MetricSet<T> {
         let metrics = T::default();
         let descriptor = metrics.descriptor();
-        let metrics_key = self.metrics.insert((metrics.to_vec(), descriptor, attrs));
+        let metrics_key = self.metrics.insert((metrics.snapshot_values(), descriptor, attrs));
 
-        MvMetrics { key: metrics_key, metrics }
+        MetricSet { key: metrics_key, metrics }
     }
 
     /// Generic add method: merges the provided metrics into the registered instance keyed by `metrics_key`.
@@ -101,10 +101,10 @@ impl MetricsRegistryHandle {
     }
 
     /// Registers a new multivariate metrics instance with the given static attributes.
-    pub fn register<T: MultivariateMetrics + Default + Debug + Send + Sync>(
+    pub fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
         attrs: NodeStaticAttrs,
-    ) -> MvMetrics<T> {
+    ) -> MetricSet<T> {
         self.metric_registry.lock().register(attrs)
     }
 

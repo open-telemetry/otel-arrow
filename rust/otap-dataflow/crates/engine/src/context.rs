@@ -4,7 +4,7 @@
 
 use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
 use otap_df_telemetry::attributes::NodeStaticAttrs;
-use otap_df_telemetry::metrics::{MultivariateMetrics, MvMetrics};
+use otap_df_telemetry::metrics::{MetricSetHandler, MetricSet};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
 use otap_df_config::node::NodeKind;
@@ -79,9 +79,9 @@ impl PipelineContext {
     }
 
     /// Registers a new multivariate metrics instance with the metrics registry.
-    pub fn register_metrics<T: MultivariateMetrics + Default + Debug + Send + Sync>(
+    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self
-    ) -> MvMetrics<T> {
+    ) -> MetricSet<T> {
         self.controller_context.metrics_registry_handle.register::<T>(
             NodeStaticAttrs {
                 node_id: self.node_id.clone(),

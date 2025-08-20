@@ -25,8 +25,8 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_telemetry::counter::Counter;
-use otap_df_telemetry::metrics::MvMetrics;
-use otap_df_telemetry_macros::telemetry_metrics;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use otap_df_telemetry::registry::MetricsKey;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
@@ -74,7 +74,7 @@ pub struct PerfExporter {
     config: Config,
     output: Option<String>,
 
-    metrics: MvMetrics<PerfExporterPdataMetrics>,
+    metrics: MetricSet<PerfExporterPdataMetrics>,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -124,7 +124,7 @@ impl PerfExporter {
 }
 
 /// Pdata-oriented metrics for the OTAP PerfExporter moved into the node module.
-#[telemetry_metrics(name = "perf.exporter.pdata.metrics")]
+#[metric_set(name = "perf.exporter.pdata.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct PerfExporterPdataMetrics {
     key: Option<MetricsKey>,

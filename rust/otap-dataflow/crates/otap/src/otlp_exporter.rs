@@ -15,8 +15,8 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
-use otap_df_telemetry::metrics::MvMetrics;
-use otap_df_telemetry_macros::telemetry_metrics;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +39,7 @@ pub struct Config {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    metrics: MvMetrics<OtlpExporterMetrics>,
+    metrics: MetricSet<OtlpExporterMetrics>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -72,7 +72,7 @@ impl OTLPExporter {
 }
 
 /// OTLP exporter metrics moved into the node module.
-#[telemetry_metrics(name = "otlp.exporter.metrics")]
+#[metric_set(name = "otlp.exporter.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpExporterMetrics {
     key: Option<MetricsKey>,
