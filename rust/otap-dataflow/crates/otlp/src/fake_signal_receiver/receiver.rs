@@ -363,7 +363,7 @@ mod tests {
     const RUN_TILL_SHUTDOWN: u64 = 999;
     const MESSAGE_PER_SECOND: usize = 3;
     const MAX_SIGNALS: u64 = 3;
-    const MAX_BATCH: usize = 30;
+    const MAX_BATCH: usize = 2;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario() -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -591,6 +591,7 @@ mod tests {
                             for resource in metric.resource_metrics.iter() {
                                 for scope in resource.scope_metrics.iter() {
                                     received_messages += scope.metrics.len();
+                                    assert!(scope.metrics.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -598,6 +599,7 @@ mod tests {
                             for resource in span.resource_spans.iter() {
                                 for scope in resource.scope_spans.iter() {
                                     received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -605,6 +607,7 @@ mod tests {
                             for resource in log.resource_logs.iter() {
                                 for scope in resource.scope_logs.iter() {
                                     received_messages += scope.log_records.len();
+                                    assert!(scope.log_records.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -661,6 +664,7 @@ mod tests {
                             for resource in metric.resource_metrics.iter() {
                                 for scope in resource.scope_metrics.iter() {
                                     received_messages += scope.metrics.len();
+                                    assert!(scope.metrics.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -668,6 +672,7 @@ mod tests {
                             for resource in span.resource_spans.iter() {
                                 for scope in resource.scope_spans.iter() {
                                     received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -675,6 +680,7 @@ mod tests {
                             for resource in log.resource_logs.iter() {
                                 for scope in resource.scope_logs.iter() {
                                     received_messages += scope.log_records.len();
+                                    assert!(scope.log_records.len() <= MAX_BATCH);
                                 }
                             }
                         }
