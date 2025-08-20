@@ -1033,8 +1033,6 @@ mod test {
         batch.set(ArrowPayloadType::ResourceAttrs, attrs_rb.clone());
         batch.set(ArrowPayloadType::ScopeAttrs, attrs_rb.clone());
 
-        let batch_b4 = batch.clone();
-
         batch.decode_transport_optimized_ids().unwrap();
 
         // check log.ids

@@ -956,7 +956,6 @@ where
     // downcast parent ID into an array of the primitive type
     let parent_id_arr = T::get_parent_id_column(record_batch)?;
 
-    // TODO write tests for this
     if record_batch.num_rows() == 0 {
         // safety: we've already called `T::get_parent_id_column`, which checks that the column
         // so it should be safe to call expect here
@@ -966,7 +965,6 @@ where
             .clone());
     }
 
-    // TODO add tests for this?
     // check that the column hasn't already been encoded. If so, we want to avoid re-encoding
     let column_encoding = get_field_metadata(
         record_batch.schema_ref(),
@@ -1098,7 +1096,6 @@ where
 {
     let parent_ids = T::get_parent_id_column(record_batch)?;
 
-    // TODO add tests for this
     // if the record batch is empty, nothing to decode so return early
     if record_batch.num_rows() == 0 {
         // safety: we've already called `T::get_parent_id_column`, which checks that the column
@@ -1109,7 +1106,6 @@ where
             .clone());
     }
 
-    // TODO add tests for this
     // check that the column hasn't already been encoded. If so, we want to avoid re-encoding
     let column_encoding = get_field_metadata(
         record_batch.schema_ref(),
@@ -2083,5 +2079,63 @@ mod test {
         ] {
             do_test(payload_type);
         }
+    }
+
+    #[test]
+    fn test_transport_encode_parent_ids_for_attributes_empty_batch() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::PARENT_ID,
+            DataType::UInt16,
+            true,
+        )]));
+        let input = RecordBatch::new_empty(schema);
+
+        let result = transport_encode_parent_id_for_attributes::<u16>(&input).unwrap();
+        assert_eq!(&result, input.column_by_name(consts::PARENT_ID).unwrap());
+    }
+
+    #[test]
+    fn test_transport_encode_parent_ids_for_attributes_no_double_encoding() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, true)
+                .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+        ]));
+        let input = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let result = transport_encode_parent_id_for_attributes::<u16>(&input).unwrap();
+        assert_eq!(&result, input.column_by_name(consts::PARENT_ID).unwrap());
+    }
+
+    #[test]
+    fn test_transport_encode_parent_id_for_columns_empty_batch() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::PARENT_ID,
+            DataType::UInt16,
+            true,
+        )]));
+        let input = RecordBatch::new_empty(schema);
+
+        let result = transport_encode_parent_id_for_columns::<u16>(&input, &["name"]).unwrap();
+        assert_eq!(&result, input.column_by_name(consts::PARENT_ID).unwrap());
+    }
+
+    #[test]
+    fn test_transport_encode_parent_id_for_columns_no_double_encoding() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, true)
+                .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+        ]));
+        let input = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let result = transport_encode_parent_id_for_columns::<u16>(&input, &["name"]).unwrap();
+        assert_eq!(&result, input.column_by_name(consts::PARENT_ID).unwrap());
     }
 }
