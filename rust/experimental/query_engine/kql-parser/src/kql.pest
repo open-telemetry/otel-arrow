@@ -143,13 +143,15 @@ arithmetic_factor = {
     scalar_expression ~ ((multiply_token | divide_token | modulo_token) ~ scalar_expression)*
 }
 arithmetic_expression = {
-    (minus_token | plus_token)? ~ arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
+    arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
+}
+negate_expression = {
+    "-" ~ scalar_expression
 }
 
 // Modify scalar_expression to include arithmetic_expression as first option
 scalar_expression = {
-    ("(" ~ arithmetic_expression ~ ")")
-    | null_literal
+    null_literal
     | real_expression
     | datetime_expression
     | conditional_expressions
@@ -159,9 +161,11 @@ scalar_expression = {
     | double_literal
     | integer_literal
     | string_literal
+    | negate_expression
     | accessor_expression
     | ("(" ~ scalar_expression ~ ")")
     | ("(" ~ logical_expression ~ ")")
+    | ("(" ~ arithmetic_expression ~ ")")
 }
 
 comparison_expression = {
