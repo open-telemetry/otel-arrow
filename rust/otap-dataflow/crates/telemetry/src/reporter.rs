@@ -26,6 +26,7 @@ impl MetricsReporter {
         if !metrics.needs_flush() {
             return;
         }
+        // ToDo (LQ) Use a try send async to avoid blocking the reporter
         if let Err(e) = self.metrics_sender.send_async(metrics.snapshot()).await {
             eprintln!("Failed to send metrics: {:?}", e);
         } else {
