@@ -21,7 +21,7 @@ where
     println!("Pipeline:");
     println!("{pipeline:?}");
 
-    let mut batch = engine.begin_batch(pipeline);
+    let mut batch = engine.begin_batch(pipeline).unwrap();
 
     let dropped_records = batch.push_records(records);
 
@@ -31,7 +31,14 @@ where
         final_results.dropped_records.push(record);
     }
 
-    println!("Included summaries:");
+    println!("Initialization:");
+    if final_results.get_diagnostics().is_empty() {
+        println!("None")
+    } else {
+        println!("{final_results}");
+    }
+
+    println!("Summaries:");
     if final_results.summaries.is_empty() {
         println!("None")
     } else {
@@ -41,7 +48,6 @@ where
     }
 
     println!("Included records:");
-
     if final_results.included_records.is_empty() {
         println!("None")
     } else {
@@ -52,7 +58,6 @@ where
     }
 
     println!("Dropped records:");
-
     if final_results.dropped_records.is_empty() {
         println!("None")
     } else {
