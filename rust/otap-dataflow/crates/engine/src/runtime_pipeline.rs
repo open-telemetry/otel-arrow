@@ -82,7 +82,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
-    pub fn run_forever(self) -> Result<Vec<()>, Error<PData>> {
+    pub fn run_forever(self) -> Result<(), Error<PData>> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let rt = Builder::new_current_thread()
@@ -133,14 +133,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         rt.block_on(async {
             local_tasks
                 .run_until(async {
-                    let mut task_results = Vec::new();
-
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
-                            Ok(Ok(res)) => {
-                                // Task completed successfully, collect its result
-                                task_results.push(res);
+                            Ok(Ok(())) => {
+                                // Task completed successfully, continue
                             }
                             Ok(Err(e)) => {
                                 // A task returned an error
@@ -156,7 +153,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                             }
                         }
                     }
-                    Ok(task_results)
+                    Ok(())
                 })
                 .await
         })
