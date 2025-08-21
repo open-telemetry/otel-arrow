@@ -67,12 +67,28 @@ pub(crate) fn parse_query(
                         if let MutableValueExpression::Variable(v) = s.get_destination() {
                             let name = v.get_name().get_value();
 
-                            if let ImmutableValueExpression::Scalar(ScalarExpression::Static(s)) =
-                                s.get_source()
-                            {
-                                state.push_constant(name, s.clone());
-                                validated = true;
+                            match s.get_source() {
+                                ImmutableValueExpression::Scalar(scalar) => {
+                                    if let ScalarExpression::Static(s) = scalar {
+                                        state.push_constant(name, s.clone())
+                                    } else {
+                                        match scalar.try_resolve_static(state.get_pipeline()) {
+                                            Ok(Some(ResolvedStaticScalarExpression::Value(s))) => {
+                                                state.push_constant(name, s.clone())
+                                            }
+                                            Ok(None)
+                                            | Ok(Some(
+                                                ResolvedStaticScalarExpression::Reference(_),
+                                            )) => {
+                                                state.push_global_variable(name, scalar.clone());
+                                            }
+                                            Err(e) => errors.push((&e).into()),
+                                        }
+                                    }
+                                }
                             }
+
+                            validated = true;
                         }
                     }
 
@@ -145,6 +161,33 @@ mod tests {
             PipelineExpressionBuilder::new("let var1 = 1;")
                 .with_constants(vec![StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )])
+                .build()
+                .unwrap(),
+        );
+
+        // Note: The let statement becomes an unreferenced folded constant so
+        // the whole expression essentially becomes a no-op.
+        run_test_success(
+            "let var1 = (-toint('1') * -1);",
+            PipelineExpressionBuilder::new("let var1 = (-toint('1') * -1);")
+                .with_constants(vec![StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )])
+                .build()
+                .unwrap(),
+        );
+
+        // Note: var1 becomes a global variable because "now()" cannot be known
+        // statically.
+        run_test_success(
+            "let var1 = now();",
+            PipelineExpressionBuilder::new("let var1 = now();")
+                .with_global_variables(vec![(
+                    "var1",
+                    ScalarExpression::Temporal(TemporalScalarExpression::Now(
+                        NowScalarExpression::new(QueryLocation::new_fake()),
+                    )),
                 )])
                 .build()
                 .unwrap(),

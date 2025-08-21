@@ -168,7 +168,7 @@ mod tests {
 
             let engine = RecordSetEngine::new();
 
-            let mut batch = engine.begin_batch(&pipeline);
+            let mut batch = engine.begin_batch(&pipeline).unwrap();
 
             batch.push_records(&mut TestRecordSet::new(vec![
                 record1.clone(),
@@ -383,7 +383,7 @@ mod tests {
 
             let engine = RecordSetEngine::new();
 
-            let mut batch = engine.begin_batch(&pipeline);
+            let mut batch = engine.begin_batch(&pipeline).unwrap();
 
             batch.push_records(&mut TestRecordSet::new(vec![record1, record2]));
 

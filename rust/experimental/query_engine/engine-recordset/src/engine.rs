@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Display, Write},
 };
@@ -9,8 +10,9 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::ExecutionContext,
+    execution_context::*,
     logical_expressions::execute_logical_expression,
+    scalars::execute_scalar_expression,
     summary::{summary_data_expression::execute_summary_data_expression, *},
     transform::transform_expressions::execute_transform_expression,
     *,
@@ -78,25 +80,29 @@ impl RecordSetEngine {
     pub fn begin_batch<'a, 'b, 'c, TRecord: Record + 'static>(
         &'b self,
         pipeline: &'a PipelineExpression,
-    ) -> RecordSetEngineBatch<'a, 'b, 'c, TRecord>
+    ) -> Result<RecordSetEngineBatch<'a, 'b, 'c, TRecord>, ExpressionError>
     where
-        'a: 'c,
+        'a: 'b,
         'b: 'c,
     {
-        RecordSetEngineBatch::new(pipeline, self)
+        let mut batch = RecordSetEngineBatch::new(pipeline, self);
+        batch.initialize()?;
+        Ok(batch)
     }
 }
 
 pub struct RecordSetEngineBatch<'a, 'b, 'c, TRecord: Record> {
-    pipeline: &'a PipelineExpression,
     engine: &'b RecordSetEngine,
+    pipeline: &'a PipelineExpression,
+    diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
+    global_variables: RefCell<MapValueStorage<OwnedValue>>,
     summaries: Summaries,
     included_records: Vec<RecordSetEngineRecord<'a, 'c, TRecord>>,
 }
 
 impl<'a, 'b, 'c, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, 'c, TRecord>
 where
-    'a: 'c,
+    'a: 'b,
     'b: 'c,
 {
     pub(crate) fn new(
@@ -106,9 +112,43 @@ where
         Self {
             engine,
             pipeline,
+            diagnostics: Vec::new(),
+            global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
             summaries: Summaries::new(engine.summary_cardinality_limit),
             included_records: Vec::new(),
         }
+    }
+
+    pub(crate) fn initialize(&mut self) -> Result<(), ExpressionError> {
+        let initializations = self.pipeline.get_initializations();
+
+        if initializations.is_empty() {
+            return Ok(());
+        }
+
+        let execution_context = ExecutionContext::<TRecord>::new(
+            self.engine.diagnostic_level.clone(),
+            self.pipeline,
+            &self.global_variables,
+            &self.summaries,
+            None,
+            None,
+        );
+
+        for init in initializations {
+            match init {
+                PipelineInitialization::SetGlobalVariable { name, value } => {
+                    let value = execute_scalar_expression(&execution_context, value)?;
+
+                    self.global_variables.borrow_mut().set(name, value);
+                }
+            }
+        }
+
+        self.diagnostics
+            .extend(execution_context.take_diagnostics());
+
+        Ok(())
     }
 
     pub fn push_records<TRecords: RecordSet<TRecord>>(
@@ -130,6 +170,7 @@ where
     pub fn flush(self) -> RecordSetEngineResults<'a, 'c, TRecord> {
         RecordSetEngineResults::new(
             self.pipeline,
+            self.diagnostics,
             self.summaries,
             self.included_records,
             Vec::new(),
@@ -148,9 +189,10 @@ where
         let execution_context = ExecutionContext::new(
             diagnostic_level,
             self.pipeline,
+            &self.global_variables,
             &self.summaries,
             attached_records,
-            record,
+            Some(record),
         );
 
         if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
@@ -300,66 +342,75 @@ impl<'a, 'b, 'c, TRecord: Record> From<ExecutionContext<'a, 'b, 'c, TRecord>>
 
 impl<TRecord: Record> Display for RecordSetEngineRecord<'_, '_, TRecord> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut lines: Vec<(&str, Vec<&RecordSetEngineDiagnostic<'_>>)> = Vec::new();
-
-        for line in self.pipeline.get_query().lines() {
-            lines.push((line, Vec::new()));
-        }
-
-        for log in &self.diagnostics {
-            let location = log.get_expression().get_query_location();
-            let (line, _) = location.get_line_and_column_numbers();
-            lines[line - 1].1.push(log);
-        }
-
-        let mut line_number = 1;
-
-        for (query_line, messages) in lines.iter_mut() {
-            messages.sort_by(|a, b| {
-                let l = a
-                    .get_expression()
-                    .get_query_location()
-                    .get_line_and_column_numbers()
-                    .1;
-                let r = b
-                    .get_expression()
-                    .get_query_location()
-                    .get_line_and_column_numbers()
-                    .1;
-                r.cmp(&l)
-            });
-
-            let mut line = String::new();
-            line.push_str(query_line);
-            for message in messages {
-                line.push('\n');
-                let (_, column) = message
-                    .get_expression()
-                    .get_query_location()
-                    .get_line_and_column_numbers();
-
-                line.push_str(&" ".repeat(column + 7));
-                line.push('[');
-                line.push_str(message.get_diagnostic_level().get_name());
-                line.push_str("] ");
-                line.push_str(message.get_expression().get_name());
-                line.push_str(": ");
-                line.push_str(message.get_message());
-            }
-            if line_number > 1 {
-                f.write_char('\n')?;
-            }
-            write!(f, "ln {line_number:>3}: {line}")?;
-            line_number += 1;
-        }
-
-        Ok(())
+        format_diagnostics(self.pipeline.get_query(), &self.diagnostics, f)
     }
+}
+
+fn format_diagnostics(
+    query: &str,
+    diagnostics: &Vec<RecordSetEngineDiagnostic<'_>>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    let mut lines: Vec<(&str, Vec<&RecordSetEngineDiagnostic<'_>>)> = Vec::new();
+
+    for line in query.lines() {
+        lines.push((line, Vec::new()));
+    }
+
+    for log in diagnostics {
+        let location = log.get_expression().get_query_location();
+        let (line, _) = location.get_line_and_column_numbers();
+        lines[line - 1].1.push(log);
+    }
+
+    let mut line_number = 1;
+
+    for (query_line, messages) in lines.iter_mut() {
+        messages.sort_by(|a, b| {
+            let l = a
+                .get_expression()
+                .get_query_location()
+                .get_line_and_column_numbers()
+                .1;
+            let r = b
+                .get_expression()
+                .get_query_location()
+                .get_line_and_column_numbers()
+                .1;
+            r.cmp(&l)
+        });
+
+        let mut line = String::new();
+        line.push_str(query_line);
+        for message in messages {
+            line.push('\n');
+            let (_, column) = message
+                .get_expression()
+                .get_query_location()
+                .get_line_and_column_numbers();
+
+            line.push_str(&" ".repeat(column + 7));
+            line.push('[');
+            line.push_str(message.get_diagnostic_level().get_name());
+            line.push_str("] ");
+            line.push_str(message.get_expression().get_name());
+            line.push_str(": ");
+            line.push_str(message.get_message());
+        }
+        if line_number > 1 {
+            f.write_char('\n')?;
+        }
+        write!(f, "ln {line_number:>3}: {line}")?;
+        line_number += 1;
+    }
+
+    Ok(())
 }
 
 #[derive(Debug)]
 pub struct RecordSetEngineResults<'a, 'b, TRecord: Record> {
     pipeline: &'a PipelineExpression,
+    pub diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
     pub summaries: Vec<RecordSetEngineSummary>,
     pub included_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
     pub dropped_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
@@ -368,12 +419,14 @@ pub struct RecordSetEngineResults<'a, 'b, TRecord: Record> {
 impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
     pub(crate) fn new(
         pipeline: &'a PipelineExpression,
+        diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
         summaries: Summaries,
         included_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
         dropped_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
     ) -> RecordSetEngineResults<'a, 'b, TRecord> {
         Self {
             pipeline,
+            diagnostics,
             summaries: summaries.into(),
             included_records,
             dropped_records,
@@ -382,6 +435,16 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
 
     pub fn get_pipeline(&self) -> &PipelineExpression {
         self.pipeline
+    }
+
+    pub fn get_diagnostics(&self) -> &Vec<RecordSetEngineDiagnostic<'b>> {
+        &self.diagnostics
+    }
+}
+
+impl<TRecord: Record> Display for RecordSetEngineResults<'_, '_, TRecord> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        format_diagnostics(self.pipeline.get_query(), &self.diagnostics, f)
     }
 }
 
@@ -421,5 +484,66 @@ impl From<Summaries> for Vec<RecordSetEngineSummary> {
         }
 
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_engine_with_initialization() {
+        let mut pipeline_builder = PipelineExpressionBuilder::new(" ");
+
+        pipeline_builder.push_global_variable(
+            "gvar1",
+            ScalarExpression::Temporal(TemporalScalarExpression::Now(NowScalarExpression::new(
+                QueryLocation::new_fake(),
+            ))),
+        );
+
+        pipeline_builder.push_expression(DataExpression::Transform(TransformExpression::Set(
+            SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Variable(
+                    VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "gvar1"),
+                        ValueAccessor::new(),
+                    ),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "now",
+                        )),
+                    )]),
+                )),
+            ),
+        )));
+
+        let pipeline = pipeline_builder.build().unwrap();
+
+        let engine = RecordSetEngine::new();
+
+        let mut batch = engine.begin_batch(&pipeline).unwrap();
+
+        let mut records = TestRecordSet::new(vec![TestRecord::new()]);
+
+        batch.push_records(&mut records);
+
+        let results = batch.flush();
+
+        let record = results.included_records.first().unwrap().get_record();
+
+        assert_eq!(1, record.len());
+        assert!(record.contains_key("now"));
+
+        assert_eq!(
+            ValueType::DateTime,
+            record.get("now").unwrap().get_value_type()
+        );
     }
 }
