@@ -21,6 +21,8 @@ use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
+pub mod transport_optimize;
+
 pub fn remove_delta_encoding<T>(
     record_batch: &RecordBatch,
     column_name: &str,
@@ -263,7 +265,11 @@ where
     let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
 
     // create new record batch but with parent column replaced
-    replace_materialized_parent_id_column(record_batch, materialized_parent_ids)
+    replace_materialized_parent_id_column(
+        record_batch,
+        materialized_parent_ids,
+        metadata::encodings::PLAIN,
+    )
 }
 
 /// Materialize quasi-delta encoded record batch. Subsequent parent IDs are considered
@@ -340,7 +346,11 @@ where
 
     let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
 
-    replace_materialized_parent_id_column(record_batch, materialized_parent_ids)
+    replace_materialized_parent_id_column(
+        record_batch,
+        materialized_parent_ids,
+        metadata::encodings::PLAIN,
+    )
 }
 
 /// Decodes the quasi-delta encoded Parent IDs field for a record batch of exemplars.
@@ -376,6 +386,7 @@ where
 fn replace_materialized_parent_id_column(
     record_batch: &RecordBatch,
     materialized_parent_ids: ArrayRef,
+    encoding: &'static str,
 ) -> Result<RecordBatch> {
     let schema = record_batch.schema();
     let parent_id_idx = schema
@@ -399,7 +410,7 @@ fn replace_materialized_parent_id_column(
         schema.as_ref(),
         consts::PARENT_ID,
         metadata::COLUMN_ENCODING,
-        metadata::encodings::PLAIN,
+        encoding,
     );
 
     RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| {
