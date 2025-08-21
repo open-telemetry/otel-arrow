@@ -1,6 +1,9 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashMap, fmt::Debug, mem};
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, TimeDelta};
 use data_engine_expressions::*;
 use regex::Regex;
 
@@ -233,6 +236,37 @@ impl AsStaticValue for StringValueStorage {
 impl AsStaticValueMut for StringValueStorage {
     fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         Some(StaticValueMut::String(self))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TimeSpanValueStorage {
+    value: TimeDelta,
+}
+
+impl TimeSpanValueStorage {
+    pub fn new(value: TimeDelta) -> TimeSpanValueStorage {
+        Self { value }
+    }
+
+    pub fn get_raw_value(&self) -> &TimeDelta {
+        &self.value
+    }
+
+    pub fn get_raw_value_mut(&mut self) -> &mut TimeDelta {
+        &mut self.value
+    }
+}
+
+impl TimeSpanValue for TimeSpanValueStorage {
+    fn get_value(&self) -> TimeDelta {
+        self.value
+    }
+}
+
+impl AsStaticValue for TimeSpanValueStorage {
+    fn to_static_value(&self) -> StaticValue<'_> {
+        StaticValue::TimeSpan(self)
     }
 }
 

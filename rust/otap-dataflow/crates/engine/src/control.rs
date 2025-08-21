@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Provides types and traits for control messages exchanged between the pipeline engine and nodes.
@@ -5,9 +6,8 @@
 //! configuration updates, and timer management.
 
 use crate::message::Sender;
+use crate::node::NodeIndex;
 use crate::shared::message::{SharedReceiver, SharedSender};
-use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
 use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
@@ -70,14 +70,14 @@ pub enum PipelineControlMsg {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
-        node_id: NodeId,
+        node_id: NodeIndex,
         /// Duration of the timer interval.
         duration: Duration,
     },
     /// Requests cancellation of a periodic timer for the specified node.
     CancelTimer {
         /// Identifier of the node for which the timer is being canceled.
-        node_id: NodeId,
+        node_id: NodeIndex,
     },
     /// Requests shutdown of the node request manager.
     Shutdown,
@@ -89,11 +89,6 @@ pub enum PipelineControlMsg {
 /// updates, shutdown requests, or timer events. Implementers are not required to be thread-safe.
 #[async_trait::async_trait(?Send)]
 pub trait Controllable {
-    /// Sends a control message to the node asynchronously.
-    ///
-    /// Returns an error if the message could not be delivered.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
-
     /// Returns the sender for control messages to this node.
     ///
     /// Used for direct message passing from the pipeline engine.

@@ -1,34 +1,37 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MathScalarExpression {
     /// Returns the sum of two values.
-    Add(BinaryMathmaticalScalarExpression),
+    Add(BinaryMathematicalScalarExpression),
 
     /// Returns a value rounded down to the nearest multiple of a given bin
     /// size, effectively grouping similar values into buckets.
-    Bin(BinaryMathmaticalScalarExpression),
+    Bin(BinaryMathematicalScalarExpression),
 
     /// Returns the smallest integral value greater than or equal to the specified number.
-    Ceiling(UnaryMathmaticalScalarExpression),
+    Ceiling(UnaryMathematicalScalarExpression),
 
     /// Returns the result of dividing two values.
-    Divide(BinaryMathmaticalScalarExpression),
+    Divide(BinaryMathematicalScalarExpression),
 
     /// Returns the largest integral value less than or equal to the specified number.
-    Floor(UnaryMathmaticalScalarExpression),
+    Floor(UnaryMathematicalScalarExpression),
 
     /// Returns the remainder of a division operation between two values.
-    Modulus(BinaryMathmaticalScalarExpression),
+    Modulus(BinaryMathematicalScalarExpression),
 
     /// Returns the result of multiplying two values.
-    Multiply(BinaryMathmaticalScalarExpression),
+    Multiply(BinaryMathematicalScalarExpression),
 
     /// Negate the value returned by the inner scalar expression.
-    Negate(UnaryMathmaticalScalarExpression),
+    Negate(UnaryMathematicalScalarExpression),
 
     /// Returns the result of subtracting two values.
-    Subtract(BinaryMathmaticalScalarExpression),
+    Subtract(BinaryMathematicalScalarExpression),
 }
 
 impl MathScalarExpression {
@@ -53,6 +56,7 @@ impl MathScalarExpression {
                 match value {
                     ValueType::Integer => Ok(Some(ValueType::Integer)),
                     ValueType::Double => Ok(Some(ValueType::Double)),
+                    ValueType::TimeSpan => Ok(Some(ValueType::TimeSpan)),
                     value => {
                         if ConvertScalarExpression::is_always_convertable_to_numeric(&value) {
                             Ok(Some(ValueType::Integer))
@@ -62,12 +66,91 @@ impl MathScalarExpression {
                     }
                 }
             }
-            MathScalarExpression::Add(b)
-            | MathScalarExpression::Bin(b)
-            | MathScalarExpression::Divide(b)
+            MathScalarExpression::Bin(b) => {
+                let left = b
+                    .get_left_expression()
+                    .try_resolve_value_type(pipeline)?
+                    .unwrap_or(ValueType::Null);
+                let right = b
+                    .get_right_expression()
+                    .try_resolve_value_type(pipeline)?
+                    .unwrap_or(ValueType::Null);
+                match (left, right) {
+                    (ValueType::Integer, ValueType::Integer) => Ok(Some(ValueType::Integer)),
+                    (ValueType::Double, ValueType::Double) => Ok(Some(ValueType::Double)),
+                    (ValueType::DateTime, right) => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&right) {
+                            Ok(Some(ValueType::DateTime))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    (ValueType::TimeSpan, right) => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&right) {
+                            Ok(Some(ValueType::TimeSpan))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    (left, right) => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&left)
+                            && ConvertScalarExpression::is_always_convertable_to_numeric(&right)
+                        {
+                            if left == ValueType::Double || right == ValueType::Double {
+                                Ok(Some(ValueType::Double))
+                            } else {
+                                Ok(Some(ValueType::Integer))
+                            }
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+            MathScalarExpression::Add(b) | MathScalarExpression::Subtract(b) => {
+                let left = b
+                    .get_left_expression()
+                    .try_resolve_value_type(pipeline)?
+                    .unwrap_or(ValueType::Null);
+                let right = b
+                    .get_right_expression()
+                    .try_resolve_value_type(pipeline)?
+                    .unwrap_or(ValueType::Null);
+                match (left, right) {
+                    (ValueType::Integer, ValueType::Integer) => Ok(Some(ValueType::Integer)),
+                    (ValueType::Double, ValueType::Double) => Ok(Some(ValueType::Double)),
+                    (ValueType::DateTime, vt) => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&vt) {
+                            Ok(Some(ValueType::DateTime))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    (ValueType::TimeSpan, vt) => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&vt) {
+                            Ok(Some(ValueType::TimeSpan))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    (left, right) => {
+                        if ConvertScalarExpression::is_always_convertable_to_numeric(&left)
+                            && ConvertScalarExpression::is_always_convertable_to_numeric(&right)
+                        {
+                            if left == ValueType::Double || right == ValueType::Double {
+                                Ok(Some(ValueType::Double))
+                            } else {
+                                Ok(Some(ValueType::Integer))
+                            }
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+            MathScalarExpression::Divide(b)
             | MathScalarExpression::Modulus(b)
-            | MathScalarExpression::Multiply(b)
-            | MathScalarExpression::Subtract(b) => {
+            | MathScalarExpression::Multiply(b) => {
                 let left = b
                     .get_left_expression()
                     .try_resolve_value_type(pipeline)?
@@ -142,7 +225,7 @@ impl MathScalarExpression {
 
     fn try_resolve_static_unary_operation<'a, F>(
         pipeline: &PipelineExpression,
-        unary_expression: &UnaryMathmaticalScalarExpression,
+        unary_expression: &UnaryMathematicalScalarExpression,
         op: F,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
     where
@@ -152,21 +235,11 @@ impl MathScalarExpression {
             .get_value_expression()
             .try_resolve_static(pipeline)?
         {
-            if let Some(i) = (op)(&v.to_value()) {
-                match i {
-                    NumericValue::Integer(i) => Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                            unary_expression.query_location.clone(),
-                            i,
-                        )),
-                    ))),
-                    NumericValue::Double(d) => Ok(Some(ResolvedStaticScalarExpression::Value(
-                        StaticScalarExpression::Double(DoubleScalarExpression::new(
-                            unary_expression.query_location.clone(),
-                            d,
-                        )),
-                    ))),
-                }
+            if let Some(v) = (op)(&v.to_value()) {
+                Ok(Some(Self::numeric_value_to_static_value(
+                    &unary_expression.query_location,
+                    v,
+                )))
             } else {
                 Ok(Some(ResolvedStaticScalarExpression::Value(
                     StaticScalarExpression::Null(NullScalarExpression::new(
@@ -181,7 +254,7 @@ impl MathScalarExpression {
 
     fn try_resolve_static_binary_operation<'a, F>(
         pipeline: &PipelineExpression,
-        binary_expression: &BinaryMathmaticalScalarExpression,
+        binary_expression: &BinaryMathematicalScalarExpression,
         op: F,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
     where
@@ -197,22 +270,10 @@ impl MathScalarExpression {
         match (left, right) {
             (Some(l), Some(r)) => {
                 if let Some(v) = (op)(&l.to_value(), &r.to_value()) {
-                    match v {
-                        NumericValue::Integer(v) => {
-                            Ok(Some(ResolvedStaticScalarExpression::Value(
-                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                    binary_expression.query_location.clone(),
-                                    v,
-                                )),
-                            )))
-                        }
-                        NumericValue::Double(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
-                            StaticScalarExpression::Double(DoubleScalarExpression::new(
-                                binary_expression.query_location.clone(),
-                                v,
-                            )),
-                        ))),
-                    }
+                    Ok(Some(Self::numeric_value_to_static_value(
+                        &binary_expression.query_location,
+                        v,
+                    )))
                 } else {
                     Ok(Some(ResolvedStaticScalarExpression::Value(
                         StaticScalarExpression::Null(NullScalarExpression::new(
@@ -222,6 +283,34 @@ impl MathScalarExpression {
                 }
             }
             _ => Ok(None),
+        }
+    }
+
+    fn numeric_value_to_static_value<'a>(
+        query_location: &QueryLocation,
+        value: NumericValue,
+    ) -> ResolvedStaticScalarExpression<'a> {
+        match value {
+            NumericValue::Integer(i) => {
+                ResolvedStaticScalarExpression::Value(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(query_location.clone(), i),
+                ))
+            }
+            NumericValue::DateTime(d) => {
+                ResolvedStaticScalarExpression::Value(StaticScalarExpression::DateTime(
+                    DateTimeScalarExpression::new(query_location.clone(), d),
+                ))
+            }
+            NumericValue::Double(d) => {
+                ResolvedStaticScalarExpression::Value(StaticScalarExpression::Double(
+                    DoubleScalarExpression::new(query_location.clone(), d),
+                ))
+            }
+            NumericValue::TimeSpan(t) => {
+                ResolvedStaticScalarExpression::Value(StaticScalarExpression::TimeSpan(
+                    TimeSpanScalarExpression::new(query_location.clone(), t),
+                ))
+            }
         }
     }
 }
@@ -257,16 +346,16 @@ impl Expression for MathScalarExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UnaryMathmaticalScalarExpression {
+pub struct UnaryMathematicalScalarExpression {
     query_location: QueryLocation,
     value_expression: Box<ScalarExpression>,
 }
 
-impl UnaryMathmaticalScalarExpression {
+impl UnaryMathematicalScalarExpression {
     pub fn new(
         query_location: QueryLocation,
         value_expression: ScalarExpression,
-    ) -> UnaryMathmaticalScalarExpression {
+    ) -> UnaryMathematicalScalarExpression {
         Self {
             query_location,
             value_expression: value_expression.into(),
@@ -278,29 +367,29 @@ impl UnaryMathmaticalScalarExpression {
     }
 }
 
-impl Expression for UnaryMathmaticalScalarExpression {
+impl Expression for UnaryMathematicalScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
 
     fn get_name(&self) -> &'static str {
-        "UnaryMathmaticalScalarExpression"
+        "UnaryMathematicalScalarExpression"
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BinaryMathmaticalScalarExpression {
+pub struct BinaryMathematicalScalarExpression {
     query_location: QueryLocation,
     left_expression: Box<ScalarExpression>,
     right_expression: Box<ScalarExpression>,
 }
 
-impl BinaryMathmaticalScalarExpression {
+impl BinaryMathematicalScalarExpression {
     pub fn new(
         query_location: QueryLocation,
         left_expression: ScalarExpression,
         right_expression: ScalarExpression,
-    ) -> BinaryMathmaticalScalarExpression {
+    ) -> BinaryMathematicalScalarExpression {
         Self {
             query_location,
             left_expression: left_expression.into(),
@@ -317,28 +406,32 @@ impl BinaryMathmaticalScalarExpression {
     }
 }
 
-impl Expression for BinaryMathmaticalScalarExpression {
+impl Expression for BinaryMathematicalScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
 
     fn get_name(&self) -> &'static str {
-        "BinaryMathmaticalScalarExpression"
+        "BinaryMathematicalScalarExpression"
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeDelta;
+
+    use crate::date_utils::create_utc;
+
     use super::*;
 
     #[test]
     pub fn test_try_resolve_unary() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, Option<ValueType>, Option<Value>)>)
         where
-            F: Fn(UnaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(UnaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (inner, expected_type, expected_value) in input {
-                let e = build(UnaryMathmaticalScalarExpression::new(
+                let e = build(UnaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     inner,
                 ));
@@ -515,10 +608,10 @@ mod tests {
                 Option<Value>,
             )>,
         ) where
-            F: Fn(BinaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(BinaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (left, right, expected_type, expected_value) in input {
-                let e = build(BinaryMathmaticalScalarExpression::new(
+                let e = build(BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     left,
                     right,
@@ -574,6 +667,44 @@ mod tests {
                     Some(Value::Double(&DoubleScalarExpression::new(
                         QueryLocation::new_fake(),
                         3.0,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            create_utc(2025, 8, 19, 18, 26, 0, 0),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(1),
+                        ),
+                    )),
+                    Some(ValueType::DateTime),
+                    Some(Value::DateTime(&DateTimeScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        create_utc(2025, 8, 20, 18, 26, 0, 0),
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(1),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(1),
+                        ),
+                    )),
+                    Some(ValueType::TimeSpan),
+                    Some(Value::TimeSpan(&TimeSpanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        TimeDelta::days(2),
                     ))),
                 ),
                 (
@@ -665,6 +796,44 @@ mod tests {
                     Some(Value::Double(&DoubleScalarExpression::new(
                         QueryLocation::new_fake(),
                         -1.0,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            create_utc(2025, 8, 19, 18, 26, 0, 0),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(1),
+                        ),
+                    )),
+                    Some(ValueType::DateTime),
+                    Some(Value::DateTime(&DateTimeScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        create_utc(2025, 8, 18, 18, 26, 0, 0),
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(1),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(1),
+                        ),
+                    )),
+                    Some(ValueType::TimeSpan),
+                    Some(Value::TimeSpan(&TimeSpanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        TimeDelta::days(0),
                     ))),
                 ),
                 (
@@ -1029,6 +1198,82 @@ mod tests {
                     Some(Value::Double(&DoubleScalarExpression::new(
                         QueryLocation::new_fake(),
                         10000.0,
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            create_utc(2025, 8, 19, 18, 26, 30, 10),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(1),
+                        ),
+                    )),
+                    Some(ValueType::DateTime),
+                    Some(Value::DateTime(&DateTimeScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        create_utc(2025, 8, 19, 0, 0, 0, 0),
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            create_utc(2025, 8, 19, 18, 26, 30, 10),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::hours(1),
+                        ),
+                    )),
+                    Some(ValueType::DateTime),
+                    Some(Value::DateTime(&DateTimeScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        create_utc(2025, 8, 19, 18, 0, 0, 0),
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::DateTime(
+                        DateTimeScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            create_utc(2025, 8, 19, 18, 26, 30, 10),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::minutes(1),
+                        ),
+                    )),
+                    Some(ValueType::DateTime),
+                    Some(Value::DateTime(&DateTimeScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        create_utc(2025, 8, 19, 18, 26, 0, 0),
+                    ))),
+                ),
+                (
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(16),
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                        TimeSpanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            TimeDelta::days(7),
+                        ),
+                    )),
+                    Some(ValueType::TimeSpan),
+                    Some(Value::TimeSpan(&TimeSpanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        TimeDelta::days(14),
                     ))),
                 ),
                 (
