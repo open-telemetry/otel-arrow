@@ -342,7 +342,7 @@ fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEnco
 
 /// returns the list of columns that the OTAP record batch of this payload type should be sorted by
 /// before applying any column encodings
-fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
+const fn get_sort_column_paths(payload_type: &ArrowPayloadType) -> &'static [&'static str] {
     match payload_type {
         ArrowPayloadType::ResourceAttrs
         | ArrowPayloadType::ScopeAttrs
