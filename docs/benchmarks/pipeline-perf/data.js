@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1755814205712,
+  "lastUpdate": 1755817809857,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8677712e3654c367deaaa2afbbaa152009b2cddb",
-          "message": "feat: support additional types for adaptive array builders (#562)\n\nImplements adaptive array builder for additional types:\n- Primitive (e.g. Uint, Int and Float)\n- Boolean\n- Binary\n- FixedSizeBinary\n\nThere are some changes to the base traits that may warrant some\nexplanation:\n- Because FixedSizeBinary can return an error when appending a value\n(e.g. if the passed byte array length is wrong), we need to have a\nversion of `append_value` that can return an error. Ideally, we wouldn't\nforce callers to handle the error when the append for a given type can't\nreturn an error. For this reason, there's now two traits for append:\n`ArrayAppend` and `CheckedArrayAppend` and for the latter,\n`append_value` can return a `Result<(), ArrowError>`\n- Something similar has happened in dictionary.rs for appending to\ndicts.\n- The `finish` method on the `ArrayBuilder` trait now just returns an\n`ArrayRef` rather than `ArrayWithType`, which was unnecessary because\n`ArrayRef` already has a `data_type()` method\n- Since some array builders might take additional arguments in the\nconstructor (e.g. for FixedSizeBinary the constructor takes the\nbyte_length argument), the `ArrayBuilderConstructor` trait is now\ngeneric over the args type and so is `AdaptiveArrayBuilder`, which owns\nan instance of the `Args` type and uses this to create the builders.\n- The implication here is that now `AdaptiveArrayBuilder` is responsible\nfor converting from dict builder to native builder, whereas before it\nwas the `MaybeDictionaryBuilder` enum doing this. This change was made\nbecause the arg value (which `MaybeDictionaryBuilder` doesn't have) is\nneeded to do the conversion.\n\nThis PR also tries to clean up where the trait bounds are defined\n(especially in array.rs) so that there's only restrictions added to\ngeneric types in impl/fn blocks where the trait bound is actually\nneeded. This removes some unnecessary code duplication, but more\nimportantly it makes this code much easier to change.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2025-06-10T20:29:13Z",
-          "tree_id": "7cd8bde963e4421ec12a2eadac2bd78e380f7b62",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/8677712e3654c367deaaa2afbbaa152009b2cddb"
-        },
-        "date": 1749587953066,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 468500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 14055000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 14055000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 2.48,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 2.81,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 142.52,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 166.92,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 444166.6666666667,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 13325000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 13325000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 2.3,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 2.8,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 113.03,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 145.28,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 137.53,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "66651184+utpilla@users.noreply.github.com",
+            "name": "Utkarsh Umesan Pillai",
+            "username": "utpilla"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "49488a8084ca96bc92e8247f336eb454d1739ab0",
+          "message": "Add benchmarks for Syslog CEF Receiver (#978)\n\n## Changes\n- Add benchmarks for Syslog CEF Receiver\n\nMachine details:\n\nOS: Ubuntu 22.04.4 LTS (5.15.153.1-microsoft-standard-WSL2)\nHardware: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz, 16vCPUs,\nRAM: 64.0 GB\n\n**parser_comparison/rfc3164**\n```\ntime:   [22.645 ns 22.859 ns 23.178 ns]\nthrpt:  [3.0538 GiB/s 3.0965 GiB/s 3.1257 GiB/s]\n```\n\n**parser_comparison/rfc5424**\n```\ntime:   [60.350 ns 60.541 ns 60.803 ns]\nthrpt:  [1.1028 GiB/s 1.1076 GiB/s 1.1111 GiB/s]\n```\n\n**parser_comparison/cef**\n```\ntime:   [43.112 ns 43.256 ns 43.452 ns]\nthrpt:  [1.6718 GiB/s 1.6794 GiB/s 1.6850 GiB/s]\n```\n\n**arrow_batch_creation/rfc3164_arrow_batch_100_msgs**\n```\ntime:   [149.85 µs 150.54 µs 151.27 µs]\n```\n\n**arrow_batch_creation/rfc5424_arrow_batch_100_msgs**\n```\ntime:   [126.32 µs 128.02 µs 130.03 µs]\n```\n\n**arrow_batch_creation/cef_arrow_batch_100_msgs**\n```\ntime:   [94.159 µs 94.257 µs 94.372 µs]\n```\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2025-08-21T22:57:20Z",
+          "tree_id": "77446ebfdb44e370719e2bebefa860bfb978d022",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/49488a8084ca96bc92e8247f336eb454d1739ab0"
+        },
+        "date": 1755817807178,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 738333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22150000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22150000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.78,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 7.06,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 164.49,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 202.56,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 739333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22180000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22180000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.6,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.7,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 128.07,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 150.06,
             "unit": "MiB"
           }
         ]
