@@ -129,15 +129,13 @@ pub(crate) fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> 
 }
 
 pub(crate) fn parse_timespan(input: &str) -> Result<TimeDelta, ()> {
-    let mut raw_value: String = input.into();
+    let trimmed_input = input.trim();
 
-    let iso = ISO_TIME_SPAN_REGEX.captures(input);
+    let iso = ISO_TIME_SPAN_REGEX.captures(trimmed_input);
     if let Some(captures) = iso {
         let r = captures.get(0).unwrap().range();
 
-        raw_value.replace_range(r, "");
-
-        if !raw_value.trim().is_empty() {
+        if trimmed_input.len() != r.len() {
             return Err(());
         }
 
