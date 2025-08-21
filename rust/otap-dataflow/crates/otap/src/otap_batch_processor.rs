@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! OTAP batch processor (skeleton)
@@ -344,7 +345,10 @@ fn item_count(_data: &OtapPdata) -> usize {
 /// Parses duration strings using Go-like syntax (e.g., "200ms", "2s", "1m", "1m30s").
 /// Returns milliseconds. Bare numbers are NOT accepted here to mirror Go's time.ParseDuration.
 fn parse_duration_ms(s: &str) -> Option<u64> {
-    parse_duration::parse(s).ok().map(|d| d.as_millis() as u64)
+    // humantime supports inputs like "200ms", "2s", "1m", "1h", but not scientific exponents
+    humantime::parse_duration(s)
+        .ok()
+        .map(|d| d.as_millis() as u64)
 }
 
 #[cfg(test)]
