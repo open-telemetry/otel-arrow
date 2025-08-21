@@ -10,6 +10,7 @@ pub struct SummaryDataExpression {
     query_location: QueryLocation,
     group_by_expressions: Vec<(Box<str>, ScalarExpression)>,
     aggregation_expressions: Vec<(Box<str>, AggregationExpression)>,
+    pipeline: Option<PipelineExpression>,
 }
 
 impl SummaryDataExpression {
@@ -28,7 +29,13 @@ impl SummaryDataExpression {
             query_location,
             group_by_expressions,
             aggregation_expressions,
+            pipeline: None,
         }
+    }
+
+    pub fn with_pipeline(mut self, pipeline: PipelineExpression) -> Self {
+        self.pipeline = Some(pipeline);
+        self
     }
 
     pub fn get_group_by_expressions(&self) -> &Vec<(Box<str>, ScalarExpression)> {
@@ -37,6 +44,10 @@ impl SummaryDataExpression {
 
     pub fn get_aggregation_expressions(&self) -> &Vec<(Box<str>, AggregationExpression)> {
         &self.aggregation_expressions
+    }
+
+    pub fn get_pipeline(&self) -> Option<&PipelineExpression> {
+        self.pipeline.as_ref()
     }
 }
 

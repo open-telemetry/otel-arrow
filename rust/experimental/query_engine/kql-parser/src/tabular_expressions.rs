@@ -324,6 +324,7 @@ pub(crate) fn parse_summarize_expression(
 
     let mut aggregation_expressions: HashMap<Box<str>, AggregationExpression> = HashMap::new();
     let mut group_by_expressions: HashMap<Box<str>, ScalarExpression> = HashMap::new();
+    let mut pipeline_expressions = Vec::new();
 
     for summarize_rule in summarize_expression_rule.into_inner() {
         match summarize_rule.as_rule() {
@@ -356,8 +357,9 @@ pub(crate) fn parse_summarize_expression(
                 group_by_expressions.insert(identifier.into(), scalar);
             }
             _ => {
-                // todo: Support applying tabular expressions to summary
-                parse_tabular_expression(summarize_rule, state)?;
+                for e in parse_tabular_expression_rule(summarize_rule, state)? {
+                    pipeline_expressions.push(e);
+                }
             }
         }
     }
@@ -368,11 +370,27 @@ pub(crate) fn parse_summarize_expression(
             "Invalid summarize operator: missing both aggregates and group-by expressions".into(),
         ))
     } else {
-        Ok(DataExpression::Summary(SummaryDataExpression::new(
+        let mut summary = SummaryDataExpression::new(
             query_location,
             group_by_expressions,
             aggregation_expressions,
-        )))
+        );
+
+        if !pipeline_expressions.is_empty() {
+            let mut pipeline_builder = PipelineExpressionBuilder::new(state.get_query());
+
+            for e in pipeline_expressions {
+                pipeline_builder.push_expression(e);
+            }
+
+            let pipeline = pipeline_builder
+                .build()
+                .map_err(|e| ParserError::from(e.first().unwrap()))?;
+
+            summary = summary.with_pipeline(pipeline);
+        }
+
+        Ok(DataExpression::Summary(summary))
     }
 }
 
@@ -389,41 +407,58 @@ pub(crate) fn parse_tabular_expression(
     let mut expressions = Vec::new();
 
     for rule in rules {
-        match rule.as_rule() {
-            Rule::extend_expression => {
-                let extend_expressions = parse_extend_expression(rule, state)?;
-
-                for e in extend_expressions {
-                    expressions.push(DataExpression::Transform(e));
-                }
-            }
-            Rule::project_expression => {
-                let project_expressions = parse_project_expression(rule, state)?;
-
-                for e in project_expressions {
-                    expressions.push(DataExpression::Transform(e));
-                }
-            }
-            Rule::project_keep_expression => {
-                let project_keep_expressions = parse_project_keep_expression(rule, state)?;
-
-                for e in project_keep_expressions {
-                    expressions.push(DataExpression::Transform(e));
-                }
-            }
-            Rule::project_away_expression => {
-                let project_away_expressions = parse_project_away_expression(rule, state)?;
-
-                for e in project_away_expressions {
-                    expressions.push(DataExpression::Transform(e));
-                }
-            }
-            Rule::where_expression => expressions.push(parse_where_expression(rule, state)?),
-            Rule::summarize_expression => {
-                expressions.push(parse_summarize_expression(rule, state)?)
-            }
-            _ => panic!("Unexpected rule in tabular_expression: {rule}"),
+        for e in parse_tabular_expression_rule(rule, state)? {
+            expressions.push(e);
         }
+    }
+
+    Ok(expressions)
+}
+
+pub(crate) fn parse_tabular_expression_rule(
+    tabular_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<Vec<DataExpression>, ParserError> {
+    let mut expressions = Vec::new();
+
+    match tabular_expression_rule.as_rule() {
+        Rule::extend_expression => {
+            let extend_expressions = parse_extend_expression(tabular_expression_rule, state)?;
+
+            for e in extend_expressions {
+                expressions.push(DataExpression::Transform(e));
+            }
+        }
+        Rule::project_expression => {
+            let project_expressions = parse_project_expression(tabular_expression_rule, state)?;
+
+            for e in project_expressions {
+                expressions.push(DataExpression::Transform(e));
+            }
+        }
+        Rule::project_keep_expression => {
+            let project_keep_expressions =
+                parse_project_keep_expression(tabular_expression_rule, state)?;
+
+            for e in project_keep_expressions {
+                expressions.push(DataExpression::Transform(e));
+            }
+        }
+        Rule::project_away_expression => {
+            let project_away_expressions =
+                parse_project_away_expression(tabular_expression_rule, state)?;
+
+            for e in project_away_expressions {
+                expressions.push(DataExpression::Transform(e));
+            }
+        }
+        Rule::where_expression => {
+            expressions.push(parse_where_expression(tabular_expression_rule, state)?)
+        }
+        Rule::summarize_expression => {
+            expressions.push(parse_summarize_expression(tabular_expression_rule, state)?)
+        }
+        _ => panic!("Unexpected rule in tabular_expression: {tabular_expression_rule}"),
     }
 
     Ok(expressions)
@@ -2291,6 +2326,31 @@ mod tests {
                         None,
                     ),
                 )]),
+            )
+            .with_pipeline(
+                PipelineExpressionBuilder::new("summarize c = count() by a | extend v = 1")
+                    .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
+                            QueryLocation::new_fake(),
+                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    1,
+                                )),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "v",
+                                    )),
+                                )]),
+                            )),
+                        ),
+                    ))])
+                    .build()
+                    .unwrap(),
             ),
         );
 
