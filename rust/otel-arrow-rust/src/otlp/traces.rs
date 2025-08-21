@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use arrow::array::StructArray;
 use related_data::RelatedData;
 use snafu::ensure;
 
@@ -12,6 +13,7 @@ use crate::otlp::metrics::AppendAndGet;
 use crate::otlp::traces::spans_arrays::SpansArrays;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+use crate::schema::{consts, is_id_plain_encoded};
 
 pub mod delta_decoder;
 mod related_data;
@@ -64,9 +66,30 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
     let scope_arrays = ScopeArrays::try_from(rb)?;
     let spans_arrays = SpansArrays::try_from(rb)?;
 
+    let ids_plain_encoded = is_id_plain_encoded(rb);
+    let resource_ids_plain_encoded = rb
+        .column_by_name(consts::RESOURCE)
+        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
+        .and_then(|col_struct| col_struct.fields().find(consts::ID))
+        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
+        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
+        .unwrap_or(false);
+
+    let scope_ids_plain_encoded = rb
+        .column_by_name(consts::SCOPE)
+        .and_then(|col| col.as_any().downcast_ref::<StructArray>())
+        .and_then(|col_struct| col_struct.fields().find(consts::ID))
+        .and_then(|(_, field)| field.metadata().get(consts::metadata::COLUMN_ENCODING))
+        .map(|encoding| encoding.as_str() == consts::metadata::encodings::PLAIN)
+        .unwrap_or(false);
+
     for idx in 0..rb.num_rows() {
-        let res_delta_id = resource_arrays.id.value_at_or_default(idx);
-        res_id += res_delta_id;
+        let res_maybe_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
+        if resource_ids_plain_encoded {
+            res_id = res_maybe_delta_id;
+        } else {
+            res_id += res_maybe_delta_id;
+        }
 
         // When resource ID changes, create new ResourceSpans entry
         if prev_res_id != Some(res_id) {
@@ -95,8 +118,12 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
         }
 
         // Decode scope ID using delta encoding
-        let scope_delta_id = scope_arrays.id.value_at_or_default(idx);
-        scope_id += scope_delta_id;
+        let scope_maybe_delta_id_opt = scope_arrays.id.value_at(idx);
+        if scope_ids_plain_encoded {
+            scope_id = scope_maybe_delta_id_opt.unwrap_or_default();
+        } else {
+            scope_id += scope_maybe_delta_id_opt.unwrap_or_default();
+        }
 
         // When scope ID changes, create new ScopeSpans entry
         if prev_scope_id != Some(scope_id) {
@@ -136,8 +163,12 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
             .expect("At this stage, we should have added at least one scope span.");
 
         let current_span = current_scope_spans.spans.append_and_get();
-        let delta_id = spans_arrays.id.value_at_or_default(idx);
-        let span_id = related_data.span_id_from_delta(delta_id);
+        let maybe_delta_id = spans_arrays.id.value_at_or_default(idx);
+        let span_id = if ids_plain_encoded {
+            maybe_delta_id
+        } else {
+            related_data.span_id_from_delta(maybe_delta_id)
+        };
 
         if let Some(trace_id_bytes) = spans_arrays.trace_id.value_at(idx) {
             ensure!(
@@ -178,11 +209,12 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
         current_span.name = spans_arrays.name.value_at_or_default(idx);
         current_span.kind = spans_arrays
             .kind
+            .as_ref()
             .map(|arr| arr.value_at_or_default(idx))
             .unwrap_or_default();
         current_span.start_time_unix_nano =
             spans_arrays.start_time_unix_nano.value_at_or_default(idx) as u64;
-        current_span.end_time_unix_nano = current_span.start_time_unix_nano
+        current_span.end_time_unix_nano = current_span.end_time_unix_nano
             + spans_arrays
                 .duration_time_unix_nano
                 .value_at_or_default(idx) as u64;
@@ -198,11 +230,14 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
             current_span.status = Some(status_val);
         }
 
-        if let Some(attrs) = related_data
-            .span_attr_map_store
-            .as_mut()
-            .and_then(|store| store.attribute_by_delta_id(delta_id))
-        {
+        let attrs = related_data.span_attr_map_store.as_mut().and_then(|store| {
+            if ids_plain_encoded {
+                store.attribute_by_id(span_id)
+            } else {
+                store.attribute_by_delta_id(span_id)
+            }
+        });
+        if let Some(attrs) = attrs {
             current_span.attributes = attrs.to_vec();
         }
 

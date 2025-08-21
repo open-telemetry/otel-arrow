@@ -91,11 +91,13 @@
 
 use otap_df_config::experimental::SignalType;
 use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
+use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
 use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::otlp::{logs::logs_from, metrics::metrics_from, traces::traces_from};
 use otel_arrow_rust::{Consumer, Producer};
 use prost::{EncodeError, Message};
 
+use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
 /// module contains related to pdata
@@ -321,6 +323,12 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
 
                 Ok(otap_batch)
             }
+            OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                let trace_data_view = RawTraceData::new(&bytes);
+                let otap_batch = encode_spans_otap_batch(&trace_data_view).map_err(map_error)?;
+
+                Ok(otap_batch)
+            }
             _ => {
                 // TODO add conversions when we support
                 // https://github.com/open-telemetry/otel-arrow/issues/768
@@ -400,10 +408,15 @@ mod test {
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
-            collector::logs::v1::ExportLogsServiceRequest,
+            collector::{logs::v1::ExportLogsServiceRequest, trace::v1::ExportTraceServiceRequest},
             common::v1::{AnyValue, InstrumentationScope, KeyValue},
             logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
             resource::v1::Resource,
+            trace::v1::{
+                ResourceSpans, ScopeSpans, Span, Status,
+                span::{Event, Link},
+                status::StatusCode,
+            },
         },
     };
 
@@ -456,9 +469,8 @@ mod test {
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
     }
 
-    // TODO add additional tests for converting between metrics & traces
-    // once we have the ability to convert between OTLP bytes -> OTAP for
-    // these signal types
+    // TODO add additional tests for converting between metrics once we have the ability to convert
+    //  between OTLP bytes -> OTAP for this signal types
     // https://github.com/open-telemetry/otel-arrow/issues/768
 
     fn roundtrip_otlp_otap_logs(otlp_service_req: ExportLogsServiceRequest) {
@@ -478,6 +490,26 @@ mod test {
         };
 
         let result = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
+        assert_eq!(otlp_service_req, result);
+    }
+
+    fn roundtrip_otlp_otap_traces(otlp_service_req: ExportTraceServiceRequest) {
+        let mut otlp_bytes = vec![];
+        otlp_service_req.encode(&mut otlp_bytes).unwrap();
+        let pdata: OtapPdata = OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into();
+
+        // test can go OtlpBytes -> OtapBatch & back
+        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
+        let pdata: OtapPdata = otap_batch.into();
+
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let bytes = match otlp_bytes {
+            OtlpProtoBytes::ExportTracesRequest(bytes) => bytes,
+            _ => panic!("unexpected otlp bytes pdata variant"),
+        };
+
+        let result = ExportTraceServiceRequest::decode(bytes.as_ref()).unwrap();
         assert_eq!(otlp_service_req, result);
     }
 
@@ -616,6 +648,120 @@ mod test {
         ]);
 
         roundtrip_otlp_otap_logs(otlp_service_req);
+    }
+
+    #[test]
+    fn test_otlp_otap_traces_roundtrip() {
+        let otlp_service_req = ExportTraceServiceRequest::new(vec![
+            ResourceSpans::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val1"))],
+                ..Default::default()
+            })
+            .scope_spans(vec![
+                ScopeSpans::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val1"))],
+                    ..Default::default()
+                })
+                .spans(vec![
+                    Span::build(u128::to_be_bytes(1), u64::to_be_bytes(1), "albert", 1u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                        .links(vec![
+                            Link::build(u128::to_be_bytes(10), u64::to_be_bytes(10)).finish(),
+                            // this Link's trace_id repeats with the next one. doing this to ensure
+                            // their parent IDs don't get interpreted as delta encoded
+                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(11))
+                                .attributes(vec![
+                                    KeyValue::new("link_key", AnyValue::new_string("val0")),
+                                    // repeating the attr here with the next one for same reason
+                                    // as repeating link with trace ID
+                                    KeyValue::new("link_key_r", AnyValue::new_string("val1")),
+                                ])
+                                .finish(),
+                        ])
+                        .events(vec![
+                            Event::build("event0", 0u64).finish(),
+                            // this event has the repeating name with the next one. doing this to
+                            // ensure their parent IDs don't get interpreted as delta encoded
+                            Event::build("event1", 1u64)
+                                .attributes(vec![
+                                    KeyValue::new("evt_key", AnyValue::new_string("val0")),
+                                    // repeating the attr here with the next one for same reason
+                                    // as repeating link with trace ID
+                                    KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                    Span::build(u128::to_be_bytes(2), u64::to_be_bytes(2), "terry", 2u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                        .links(vec![
+                            // this Link's trace_id repeats with the previous, and  next one.
+                            // doing this to ensure their parent IDs don't get interpreted as
+                            // delta encoded
+                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(20))
+                                .attributes(vec![
+                                    KeyValue::new("link_key_r", AnyValue::new_string("val1")),
+                                    KeyValue::new("link_key", AnyValue::new_string("val2")),
+                                ])
+                                .finish(),
+                        ])
+                        .events(vec![
+                            // this event has the repeating name with the next one and previous one
+                            // doing this to ensure their parent IDs don't get interpreted as
+                            // delta encoded
+                            Event::build("event1", 1u64)
+                                .attributes(vec![
+                                    KeyValue::new("evt_key_r", AnyValue::new_string("val1")),
+                                    KeyValue::new("evt_key", AnyValue::new_string("val2")),
+                                ])
+                                .finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+            ResourceSpans::build(Resource {
+                attributes: vec![KeyValue::new("res_key", AnyValue::new_string("val2"))],
+                ..Default::default()
+            })
+            .scope_spans(vec![
+                ScopeSpans::build(InstrumentationScope {
+                    attributes: vec![KeyValue::new("scope_key", AnyValue::new_string("val3"))],
+                    ..Default::default()
+                })
+                .spans(vec![
+                    Span::build(u128::to_be_bytes(3), u64::to_be_bytes(3), "albert", 3u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                        .links(vec![
+                            // this Link's trace_id repeats with the previous one. do this to ensure they
+                            // don't get interpreted as delta encoded
+                            Link::build(u128::to_be_bytes(11), u64::to_be_bytes(30)).finish(),
+                            Link::build(u128::to_be_bytes(31), u64::to_be_bytes(31)).finish(),
+                        ])
+                        .events(vec![
+                            // this event has the repeating name with the previous one. doing this
+                            // to ensure their parent IDs don't get interpreted as delta encoded
+                            Event::build("event1", 2u64).finish(),
+                        ])
+                        .finish(),
+                    Span::build(u128::to_be_bytes(4), u64::to_be_bytes(4), "terry", 4u64)
+                        .status(Status::new("status1", StatusCode::Ok))
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
+                        .links(vec![
+                            Link::build(u128::to_be_bytes(40), u64::to_be_bytes(40)).finish(),
+                        ])
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+
+        roundtrip_otlp_otap_traces(otlp_service_req);
     }
 
     #[test]

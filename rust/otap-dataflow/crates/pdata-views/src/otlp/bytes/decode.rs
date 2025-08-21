@@ -379,3 +379,18 @@ pub fn read_fixed64(buf: &[u8], pos: usize) -> Option<(&[u8], usize)> {
     let slice = &buf[pos..end];
     Some((slice, end))
 }
+
+/// Fields like dropped_attributes_count, dropped_events_count and dropped_links count have
+/// all have this common logic where they're encoded as varints and interpreted to be zero if the
+/// field is missing. This helper encapsulates that logic
+#[inline]
+#[must_use]
+pub fn read_dropped_count(buf: Option<&[u8]>) -> u32 {
+    match buf {
+        Some(slice) => match read_varint(slice, 0) {
+            Some((val, _)) => val as u32,
+            None => 0,
+        },
+        None => 0,
+    }
+}
