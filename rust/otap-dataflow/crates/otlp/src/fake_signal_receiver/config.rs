@@ -42,6 +42,8 @@ pub struct TrafficConfig {
     signals_per_second: Option<usize>,
     #[serde(default = "default_max_signal")]
     max_signal_count: Option<u64>,
+    #[serde(default = "default_max_batch_size")]
+    max_batch_size: usize,
     #[serde(default = "default_weight")]
     metric_weight: u32,
     #[serde(default = "default_weight")]
@@ -106,6 +108,7 @@ impl TrafficConfig {
     pub fn new(
         signals_per_second: Option<usize>,
         max_signal_count: Option<u64>,
+        max_batch_size: usize,
         metric_weight: u32,
         trace_weight: u32,
         log_weight: u32,
@@ -113,6 +116,7 @@ impl TrafficConfig {
         Self {
             signals_per_second,
             max_signal_count,
+            max_batch_size,
             metric_weight,
             trace_weight,
             log_weight,
@@ -164,6 +168,12 @@ impl TrafficConfig {
     pub fn get_max_signal_count(&self) -> Option<u64> {
         self.max_signal_count
     }
+
+    /// returns the max batch size per message
+    #[must_use]
+    pub fn get_max_batch_size(&self) -> usize {
+        self.max_batch_size
+    }
 }
 
 fn default_signals_per_second() -> Option<usize> {
@@ -172,6 +182,10 @@ fn default_signals_per_second() -> Option<usize> {
 
 fn default_max_signal() -> Option<u64> {
     None
+}
+
+fn default_max_batch_size() -> usize {
+    1000
 }
 
 fn default_weight() -> u32 {

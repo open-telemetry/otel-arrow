@@ -90,12 +90,10 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             })?;
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
-
         let max_signal_count = traffic_config.get_max_signal_count();
         let signals_per_second = traffic_config.get_signal_rate();
-
+        let max_batch_size = traffic_config.get_max_batch_size();
         let mut signal_count: u64 = 0;
-
         let one_second_duration = Duration::from_secs(1);
         loop {
             let wait_till = Instant::now() + one_second_duration;
@@ -117,7 +115,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     }
                 }
                 // generate and send signal based on provided configuration
-                signal_status = generate_signal(effect_handler.clone(), max_signal_count, &mut signal_count, metric_count, trace_count, log_count, &registry), if max_signal_count.is_none_or(|max| max > signal_count) => {
+                signal_status = generate_signal(effect_handler.clone(), max_signal_count, &mut signal_count, max_batch_size, metric_count, trace_count, log_count, &registry), if max_signal_count.is_none_or(|max| max > signal_count) => {
                     // if signals per second is set then we should rate limit
                     match signal_status {
                         Ok(_) => {
@@ -152,13 +150,24 @@ async fn generate_signal(
     effect_handler: local::EffectHandler<OtapPdata>,
     max_signal_count: Option<u64>,
     signal_count: &mut u64,
+    max_batch_size: usize,
     metric_count: usize,
     trace_count: usize,
     log_count: usize,
     registry: &ResolvedRegistry,
 ) -> Result<(), Error<OtapPdata>> {
-    // ToDo: will need to check in if loop if generating signals will cause the signal count to be more than max
-    // this will allow us to generate some but not all signals
+    // nothing to send
+    if max_batch_size == 0 {
+        return Ok(());
+    }
+
+    let metric_count_split = metric_count / max_batch_size;
+    let metric_count_remainder = metric_count % max_batch_size;
+    let trace_count_split = trace_count / max_batch_size;
+    let trace_count_remainder = trace_count % max_batch_size;
+    let log_count_split = log_count / max_batch_size;
+    let log_count_remainder = log_count % max_batch_size;
+
     if let Some(max_count) = max_signal_count {
         // don't generate signals if we reached max signal
         let mut current_count = *signal_count;
@@ -167,64 +176,177 @@ async fn generate_signal(
         }
         // update the counts here to allow us to reach the max_signal_count
 
-        if metric_count > 0 && max_count >= current_count + metric_count as u64 {
+        for _ in 0..metric_count_split {
+            if max_count >= current_count + max_batch_size as u64 {
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+                current_count += max_batch_size as u64;
+            } else {
+                // generate last remaining signals
+                let remaining_count: usize =
+                    (max_count - current_count)
+                        .try_into()
+                        .map_err(|_| Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            error: "failed to convert u64 to usize".to_string(),
+                        })?;
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Metrics(fake_otlp_metrics(remaining_count, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+
+                // no more signals we have reached the max
+                *signal_count = max_count;
+                return Ok(());
+            }
+        }
+        if metric_count_remainder > 0 && max_count >= current_count + metric_count_remainder as u64
+        {
             effect_handler
                 .send_message(
-                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count, registry)).try_into()?,
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                        .try_into()?,
                 )
                 .await?;
-            current_count += metric_count as u64;
+            current_count += metric_count_remainder as u64;
         }
 
         // generate and send traces
-        if trace_count > 0 && max_count >= current_count + metric_count as u64 {
+        for _ in 0..trace_count_split {
+            if max_count >= current_count + max_batch_size as u64 {
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+                current_count += max_batch_size as u64;
+            } else {
+                let remaining_count: usize =
+                    (max_count - current_count)
+                        .try_into()
+                        .map_err(|_| Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            error: "failed to convert u64 to usize".to_string(),
+                        })?;
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Traces(fake_otlp_traces(remaining_count, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+                // no more signals we have reached the max
+                *signal_count = max_count;
+                return Ok(());
+            }
+        }
+        if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
             effect_handler
                 .send_message(
-                    OTLPSignal::Traces(fake_otlp_traces(trace_count, registry)).try_into()?,
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                        .try_into()?,
                 )
                 .await?;
-            current_count += trace_count as u64;
+            current_count += trace_count_remainder as u64;
         }
 
         // generate and send logs
-        if log_count > 0 && max_count >= current_count + metric_count as u64 {
+        for _ in 0..log_count_split {
+            if max_count >= current_count + max_batch_size as u64 {
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                    )
+                    .await?;
+                current_count += max_batch_size as u64;
+            } else {
+                let remaining_count: usize =
+                    (max_count - current_count)
+                        .try_into()
+                        .map_err(|_| Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            error: "failed to convert u64 to usize".to_string(),
+                        })?;
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Logs(fake_otlp_logs(remaining_count, registry)).try_into()?,
+                    )
+                    .await?;
+                // no more signals we have reached the max
+                *signal_count = max_count;
+                return Ok(());
+            }
+        }
+        if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             effect_handler
-                .send_message(OTLPSignal::Logs(fake_otlp_logs(log_count, registry)).try_into()?)
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                )
                 .await?;
-            current_count += log_count as u64;
+            current_count += log_count_remainder as u64;
         }
 
         *signal_count = current_count;
     } else {
         // generate and send metric
-        if metric_count > 0 {
+        for _ in 0..metric_count_split {
             effect_handler
                 .send_message(
-                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count, registry)).try_into()?,
+                    OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry)).try_into()?,
+                )
+                .await?;
+        }
+        if metric_count_remainder > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                        .try_into()?,
                 )
                 .await?;
         }
 
         // generate and send traces
-        if trace_count > 0 {
+        for _ in 0..trace_count_split {
             effect_handler
                 .send_message(
-                    OTLPSignal::Traces(fake_otlp_traces(trace_count, registry)).try_into()?,
+                    OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry)).try_into()?,
+                )
+                .await?;
+        }
+        if trace_count_remainder > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                        .try_into()?,
                 )
                 .await?;
         }
 
         // generate and send logs
-        if log_count > 0 {
+        for _ in 0..log_count_split {
             effect_handler
-                .send_message(OTLPSignal::Logs(fake_otlp_logs(log_count, registry)).try_into()?)
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                )
+                .await?;
+        }
+        if log_count_remainder > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                )
                 .await?;
         }
     }
 
     Ok(())
 }
-
 impl TryFrom<OTLPSignal> for OtapPdata {
     type Error = Error<OtapPdata>;
 
@@ -281,6 +403,7 @@ mod tests {
     const RUN_TILL_SHUTDOWN: u64 = 999;
     const MESSAGE_PER_SECOND: usize = 3;
     const MAX_SIGNALS: u64 = 3;
+    const MAX_BATCH: usize = 30;
 
     impl From<OtapPdata> for OTLPSignal {
         fn from(value: OtapPdata) -> Self {
@@ -480,7 +603,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // https://github.com/open-telemetry/otel-arrow/issues/964
     fn test_fake_signal_receiver() {
         let test_runtime = TestRuntime::new();
 
@@ -490,7 +612,7 @@ mod tests {
             refspec: None,
         };
 
-        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, 1, 1, 1);
+        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path);
         let registry = config.get_registry().expect("failed to get registry");
 
@@ -527,6 +649,7 @@ mod tests {
                             for resource in metric.resource_metrics.iter() {
                                 for scope in resource.scope_metrics.iter() {
                                     received_messages += scope.metrics.len();
+                                    assert!(scope.metrics.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -534,6 +657,7 @@ mod tests {
                             for resource in span.resource_spans.iter() {
                                 for scope in resource.scope_spans.iter() {
                                     received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -541,6 +665,7 @@ mod tests {
                             for resource in log.resource_logs.iter() {
                                 for scope in resource.scope_logs.iter() {
                                     received_messages += scope.log_records.len();
+                                    assert!(scope.log_records.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -564,7 +689,7 @@ mod tests {
             refspec: None,
         };
 
-        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, 1, 0, 0);
+        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 0, 0);
         let config = Config::new(traffic_config, registry_path);
 
         // create our receiver
@@ -600,6 +725,7 @@ mod tests {
                             for resource in metric.resource_metrics.iter() {
                                 for scope in resource.scope_metrics.iter() {
                                     received_messages += scope.metrics.len();
+                                    assert!(scope.metrics.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -607,6 +733,7 @@ mod tests {
                             for resource in span.resource_spans.iter() {
                                 for scope in resource.scope_spans.iter() {
                                     received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -614,6 +741,7 @@ mod tests {
                             for resource in log.resource_logs.iter() {
                                 for scope in resource.scope_logs.iter() {
                                     received_messages += scope.log_records.len();
+                                    assert!(scope.log_records.len() <= MAX_BATCH);
                                 }
                             }
                         }
@@ -633,7 +761,7 @@ mod tests {
             refspec: None,
         };
 
-        let traffic_config = TrafficConfig::new(None, Some(MAX_SIGNALS), 1, 0, 0);
+        let traffic_config = TrafficConfig::new(None, Some(MAX_SIGNALS), MAX_BATCH, 1, 0, 0);
         let config = Config::new(traffic_config, registry_path);
 
         // create our receiver
