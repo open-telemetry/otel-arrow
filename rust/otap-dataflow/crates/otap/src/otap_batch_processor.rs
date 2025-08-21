@@ -28,6 +28,7 @@ use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use serde::Deserialize;
 use serde_json::Value;
@@ -40,10 +41,18 @@ pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otap:processor:batch";
 pub const DEFAULT_SEND_BATCH_SIZE: usize = 8192;
 /// Default upper bound on batch size used to chunk oversized inputs (in number of items)
 /// Note: In Go batchprocessor, send_batch_max_size defaults to 0 which means "use send_batch_size".
-/// We mirror that behavior by leaving this unset in Default and normalizing at runtime.
+/// We mirror that behavior by using a sentinel and normalizing at runtime.
 pub const DEFAULT_SEND_BATCH_MAX_SIZE: usize = 8192;
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
+
+/// Semantic constants (avoid magic numbers)
+/// Minimum allowed send_batch_size
+pub const MIN_SEND_BATCH_SIZE: usize = 1;
+/// Sentinel meaning: follow send_batch_size for max size (Go parity)
+pub const FOLLOW_SEND_BATCH_SIZE_SENTINEL: usize = 0;
+/// Minimum allowed metadata cardinality limit when specified
+pub const MIN_METADATA_CARDINALITY_LIMIT: usize = 1;
 
 /// Log messages
 const LOG_MSG_SHUTTING_DOWN: &str = "OTAP batch processor shutting down";
@@ -52,11 +61,15 @@ const LOG_MSG_SHUTTING_DOWN: &str = "OTAP batch processor shutting down";
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Flush current batch when this count is reached.
-    pub send_batch_size: Option<usize>,
+    #[serde(default = "default_send_batch_size")]
+    pub send_batch_size: usize,
     /// Hard cap for splitting very large inputs.
-    pub send_batch_max_size: Option<usize>,
+    /// Go behavior: 0 (or missing) => use send_batch_size; we use 0 as default and normalize later
+    #[serde(default = "default_send_batch_max_size")]
+    pub send_batch_max_size: usize,
     /// Flush non-empty batches on this interval (milliseconds).
-    pub timeout: Option<u64>,
+    #[serde(default = "default_timeout_ms")]
+    pub timeout: u64,
     /// Optional metadata partitioning keys (resource/scope/attribute names)
     #[serde(default)]
     pub metadata_keys: Vec<String>,
@@ -65,16 +78,28 @@ pub struct Config {
     /// Note: This is currently a no-op because grouping by metadata_keys has not yet been
     /// implemented in the MVP. Once grouping lands (post-#814), this will cap the number of
     /// concurrent groups and overflow strategy will be documented.
+    #[serde(default)]
     pub metadata_cardinality_limit: Option<usize>,
+}
+
+fn default_send_batch_size() -> usize {
+    DEFAULT_SEND_BATCH_SIZE
+}
+
+fn default_send_batch_max_size() -> usize {
+    FOLLOW_SEND_BATCH_SIZE_SENTINEL // Go behavior: 0 means "use send_batch_size"
+}
+
+fn default_timeout_ms() -> u64 {
+    DEFAULT_TIMEOUT_MS
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            send_batch_size: Some(DEFAULT_SEND_BATCH_SIZE),
-            // Go behavior: 0 (or missing) => use send_batch_size; we leave None and normalize later
-            send_batch_max_size: None,
-            timeout: Some(DEFAULT_TIMEOUT_MS),
+            send_batch_size: default_send_batch_size(),
+            send_batch_max_size: default_send_batch_max_size(),
+            timeout: default_timeout_ms(),
             metadata_keys: Vec::new(),
             metadata_cardinality_limit: None,
         }
@@ -124,6 +149,7 @@ impl OtapBatchProcessor {
     /// The JSON should mirror the Go collector batchprocessor shape. Missing fields fall back to
     /// crate defaults. Invalid numeric values (e.g., zero) are normalized to minimal valid values.
     pub fn from_config(
+        node: NodeId,
         cfg: &Value,
         proc_cfg: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
@@ -134,26 +160,27 @@ impl OtapBatchProcessor {
         if let Some(timeout_val) = cfg.get("timeout") {
             if let Some(s) = timeout_val.as_str() {
                 if let Some(ms) = parse_duration_ms(s) {
-                    config.timeout = Some(ms);
+                    config.timeout = ms;
                 }
             }
         }
 
         // Basic validation/normalization
-        if config.send_batch_size.unwrap_or(0) == 0 {
-            config.send_batch_size = Some(1);
+        if config.send_batch_size == 0 {
+            config.send_batch_size = MIN_SEND_BATCH_SIZE;
         }
-        // Go behavior: if send_batch_max_size is 0 or missing, use send_batch_size
-        let effective_sbs = config.send_batch_size.unwrap_or(DEFAULT_SEND_BATCH_SIZE);
-        let max = match config.send_batch_max_size.unwrap_or(0) {
-            0 => effective_sbs,
-            v => v,
+        // Go behavior: if send_batch_max_size is 0 (sentinel), use send_batch_size
+        let effective_sbs = config.send_batch_size;
+        let max = if config.send_batch_max_size == FOLLOW_SEND_BATCH_SIZE_SENTINEL {
+            effective_sbs
+        } else {
+            config.send_batch_max_size
         };
-        config.send_batch_max_size = Some(max);
+        config.send_batch_max_size = max;
 
         if let Some(limit) = config.metadata_cardinality_limit {
-            if limit == 0 {
-                config.metadata_cardinality_limit = Some(1);
+            if limit < MIN_METADATA_CARDINALITY_LIMIT {
+                config.metadata_cardinality_limit = Some(MIN_METADATA_CARDINALITY_LIMIT);
             }
         }
         let user_config = Arc::new(NodeUserConfig::new_processor_config(
@@ -163,7 +190,7 @@ impl OtapBatchProcessor {
             config,
             buffers: HashMap::new(),
         };
-        Ok(ProcessorWrapper::local(proc, user_config, proc_cfg))
+        Ok(ProcessorWrapper::local(proc, node, user_config, proc_cfg))
     }
 
     /// Derive a grouping key from metadata_keys. MVP: single default group.
@@ -255,8 +282,9 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                 // - If adding this message would exceed max, flush current buffer first.
                 // - If this single message would exceed max on its own, flush immediately after buffering
                 //   to avoid holding oversized batches.
-                if let Some(max) = self.config.send_batch_max_size {
-                    if max > 0 {
+                {
+                    let max = self.config.send_batch_max_size;
+                    if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL {
                         // We need current count without holding a mutable borrow during flush.
                         let current_count = self.buffers.get(&key).map(|b| b.count).unwrap_or(0);
                         if current_count + incoming_count > max {
@@ -269,15 +297,13 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                 buf.push(data);
 
                 // Threshold-based flush on count
-                let target = self
-                    .config
-                    .send_batch_size
-                    .unwrap_or(DEFAULT_SEND_BATCH_SIZE);
+                let target = self.config.send_batch_size;
                 if buf.count >= target {
                     let _ = buf; // release borrow before calling flush
                     self.flush_group(&key, effect).await
-                } else if let Some(max) = self.config.send_batch_max_size {
-                    if max > 0 {
+                } else {
+                    let max = self.config.send_batch_max_size;
+                    if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL {
                         // Need to recheck count without holding borrow during flush
                         let cur = self.buffers.get(&key).map(|b| b.count).unwrap_or(0);
                         if cur >= max {
@@ -289,8 +315,6 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                     } else {
                         Ok(())
                     }
-                } else {
-                    Ok(())
                 }
             }
         }
@@ -303,8 +327,8 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
 pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: OTAP_BATCH_PROCESSOR_URN,
-        create: |cfg: &Value, proc_cfg: &ProcessorConfig| {
-            OtapBatchProcessor::from_config(cfg, proc_cfg)
+        create: |node: NodeId, cfg: &Value, proc_cfg: &ProcessorConfig| {
+            OtapBatchProcessor::from_config(node, cfg, proc_cfg)
         },
     };
 
@@ -326,6 +350,7 @@ fn parse_duration_ms(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_engine::testing::test_node;
     use serde_json::json;
 
     #[test]
@@ -337,7 +362,8 @@ mod tests {
     fn test_factory_creation() {
         let cfg = json!({"send_batch_size": 1000, "timeout": 100});
         let processor_config = ProcessorConfig::new("otap_batch_test");
-        let result = OtapBatchProcessor::from_config(&cfg, &processor_config);
+        let node = test_node(processor_config.name.clone());
+        let result = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -350,7 +376,8 @@ mod tests {
             "metadata_keys": ["service.name", "telemetry.sdk.name"]
         });
         let processor_config = ProcessorConfig::new("otap_batch_test2");
-        let result = OtapBatchProcessor::from_config(&cfg, &processor_config);
+        let node = test_node(processor_config.name.clone());
+        let result = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -361,7 +388,8 @@ mod tests {
             "timeout": "200ms"
         });
         let processor_config = ProcessorConfig::new("otap_batch_test3");
-        let result = OtapBatchProcessor::from_config(&cfg, &processor_config);
+        let node = test_node(processor_config.name.clone());
+        let result = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
         assert!(result.is_ok());
     }
 
@@ -375,7 +403,8 @@ mod tests {
             "metadata_cardinality_limit": 100
         });
         let processor_config = ProcessorConfig::new("otap_batch_test_card");
-        let res = OtapBatchProcessor::from_config(&cfg, &processor_config);
+        let node = test_node(processor_config.name.clone());
+        let res = OtapBatchProcessor::from_config(node, &cfg, &processor_config);
         assert!(res.is_ok());
         // Ensure deserialization keeps the value
         let mut parsed: Config = serde_json::from_value(cfg).unwrap();
@@ -387,7 +416,8 @@ mod tests {
             "metadata_cardinality_limit": 0
         });
         let proc_cfg = ProcessorConfig::new("norm");
-        let wrapper_res = OtapBatchProcessor::from_config(&cfg2, &proc_cfg);
+        let node = test_node(proc_cfg.name.clone());
+        let wrapper_res = OtapBatchProcessor::from_config(node, &cfg2, &proc_cfg);
         assert!(wrapper_res.is_ok());
     }
 
@@ -403,10 +433,11 @@ mod tests {
             "timeout": 10
         });
         let processor_config = ProcessorConfig::new("otap_batch_test_max1");
-        let proc =
-            OtapBatchProcessor::from_config(&cfg, &processor_config).expect("proc from config");
-
         let test_rt = TestRuntime::new();
+        let node = test_node(processor_config.name.clone());
+        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
+            .expect("proc from config");
+
         let phase = test_rt.set_processor(proc);
 
         // run scenario
@@ -467,10 +498,11 @@ mod tests {
             "timeout": 10
         });
         let processor_config = ProcessorConfig::new("otap_batch_test_max2");
-        let proc =
-            OtapBatchProcessor::from_config(&cfg, &processor_config).expect("proc from config");
-
         let test_rt = TestRuntime::new();
+        let node = test_node(processor_config.name.clone());
+        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
+            .expect("proc from config");
+
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
@@ -510,7 +542,8 @@ mod tests {
             "timeout": "200ms"
         });
         let proc_cfg = ProcessorConfig::new("norm-max");
-        let res = OtapBatchProcessor::from_config(&cfg, &proc_cfg);
+        let node = test_node(proc_cfg.name.clone());
+        let res = OtapBatchProcessor::from_config(node.clone(), &cfg, &proc_cfg);
         assert!(res.is_ok());
 
         // Missing max -> also defaults to size
@@ -518,7 +551,7 @@ mod tests {
             "send_batch_size": 9,
             "timeout": "200ms"
         });
-        let res2 = OtapBatchProcessor::from_config(&cfg2, &proc_cfg);
+        let res2 = OtapBatchProcessor::from_config(node, &cfg2, &proc_cfg);
         assert!(res2.is_ok());
     }
 }
