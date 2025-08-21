@@ -639,10 +639,6 @@ mod tests {
             }
 
             validate(execution_context.get_variables());
-
-            let result = execution_context.consume_into_record();
-
-            println!("{result}");
         }
 
         // Test setting a variable
