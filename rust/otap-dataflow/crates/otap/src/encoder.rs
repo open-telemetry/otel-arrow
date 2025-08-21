@@ -3728,7 +3728,6 @@ mod test {
         _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
     }
 
-    // TODO revist the imports here ...
     fn _generate_traces_data_all_fields() -> TracesData {
         let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
