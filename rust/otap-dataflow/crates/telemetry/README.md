@@ -41,11 +41,15 @@ while still exporting high-fidelity operational data.
 - Transport decoupling: snapshot batches move over MPSC queues to
   aggregation / export workers.
 
+![Architecture Phase 1](assets/Metrics%20Phase%201.svg)
+
 ## Roadmap
 
 - HTTP (pull) telemetry endpoint. 
 - OTLP (push) export via Rust OpenTelemetry SDK.
 - Generate OpenTelemetry Semantic Registry from the schema.
 - Generate Telemetry client SDK from custom registry and Weaver.
-- NUMA-aware aggregation.
 - Structured events and spans.
+- NUMA-aware aggregation.
+
+![Architecture Phase 1](assets/Metrics%20Phase%202.svg)
