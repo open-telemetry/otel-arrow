@@ -37,3 +37,36 @@ pub struct MetricsDescriptor {
     /// Ordered field metadata.
     pub fields: &'static [MetricsField],
 }
+
+/// Supported attribute value kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeValueType {
+    /// String attribute value
+    String,
+    /// Integer attribute value
+    Int,
+    /// Double-precision floating-point attribute value
+    Double,
+    /// Boolean attribute value
+    Boolean,
+}
+
+/// Metadata describing a single attribute field.
+#[derive(Debug, Clone, Copy)]
+pub struct AttributeField {
+    /// Attribute key (canonical, may contain dots instead of underscores).
+    pub key: &'static str,
+    /// Short description extracted from doc comments.
+    pub description: &'static str,
+    /// Value kind.
+    pub value_type: AttributeValueType,
+}
+
+/// Descriptor for an attribute set.
+#[derive(Debug)]
+pub struct AttributesDescriptor {
+    /// Human-friendly group name.
+    pub name: &'static str,
+    /// Ordered attribute field metadata.
+    pub fields: &'static [AttributeField],
+}

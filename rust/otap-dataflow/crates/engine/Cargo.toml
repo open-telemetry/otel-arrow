@@ -19,6 +19,7 @@ testing = []
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }

@@ -34,6 +34,7 @@ pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
 pub mod context;
+mod attributes;
 
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::Receiver;

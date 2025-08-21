@@ -8,7 +8,7 @@
 //! - [Phase 3 - Exploratory] Aggregated metrics could be processed and delivered by our own
 //!    pipeline engine. All processors and exporters could be used (OTLP, OTAP, ...).
 
-use crate::attributes::StaticAttributeSet;
+use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsField;
 use crate::error::Error;
 use std::fmt::Write as _;
@@ -21,7 +21,7 @@ pub trait MetricsPipeline {
         &self,
         measurement: &'static str,
         fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-        attrs: &StaticAttributeSet,
+        attrs: &dyn AttributeSetHandler,
     ) -> Result<(), Error>;
 }
 
@@ -34,7 +34,7 @@ impl MetricsPipeline for LineProtocolPipeline {
         &self,
         measurement: &'static str,
         fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-        attrs: &StaticAttributeSet,
+        attrs: &dyn AttributeSetHandler,
     ) -> Result<(), Error> {
         let line = format_line_protocol_iter(measurement, fields, attrs);
         println!("{}", line);
@@ -58,26 +58,18 @@ fn escape_tag(s: &str) -> String {
 pub(crate) fn format_line_protocol_iter<'a>(
     measurement: &'static str,
     fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-    attrs: &StaticAttributeSet,
+    attrs: &dyn AttributeSetHandler,
 ) -> String {
     let mut line = String::with_capacity(192);
     line.push_str(measurement);
 
-    // Tags.
-    let static_tags = [
-        ("node_id", attrs.node_id.as_ref()),
-        ("node_type", attrs.node_type.as_ref()),
-        ("pipeline_id", attrs.pipeline_id.as_ref()),
-    ];
-    for (k,v) in static_tags.iter() {
+    // Tags from the generic attribute handler
+    for (key, value) in attrs.iter_attributes() {
         line.push(',');
-        line.push_str(escape_tag(k).as_str());
+        line.push_str(escape_tag(key).as_str());
         line.push('=');
-        line.push_str(escape_tag(v).as_str());
+        line.push_str(escape_tag(&value.to_string_value()).as_str());
     }
-    let _ = write!(line, ",core_id={}", attrs.core_id);
-    let _ = write!(line, ",numa_node_id={}", attrs.numa_node_id);
-    let _ = write!(line, ",process_id={}", attrs.process_id);
 
     line.push(' ');
 
