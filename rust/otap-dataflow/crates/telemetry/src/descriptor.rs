@@ -7,6 +7,7 @@ use serde::Serialize;
 /// The type of instrument used to record the metric. Must be one of the following variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Instrument {
     /// A value that can only go up or be reset to 0, used for counts
     Counter,
@@ -46,6 +47,7 @@ pub struct MetricsDescriptor {
 /// Supported attribute value kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AttributeValueType {
     /// String attribute value
     String,
