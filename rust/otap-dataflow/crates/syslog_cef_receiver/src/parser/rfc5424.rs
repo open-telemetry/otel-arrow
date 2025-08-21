@@ -7,7 +7,7 @@ use crate::parser::ParseError;
 
 /// RFC 5424 message structure
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Rfc5424Message<'a> {
+pub struct Rfc5424Message<'a> {
     pub(super) priority: crate::parser::Priority,
     pub(super) version: u8,
     pub(super) timestamp: Option<&'a [u8]>,
@@ -21,7 +21,7 @@ pub(crate) struct Rfc5424Message<'a> {
 }
 
 /// Parse an RFC 5424 syslog message
-pub(super) fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseError> {
+pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseError> {
     let (priority, mut remaining) = crate::parser::parse_priority(input)?;
 
     // Parse version
