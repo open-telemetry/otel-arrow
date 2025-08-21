@@ -403,7 +403,9 @@ mod tests {
     const RUN_TILL_SHUTDOWN: u64 = 999;
     const MESSAGE_PER_SECOND: usize = 3;
     const MAX_SIGNALS: u64 = 3;
-    const MAX_BATCH: usize = 30;
+    const MAX_SIGNALS_2: u64 = 35;
+    const MAX_BATCH: usize = 10;
+    const MESSAGE_PER_SECOND_2: usize = 60;
 
     impl From<OtapPdata> for OTLPSignal {
         fn from(value: OtapPdata) -> Self {
@@ -456,6 +458,7 @@ mod tests {
                                 assert!(scope_count == SCOPE_COUNT);
                                 for scope in resource.scope_metrics.iter() {
                                     let metric_count = scope.metrics.len();
+                                    assert!(metric_count <= MAX_BATCH);
                                     assert!(metric_count == MESSAGE_COUNT);
                                     for metric in scope.metrics.iter() {
                                         let metric_definition = resolved_registry
@@ -526,6 +529,7 @@ mod tests {
                                 assert!(scope_count == SCOPE_COUNT);
                                 for scope in resource.scope_spans.iter() {
                                     let span_count = scope.spans.len();
+                                    assert!(span_count <= MAX_BATCH);
                                     assert!(span_count == MESSAGE_COUNT);
                                     for span in scope.spans.iter() {
                                         let span_definition = resolved_registry
@@ -570,6 +574,7 @@ mod tests {
                                 assert!(scope_count == SCOPE_COUNT);
                                 for scope in resource.scope_logs.iter() {
                                     let log_record_count = scope.log_records.len();
+                                    assert!(log_record_count <= MAX_BATCH);
                                     assert!(log_record_count == MESSAGE_COUNT);
                                     for log_record in scope.log_records.iter() {
                                         let log_record_definition = resolved_registry
@@ -603,7 +608,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // https://github.com/open-telemetry/otel-arrow/issues/964
     fn test_fake_signal_receiver() {
         let test_runtime = TestRuntime::new();
 
@@ -782,5 +786,80 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario())
             .run_validation(validation_procedure_max_signal());
+    }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure_max_batch()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                let mut received_messages = 0;
+
+                while let Ok(received_signal) = ctx.recv().await {
+                    match received_signal.into() {
+                        OTLPSignal::Metrics(metric) => {
+                            // loop and check count
+                            for resource in metric.resource_metrics.iter() {
+                                for scope in resource.scope_metrics.iter() {
+                                    received_messages += scope.metrics.len();
+                                    assert!(scope.metrics.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                        OTLPSignal::Traces(span) => {
+                            for resource in span.resource_spans.iter() {
+                                for scope in resource.scope_spans.iter() {
+                                    received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                        OTLPSignal::Logs(log) => {
+                            for resource in log.resource_logs.iter() {
+                                for scope in resource.scope_logs.iter() {
+                                    received_messages += scope.log_records.len();
+                                    assert!(scope.log_records.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                
+                assert_eq!(received_messages as u64, MAX_SIGNALS_2);
+            })
+        }
+    }
+
+    #[test]
+    fn test_fake_signal_receiver_max_batch() {
+        let test_runtime = TestRuntime::new();
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config =
+            TrafficConfig::new(Some(MESSAGE_PER_SECOND_2), Some(MAX_SIGNALS_2), MAX_BATCH, 1, 1, 1);
+        let config = Config::new(traffic_config, registry_path);
+
+        // create our receiver
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        // create our receiver
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(config),
+            test_node("fake_receiver"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // run the test
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario())
+            .run_validation(validation_procedure_max_batch());
     }
 }
