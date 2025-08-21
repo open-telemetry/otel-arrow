@@ -36,19 +36,15 @@ pub trait Node {
     async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
 }
 
-/// NodeId consists of NodeId and NodeIndex integer.
+/// NodeId consists of a unique integer index and a name.
 #[derive(Clone, Debug)]
 pub struct NodeId {
     /// A unique integer.
-    pub(crate) index: NodeIndex,
+    pub(crate) index: usize,
 
     /// A unique name as defined by otap_df_config.
     pub name: NodeName,
 }
-
-/// Index in the NodeDefs vector
-#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
-pub struct NodeIndex(u16);
 
 /// Enum to identify the type of a node for registry lookups
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,22 +108,24 @@ impl<PData, Inner> Default for NodeDefs<PData, Inner> {
 impl<PData, Inner> NodeDefs<PData, Inner> {
     /// Gets a the node definition
     #[must_use]
-    pub(crate) fn get(&self, index: NodeIndex) -> Option<&NodeDefinition<Inner>> {
-        self.entries.get(index.0 as usize)
+    pub(crate) fn get(&self, index: usize) -> Option<&NodeDefinition<Inner>> {
+        self.entries.get(index)
     }
 
     /// Gets the next unique node identifier. Returns an error when
-    /// the underlying u16 overflows.
+    /// the node limit (65,535) is exceeded.
     pub fn next(
         &mut self,
         name: NodeName,
         ntype: NodeType,
         inner: Inner,
     ) -> Result<NodeId, Error<PData>> {
-        let uniq = NodeId::build(
-            NodeIndex::try_from(self.entries.len()).map_err(|_| Error::TooManyNodes {})?,
-            name.clone(),
-        );
+        let index = self.entries.len();
+        if index > u16::MAX as usize {
+            return Err(Error::TooManyNodes {});
+        }
+
+        let uniq = NodeId::build(index, name.clone());
         self.entries.push(NodeDefinition { ntype, name, inner });
         Ok(uniq)
     }
@@ -138,7 +136,7 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
             (
                 NodeId {
                     name: val.name.clone(),
-                    index: NodeIndex::try_from(idx).expect("enumerated"),
+                    index: idx,
                 },
                 val,
             )
@@ -146,17 +144,8 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
     }
 }
 
-impl TryFrom<usize> for NodeIndex {
-    type Error = std::num::TryFromIntError;
-
-    /// TryFrom signals an error when the u16 overflows.
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
-        Ok(Self(u16::try_from(value)?))
-    }
-}
-
 impl NodeId {
-    pub(crate) fn build(index: NodeIndex, name: NodeName) -> NodeId {
+    pub(crate) fn build(index: usize, name: NodeName) -> NodeId {
         NodeId { index, name }
     }
 }

@@ -5,9 +5,7 @@
 
 use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
-use crate::node::{
-    Node, NodeDefs, NodeId, NodeIndex, NodeType, NodeWithPDataReceiver, NodeWithPDataSender,
-};
+use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 
@@ -164,8 +162,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a reference to any node by its ID as a Node trait object
     #[must_use]
-    pub fn get_node(&self, node: NodeIndex) -> Option<&dyn Node> {
-        let ndef = self.nodes.get(node)?;
+    pub fn get_node(&self, node_id: usize) -> Option<&dyn Node> {
+        let ndef = self.nodes.get(node_id)?;
 
         match ndef.ntype {
             NodeType::Receiver => self.receivers.get(ndef.inner.index).map(|r| r as &dyn Node),
@@ -181,9 +179,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     #[must_use]
     pub fn get_mut_node_with_pdata_sender(
         &mut self,
-        node: NodeIndex,
+        node_id: usize,
     ) -> Option<&mut dyn NodeWithPDataSender<PData>> {
-        let ndef = self.nodes.get(node)?;
+        let ndef = self.nodes.get(node_id)?;
 
         match ndef.ntype {
             NodeType::Receiver => self
@@ -202,9 +200,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     #[must_use]
     pub fn get_mut_node_with_pdata_receiver(
         &mut self,
-        node: NodeIndex,
+        node_id: usize,
     ) -> Option<&mut dyn NodeWithPDataReceiver<PData>> {
-        let ndef = self.nodes.get(node)?;
+        let ndef = self.nodes.get(node_id)?;
 
         match ndef.ntype {
             NodeType::Receiver => None,

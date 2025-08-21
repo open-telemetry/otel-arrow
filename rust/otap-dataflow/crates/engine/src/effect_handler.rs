@@ -5,7 +5,7 @@
 
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
-use crate::node::{NodeId, NodeIndex};
+use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -175,7 +175,7 @@ impl EffectHandlerCore {
 
 /// Handle to cancel a running timer.
 pub struct TimerCancelHandle {
-    node_id: NodeIndex,
+    node_id: usize,
     pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
 }
 
