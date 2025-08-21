@@ -2,8 +2,11 @@
 
 //! Metric and Attribute descriptor types for metrics reflection.
 
+use serde::Serialize;
+
 /// The type of instrument used to record the metric. Must be one of the following variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize)]
 pub enum Instrument {
     /// A value that can only go up or be reset to 0, used for counts
     Counter,
@@ -17,6 +20,7 @@ pub enum Instrument {
 
 /// Metadata describing a single field inside a metrics struct.
 #[derive(Debug, Clone, Copy)]
+#[derive(Serialize)]
 pub struct MetricsField {
     /// Canonical metric name (e.g., "bytes.rx"). Uniquely identifies the metric.
     pub name: &'static str,
@@ -31,15 +35,17 @@ pub struct MetricsField {
 
 /// Descriptor for a multivariate metrics.
 #[derive(Debug)]
+#[derive(Serialize)]
 pub struct MetricsDescriptor {
     /// Human-friendly group name.
     pub name: &'static str,
     /// Ordered field metadata.
-    pub fields: &'static [MetricsField],
+    pub metrics: &'static [MetricsField],
 }
 
 /// Supported attribute value kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize)]
 pub enum AttributeValueType {
     /// String attribute value
     String,
@@ -53,13 +59,14 @@ pub enum AttributeValueType {
 
 /// Metadata describing a single attribute field.
 #[derive(Debug, Clone, Copy)]
+#[derive(Serialize)]
 pub struct AttributeField {
     /// Attribute key (canonical, may contain dots instead of underscores).
     pub key: &'static str,
     /// Short description extracted from doc comments.
-    pub description: &'static str,
+    pub brief: &'static str,
     /// Value kind.
-    pub value_type: AttributeValueType,
+    pub r#type: AttributeValueType,
 }
 
 /// Descriptor for an attribute set.

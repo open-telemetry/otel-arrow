@@ -34,6 +34,7 @@ pub mod reporter;
 pub mod error;
 pub(crate) mod pipeline;
 mod config;
+mod semconv;
 
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {

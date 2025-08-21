@@ -1,38 +1,51 @@
-# NUMA‑aware telemetry SDK exposing a type‑safe API
+# Telemetry SDK (schema‑first, multivariate, NUMA‑aware)
 
-A low-overhead, NUMA-aware telemetry infrastructure exposing a type-safe API
-used by the thread-per-core OTAP dataflow pipelines.
+A low-overhead, NUMA-aware telemetry SDK that turns a declarative schema into a
+type-safe Rust API for emitting richly structured, multivariate metrics. It is
+designed for engines that run a thread-per-core and require predictable latency
+while still exporting high-fidelity operational data.
 
-## Goals and constraints
+## Core principles
 
-- Type-safe metric API with zero-cost counters on the hot path (no atomics
-  on steady-state per-core updates).
-- NUMA locality by construction: per-core metrics live with the node and are
-  mutated only by that core.
-- Reset-on-flush semantics with configurable aggregation cadence (e.g. every 100
-  ms), accepting brief staleness between
-  flushes.
-- Minimal synchronization for collection: SPSC handoff; global aggregation off
-  the hot path.
+1. **Schema‑first**: You declare a metric schema (attributes + instrument kinds)
+   and derive strongly typed metric sets. This eliminates stringly‑typed
+   lookups, guarantees field ordering, and lets downstream tooling reason about
+   the data shape at compile time.
+2. **Native multivariate metrics**: A metric set groups multiple instruments
+   that share identical attribute tuples and timestamps. Collection exports
+   sparse non‑zero field/value pairs, avoiding per‑field overhead and reducing
+   wire size.
+3. **Performance focus**: Counter increments are zero‑cost in steady state (no
+   atomics, no branching beyond range checks) by leveraging per‑core ownership
+   and cache alignment. The cold path (flush, aggregate, encode) is NUMA‑aware
+   and batch oriented, separating mutation from collection.
+4. **Auto‑describing**: From the same schema we generate OpenTelemetry semantic
+   descriptors so the system can describe its own telemetry: instrument kinds,
+   units, brief docs, and attribute keys. Exporters can attach this metadata
+   once, enabling self‑describing streams.
 
-## Design overview
+## Architectural highlights
 
-- Pipeline nodes maintain strongly typed, per-core metrics structs with
-  lightweight, single-threaded counters.
-- Metrics are reset on flush, not on every update, and aggregated by the
-  consumer.
-- A `Metrics` trait and global registry enable type-safe reflection and export.
-- Periodic snapshotting copies metrics to a queue for off-path aggregation.
-- Lock-free, single-producer/single-consumer queues transport snapshots to a
-  collector.
-- Engine integration supports separate controls for reporting and telemetry
-  flushing, managed by a shared timer and exporters.
+- Per‑core metric sets: each core mutates only its own instance => no cross‑core
+  contention.
+- Reset‑on‑flush semantics: values accumulate for a cadence (e.g. 100 ms) then
+  are atomically snapshotted and zeroed, yielding deltas by construction.
+- Sparse enumeration: only non‑zero fields are walked; zeroing touches only
+  dirty counters.
+- Descriptor & schema statics: each generated metric set exposes a
+  `MetricsDescriptor` with an ordered slice of `MetricsField` (name, unit,
+  instrument kind, brief). Similarly, a `AttributesDescriptor` provides
+  attribute keys and their types.
+- Registry & reflection: a global registry tracks live metric sets, enabling
+  periodic flush loops without bespoke wiring.
+- Transport decoupling: snapshot batches move over MPSC queues to
+  aggregation / export workers.
 
-## Future directions
+## Roadmap
 
-- Expose the aggregated metrics with the Rust OpenTelemetry SDK.
-- Expose the aggregated metrics with a basic HTTP endpoint.
-- Use OpenTelemetry semantic conventions plus OTEL Weaver to generate this
-  NUMA-aware, type-safe SDK.
-- Add a centralized, NUMA-aware collector thread per socket.
-- Add support for structured events and spans.
+- HTTP (pull) telemetry endpoint. 
+- OTLP (push) export via Rust OpenTelemetry SDK.
+- Generate OpenTelemetry Semantic Registry from the schema.
+- Generate Telemetry client SDK from custom registry and Weaver.
+- NUMA-aware aggregation.
+- Structured events and spans.

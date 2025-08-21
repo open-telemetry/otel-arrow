@@ -147,7 +147,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
             fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
                 static #desc_ident: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
                     name: #metrics_name,
-                    fields: &[
+                    metrics: &[
                         #( otap_df_telemetry::descriptor::MetricsField {
                             name: #metric_field_names,
                             unit: #metric_field_units,
@@ -159,7 +159,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                 &#desc_ident
             }
             fn snapshot_values(&self) -> ::std::vec::Vec<u64> {
-                let mut out = ::std::vec::Vec::with_capacity(self.descriptor().fields.len());
+                let mut out = ::std::vec::Vec::with_capacity(self.descriptor().metrics.len());
                 #( out.push(self.#metric_field_idents.get()); )*
                 out
             }
@@ -378,8 +378,8 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                         fields: &[
                             #( #field_path {
                                 key: #attr_field_keys,
-                                description: #attr_field_descriptions,
-                                value_type: #attr_field_types
+                                brief: #attr_field_descriptions,
+                                r#type: #attr_field_types
                             } ),*
                         ],
                     };
@@ -423,8 +423,8 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                             all_fields.extend_from_slice(&[
                                 #( #field_path {
                                     key: #attr_field_keys,
-                                    description: #attr_field_descriptions,
-                                    value_type: #attr_field_types
+                                    brief: #attr_field_descriptions,
+                                    r#type: #attr_field_types
                                 } ),*
                             ]);
 
