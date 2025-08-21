@@ -237,7 +237,7 @@ fn struct_column_name(path: &str) -> Option<&'static str> {
 
 /// returns the list of transport-optimized encoding that should be applied to OTAP batches of a
 /// given payload type
-fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
+const fn get_column_encodings(payload_type: &ArrowPayloadType) -> &'static [ColumnEncoding<'static>] {
     match payload_type {
         ArrowPayloadType::ResourceAttrs
         | ArrowPayloadType::ScopeAttrs
