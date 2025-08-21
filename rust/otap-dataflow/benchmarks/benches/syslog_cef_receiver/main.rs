@@ -63,11 +63,12 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
         b.iter(|| {
             let mut builder = ArrowRecordsBuilder::new();
             for _ in 0..100 {
-                let parsed = parse_rfc3164(black_box(RFC3164_MSG)).unwrap();
+                let parsed = parse_rfc3164(black_box(RFC3164_MSG))
+                    .expect("Failed to parse RFC3164 message");
                 let parsed_msg = ParsedSyslogMessage::Rfc3164(parsed);
                 builder.append_syslog(parsed_msg);
             }
-            let arrow_records = builder.build().unwrap();
+            let arrow_records = builder.build().expect("Failed to build Arrow records");
             black_box(arrow_records)
         });
     });
@@ -77,11 +78,12 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
         b.iter(|| {
             let mut builder = ArrowRecordsBuilder::new();
             for _ in 0..100 {
-                let parsed = parse_rfc5424(black_box(RFC5424_MSG)).unwrap();
+                let parsed = parse_rfc5424(black_box(RFC5424_MSG))
+                    .expect("Failed to parse RFC5424 message");
                 let parsed_msg = ParsedSyslogMessage::Rfc5424(parsed);
                 builder.append_syslog(parsed_msg);
             }
-            let arrow_records = builder.build().unwrap();
+            let arrow_records = builder.build().expect("Failed to build Arrow records");
             black_box(arrow_records)
         });
     });
@@ -91,11 +93,12 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
         b.iter(|| {
             let mut builder = ArrowRecordsBuilder::new();
             for _ in 0..100 {
-                let parsed = parse_cef(black_box(CEF_MSG)).unwrap();
+                let parsed = parse_cef(black_box(CEF_MSG))
+                    .expect("Failed to parse CEF message");
                 let parsed_msg = ParsedSyslogMessage::Cef(parsed);
                 builder.append_syslog(parsed_msg);
             }
-            let arrow_records = builder.build().unwrap();
+            let arrow_records = builder.build().expect("Failed to build Arrow records");
             black_box(arrow_records)
         });
     });
