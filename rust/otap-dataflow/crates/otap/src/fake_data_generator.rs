@@ -603,7 +603,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // https://github.com/open-telemetry/otel-arrow/issues/964
     fn test_fake_signal_receiver() {
         let test_runtime = TestRuntime::new();
 

@@ -213,7 +213,7 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                     AnyValue::new_array(vec![AnyValue::new_bool(true), AnyValue::new_bool(false)])
                 }
             };
-            KeyValue::new(format!("{name}.key"), value)
+            KeyValue::new(name, value)
         }
     }
 }
