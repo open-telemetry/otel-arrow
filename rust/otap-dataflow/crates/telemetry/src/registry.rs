@@ -6,15 +6,15 @@
 //! dynamic dispatch.
 
 use crate::attributes::AttributeSetHandler;
-use crate::metrics::{MetricSetHandler, MetricSet};
+use crate::descriptor::MetricsDescriptor;
+use crate::descriptor::MetricsField;
+use crate::metrics::{MetricSet, MetricSetHandler};
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
-use slotmap::{SlotMap, new_key_type};
+use slotmap::{new_key_type, SlotMap};
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::collections::HashSet;
-use crate::descriptor::MetricsField;
-use crate::descriptor::MetricsDescriptor;
 
 new_key_type! {
     /// This key is used to identify a specific metrics entry in the registry (slotmap index).
@@ -63,6 +63,80 @@ impl MetricsEntry {
     }
 }
 
+/// Lightweight iterator over non-zero metrics (no heap allocs).
+pub struct NonZeroMetrics<'a> {
+    fields: &'static [MetricsField],
+    values: &'a [u64],
+    idx: usize,
+    len: usize,
+}
+
+impl<'a> NonZeroMetrics<'a> {
+    #[inline]
+    fn new(fields: &'static [MetricsField], values: &'a [u64]) -> Self {
+        let len = values.len();
+        debug_assert_eq!(
+            fields.len(),
+            len,
+            "descriptor.fields and metric values length must match"
+        );
+        Self { fields, values, idx: 0, len }
+    }
+}
+
+impl<'a> Iterator for NonZeroMetrics<'a> {
+    type Item = (&'static MetricsField, u64);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        // SAFETY invariants (upheld by construction and the registry):
+        // - self.idx < self.len is the loop guard; we read index `i` captured before increment.
+        // - fields.len() == values.len() (asserted in debug in new()) => indexing `fields[i]` is valid.
+        // - `values` is an immutable slice for the lifetime of the iterator; no concurrent mutation.
+        while self.idx < self.values.len() {
+            let i = self.idx;
+            self.idx += 1;
+
+            // Use unchecked in release, safe in debug to catch issues early.
+            let v = {
+                #[cfg(debug_assertions)]
+                { self.values[i] }
+                #[cfg(not(debug_assertions))]
+                { unsafe { *self.values.get_unchecked(i) } }
+            };
+
+            if v != 0 {
+                let field = {
+                    #[cfg(debug_assertions)]
+                    { &self.fields[i] }
+                    #[cfg(not(debug_assertions))]
+                    { unsafe { self.fields.get_unchecked(i) } }
+                };
+                return Some((field, v));
+            }
+        }
+        None
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Upper bound: remaining elements
+        // Lower bound: unknown number of non-zeros.
+        (0, Some(self.len.saturating_sub(self.idx)))
+    }
+}
+
+// This iterator is "fused": once `next()` returns `None`, it will always return `None`.
+// Rationale:
+// - `idx` increases monotonically up to `len` and is never reset.
+// - No internal state can make new items appear after exhaustion.
+// Benefit:
+// - Allows iterator adaptors (e.g. `chain`) to skip redundant checks after exhaustion,
+//   and callers do not need to wrap with `iter.fuse()`.
+
+// Note: This marker trait does not change behavior. It only encodes the guarantee.
+impl<'a> core::iter::FusedIterator for NonZeroMetrics<'a> {}
+
 /// A sendable and cloneable handle on a metrics registry.
 ///
 /// # Performance Note
@@ -77,7 +151,6 @@ pub struct MetricsRegistryHandle {
 }
 
 /// A metrics registry that maintains aggregated metrics for different set of static attributes.
-///
 pub struct MetricsRegistry {
     pub(crate) metrics: SlotMap<MetricsKey, MetricsEntry>,
 }
@@ -91,53 +164,68 @@ impl Debug for MetricsRegistry {
 }
 
 impl MetricsRegistry {
-    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(&mut self, static_attrs: impl AttributeSetHandler + Send + Sync + 'static) -> MetricSet<T> {
+    /// Registers a metric set type with the given static attributes and returns a `MetricSet`
+    /// instance that can be used to report metrics for that type.
+    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &mut self,
+        static_attrs: impl AttributeSetHandler + Send + Sync + 'static,
+    ) -> MetricSet<T> {
         let metrics = T::default();
         let descriptor = metrics.descriptor();
 
-        let metrics_key = self.metrics.insert(MetricsEntry::new(descriptor, static_attrs.descriptor(), metrics.snapshot_values(), Box::new(static_attrs)));
+        let metrics_key = self.metrics.insert(MetricsEntry::new(
+            descriptor,
+            static_attrs.descriptor(),
+            metrics.snapshot_values(),
+            Box::new(static_attrs),
+        ));
 
         // ToDo remove this debug print in production code
         println!("{}", self.generate_semconv_registry().to_yaml());
 
-        MetricSet { key: metrics_key, metrics }
+        MetricSet {
+            key: metrics_key,
+            metrics,
+        }
     }
 
-    /// Generic add method: merges the provided metrics into the registered instance keyed by `metrics_key`.
-    pub fn add_metrics(&mut self, metrics_key: MetricsKey, metrics_values: &[u64]) {
+    /// Merges a metrics snapshot (delta) into the registered instance keyed by `metrics_key`.
+    fn accumulate_snapshot(&mut self, metrics_key: MetricsKey, metrics_values: &[u64]) {
         if let Some(entry) = self.metrics.get_mut(metrics_key) {
-            entry.metric_values.iter_mut().zip(metrics_values).for_each(|(e, v)| *e += v);
+            entry
+                .metric_values
+                .iter_mut()
+                .zip(metrics_values)
+                .for_each(|(e, v)| *e += v);
         } else {
             // TODO: consider logging missing key
         }
     }
 
     /// Returns the total number of registered metrics sets.
-    pub(crate) fn len(&self) -> usize {
-    self.metrics.len()
+    fn len(&self) -> usize {
+        self.metrics.len()
     }
 
-    /// Iterates over all registered metrics which have at least one non-zero value.
-    /// For each such metrics instance it constructs an iterator of (&MetricsField, u64)
-    /// for only the non-zero entries, invokes `f`, then zeroes the metrics.
-    pub(crate) fn for_each_changed_field_iter_and_zero<F>(&mut self, mut f: F)
+    /// Visits only metric sets with at least one non-zero value, yields a zero-alloc iterator
+    /// of (MetricsField, value), then resets the values to zero.
+    pub(crate) fn visit_non_zero_metrics_and_reset<F>(&mut self, mut f: F)
     where
-        F: for<'a> FnMut(&'static str, Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>, &dyn AttributeSetHandler),
+            for<'a> F: FnMut(
+        &'static MetricsDescriptor,
+        &'a dyn AttributeSetHandler,
+        NonZeroMetrics<'a>,
+    ),
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
-            let descriptor = entry.metrics_descriptor;
-            let attrs = entry.attribute_values.as_ref();
-
             if values.iter().any(|&v| v != 0) {
-                let iter = descriptor
-                    .metrics
-                    .iter()
-                    .zip(values.iter())
-                    .filter(|(_, v)| **v != 0)
-                    .map(|(field, &v)| (field, v));
-                f(descriptor.name, Box::new(iter), attrs);
-                // zero after reporting
+                let desc = entry.metrics_descriptor;
+                let attrs = entry.attribute_values.as_ref();
+
+                f(desc, attrs, NonZeroMetrics::new(desc.metrics, values));
+
+                // Zero after reporting.
                 values.iter_mut().for_each(|v| *v = 0);
             }
         }
@@ -175,14 +263,17 @@ impl MetricsRegistry {
 }
 
 impl MetricsRegistryHandle {
-    /// Creates a new `MetricsRegistry`.
+    /// Creates a new `MetricsRegistryHandle`.
     pub fn new() -> Self {
         Self {
-            metric_registry: Arc::new(Mutex::new(MetricsRegistry { metrics: SlotMap::default() })),
+            metric_registry: Arc::new(Mutex::new(MetricsRegistry {
+                metrics: SlotMap::default(),
+            })),
         }
     }
 
-    /// Registers a new multivariate metrics instance with the given static attributes.
+    /// Registers a metric set type with the given static attributes and returns a `MetricSet`
+    /// instance that can be used to report metrics for that type.
     pub fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
@@ -191,8 +282,10 @@ impl MetricsRegistryHandle {
     }
 
     /// Adds a new metrics snapshot to the aggregator for the given key.
-    pub fn add_metrics(&self, metrics_key: MetricsKey, metrics: &[u64]) {
-        self.metric_registry.lock().add_metrics(metrics_key, metrics);
+    pub fn accumulate_snapshot(&self, metrics_key: MetricsKey, metrics: &[u64]) {
+        self.metric_registry
+            .lock()
+            .accumulate_snapshot(metrics_key, metrics);
     }
 
     /// Returns the total number of registered metrics sets.
@@ -200,13 +293,18 @@ impl MetricsRegistryHandle {
         self.metric_registry.lock().len()
     }
 
-    /// Handle wrapper for `MetricsRegistry::for_each_changed_field_iter_and_zero`.
-    pub fn for_each_changed_field_iter_and_zero<F>(&self, f: F)
+    /// Visits only metric sets with at least one non-zero value, yields a zero-alloc iterator
+    /// of (MetricsField, value), then resets the values to zero.
+    pub fn visit_non_zero_metrics_and_reset<F>(&self, f: F)
     where
-        F: for<'a> FnMut(&'static str, Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>, &dyn AttributeSetHandler),
+            for<'a> F: FnMut(
+        &'static MetricsDescriptor,
+        &'a dyn AttributeSetHandler,
+        NonZeroMetrics<'a>,
+    ),
     {
         let mut reg = self.metric_registry.lock();
-        reg.for_each_changed_field_iter_and_zero(f);
+        reg.visit_non_zero_metrics_and_reset(f);
     }
 
     /// Generates a SemConvRegistry from the current MetricsRegistry.

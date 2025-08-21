@@ -9,7 +9,8 @@
 //!    pipeline engine. All processors and exporters could be used (OTLP, OTAP, ...).
 
 use crate::attributes::AttributeSetHandler;
-use crate::descriptor::MetricsField;
+use crate::descriptor::MetricsDescriptor;
+use crate::registry::NonZeroMetrics;
 use crate::error::Error;
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,9 +20,9 @@ pub trait MetricsPipeline {
     /// Report the given iterator of (field, value) pairs for a measurement with the associated static attributes.
     fn report_iter<'a>(
         &self,
-        measurement: &'static str,
-        fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-        attrs: &dyn AttributeSetHandler,
+        desc: &'static MetricsDescriptor,
+        attrs: &'a dyn AttributeSetHandler,
+        metrics: NonZeroMetrics<'a>,
     ) -> Result<(), Error>;
 }
 
@@ -32,11 +33,11 @@ pub(crate) struct LineProtocolPipeline;
 impl MetricsPipeline for LineProtocolPipeline {
     fn report_iter<'a>(
         &self,
-        measurement: &'static str,
-        fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-        attrs: &dyn AttributeSetHandler,
+        desc: &'static MetricsDescriptor,
+        attrs: &'a dyn AttributeSetHandler,
+        metrics: NonZeroMetrics<'a>,
     ) -> Result<(), Error> {
-        let line = format_line_protocol_iter(measurement, fields, attrs);
+        let line = format_line_protocol_iter(desc, attrs, metrics);
         println!("{}", line);
         Ok(())
     }
@@ -56,12 +57,12 @@ fn escape_tag(s: &str) -> String {
 
 /// Formats the provided metrics fields and attributes into a single line protocol string.
 pub(crate) fn format_line_protocol_iter<'a>(
-    measurement: &'static str,
-    fields: Box<dyn Iterator<Item = (&'a MetricsField, u64)> + 'a>,
-    attrs: &dyn AttributeSetHandler,
+    desc: &'static MetricsDescriptor,
+    attrs: &'a dyn AttributeSetHandler,
+    metrics: NonZeroMetrics<'a>,
 ) -> String {
     let mut line = String::with_capacity(192);
-    line.push_str(measurement);
+    line.push_str(desc.name);
 
     // Tags from the generic attribute handler
     for (key, value) in attrs.iter_attributes() {
@@ -74,7 +75,7 @@ pub(crate) fn format_line_protocol_iter<'a>(
     line.push(' ');
 
     let mut first = true;
-    for (field_desc, value) in fields {
+    for (field_desc, value) in metrics {
         if !first { line.push(','); } else { first = false; }
         let _ = write!(line, "{}={}i", field_desc.name, value);
     }

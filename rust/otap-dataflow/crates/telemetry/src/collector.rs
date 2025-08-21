@@ -52,7 +52,7 @@ impl MetricsCollector {
             tokio::select! {
                 // ToDo need to be moved into a CollectorExporter
                 _ = timer.tick() => {
-                    self.registry.for_each_changed_field_iter_and_zero(|measurement, field_iter, attrs| {
+                    self.registry.visit_non_zero_metrics_and_reset(|measurement, field_iter, attrs| {
                         // Ignore individual report errors for now; could log.
                         let _ = reporter.report_iter(measurement, field_iter, attrs);
                     });
@@ -60,7 +60,7 @@ impl MetricsCollector {
                 result = self.metrics_receiver.recv_async() => {
                     match result {
                         Ok(metrics) => {
-                            self.registry.add_metrics(metrics.key, &metrics.metrics);
+                            self.registry.accumulate_snapshot(metrics.key, &metrics.metrics);
                         }
                         Err(_) => {
                             // Channel closed, exit the loop
