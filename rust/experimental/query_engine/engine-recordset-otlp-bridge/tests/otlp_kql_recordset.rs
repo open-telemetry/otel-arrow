@@ -501,3 +501,45 @@ fn test_coalesce_function() {
     );
     run_test("coalesce(tolong('invalid'), 18)", "18");
 }
+
+#[test]
+fn test_now_global_variable() {
+    let log = LogRecord::new();
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "let batch_start_time = now();\nsource\n | extend batch_start = batch_start_time, record_start = now()";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+
+    assert_eq!(attributes.len(), 2);
+
+    let batch_start = attributes.get("batch_start").unwrap();
+    let record_start = attributes.get("record_start").unwrap();
+
+    match (
+        batch_start.to_value().convert_to_datetime(),
+        record_start.to_value().convert_to_datetime(),
+    ) {
+        (Some(batch_start), Some(record_start)) => {
+            assert!(batch_start <= record_start);
+        }
+        _ => panic!(),
+    }
+}
