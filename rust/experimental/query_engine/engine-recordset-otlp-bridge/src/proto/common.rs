@@ -86,6 +86,7 @@ impl AsStaticValue for AnyValue {
             AnyValue::Extended(e) => match e {
                 ExtendedValue::DateTime(d) => StaticValue::DateTime(d),
                 ExtendedValue::Regex(r) => StaticValue::Regex(r),
+                ExtendedValue::TimeSpan(t) => StaticValue::TimeSpan(t),
             },
         }
     }
@@ -126,6 +127,7 @@ impl From<OwnedValue> for AnyValue {
             OwnedValue::Null => AnyValue::Null,
             OwnedValue::Regex(r) => AnyValue::Extended(ExtendedValue::Regex(r)),
             OwnedValue::String(s) => AnyValue::Native(OtlpAnyValue::StringValue(s)),
+            OwnedValue::TimeSpan(t) => AnyValue::Extended(ExtendedValue::TimeSpan(t)),
         }
     }
 }
@@ -151,6 +153,7 @@ impl From<AnyValue> for OwnedValue {
             AnyValue::Extended(e) => match e {
                 ExtendedValue::DateTime(d) => OwnedValue::DateTime(d),
                 ExtendedValue::Regex(r) => OwnedValue::Regex(r),
+                ExtendedValue::TimeSpan(t) => OwnedValue::TimeSpan(t),
             },
         }
     }
@@ -160,6 +163,7 @@ impl From<AnyValue> for OwnedValue {
 pub enum ExtendedValue {
     DateTime(DateTimeValueStorage),
     Regex(RegexValueStorage),
+    TimeSpan(TimeSpanValueStorage),
 }
 
 #[derive(Debug, Clone)]
@@ -213,8 +217,12 @@ impl ArrayValue for ByteArrayValueStorage {
         self.values.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
-        self.values.get(index).map(|v| v as &dyn AsStaticValue)
+    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
+        self.values.get(index).map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Ok(self.values.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
     fn get_item_range(

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::{HashMap, HashSet};
 
 use data_engine_expressions::*;
@@ -63,6 +66,11 @@ impl ParserState {
     }
 
     pub fn push_variable_name(&mut self, name: &str) {
+        self.variable_names.insert(name.into());
+    }
+
+    pub fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
+        self.pipeline_builder.push_global_variable(name, value);
         self.variable_names.insert(name.into());
     }
 

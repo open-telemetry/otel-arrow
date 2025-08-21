@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 
 use crate::{execution_context::*, scalars::*, *};
@@ -165,7 +168,7 @@ mod tests {
 
             let engine = RecordSetEngine::new();
 
-            let mut batch = engine.begin_batch(&pipeline);
+            let mut batch = engine.begin_batch(&pipeline).unwrap();
 
             batch.push_records(&mut TestRecordSet::new(vec![
                 record1.clone(),
@@ -380,7 +383,7 @@ mod tests {
 
             let engine = RecordSetEngine::new();
 
-            let mut batch = engine.begin_batch(&pipeline);
+            let mut batch = engine.begin_batch(&pipeline).unwrap();
 
             batch.push_records(&mut TestRecordSet::new(vec![record1, record2]));
 

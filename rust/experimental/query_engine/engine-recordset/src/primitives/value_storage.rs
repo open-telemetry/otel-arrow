@@ -1,6 +1,9 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashMap, fmt::Debug, mem};
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, TimeDelta};
 use data_engine_expressions::*;
 use regex::Regex;
 
@@ -236,6 +239,37 @@ impl AsStaticValueMut for StringValueStorage {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TimeSpanValueStorage {
+    value: TimeDelta,
+}
+
+impl TimeSpanValueStorage {
+    pub fn new(value: TimeDelta) -> TimeSpanValueStorage {
+        Self { value }
+    }
+
+    pub fn get_raw_value(&self) -> &TimeDelta {
+        &self.value
+    }
+
+    pub fn get_raw_value_mut(&mut self) -> &mut TimeDelta {
+        &mut self.value
+    }
+}
+
+impl TimeSpanValue for TimeSpanValueStorage {
+    fn get_value(&self) -> TimeDelta {
+        self.value
+    }
+}
+
+impl AsStaticValue for TimeSpanValueStorage {
+    fn to_static_value(&self) -> StaticValue<'_> {
+        StaticValue::TimeSpan(self)
+    }
+}
+
 pub trait EnumerableValueSource<T>:
     AsStaticValue + AsStaticValueMut + Into<OwnedValue> + From<OwnedValue> + 'static
 {
@@ -278,8 +312,12 @@ impl<T: EnumerableValueSource<T>> ArrayValue for ArrayValueStorage<T> {
         self.values.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
-        self.values.get(index).map(|v| v as &dyn AsStaticValue)
+    fn get(&self, index: usize) -> Option<&(dyn AsValue + 'static)> {
+        self.values.get(index).map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Ok(self.values.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
     fn get_item_range(

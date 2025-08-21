@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,8 +40,12 @@ impl ArrayValue for ArrayScalarExpression {
         self.value.len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
-        self.value.get(index).map(|v| v as &dyn AsStaticValue)
+    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
+        self.value.get(index).map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Ok(self.value.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
     fn get_item_range(

@@ -1,6 +1,9 @@
-use std::{cell::RefCell, collections::HashMap};
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::{Expression, MapValue, PipelineExpression};
+use std::{cell::*, collections::HashMap};
+
+use data_engine_expressions::{AsStaticValue, Expression, MapValue, PipelineExpression};
 
 #[cfg(test)]
 use crate::TestRecord;
@@ -14,27 +17,28 @@ where
     diagnostic_level: RecordSetEngineDiagnosticLevel,
     diagnostics: RefCell<Vec<RecordSetEngineDiagnostic<'c>>>,
     pipeline: &'a PipelineExpression,
+    variables: ExecutionContextVariables<'b>,
     summaries: &'b Summaries,
     attached_records: Option<&'b dyn AttachedRecords>,
-    record: RefCell<TRecord>,
-    variables: RefCell<MapValueStorage<OwnedValue>>,
+    record: Option<RefCell<TRecord>>,
 }
 
 impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord> {
     pub fn new(
         diagnostic_level: RecordSetEngineDiagnosticLevel,
         pipeline: &'a PipelineExpression,
+        global_variables: &'b RefCell<MapValueStorage<OwnedValue>>,
         summaries: &'b Summaries,
         attached_records: Option<&'b dyn AttachedRecords>,
-        record: TRecord,
+        record: Option<TRecord>,
     ) -> ExecutionContext<'a, 'b, 'c, TRecord> {
         Self {
             diagnostic_level,
             diagnostics: RefCell::new(Vec::new()),
             pipeline,
             attached_records,
-            record: RefCell::new(record),
-            variables: RefCell::new(MapValueStorage::new(HashMap::new())),
+            record: record.map(|v| RefCell::new(v)),
+            variables: ExecutionContextVariables::new(global_variables),
             summaries,
         }
     }
@@ -77,11 +81,11 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         self.attached_records
     }
 
-    pub fn get_record(&self) -> &RefCell<TRecord> {
-        &self.record
+    pub fn get_record(&self) -> Option<&RefCell<TRecord>> {
+        self.record.as_ref()
     }
 
-    pub fn get_variables(&self) -> &RefCell<MapValueStorage<OwnedValue>> {
+    pub fn get_variables(&self) -> &ExecutionContextVariables<'b> {
         &self.variables
     }
 
@@ -89,18 +93,66 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         self.summaries
     }
 
+    pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'c>> {
+        self.diagnostics.take()
+    }
+
     pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, 'c, TRecord> {
         RecordSetEngineRecord::new(
             self.pipeline,
-            self.record.into_inner(),
+            self.record.expect("record wasn't set").into_inner(),
             self.diagnostics.take(),
         )
+    }
+}
+
+pub(crate) struct ExecutionContextVariables<'a> {
+    global_variables: &'a RefCell<MapValueStorage<OwnedValue>>,
+    local_variables: RefCell<MapValueStorage<OwnedValue>>,
+}
+
+impl<'a> ExecutionContextVariables<'a> {
+    pub fn new(global_variables: &'a RefCell<MapValueStorage<OwnedValue>>) -> Self {
+        Self {
+            global_variables,
+            local_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
+        }
+    }
+
+    pub fn get_global_or_local_variable(
+        &self,
+        name: &str,
+    ) -> Option<Ref<'_, dyn AsStaticValue + 'static>> {
+        let vars = self.local_variables.borrow();
+
+        let var = Ref::filter_map(vars, |v| v.get(name));
+
+        if let Ok(v) = var {
+            return Some(v);
+        }
+
+        Ref::filter_map(self.global_variables.borrow(), |v| v.get(name)).ok()
+    }
+
+    #[cfg(test)]
+    pub fn get_local_variables(&self) -> Ref<'_, MapValueStorage<OwnedValue>> {
+        self.local_variables.borrow()
+    }
+
+    pub fn get_local_variables_mut(&self) -> RefMut<'_, MapValueStorage<OwnedValue>> {
+        self.local_variables.borrow_mut()
+    }
+
+    #[cfg(test)]
+    pub fn get_global_variables(&self) -> Ref<'_, MapValueStorage<OwnedValue>> {
+        self.global_variables.borrow()
     }
 }
 
 #[cfg(test)]
 pub struct TestExecutionContext {
     pipeline: PipelineExpression,
+    global_variables: RefCell<MapValueStorage<OwnedValue>>,
     summaries: Summaries,
     attached_records: Option<TestAttachedRecords>,
     record: Option<TestRecord>,
@@ -111,9 +163,10 @@ impl TestExecutionContext {
     pub fn new() -> TestExecutionContext {
         Self {
             pipeline: Default::default(),
+            global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
             summaries: Summaries::new(8192),
             attached_records: None,
-            record: Some(Default::default()),
+            record: None,
         }
     }
 
@@ -135,15 +188,20 @@ impl TestExecutionContext {
         self
     }
 
+    pub fn set_global_variable(&self, name: &str, value: ResolvedValue) {
+        self.global_variables.borrow_mut().set(name, value);
+    }
+
     pub fn create_execution_context(&mut self) -> ExecutionContext<'_, '_, '_, TestRecord> {
         ExecutionContext::new(
             RecordSetEngineDiagnosticLevel::Verbose,
             &self.pipeline,
+            &self.global_variables,
             &self.summaries,
             self.attached_records
                 .as_ref()
                 .map(|v| v as &dyn AttachedRecords),
-            self.record.take().expect("Record wasn't set"),
+            self.record.take(),
         )
     }
 }

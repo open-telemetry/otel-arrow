@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{
     cell::RefMut,
     collections::HashSet,
@@ -581,41 +584,51 @@ mod tests {
 
     #[test]
     fn test_execute_set_variable_transform_expression() {
-        let record = TestRecord::new();
+        fn run_test<F>(transform_expression: TransformExpression, validate: F)
+        where
+            F: FnOnce(&ExecutionContextVariables),
+        {
+            let mut test = TestExecutionContext::new().with_pipeline(
+                PipelineExpressionBuilder::new("set")
+                    .with_expressions(vec![DataExpression::Transform(transform_expression)])
+                    .build()
+                    .unwrap(),
+            );
 
-        let run_test = |transform_expression| {
-            let mut test = TestExecutionContext::new()
-                .with_pipeline(
-                    PipelineExpressionBuilder::new("set")
-                        .with_expressions(vec![DataExpression::Transform(transform_expression)])
-                        .build()
-                        .unwrap(),
-                )
-                .with_record(record.clone());
+            test.set_global_variable(
+                "gvar1",
+                ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(18))),
+            );
 
             let execution_context = test.create_execution_context();
 
-            execution_context.get_variables().borrow_mut().set(
-                "var1",
-                ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from([(
-                    "subkey1".into(),
-                    OwnedValue::String(StringValueStorage::new("hello world".into())),
-                )])))),
-            );
+            {
+                let mut variables = execution_context.get_variables().get_local_variables_mut();
 
-            execution_context.get_variables().borrow_mut().set(
-                "var2",
-                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
-                    "Hello world!".into(),
-                ))),
-            );
+                variables.set(
+                    "var1",
+                    ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from(
+                        [(
+                            "subkey1".into(),
+                            OwnedValue::String(StringValueStorage::new("hello world".into())),
+                        )],
+                    )))),
+                );
 
-            execution_context.get_variables().borrow_mut().set(
-                "var3",
-                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
-                    "subkey1".into(),
-                ))),
-            );
+                variables.set(
+                    "var2",
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                        "Hello world!".into(),
+                    ))),
+                );
+
+                variables.set(
+                    "var3",
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                        "subkey1".into(),
+                    ))),
+                );
+            }
 
             if let DataExpression::Transform(t) =
                 &execution_context.get_pipeline().get_expressions()[0]
@@ -625,137 +638,190 @@ mod tests {
                 panic!("Unexpected expression");
             }
 
-            let variables = execution_context
-                .get_variables()
-                .replace(MapValueStorage::new(HashMap::new()));
-
-            let result = execution_context.consume_into_record();
-
-            println!("{result}");
-
-            variables
-        };
+            validate(execution_context.get_variables());
+        }
 
         // Test setting a variable
-        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
-            QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
+        run_test(
+            TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world!",
+                    )),
+                )),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "hello world!",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var4"),
+                    ValueAccessor::new(),
                 )),
             )),
-            MutableValueExpression::Variable(VariableScalarExpression::new(
-                QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var4"),
-                ValueAccessor::new(),
-            )),
-        )));
-
-        assert_eq!(4, result.len());
-        assert_eq!(
-            OwnedValue::String(StringValueStorage::new("hello world!".into())).to_value(),
-            result.get("var4").unwrap().to_value()
+            |vars| {
+                assert_eq!(4, vars.get_local_variables().len());
+                assert_eq!(
+                    OwnedValue::String(StringValueStorage::new("hello world!".into())).to_value(),
+                    vars.get_local_variables().get("var4").unwrap().to_value()
+                );
+            },
         );
 
         // Test setting a variable from another variable
-        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
-            QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Variable(
-                VariableScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    StringScalarExpression::new(QueryLocation::new_fake(), "var2"),
-                    ValueAccessor::new(),
-                ),
-            )),
-            MutableValueExpression::Variable(VariableScalarExpression::new(
+        run_test(
+            TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var3"),
-                ValueAccessor::new(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Variable(
+                    VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "var2"),
+                        ValueAccessor::new(),
+                    ),
+                )),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var3"),
+                    ValueAccessor::new(),
+                )),
             )),
-        )));
-
-        assert_eq!(3, result.len());
-        assert_eq!(
-            OwnedValue::String(StringValueStorage::new("Hello world!".into())).to_value(),
-            result.get("var3").unwrap().to_value()
+            |vars| {
+                assert_eq!(3, vars.get_local_variables().len());
+                assert_eq!(
+                    OwnedValue::String(StringValueStorage::new("Hello world!".into())).to_value(),
+                    vars.get_local_variables().get("var3").unwrap().to_value()
+                );
+            },
         );
 
         // Test updating a variable
-        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
-            QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
+        run_test(
+            TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "goodbye world",
+                    )),
+                )),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "goodebye world",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
+                    ValueAccessor::new(),
                 )),
             )),
-            MutableValueExpression::Variable(VariableScalarExpression::new(
-                QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
-                ValueAccessor::new(),
-            )),
-        )));
-
-        assert_eq!(3, result.len());
-        assert_eq!(
-            OwnedValue::String(StringValueStorage::new("goodebye world".into())).to_value(),
-            result.get("var1").unwrap().to_value()
+            |vars| {
+                assert_eq!(3, vars.get_local_variables().len());
+                assert_eq!(
+                    OwnedValue::String(StringValueStorage::new("goodbye world".into())).to_value(),
+                    vars.get_local_variables().get("var1").unwrap().to_value()
+                )
+            },
         );
 
         // Test updating a variable with path
-        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
-            QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "goodebye world",
-                )),
-            )),
-            MutableValueExpression::Variable(VariableScalarExpression::new(
+        run_test(
+            TransformExpression::Set(SetTransformExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
-                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::String(StringScalarExpression::new(
                         QueryLocation::new_fake(),
-                        "subkey1",
+                        "goodbye world",
                     )),
-                )]),
+                )),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "subkey1",
+                        )),
+                    )]),
+                )),
             )),
-        )));
-
-        assert_eq!(3, result.len());
-        assert_eq!(
-            "{\"subkey1\":\"goodebye world\"}",
-            result.get("var1").unwrap().to_value().to_string()
+            |vars| {
+                assert_eq!(3, vars.get_local_variables().len());
+                assert_eq!(
+                    "{\"subkey1\":\"goodbye world\"}",
+                    vars.get_local_variables()
+                        .get("var1")
+                        .unwrap()
+                        .to_value()
+                        .to_string()
+                );
+            },
         );
 
         // Test updating a variable with path pointing to another variable
-        let result = run_test(TransformExpression::Set(SetTransformExpression::new(
-            QueryLocation::new_fake(),
-            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
+        run_test(
+            TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "goodbye world",
+                    )),
+                )),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
                     QueryLocation::new_fake(),
-                    "goodebye world",
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Variable(
+                        VariableScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            StringScalarExpression::new(QueryLocation::new_fake(), "var3"),
+                            ValueAccessor::new(),
+                        ),
+                    )]),
                 )),
             )),
-            MutableValueExpression::Variable(VariableScalarExpression::new(
-                QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
-                ValueAccessor::new_with_selectors(vec![ScalarExpression::Variable(
-                    VariableScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        StringScalarExpression::new(QueryLocation::new_fake(), "var3"),
-                        ValueAccessor::new(),
-                    ),
-                )]),
-            )),
-        )));
+            |vars| {
+                assert_eq!(3, vars.get_local_variables().len());
+                assert_eq!(
+                    "{\"subkey1\":\"goodbye world\"}",
+                    vars.get_local_variables()
+                        .get("var1")
+                        .unwrap()
+                        .to_value()
+                        .to_string()
+                );
+            },
+        );
 
-        assert_eq!(3, result.len());
-        assert_eq!(
-            "{\"subkey1\":\"goodebye world\"}",
-            result.get("var1").unwrap().to_value().to_string()
+        // Test setting a variable which is in global scope
+        run_test(
+            TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "goodbye world",
+                    )),
+                )),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "gvar1"),
+                    ValueAccessor::new(),
+                )),
+            )),
+            |vars| {
+                assert_eq!(1, vars.get_global_variables().len());
+                assert_eq!(4, vars.get_local_variables().len());
+                assert_eq!(
+                    "goodbye world",
+                    vars.get_local_variables()
+                        .get("gvar1")
+                        .unwrap()
+                        .to_value()
+                        .to_string()
+                );
+                assert_eq!(
+                    "18",
+                    vars.get_global_variables()
+                        .get("gvar1")
+                        .unwrap()
+                        .to_value()
+                        .to_string()
+                );
+            },
         );
     }
 
@@ -865,27 +931,42 @@ mod tests {
 
     #[test]
     fn test_execute_remove_variable_transform_expression() {
-        let record = TestRecord::new();
+        fn run_test<F>(transform_expression: TransformExpression, validate: F)
+        where
+            F: FnOnce(&ExecutionContextVariables),
+        {
+            let mut test = TestExecutionContext::new().with_pipeline(
+                PipelineExpressionBuilder::new("set")
+                    .with_expressions(vec![DataExpression::Transform(transform_expression)])
+                    .build()
+                    .unwrap(),
+            );
 
-        let run_test = |transform_expression| {
-            let mut test = TestExecutionContext::new()
-                .with_pipeline(
-                    PipelineExpressionBuilder::new("set")
-                        .with_expressions(vec![DataExpression::Transform(transform_expression)])
-                        .build()
-                        .unwrap(),
-                )
-                .with_record(record.clone());
+            test.set_global_variable(
+                "gvar1",
+                ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(18))),
+            );
 
             let execution_context = test.create_execution_context();
 
-            execution_context.get_variables().borrow_mut().set(
-                "var1",
-                ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from([(
-                    "subkey1".into(),
-                    OwnedValue::String(StringValueStorage::new("hello world".into())),
-                )])))),
-            );
+            {
+                let mut variables = execution_context.get_variables().get_local_variables_mut();
+
+                variables.set(
+                    "var1",
+                    ResolvedValue::Computed(OwnedValue::Map(MapValueStorage::new(HashMap::from(
+                        [(
+                            "subkey1".into(),
+                            OwnedValue::String(StringValueStorage::new("hello world".into())),
+                        )],
+                    )))),
+                );
+
+                variables.set(
+                    "gvar1",
+                    ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(18))),
+                );
+            }
 
             if let DataExpression::Transform(t) =
                 &execution_context.get_pipeline().get_expressions()[0]
@@ -895,22 +976,49 @@ mod tests {
                 panic!("Unexpected expression");
             }
 
-            execution_context
-                .get_variables()
-                .replace(MapValueStorage::new(HashMap::new()))
-        };
+            validate(execution_context.get_variables());
+        }
 
         // Test removing a variable
-        let result = run_test(TransformExpression::Remove(RemoveTransformExpression::new(
-            QueryLocation::new_fake(),
-            MutableValueExpression::Variable(VariableScalarExpression::new(
+        run_test(
+            TransformExpression::Remove(RemoveTransformExpression::new(
                 QueryLocation::new_fake(),
-                StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
-                ValueAccessor::new(),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
+                    ValueAccessor::new(),
+                )),
             )),
-        )));
+            |vars| {
+                assert_eq!(1, vars.get_local_variables().len());
+            },
+        );
 
-        assert_eq!(0, result.len());
+        // Test removing a variable which reverts back to global
+        run_test(
+            TransformExpression::Remove(RemoveTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Variable(VariableScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    StringScalarExpression::new(QueryLocation::new_fake(), "gvar1"),
+                    ValueAccessor::new(),
+                )),
+            )),
+            |vars| {
+                assert_eq!(1, vars.get_local_variables().len());
+                assert!(!vars.get_local_variables().contains_key("gvar1"));
+                assert_eq!(
+                    OwnedValue::Integer(IntegerValueStorage::new(18)).to_value(),
+                    vars.get_global_variables().get("gvar1").unwrap().to_value()
+                );
+                assert_eq!(
+                    OwnedValue::Integer(IntegerValueStorage::new(18)).to_value(),
+                    vars.get_global_or_local_variable("gvar1")
+                        .unwrap()
+                        .to_value()
+                );
+            },
+        );
     }
 
     #[test]

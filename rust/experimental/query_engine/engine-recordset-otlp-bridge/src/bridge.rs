@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::sync::{LazyLock, RwLock};
 
 use data_engine_expressions::*;
@@ -121,7 +124,9 @@ pub fn process_export_logs_service_request_using_pipeline(
         RecordSetEngineOptions::new().with_diagnostic_level(log_level),
     );
 
-    let mut batch = engine.begin_batch(pipeline);
+    let mut batch = engine
+        .begin_batch(pipeline)
+        .map_err(|e| BridgeError::PipelineInitializationError(e.to_string()))?;
 
     let dropped_records = batch.push_records(&mut export_logs_service_request);
 
