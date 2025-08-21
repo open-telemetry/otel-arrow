@@ -22,6 +22,7 @@ otap-df-engine = { path = "../crates/engine"}
 otap-df-otap = { path="../crates/otap"}
 otap-df-otlp = { path="../crates/otlp"}
 otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
+otap-df-syslog-cef = { path="../crates/syslog_cef_receiver"}
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
 otel-arrow-rust = { path = "../../otel-arrow-rust"}
 fluke-hpack = "0.3.1"
@@ -65,6 +66,10 @@ harness = false
 
 [[bench]]
 name = "retry_processor"
+harness = false
+
+[[bench]]
+name = "syslog_cef_receiver"
 harness = false
 
 [profile.bench]

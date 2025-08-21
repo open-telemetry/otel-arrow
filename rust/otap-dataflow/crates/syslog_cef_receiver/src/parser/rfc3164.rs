@@ -3,7 +3,7 @@
 
 /// RFC 3164 message structure
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Rfc3164Message<'a> {
+pub struct Rfc3164Message<'a> {
     pub(super) priority: crate::parser::Priority,
     pub(super) timestamp: Option<&'a [u8]>,
     pub(super) hostname: Option<&'a [u8]>,
@@ -14,7 +14,7 @@ pub(crate) struct Rfc3164Message<'a> {
 }
 
 /// Parse an RFC 3164 syslog message
-pub(super) fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, crate::parser::ParseError> {
+pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, crate::parser::ParseError> {
     let (priority, mut remaining) = crate::parser::parse_priority(input)?;
 
     // Parse timestamp (optional)
