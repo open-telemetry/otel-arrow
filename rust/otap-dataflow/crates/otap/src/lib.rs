@@ -44,6 +44,9 @@ mod fixtures;
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
 
+/// Attributes processor (OTAP-based)
+pub mod attributes_processor;
+
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
