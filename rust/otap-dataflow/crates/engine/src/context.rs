@@ -7,7 +7,7 @@ use otap_df_telemetry::metrics::{MetricSetHandler, MetricSet};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
 use otap_df_config::node::NodeKind;
-use crate::attributes::EngineAttributeSet;
+use crate::attributes::PipelineAttributeSet;
 
 /// A lightweight/cloneable controller context.
 #[derive(Clone)]
@@ -82,14 +82,18 @@ impl PipelineContext {
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self
     ) -> MetricSet<T> {
+        use crate::attributes::EngineAttributeSet;
+
         self.controller_context.metrics_registry_handle.register::<T>(
-            EngineAttributeSet {
+            PipelineAttributeSet {
+                engine: EngineAttributeSet {
+                    core_id: self.core_id,
+                    numa_node_id: self.controller_context.numa_node_id,
+                    process_id: self.controller_context.process_id,
+                },
                 node_id: self.node_id.clone(),
                 node_type: self.node_kind.into(),
                 pipeline_id: self.pipeline_id.clone(),
-                core_id: self.core_id,
-                numa_node_id: self.controller_context.numa_node_id,
-                process_id: self.controller_context.process_id,
             },
         )
     }

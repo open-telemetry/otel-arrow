@@ -182,7 +182,8 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
 ///   - `#[attributes(name = "my.attributes.name")]`
 /// Field attributes:
 ///   - `#[attribute(key = "field.key")]` (optional, defaults to field name with dots)
-#[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute))]
+///   - `#[compose]` for fields that implement AttributeSetHandler
+#[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute, compose))]
 pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -245,15 +246,34 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         )
     };
 
-    // Collect attribute fields
+    // Collect attribute fields and composed attribute sets
     let mut attr_field_idents = Vec::new();
     let mut attr_field_keys = Vec::new();
     let mut attr_field_descriptions = Vec::new();
     let mut attr_field_types: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut attr_iter_values: Vec<proc_macro2::TokenStream> = Vec::new();
 
+    let mut composed_field_idents = Vec::new();
+
     for field in fields {
         let ident = field.ident.clone().unwrap();
+
+        // Check if this field is marked with #[compose]
+        let is_composed = field.attrs.iter().any(|attr| attr.path().is_ident("compose"));
+
+        if is_composed {
+            // This field should implement AttributeSetHandler
+            composed_field_idents.push(ident);
+            continue;
+        }
+
+        // Check if this field has #[attribute] annotation
+        let has_attribute_attr = field.attrs.iter().any(|attr| attr.path().is_ident("attribute"));
+
+        if !has_attribute_attr {
+            // Skip fields without #[attribute] or #[compose] annotations
+            continue;
+        }
 
         // Collect doc comments for description (concatenate all lines)
         let mut desc_lines: Vec<String> = Vec::new();
@@ -347,33 +367,107 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
     let desc_ident = format_ident!("ATTRIBUTES_DESCRIPTOR");
 
-    let generated = quote! {
-        impl #generics #attr_handler_path for #struct_ident #generics {
-            fn descriptor(&self) -> &'static #descriptor_path {
-                static #desc_ident: #descriptor_path = #descriptor_path {
-                    name: #attributes_name,
-                    fields: &[
-                        #( #field_path {
-                            key: #attr_field_keys,
-                            description: #attr_field_descriptions,
-                            value_type: #attr_field_types
-                        } ),*
-                    ],
-                };
-                &#desc_ident
-            }
+    // Generate the descriptor and iterator implementation
+    if composed_field_idents.is_empty() {
+        // Simple case: no composition - keep the original approach
+        let generated = quote! {
+            impl #generics #attr_handler_path for #struct_ident #generics {
+                fn descriptor(&self) -> &'static #descriptor_path {
+                    static #desc_ident: #descriptor_path = #descriptor_path {
+                        name: #attributes_name,
+                        fields: &[
+                            #( #field_path {
+                                key: #attr_field_keys,
+                                description: #attr_field_descriptions,
+                                value_type: #attr_field_types
+                            } ),*
+                        ],
+                    };
+                    &#desc_ident
+                }
 
-            fn iter_attributes<'a>(&'a self) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = (&'static str, #attr_value_path)> + 'a> {
-                let fields = self.descriptor().fields;
-                let values = ::std::vec![
-                    #( #attr_iter_values ),*
-                ];
-                ::std::boxed::Box::new(fields.iter().zip(values.into_iter()).map(|(field, value)| (field.key, value)))
+                fn iter_attributes<'a>(&'a self) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = (&'static str, #attr_value_path)> + 'a> {
+                    let fields = self.descriptor().fields;
+                    let values = ::std::vec![
+                        #( #attr_iter_values ),*
+                    ];
+                    ::std::boxed::Box::new(fields.iter().zip(values.into_iter()).map(|(field, value)| (field.key, value)))
+                }
             }
-        }
-    };
+        };
+        generated.into()
+    } else {
+        // Complex case: composition - use lazy_static pattern
+        let local_fields_len = attr_field_idents.len();
 
-    generated.into()
+        let generated = quote! {
+            impl #generics #attr_handler_path for #struct_ident #generics {
+                fn descriptor(&self) -> &'static #descriptor_path {
+                    use ::std::sync::Once;
+                    static INIT: Once = Once::new();
+                    static mut #desc_ident: Option<#descriptor_path> = None;
+
+                    unsafe {
+                        INIT.call_once(|| {
+                            // Create a dummy instance to access composed descriptors
+                            let dummy = Self::default();
+
+                            // Calculate total field count
+                            let mut total_fields = #local_fields_len;
+                            #( total_fields += dummy.#composed_field_idents.descriptor().fields.len(); )*
+
+                            // Create a vector to hold all fields
+                            let mut all_fields = ::std::vec::Vec::with_capacity(total_fields);
+
+                            // Add local fields
+                            all_fields.extend_from_slice(&[
+                                #( #field_path {
+                                    key: #attr_field_keys,
+                                    description: #attr_field_descriptions,
+                                    value_type: #attr_field_types
+                                } ),*
+                            ]);
+
+                            // Add fields from composed sets
+                            #( all_fields.extend_from_slice(dummy.#composed_field_idents.descriptor().fields); )*
+
+                            // Leak the vector to get a 'static reference
+                            let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());
+
+                            #desc_ident = Some(#descriptor_path {
+                                name: #attributes_name,
+                                fields: fields_slice,
+                            });
+                        });
+
+                        #desc_ident.as_ref().unwrap()
+                    }
+                }
+
+                fn iter_attributes<'a>(&'a self) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = (&'static str, #attr_value_path)> + 'a> {
+                    let mut iterators: ::std::vec::Vec<::std::boxed::Box<dyn ::std::iter::Iterator<Item = (&'static str, #attr_value_path)> + 'a>> = ::std::vec::Vec::new();
+
+                    // Add local attributes
+                    if #local_fields_len > 0 {
+                        let local_fields = &self.descriptor().fields[..#local_fields_len];
+                        let local_values = ::std::vec![
+                            #( #attr_iter_values ),*
+                        ];
+                        iterators.push(::std::boxed::Box::new(
+                            local_fields.iter().zip(local_values.into_iter()).map(|(field, value)| (field.key, value))
+                        ));
+                    }
+
+                    // Add composed attributes
+                    #( iterators.push(self.#composed_field_idents.iter_attributes()); )*
+
+                    // Chain all iterators
+                    ::std::boxed::Box::new(iterators.into_iter().flatten())
+                }
+            }
+        };
+        generated.into()
+    }
 }
 
 /// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MetricSetHandler derive
