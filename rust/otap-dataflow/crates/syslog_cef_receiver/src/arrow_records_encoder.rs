@@ -19,6 +19,12 @@ pub struct ArrowRecordsBuilder {
     log_attrs: AttributesRecordBatchBuilder<u16>,
 }
 
+impl Default for ArrowRecordsBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArrowRecordsBuilder {
     /// Creates a new `ArrowRecordsBuilder` instance.
     #[must_use]
