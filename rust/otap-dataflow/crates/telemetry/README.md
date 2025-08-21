@@ -52,4 +52,4 @@ while still exporting high-fidelity operational data.
 - Structured events and spans.
 - NUMA-aware aggregation.
 
-![Architecture Phase 1](assets/Metrics%20Phase%202.svg)
+![Architecture Phase 2](assets/Metrics%20Phase%202.svg)
