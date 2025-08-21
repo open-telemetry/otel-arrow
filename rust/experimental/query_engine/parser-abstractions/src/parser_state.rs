@@ -69,6 +69,11 @@ impl ParserState {
         self.variable_names.insert(name.into());
     }
 
+    pub fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
+        self.pipeline_builder.push_global_variable(name, value);
+        self.variable_names.insert(name.into());
+    }
+
     pub fn push_constant(&mut self, name: &str, value: StaticScalarExpression) {
         let value_type = value.get_value_type();
         let constant_id = self.pipeline_builder.push_constant(value);
