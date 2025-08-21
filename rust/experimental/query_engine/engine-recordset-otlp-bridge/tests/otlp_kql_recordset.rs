@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 use data_engine_recordset_otlp_bridge::*;
@@ -189,6 +190,89 @@ fn test_summarize_count_and_group_by() {
 
         assert_eq!(
             OwnedValue::String(StringValueStorage::new(body.into())).to_value(),
+            value.to_value()
+        );
+
+        assert_eq!(summary.aggregation_values.len(), 1);
+
+        let (key, value) = summary.aggregation_values.iter().next().unwrap();
+
+        assert_eq!("Count", key.as_ref());
+
+        if let SummaryAggregation::Count(v) = value {
+            assert_eq!(count, *v);
+        } else {
+            panic!()
+        }
+    }
+}
+
+#[test]
+fn test_summarize_count_and_group_by_with_bin() {
+    let mut request =
+        ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 25, 10, 0, 0).unwrap().into(),
+                    ))
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 25, 11, 0, 0).unwrap().into(),
+                    ))
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 26, 10, 0, 0).unwrap().into(),
+                    )),
+            ),
+        );
+
+    let query = "source | summarize Count = count() by Timestamp=bin(Timestamp, 1d)";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.len(), 2);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let mut summaries = results.summaries;
+    summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
+
+    assert_summary(
+        &summaries[0],
+        "c30d4945f0fe3cc96f677d1b25f280643af086c573bc78fe3972defb8814d0f2",
+        Utc.with_ymd_and_hms(2025, 8, 25, 0, 0, 0).unwrap().into(),
+        2,
+    );
+
+    assert_summary(
+        &summaries[1],
+        "d282417f6a5af85ecc1f2490e7f58f519185139d6d6814d1209ec0ae0a94a639",
+        Utc.with_ymd_and_hms(2025, 8, 26, 0, 0, 0).unwrap().into(),
+        1,
+    );
+
+    fn assert_summary(
+        summary: &RecordSetEngineSummary,
+        sumary_id: &str,
+        timestamp: DateTime<FixedOffset>,
+        count: usize,
+    ) {
+        assert_eq!(sumary_id, summary.summary_id);
+
+        assert_eq!(summary.group_by_values.len(), 1);
+
+        let (key, value) = &summary.group_by_values[0];
+
+        assert_eq!("Timestamp", key.as_ref());
+
+        assert_eq!(
+            OwnedValue::DateTime(DateTimeValueStorage::new(timestamp)).to_value(),
             value.to_value()
         );
 
