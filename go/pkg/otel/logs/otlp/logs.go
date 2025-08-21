@@ -133,14 +133,14 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 		if err != nil {
 			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})
 		}
-		if len(traceID) != 16 {
+		if traceID != nil && len(traceID) != 16 {
 			return logs, werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"row": row, "traceID": traceID})
 		}
 		spanID, err := arrowutils.FixedSizeBinaryFromRecord(record, logRecordIDs.SpanID, row)
 		if err != nil {
 			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})
 		}
-		if len(spanID) != 8 {
+		if spanID != nil && len(spanID) != 8 {
 			return logs, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"row": row, "spanID": spanID})
 		}
 
