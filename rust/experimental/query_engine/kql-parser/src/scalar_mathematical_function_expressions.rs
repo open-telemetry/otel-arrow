@@ -24,6 +24,22 @@ pub(crate) fn parse_negate_expression(
     )))
 }
 
+pub(crate) fn parse_bin_expression(
+    bin_expression_rule: Pair<Rule>,
+    state: &ParserState,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&bin_expression_rule);
+
+    let mut inner = bin_expression_rule.into_inner();
+
+    let left_scalar = parse_scalar_expression(inner.next().unwrap(), state)?;
+    let right_scalar = parse_scalar_expression(inner.next().unwrap(), state)?;
+
+    Ok(ScalarExpression::Math(MathScalarExpression::Bin(
+        BinaryMathematicalScalarExpression::new(query_location, left_scalar, right_scalar),
+    )))
+}
+
 pub(crate) fn parse_arithmetic_expression(
     arithmetic_expr_rule: Pair<Rule>,
     state: &ParserState,
@@ -103,11 +119,97 @@ fn parse_arithmetic_factor(
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeDelta;
     use pest::Parser;
 
     use crate::KqlPestParser;
 
     use super::*;
+
+    #[test]
+    fn test_parse_negate_expression() {
+        let test_cases = vec![
+            (
+                "-toint('1')",
+                ScalarExpression::Convert(ConvertScalarExpression::Integer(
+                    ConversionScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "1"),
+                        )),
+                    ),
+                )),
+            ),
+            (
+                "-todouble('1.0')",
+                ScalarExpression::Convert(ConvertScalarExpression::Double(
+                    ConversionScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "1.0"),
+                        )),
+                    ),
+                )),
+            ),
+        ];
+
+        for (input, value) in test_cases {
+            let state = ParserState::new(input);
+            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+                .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
+
+            let result = parse_scalar_expression(parsed.next().unwrap(), &state)
+                .unwrap_or_else(|_| panic!("Failed to parse expression: {input}"));
+
+            match result {
+                ScalarExpression::Math(MathScalarExpression::Negate(n)) => {
+                    assert_eq!(&value, n.get_value_expression());
+                }
+                _ => panic!("Expected MathScalarExpression::Negate"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_bin_expression() {
+        let test_cases = vec![
+            (
+                "bin(1009, 10)",
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1009),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                )),
+            ),
+            (
+                "bin(1009, 1 h)",
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1009),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::TimeSpan(
+                    TimeSpanScalarExpression::new(QueryLocation::new_fake(), TimeDelta::hours(1)),
+                )),
+            ),
+        ];
+
+        for (input, left, right) in test_cases {
+            let state = ParserState::new(input);
+            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+                .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
+
+            let result = parse_scalar_expression(parsed.next().unwrap(), &state)
+                .unwrap_or_else(|_| panic!("Failed to parse expression: {input}"));
+
+            match result {
+                ScalarExpression::Math(MathScalarExpression::Bin(b)) => {
+                    assert_eq!(&left, b.get_left_expression());
+                    assert_eq!(&right, b.get_right_expression());
+                }
+                _ => panic!("Expected MathScalarExpression::Bin"),
+            }
+        }
+    }
 
     #[test]
     fn test_parse_arithmetic_expression() {
