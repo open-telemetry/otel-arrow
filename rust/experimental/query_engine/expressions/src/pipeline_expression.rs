@@ -118,6 +118,17 @@ impl PipelineExpressionBuilder {
         self
     }
 
+    pub fn with_global_variables(
+        mut self,
+        variables: Vec<(&str, ScalarExpression)>,
+    ) -> PipelineExpressionBuilder {
+        for (name, value) in variables {
+            self.push_global_variable(name, value);
+        }
+
+        self
+    }
+
     pub fn with_expressions(
         mut self,
         expressions: Vec<DataExpression>,
@@ -129,16 +140,16 @@ impl PipelineExpressionBuilder {
         self
     }
 
-    pub fn push_expression(&mut self, expression: DataExpression) {
-        self.pipeline.push_expression(expression);
-    }
-
     pub fn push_constant(&mut self, value: StaticScalarExpression) -> usize {
         self.pipeline.push_constant(value)
     }
 
     pub fn push_global_variable(&mut self, name: &str, value: ScalarExpression) {
         self.pipeline.push_global_variable(name, value)
+    }
+
+    pub fn push_expression(&mut self, expression: DataExpression) {
+        self.pipeline.push_expression(expression);
     }
 
     pub fn build(self) -> Result<PipelineExpression, Vec<ExpressionError>> {
