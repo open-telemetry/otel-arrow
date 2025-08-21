@@ -176,32 +176,28 @@ mod tests {
             test_runtime.config(),
         );
 
-        test_runtime
-            .set_processor(wrapper)
-            .run_test(|mut ctx| {
-                Box::pin(async move {
-                    // Control message is handled and produces no output
-                    ctx.process(Message::timer_tick_ctrl_msg())
-                        .await
-                        .expect("control processing failed");
-                    assert!(ctx.drain_pdata().await.is_empty());
+        let validation = test_runtime.set_processor(wrapper).run_test(|mut ctx| {
+            Box::pin(async move {
+                // Control message is handled and produces no output
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("control processing failed");
+                assert!(ctx.drain_pdata().await.is_empty());
 
-                    // Data message is forwarded
-                    use crate::grpc::OtapArrowBytes;
-                    use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-                    let data = OtapArrowBytes::ArrowLogs(BatchArrowRecords::default());
-                    ctx.process(Message::data_msg(data.into()))
-                        .await
-                        .expect("data processing failed");
-                    let forwarded = ctx.drain_pdata().await;
-                    assert_eq!(forwarded.len(), 1);
-                    forwarded
-                })
+                // Data message is forwarded
+                use crate::grpc::OtapArrowBytes;
+                use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+                let data = OtapArrowBytes::ArrowLogs(BatchArrowRecords::default());
+                ctx.process(Message::data_msg(data.into()))
+                    .await
+                    .expect("data processing failed");
+                let forwarded = ctx.drain_pdata().await;
+                assert_eq!(forwarded.len(), 1);
+                ctx
             })
-            .await
-            .validate(|_| async {
-                // No-op validation closure
-            })
-            .await;
+        });
+
+        // No-op validation closure
+        validation.await.validate(|_| async {}).await;
     }
 }

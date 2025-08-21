@@ -382,7 +382,8 @@ mod tests {
 
     fn logs_scenario(
         num_rows: usize,
-    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = Vec<OtapPdata>>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = TestContext<OtapPdata>>>>
+    {
         move |mut ctx| {
             Box::pin(async move {
                 let otap_batch = OtapArrowBytes::ArrowLogs(
@@ -396,7 +397,7 @@ mod tests {
                     .await
                     .expect("Failed to send  logs message");
 
-                ctx.drain_pdata().await
+                ctx
             })
         }
     }
@@ -418,10 +419,10 @@ mod tests {
             .set_processor(processor)
             .run_test(logs_scenario(num_rows))
             .await
-            .validate(move |ctx| {
+            .validate(move |mut ctx| {
                 Box::pin(async move {
-                    assert_eq!(ctx.output().len(), 1);
-                    // assert_eq!(received, test_data);
+                    let result = ctx.test_context().drain_pdata().await;
+                    assert_eq!(result.len(), 1);
                 })
             })
             .await;
