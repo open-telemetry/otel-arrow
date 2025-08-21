@@ -410,7 +410,7 @@ mod tests {
         match exporter.config.compression_method {
             Some(ref method) => match method {
                 CompressionMethod::Gzip => {} // success
-                other => panic!("Expected Gzip, got {:?}", other),
+                other => panic!("Expected Gzip, got {other:?}"),
             },
             None => panic!("Expected Some compression method"),
         }
@@ -426,7 +426,7 @@ mod tests {
 
         assert!(result.is_err());
         if let Err(err) = result {
-            let err_msg = format!("{}", err);
+            let err_msg = format!("{err}");
             assert!(err_msg.contains("missing field `grpc_endpoint`"));
         }
     }
