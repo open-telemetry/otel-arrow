@@ -295,7 +295,7 @@ class LoadGenerator:
                     # More than 1 interval behind
                     self.increment_metric("late_batches")
                 next_send_time += batch_interval
-        
+
         sock.close()
 
     def create_syslog_message(
@@ -308,29 +308,29 @@ class LoadGenerator:
         Create a single syslog message with structure similar to OTLP log record.
         """
         hostname = socket.gethostname()
-        
+
         # Pre-generate static parts of the message
         pri = "<134>"  # local0.info = 16*8+6 = 134
         tag = "loadgen"
-        
+
         # Generate timestamp (RFC3164 format with space-padded day)
         utc_time = dt.now(timezone.utc)
         day = utc_time.day
         timestamp = utc_time.strftime(f"%b {day:2d} %H:%M:%S")
-        
+
         # Create log message body (similar to OTLP body)
         log_message = self.generate_random_string(body_size)
-        
+
         # Create attributes (similar to OTLP attributes)
         attributes = []
         for i in range(num_attributes):
             attr_value = self.generate_random_string(attribute_value_size)
             attributes.append(f"attr{i+1}={attr_value}")
-        
+
         # Combine everything into syslog format
         attributes_str = " ".join(attributes) if attributes else ""
         message_content = f"{log_message} {attributes_str}".strip()
-        
+
         syslog_message = f"{pri}{timestamp} {hostname} {tag}: {message_content}\n"
         return syslog_message.encode('utf-8')
 
@@ -344,7 +344,7 @@ class LoadGenerator:
 
         # Determine which worker thread to use based on configuration
         load_type = args_dict.get("load_type", "otlp").lower()
-        
+
         if load_type == "syslog":
             worker_func = self.syslog_worker_thread
             syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
