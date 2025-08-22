@@ -38,7 +38,7 @@ impl PipelineExpression {
         self.constants.len() - 1
     }
 
-    pub fn get_constants(&self) -> &Vec<StaticScalarExpression> {
+    pub fn get_constants(&self) -> &[StaticScalarExpression] {
         &self.constants
     }
 

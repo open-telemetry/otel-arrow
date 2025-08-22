@@ -476,7 +476,7 @@ impl CoalesceScalarExpression {
         }
     }
 
-    pub fn get_expressions(&self) -> &Vec<ScalarExpression> {
+    pub fn get_expressions(&self) -> &[ScalarExpression] {
         &self.expressions
     }
 
@@ -662,7 +662,7 @@ impl CaseScalarExpression {
         }
     }
 
-    pub fn get_expressions_with_conditions(&self) -> &Vec<(LogicalExpression, ScalarExpression)> {
+    pub fn get_expressions_with_conditions(&self) -> &[(LogicalExpression, ScalarExpression)] {
         &self.expressions_with_conditions
     }
 
@@ -861,7 +861,7 @@ impl ListScalarExpression {
         }
     }
 
-    pub fn get_value_expressions(&self) -> &Vec<ScalarExpression> {
+    pub fn get_value_expressions(&self) -> &[ScalarExpression] {
         &self.value_expressions
     }
 

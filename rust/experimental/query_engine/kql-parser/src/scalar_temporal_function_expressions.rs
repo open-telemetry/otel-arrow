@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_now_expression(
     now_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&now_expression_rule);
 

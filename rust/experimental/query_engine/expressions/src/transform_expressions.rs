@@ -161,7 +161,7 @@ impl MapKeyListExpression {
         &self.target
     }
 
-    pub fn get_keys(&self) -> &Vec<ScalarExpression> {
+    pub fn get_keys(&self) -> &[ScalarExpression] {
         &self.keys
     }
 }
@@ -248,7 +248,7 @@ impl MapSelectionExpression {
         &self.target
     }
 
-    pub fn get_selectors(&self) -> &Vec<MapSelector> {
+    pub fn get_selectors(&self) -> &[MapSelector] {
         &self.selectors
     }
 

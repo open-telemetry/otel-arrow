@@ -11,7 +11,7 @@ use crate::{
 
 pub(crate) fn parse_conditional_expression(
     conditional_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&conditional_expression_rule);
 
@@ -35,7 +35,7 @@ pub(crate) fn parse_conditional_expression(
 
 pub(crate) fn parse_case_expression(
     case_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&case_expression_rule);
 
@@ -90,7 +90,7 @@ pub(crate) fn parse_case_expression(
 
 pub(crate) fn parse_coalesce_expression(
     coalesce_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&coalesce_expression_rule);
 

@@ -18,7 +18,7 @@ where
     diagnostics: RefCell<Vec<RecordSetEngineDiagnostic<'c>>>,
     pipeline: &'a PipelineExpression,
     variables: ExecutionContextVariables<'b>,
-    summaries: &'b Summaries,
+    summaries: &'b Summaries<'a>,
     attached_records: Option<&'b dyn AttachedRecords>,
     record: Option<RefCell<TRecord>>,
 }
@@ -28,7 +28,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         diagnostic_level: RecordSetEngineDiagnosticLevel,
         pipeline: &'a PipelineExpression,
         global_variables: &'b RefCell<MapValueStorage<OwnedValue>>,
-        summaries: &'b Summaries,
+        summaries: &'b Summaries<'a>,
         attached_records: Option<&'b dyn AttachedRecords>,
         record: Option<TRecord>,
     ) -> ExecutionContext<'a, 'b, 'c, TRecord> {
@@ -89,7 +89,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         &self.variables
     }
 
-    pub fn get_summaries(&self) -> &Summaries {
+    pub fn get_summaries(&self) -> &Summaries<'a> {
         self.summaries
     }
 
@@ -150,17 +150,17 @@ impl<'a> ExecutionContextVariables<'a> {
 }
 
 #[cfg(test)]
-pub struct TestExecutionContext {
+pub struct TestExecutionContext<'a> {
     pipeline: PipelineExpression,
     global_variables: RefCell<MapValueStorage<OwnedValue>>,
-    summaries: Summaries,
+    summaries: Summaries<'a>,
     attached_records: Option<TestAttachedRecords>,
     record: Option<TestRecord>,
 }
 
 #[cfg(test)]
-impl TestExecutionContext {
-    pub fn new() -> TestExecutionContext {
+impl<'a> TestExecutionContext<'a> {
+    pub fn new() -> TestExecutionContext<'a> {
         Self {
             pipeline: Default::default(),
             global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
@@ -170,7 +170,7 @@ impl TestExecutionContext {
         }
     }
 
-    pub fn with_pipeline(mut self, pipeline: PipelineExpression) -> TestExecutionContext {
+    pub fn with_pipeline(mut self, pipeline: PipelineExpression) -> TestExecutionContext<'a> {
         self.pipeline = pipeline;
         self
     }
@@ -178,12 +178,12 @@ impl TestExecutionContext {
     pub fn with_attached_records(
         mut self,
         attached_records: TestAttachedRecords,
-    ) -> TestExecutionContext {
+    ) -> TestExecutionContext<'a> {
         self.attached_records = Some(attached_records);
         self
     }
 
-    pub fn with_record(mut self, record: TestRecord) -> TestExecutionContext {
+    pub fn with_record(mut self, record: TestRecord) -> TestExecutionContext<'a> {
         self.record = Some(record);
         self
     }
@@ -192,7 +192,7 @@ impl TestExecutionContext {
         self.global_variables.borrow_mut().set(name, value);
     }
 
-    pub fn create_execution_context(&mut self) -> ExecutionContext<'_, '_, '_, TestRecord> {
+    pub fn create_execution_context(&mut self) -> ExecutionContext<'_, 'a, '_, TestRecord> {
         ExecutionContext::new(
             RecordSetEngineDiagnosticLevel::Verbose,
             &self.pipeline,

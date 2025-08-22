@@ -127,7 +127,7 @@ where
 fn capture_selector_values_for_mutable_write<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
-    selectors: &'a Vec<ScalarExpression>,
+    selectors: &'a [ScalarExpression],
 ) -> Result<Vec<(&'a ScalarExpression, ResolvedValue<'c>)>, ExpressionError>
 where
     'a: 'c,

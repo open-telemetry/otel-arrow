@@ -14,7 +14,7 @@ use crate::{
 
 pub(crate) fn parse_scalar_expression(
     scalar_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let scalar_rule = scalar_expression_rule.into_inner().next().unwrap();
 

@@ -105,11 +105,12 @@ fn test_summarize_count_only() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.summaries.len(), 1);
+    assert_eq!(results.summaries.included_summaries.len(), 1);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
     assert_eq!(results.included_records.len(), 0);
     assert_eq!(results.dropped_records.len(), 2);
 
-    let summary = results.summaries.first().unwrap();
+    let summary = results.summaries.included_summaries.first().unwrap();
 
     assert_eq!(
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -158,11 +159,12 @@ fn test_summarize_count_and_group_by() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.summaries.len(), 2);
+    assert_eq!(results.summaries.included_summaries.len(), 2);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
     assert_eq!(results.included_records.len(), 0);
     assert_eq!(results.dropped_records.len(), 3);
 
-    let mut summaries = results.summaries;
+    let mut summaries = results.summaries.included_summaries;
     summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
 
     assert_summary(
@@ -236,11 +238,12 @@ fn test_summarize_count_and_group_by_with_bin() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.summaries.len(), 2);
+    assert_eq!(results.summaries.included_summaries.len(), 2);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
     assert_eq!(results.included_records.len(), 0);
     assert_eq!(results.dropped_records.len(), 3);
 
-    let mut summaries = results.summaries;
+    let mut summaries = results.summaries.included_summaries;
     summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
 
     assert_summary(
@@ -287,6 +290,69 @@ fn test_summarize_count_and_group_by_with_bin() {
         } else {
             panic!()
         }
+    }
+}
+
+#[test]
+fn test_summarize_with_pipeline() {
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::IntValue(IntegerValueStorage::new(1)),
+                ))),
+        ),
+    );
+
+    let query = "let BatchTime = now(); source | summarize Count = count() by Body | where Count > 1 | extend processed_time = now(), batch_time = BatchTime";
+
+    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.included_summaries.len(), 1);
+    assert_eq!(results.summaries.dropped_summaries.len(), 1);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let summary = results.summaries.included_summaries.first().unwrap();
+
+    assert_eq!(
+        "2e05f69051ddb184b5e05ab16d5a36273f972b1a540889697cf27585110cae26",
+        summary.summary_id
+    );
+
+    assert_eq!(summary.group_by_values.len(), 1);
+    assert_eq!(summary.aggregation_values.len(), 1);
+
+    if let Some(map) = &summary.map {
+        assert_eq!(
+            Some(OwnedValue::Integer(IntegerValueStorage::new(2)).to_value()),
+            map.get("Count").map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(OwnedValue::Null.to_value()),
+            map.get("Body").map(|v| v.to_value())
+        );
+
+        match (
+            map.get("processed_time").map(|v| v.to_value()),
+            map.get("batch_time").map(|v| v.to_value()),
+        ) {
+            (Some(Value::DateTime(p)), Some(Value::DateTime(b))) => {
+                assert!(p.get_value() >= b.get_value());
+            }
+            _ => panic!(),
+        }
+    } else {
+        panic!()
     }
 }
 

@@ -187,7 +187,7 @@ impl ByteArrayValueStorage {
         Self { values }
     }
 
-    pub fn get_values(&self) -> &Vec<IntegerValueStorage<u8>> {
+    pub fn get_values(&self) -> &[IntegerValueStorage<u8>] {
         &self.values
     }
 
