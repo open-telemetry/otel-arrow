@@ -31,6 +31,7 @@ pub mod exporter;
 pub mod message;
 pub mod processor;
 pub mod receiver;
+pub mod retry_processor;
 
 pub mod config;
 pub mod control;
