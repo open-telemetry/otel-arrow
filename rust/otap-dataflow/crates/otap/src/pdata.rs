@@ -404,10 +404,8 @@ impl TryFrom<OtapArrowRecords> for OtapArrowBytes {
 }
 
 #[cfg(test)]
-/// Testing utilities for OtapPdata
-pub mod test {
+mod test {
     use super::*;
-    use otap_df_config::experimental::SignalType;
     use otel_arrow_rust::{
         otap::OtapArrowRecords,
         proto::opentelemetry::{
@@ -422,33 +420,6 @@ pub mod test {
             },
         },
     };
-
-    /// Test helper function to count the number of primary signal items in OtapPdata.
-    /// 
-    /// This function extracts the main signal records (logs, spans, or metrics) and returns
-    /// the number of rows, which represents the count of primary signal items:
-    /// - For logs: number of log records
-    /// - For traces: number of spans  
-    /// - For metrics: number of metrics
-    pub fn num_rows(pdata: &OtapPdata) -> usize {
-        match pdata.signal_type() {
-            SignalType::Logs => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords = pdata.clone().try_into().unwrap();
-                records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            SignalType::Traces => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords = pdata.clone().try_into().unwrap();
-                records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-            SignalType::Metrics => {
-                let records: otel_arrow_rust::otap::OtapArrowRecords = pdata.clone().try_into().unwrap();
-                records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
-                    .map_or(0, |batch| batch.num_rows())
-            }
-        }
-    }
 
     #[test]
     fn test_conversion_logs() {
@@ -837,31 +808,5 @@ pub mod test {
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);
         assert_eq!(pdata_traces.signal_type(), SignalType::Traces);
-    }
-
-    #[test]
-    fn test_num_rows_helper() {
-        // Test with logs data containing 2 log records
-        let otlp_service_req = ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::default())
-                        .log_records(vec![
-                            LogRecord::build(1u64, SeverityNumber::Info, "event1")
-                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
-                                .finish(),
-                            LogRecord::build(2u64, SeverityNumber::Info, "event2")
-                                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
-                                .finish(),
-                        ])
-                        .finish(),
-                ])
-                .finish(),
-        ]);
-        let mut otlp_bytes = vec![];
-        otlp_service_req.encode(&mut otlp_bytes).unwrap();
-        
-        let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
-        assert_eq!(num_rows(&pdata), 2);
     }
 }
