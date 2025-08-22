@@ -14,4 +14,8 @@ pub enum Error {
         /// The metric descriptor
         descriptor: &'static MetricsDescriptor,
     },
+
+    /// The metrics channel was closed unexpectedly.
+    #[error("Metrics channel was closed")]
+    MetricsChannelClosed,
 }

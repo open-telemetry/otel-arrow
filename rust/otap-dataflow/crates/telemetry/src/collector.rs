@@ -27,11 +27,11 @@ pub struct MetricsCollector<P: MetricsPipeline> {
     flush_interval: Duration,
 
     /// The metrics pipeline for reporting metrics.
-    pipeline: P,
+    pipeline: Option<P>,
 }
 
 impl<P: MetricsPipeline> MetricsCollector<P> {
-    /// Creates a new `MetricsCollector`.
+    /// Creates a new `MetricsCollector` with a pipeline.
     pub(crate) fn new(config: Config, registry: MetricsRegistryHandle, pipeline: P) -> (Self, MetricsReporter) {
         let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
 
@@ -40,7 +40,22 @@ impl<P: MetricsPipeline> MetricsCollector<P> {
                 registry,
                 metrics_receiver,
                 flush_interval: config.flush_interval,
-                pipeline,
+                pipeline: Some(pipeline),
+            },
+            MetricsReporter::new(metrics_sender),
+        )
+    }
+
+    /// Creates a new `MetricsCollector` without a pipeline (metrics aggregation only).
+    pub(crate) fn new_without_pipeline(config: Config, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
+        let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
+
+        (
+            Self {
+                registry,
+                metrics_receiver,
+                flush_interval: config.flush_interval,
+                pipeline: None,
             },
             MetricsReporter::new(metrics_sender),
         )
@@ -48,27 +63,44 @@ impl<P: MetricsPipeline> MetricsCollector<P> {
 
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
-    /// Returns the pipeline instance when the loop ends.
-    pub async fn run_collection_loop(self) -> Result<P, Error> {
-        let mut timer = interval(self.flush_interval);
-
-        loop {
-            tokio::select! {
-                // ToDo need to be moved into a CollectorExporter
-                _ = timer.tick() => {
-                    self.registry.visit_non_zero_metrics_and_reset(|measurement, field_iter, attrs| {
-                        // Ignore individual report errors for now; could log.
-                        let _ = self.pipeline.report_iter(measurement, field_iter, attrs);
-                    });
+    /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
+    pub async fn run_collection_loop(self) -> Result<Option<P>, Error> {
+        match self.pipeline {
+            Some(pipeline) => {
+                // With pipeline: use timer and select!
+                let mut timer = interval(self.flush_interval);
+                loop {
+                    tokio::select! {
+                        _ = timer.tick() => {
+                            self.registry.visit_non_zero_metrics_and_reset(|measurement, field_iter, attrs| {
+                                // Ignore individual report errors for now; could log.
+                                let _ = pipeline.report_iter(measurement, field_iter, attrs);
+                            });
+                        }
+                        result = self.metrics_receiver.recv_async() => {
+                            match result {
+                                Ok(metrics) => {
+                                    self.registry.accumulate_snapshot(metrics.key, &metrics.metrics);
+                                }
+                                Err(_) => {
+                                    // Channel closed, exit the loop and return the pipeline
+                                    return Ok(Some(pipeline));
+                                }
+                            }
+                        }
+                    }
                 }
-                result = self.metrics_receiver.recv_async() => {
-                    match result {
+            }
+            None => {
+                // Without pipeline: simple loop without timer
+                loop {
+                    match self.metrics_receiver.recv_async().await {
                         Ok(metrics) => {
                             self.registry.accumulate_snapshot(metrics.key, &metrics.metrics);
                         }
                         Err(_) => {
-                            // Channel closed, exit the loop and return the pipeline
-                            return Ok(self.pipeline);
+                            // Channel closed, exit the loop
+                            return Ok(None);
                         }
                     }
                 }
@@ -186,6 +218,7 @@ mod tests {
         Config {
             reporting_channel_size: 10,
             flush_interval: Duration::from_millis(flush_interval_ms),
+            http_server: None, // No HTTP server for these tests
         }
     }
 
@@ -204,21 +237,16 @@ mod tests {
         let mock_pipeline = MockPipeline::new();
         let initial_report_count = mock_pipeline.report_count();
 
-        let (sender, receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
-        let collector = MetricsCollector {
-            registry,
-            metrics_receiver: receiver,
-            flush_interval: config.flush_interval,
-            pipeline: mock_pipeline.clone(),
-        };
+        let (collector, _reporter) = MetricsCollector::new(config, registry, mock_pipeline.clone());
 
-        // Close the channel immediately
-        drop(sender);
+        // Close the channel immediately by dropping the reporter
+        drop(_reporter);
 
         let returned_pipeline = collector.run_collection_loop().await.unwrap();
 
         // Verify the returned pipeline has the same state as when we started
-        assert_eq!(returned_pipeline.report_count(), initial_report_count);
+        assert!(returned_pipeline.is_some());
+        assert_eq!(returned_pipeline.unwrap().report_count(), initial_report_count);
     }
 
     #[tokio::test]
@@ -231,13 +259,7 @@ mod tests {
         let test_key = MetricsKey::default();
         registry.accumulate_snapshot(test_key, &vec![42, 24]);
 
-        let (sender, receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
-        let collector = MetricsCollector {
-            registry,
-            metrics_receiver: receiver,
-            flush_interval: config.flush_interval,
-            pipeline: mock_pipeline.clone(),
-        };
+        let (collector, reporter) = MetricsCollector::new(config, registry, mock_pipeline.clone());
 
         let collection_task = tokio::spawn(async move {
             collector.run_collection_loop().await
@@ -247,12 +269,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Close the channel
-        drop(sender);
+        drop(reporter);
 
         let returned_pipeline = collection_task.await.unwrap().unwrap();
 
         // Now validate the actual content reported to the pipeline
-        let reports = returned_pipeline.get_reports();
+        let reports = returned_pipeline.unwrap().get_reports();
 
         // We should have at least one report from the timer flush
         if !reports.is_empty() {
@@ -277,13 +299,7 @@ mod tests {
         let registry = create_test_registry();
         let mock_pipeline = MockPipeline::new();
 
-        let (sender, receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
-        let collector = MetricsCollector {
-            registry: registry.clone(),
-            metrics_receiver: receiver,
-            flush_interval: config.flush_interval,
-            pipeline: mock_pipeline.clone(),
-        };
+        let (collector, reporter) = MetricsCollector::new(config, registry.clone(), mock_pipeline.clone());
 
         let collection_task = tokio::spawn(async move {
             collector.run_collection_loop().await
@@ -291,8 +307,8 @@ mod tests {
 
         // Send metrics that will be accumulated
         let test_key = MetricsKey::default();
-        sender.send_async(create_test_snapshot(test_key, vec![10, 20])).await.unwrap();
-        sender.send_async(create_test_snapshot(test_key, vec![5, 15])).await.unwrap();
+        reporter.report_snapshot(create_test_snapshot(test_key, vec![10, 20])).await.unwrap();
+        reporter.report_snapshot(create_test_snapshot(test_key, vec![5, 15])).await.unwrap();
 
         // Wait for metrics to be processed and timer to fire
         tokio::time::sleep(Duration::from_millis(80)).await;
@@ -300,8 +316,8 @@ mod tests {
         let reports_count = mock_pipeline.report_count();
 
         // Close channel
-        drop(sender);
-        let returned_pipeline = collection_task.await.unwrap().unwrap();
+        drop(reporter);
+        let returned_pipeline = collection_task.await.unwrap().unwrap().unwrap();
 
         // Verify that the pipeline received reports from the timer
         let final_reports = returned_pipeline.get_reports();

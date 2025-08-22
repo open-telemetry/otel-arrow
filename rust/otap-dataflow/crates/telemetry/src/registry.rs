@@ -193,10 +193,7 @@ impl MetricsRegistry {
             metrics.snapshot_values(),
             Box::new(static_attrs),
         ));
-
-        // ToDo remove this debug print in production code
-        println!("{}", self.generate_semconv_registry().to_yaml());
-
+        
         MetricSet {
             key: metrics_key,
             metrics,
@@ -337,6 +334,28 @@ impl MetricsRegistryHandle {
     /// AttributeFields are deduplicated based on their key.
     pub fn generate_semconv_registry(&self) -> SemConvRegistry {
         self.metric_registry.lock().generate_semconv_registry()
+    }
+
+    /// Visits current metric sets with non-zero values without resetting them.
+    /// This is useful for read-only access to metrics for HTTP endpoints.
+    pub fn visit_current_metrics<F>(&self, mut f: F)
+    where
+        for<'a> F: FnMut(
+            &'static MetricsDescriptor,
+            &'a dyn AttributeSetHandler,
+            NonZeroMetrics<'a>,
+        ),
+    {
+        let reg = self.metric_registry.lock();
+        for entry in reg.metrics.values() {
+            let values = &entry.metric_values;
+            if values.iter().any(|&v| v != 0) {
+                let desc = entry.metrics_descriptor;
+                let attrs = entry.attribute_values.as_ref();
+
+                f(desc, attrs, NonZeroMetrics::new(desc.metrics, values));
+            }
+        }
     }
 }
 

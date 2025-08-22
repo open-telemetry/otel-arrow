@@ -69,7 +69,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .expect("Failed to create runtime");
                 let local_tasks = tokio::task::LocalSet::new();
 
-                let _task_handle = local_tasks.spawn_local(metrics_system.run_collection_loop());
+                let _task_handle = local_tasks.spawn_local(metrics_system.run());
                 rt.block_on(async {
                     local_tasks.await;
                 });

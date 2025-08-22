@@ -33,4 +33,14 @@ impl MetricsReporter {
             metrics.clear_values();
         }
     }
+
+    /// Send a raw metrics snapshot directly to the collector.
+    /// This method is primarily for testing purposes.
+    #[cfg(test)]
+    pub async fn report_snapshot(
+        &self,
+        snapshot: MetricSetSnapshot,
+    ) -> Result<(), flume::SendError<MetricSetSnapshot>> {
+        self.metrics_sender.send_async(snapshot).await
+    }
 }
