@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::OTLP_PROCESSOR_FACTORIES;
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -12,12 +13,12 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ProcessorFactory;
+use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
-use otap_df_engine::ProcessorFactory;
-use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use prost::Message as ProstMessage;
@@ -26,7 +27,6 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use validator::Validate;
-use crate::OTLP_PROCESSOR_FACTORIES;
 
 const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
 
@@ -387,10 +387,6 @@ impl GenericBatcher {
     #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
-        // ToDo: Validate should check self.config.send_batch_size > 0
-        if config.send_batch_size == 0 {
-            panic!("max_batch_size must be greater than zero");
-        }
         Self {
             traces_pending: None,
             metrics_pending: None,
