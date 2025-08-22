@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1755876504981,
+  "lastUpdate": 1755880092265,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "drewrelmas@gmail.com",
-            "name": "Drew Relmas",
-            "username": "drewrelmas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "2da489e3219ecef755bdd451745d2f40e8851b56",
-          "message": "Remove randomness in go tests to address flaky codecov (#555)\n\nAttempt at addressing #529\n\nAccording to various [codecov\nreadings](https://app.codecov.io/gh/open-telemetry/otel-arrow/pull/554/indirect-changes),\nthe discrepancy in our codecov is often in various error conditions of\ndifferent `pkg/otel` files.\n\n\n![image](https://github.com/user-attachments/assets/66e6b96a-3449-4227-bb3c-a4f2ac07fa69)\n\nThis PR was a result of a brief look into the test infrastructure there\nand noting several usages of `rng` with a seed of type `rand.Uint64`.\nOut of curiosity I removed them and ran checked coverage multiple times\nlocally, and found it stabilizes at reproducible numbers.\n\nI am not entirely sure how important true entropy is in testing the go\nmodules compared to seeded entropy, looking for insights from @jmacd and\n@lquerel who wrote most of it.",
-          "timestamp": "2025-06-11T17:15:05Z",
-          "tree_id": "d624715db99bc804b44b7f6171ceafd6be572f79",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/2da489e3219ecef755bdd451745d2f40e8851b56"
-        },
-        "date": 1749662767223,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 460000,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 13800000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 13800000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 2.47,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 2.79,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 146.54,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 166.26,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 442000,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 13260000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 13260000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 2.42,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 2.84,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 107.15,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 126.48,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 138.65,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a36e25ec8b04424c6ee14c70cde21723300675b",
+          "message": "Restore parquet exporter shutdown test and fix flakey implementation (#991)\n\nFixes: #967 \n\nI think the source of the flakiness here was we'd enter into this:\n\nhttps://github.com/open-telemetry/otel-arrow/blob/b4bb1d87434528b7ffedc6aa5c76b512f6358182/rust/otap-dataflow/crates/engine/src/message.rs#L221-L241\n\nAnd depending on how long it took between when the test setup function\nrun, and when we invoked the validation function, we'd either hit the\ndeadline or the pdata first. If we hit the deadline first, no writes are\nqueued and the parquet exporter shuts down successfuly. This is not what\nwe're trying to test here.\n\nTo get around this, the test is now rewritten to manually drive the\ncontrol messages, and have the parquet exporter receiving them at the\nsame time. This way, we can have a better guarantee that there will be\nunflushed writes queued when it receives the shutdown signal.",
+          "timestamp": "2025-08-22T16:19:51Z",
+          "tree_id": "c94187dcd1e193bdbea35c999355c15c948d654c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4a36e25ec8b04424c6ee14c70cde21723300675b"
+        },
+        "date": 1755880090367,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 737500,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22125000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22125000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.72,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.8,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 162.45,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 188.84,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 743833.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22315000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22315000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.7,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.77,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 128.31,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 150.53,
             "unit": "MiB"
           }
         ]
