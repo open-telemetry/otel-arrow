@@ -185,6 +185,14 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Failed to batch OTAP data"))]
+    Batching {
+        #[snafu(source)]
+        source: ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Batch is empty"))]
     EmptyBatch {
         #[snafu(implicit)]
