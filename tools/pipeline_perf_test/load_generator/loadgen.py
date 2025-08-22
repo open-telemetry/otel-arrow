@@ -232,7 +232,14 @@ class LoadGenerator:
         # Create TCP socket for syslog
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
-        sock.connect((syslog_server, syslog_port))
+        
+        try:
+            sock.connect((syslog_server, syslog_port))
+            print(f"Thread {thread_id}: Successfully connected to syslog server {syslog_server}:{syslog_port}")
+        except Exception as e:
+            print(f"Thread {thread_id}: Failed to connect to syslog server {syslog_server}:{syslog_port}: {e}")
+            sock.close()
+            return
 
         batch_size = args["batch_size"]
         thread_count = args["threads"]
@@ -253,9 +260,7 @@ class LoadGenerator:
         syslog_batch = []
         for _ in range(batch_size):
             syslog_message = self.create_syslog_message(
-                body_size=args["body_size"],
-                num_attributes=args["num_attributes"],
-                attribute_value_size=args["attribute_value_size"],
+                body_size=args["body_size"]
             )
             syslog_batch.append(syslog_message)
 
@@ -301,8 +306,6 @@ class LoadGenerator:
     def create_syslog_message(
         self,
         body_size: int = 25,
-        num_attributes: int = 2,
-        attribute_value_size: int = 15,
     ) -> bytes:
         """
         Create a single syslog message with structure similar to OTLP log record.
@@ -321,17 +324,7 @@ class LoadGenerator:
         # Create log message body (similar to OTLP body)
         log_message = self.generate_random_string(body_size)
 
-        # Create attributes (similar to OTLP attributes)
-        attributes = []
-        for i in range(num_attributes):
-            attr_value = self.generate_random_string(attribute_value_size)
-            attributes.append(f"attr{i+1}={attr_value}")
-
-        # Combine everything into syslog format
-        attributes_str = " ".join(attributes) if attributes else ""
-        message_content = f"{log_message} {attributes_str}".strip()
-
-        syslog_message = f"{pri}{timestamp} {hostname} {tag}: {message_content}\n"
+        syslog_message = f"{pri}{timestamp} {hostname} {tag}: {log_message}\n"
         return syslog_message.encode('utf-8')
 
     def run_loadgen(self, args_dict):
@@ -347,13 +340,8 @@ class LoadGenerator:
 
         if load_type == "syslog":
             worker_func = self.syslog_worker_thread
-            syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
-            syslog_port = os.getenv("SYSLOG_PORT", "514")
-            print(f"Using syslog worker, target: {syslog_server}:{syslog_port}")
         else:
             worker_func = self.worker_thread
-            endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
-            print(f"Using OTLP worker, target: {endpoint}")
 
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=args_dict.get("threads", 4)
@@ -526,6 +514,15 @@ def main():
             f"{get_default_value("tcp_connection_per_thread")})"
         ),
     )
+    parser.add_argument(
+        "--load-type",
+        type=str,
+        default=get_default_value("load_type"),
+        help=(
+            "Load generation type: 'otlp' or 'syslog' (default "
+            f"{get_default_value('load_type')})"
+        ),
+    )
     args = parser.parse_args()
 
     if args.serve:
@@ -536,6 +533,7 @@ def main():
 
     print("Starting load generator with configuration:")
     print(f"- Duration: {args.duration} seconds")
+    print(f"- Load type: {args.load_type}")
     print(f"- Batch size: {args.batch_size} logs")
     print(f"- Threads: {args.threads}")
     print(f"- Target Rate: {args.target_rate}")
@@ -550,6 +548,7 @@ def main():
         batch_size=args.batch_size,
         threads=args.threads,
         target_rate=args.target_rate,
+        load_type=args.load_type,
     )
 
     loadgen.start(config=config)
