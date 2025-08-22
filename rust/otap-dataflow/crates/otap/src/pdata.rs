@@ -664,6 +664,7 @@ mod test {
                 })
                 .spans(vec![
                     Span::build(u128::to_be_bytes(1), u64::to_be_bytes(1), "albert", 1u64)
+                        .end_time_unix_nano(4u64)
                         .status(Status::new("status1", StatusCode::Ok))
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                         .links(vec![
@@ -694,6 +695,7 @@ mod test {
                         ])
                         .finish(),
                     Span::build(u128::to_be_bytes(2), u64::to_be_bytes(2), "terry", 2u64)
+                        .end_time_unix_nano(3u64)
                         .status(Status::new("status1", StatusCode::Ok))
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                         .links(vec![
@@ -734,6 +736,7 @@ mod test {
                 })
                 .spans(vec![
                     Span::build(u128::to_be_bytes(3), u64::to_be_bytes(3), "albert", 3u64)
+                        .end_time_unix_nano(4u64)
                         .status(Status::new("status1", StatusCode::Ok))
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                         .links(vec![
@@ -749,6 +752,7 @@ mod test {
                         ])
                         .finish(),
                     Span::build(u128::to_be_bytes(4), u64::to_be_bytes(4), "terry", 4u64)
+                        .end_time_unix_nano(5u64)
                         .status(Status::new("status1", StatusCode::Ok))
                         .attributes(vec![KeyValue::new("key", AnyValue::new_string("val4"))])
                         .links(vec![

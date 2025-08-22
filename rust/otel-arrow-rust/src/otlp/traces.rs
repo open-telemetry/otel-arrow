@@ -214,9 +214,10 @@ pub fn traces_from(traces_otap_batch: OtapArrowRecords) -> Result<ExportTraceSer
             .unwrap_or_default();
         current_span.start_time_unix_nano =
             spans_arrays.start_time_unix_nano.value_at_or_default(idx) as u64;
-        current_span.end_time_unix_nano += spans_arrays
-            .duration_time_unix_nano
-            .value_at_or_default(idx) as u64;
+        current_span.end_time_unix_nano = current_span.start_time_unix_nano
+            + spans_arrays
+                .duration_time_unix_nano
+                .value_at_or_default(idx) as u64;
         current_span.dropped_attributes_count = spans_arrays
             .dropped_attributes_count
             .value_at_or_default(idx);
