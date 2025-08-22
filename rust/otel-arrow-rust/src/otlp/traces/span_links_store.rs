@@ -10,7 +10,7 @@ use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::traces::delta_decoder::DeltaDecoder;
 use crate::otlp::traces::span_link::SpanLink;
 use crate::proto::opentelemetry::trace::v1::span::Link;
-use crate::schema::consts;
+use crate::schema::{consts, is_id_plain_encoded, is_parent_id_plain_encoded};
 use arrow::array::{RecordBatch, UInt16Array, UInt32Array};
 use std::collections::HashMap;
 
@@ -82,6 +82,8 @@ struct SpanLinkIterator<'a> {
     attr_store: Option<&'a mut Attribute32Store>,
     offset: usize,
     num_rows: usize,
+    ids_plain_encoded: bool,
+    parent_ids_plain_encoded: bool,
 }
 
 impl Iterator for SpanLinkIterator<'_> {
@@ -92,12 +94,16 @@ impl Iterator for SpanLinkIterator<'_> {
             return None;
         }
         let id = self.id.value_at(self.offset);
-        let parent_id = self.parent_id.value_at_or_default(self.offset);
 
         // todo(v0y4g3r): maybe impl value_ref_at to avoid heap alloc.
         let trace_id = self.trace_id.value_at(self.offset).unwrap_or_default();
 
-        let decoded_parent_id = self.parent_id_decoder.decode(&trace_id, parent_id);
+        let parent_id = self.parent_id.value_at_or_default(self.offset);
+        let decoded_parent_id = if self.parent_ids_plain_encoded {
+            parent_id
+        } else {
+            self.parent_id_decoder.decode(&trace_id, parent_id)
+        };
 
         let span_id = self.span_id.value_at(self.offset).unwrap_or_default();
 
@@ -106,11 +112,13 @@ impl Iterator for SpanLinkIterator<'_> {
             .dropped_attributes_count
             .value_at_or_default(self.offset);
         let attributes = if let Some((id, attr_store)) = id.zip(self.attr_store.as_deref_mut()) {
+            let attrs = if self.ids_plain_encoded {
+                attr_store.attribute_by_id(id)
+            } else {
+                attr_store.attribute_by_delta_id(id)
+            };
             // Copy attributes
-            attr_store
-                .attribute_by_delta_id(id)
-                .unwrap_or_default()
-                .to_vec()
+            attrs.unwrap_or_default().to_vec()
         } else {
             vec![]
         };
@@ -156,6 +164,9 @@ impl<'a> SpanLinkIterator<'a> {
             .map(UInt32ArrayAccessor::try_new)
             .transpose()?;
 
+        let ids_plain_encoded = is_id_plain_encoded(rb);
+        let parent_ids_plain_encoded = is_parent_id_plain_encoded(rb);
+
         Ok(Self {
             id,
             trace_id,
@@ -167,6 +178,8 @@ impl<'a> SpanLinkIterator<'a> {
             attr_store,
             offset: 0,
             num_rows,
+            ids_plain_encoded,
+            parent_ids_plain_encoded,
         })
     }
 }
