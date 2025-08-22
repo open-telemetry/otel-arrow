@@ -24,6 +24,321 @@ use crate::{
     schema::consts,
 };
 
+/// I logically represent a sequence of OtapArrowRecords that all share exactly the same tag.  I
+/// maintain an invariant that the primary table for each telemetry type in each batch is not None
+/// and has more than zero records.
+pub enum RecordsGroup {
+    /// A sequence of batches representing log data
+    Logs(Vec<[Option<RecordBatch>; Logs::COUNT]>),
+    /// A sequence of batches representing metric data
+    Metrics(Vec<[Option<RecordBatch>; Metrics::COUNT]>),
+    /// A sequence of batches representing span data
+    Traces(Vec<[Option<RecordBatch>; Traces::COUNT]>),
+}
+
+impl RecordsGroup {
+    /// Convert a sequence of `OtapArrowRecords` into three `RecordsGroup` objects
+    #[must_use]
+    pub fn split_by_type(records: Vec<OtapArrowRecords>) -> [Self; 3] {
+        let log_count = tag_count(&records, OtapArrowRecordTag::Logs);
+        let mut log_records = Vec::with_capacity(log_count);
+
+        let metric_count = tag_count(&records, OtapArrowRecordTag::Metrics);
+        let mut metric_records = Vec::with_capacity(metric_count);
+
+        let trace_count = tag_count(&records, OtapArrowRecordTag::Traces);
+        let mut trace_records = Vec::with_capacity(trace_count);
+
+        for records in records {
+            match records {
+                OtapArrowRecords::Logs(logs) => {
+                    let batches = shrink(logs.into_batches());
+                    if primary_table(&batches)
+                        .map(|batch| batch.num_rows() > 0)
+                        .unwrap_or(false)
+                    {
+                        log_records.push(batches);
+                    }
+                }
+                OtapArrowRecords::Metrics(metrics) => {
+                    let batches = metrics.into_batches();
+                    if primary_table(&batches)
+                        .map(|batch| batch.num_rows() > 0)
+                        .unwrap_or(false)
+                    {
+                        metric_records.push(batches);
+                    }
+                }
+                OtapArrowRecords::Traces(traces) => {
+                    let batches = shrink(traces.into_batches());
+                    if primary_table(&batches)
+                        .map(|batch| batch.num_rows() > 0)
+                        .unwrap_or(false)
+                    {
+                        trace_records.push(batches);
+                    }
+                }
+            }
+        }
+
+        [
+            RecordsGroup::Logs(log_records),
+            RecordsGroup::Metrics(metric_records),
+            RecordsGroup::Traces(trace_records),
+        ]
+    }
+
+    /// Split `RecordBatch`es as need when they're larger than our threshold or when we need them in
+    /// smaller pieces to concatenate together into our target size.
+    pub fn split(self, max_output_batch: NonZeroU64) -> Result<Self> {
+        Ok(match self {
+            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_split(
+                items,
+                max_output_batch,
+                Logs::allowed_payload_types(),
+                ArrowPayloadType::Logs,
+            )?),
+            RecordsGroup::Metrics(items) => RecordsGroup::Metrics(generic_split(
+                items,
+                max_output_batch,
+                Metrics::allowed_payload_types(),
+                ArrowPayloadType::UnivariateMetrics,
+            )?),
+            RecordsGroup::Traces(items) => RecordsGroup::Traces(generic_split(
+                items,
+                max_output_batch,
+                Traces::allowed_payload_types(),
+                ArrowPayloadType::Spans,
+            )?),
+        })
+    }
+
+    /// Merge `RecordBatch`es together so that they're no bigger than `max_output_batch`.
+    pub fn concatenate(self, max_output_batch: Option<NonZeroU64>) -> Result<Self> {
+        Ok(match self {
+            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(
+                items,
+                Logs::allowed_payload_types(),
+                max_output_batch,
+            )?),
+            RecordsGroup::Metrics(items) => RecordsGroup::Metrics(generic_concatenate(
+                items,
+                Metrics::allowed_payload_types(),
+                max_output_batch,
+            )?),
+            RecordsGroup::Traces(items) => RecordsGroup::Traces(generic_concatenate(
+                items,
+                Traces::allowed_payload_types(),
+                max_output_batch,
+            )?),
+        })
+    }
+
+    // FIXME: replace this with an Extend impl to avoid unnecessary allocations
+    /// Convert into a sequence of `OtapArrowRecords`
+    #[must_use]
+    pub fn into_otap_arrow_records(self) -> Vec<OtapArrowRecords> {
+        match self {
+            RecordsGroup::Logs(items) => items
+                .into_iter()
+                .map(|batches| OtapArrowRecords::Logs(Logs { batches }))
+                .collect(),
+            RecordsGroup::Metrics(items) => items
+                .into_iter()
+                .map(|batches| OtapArrowRecords::Metrics(Metrics { batches }))
+                .collect(),
+            RecordsGroup::Traces(items) => items
+                .into_iter()
+                .map(|batches| OtapArrowRecords::Traces(Traces { batches }))
+                .collect(),
+        }
+    }
+}
+
+// *************************************************************************************************
+// Everything above this line is the public interface and everything below this line is internal
+// implementation details.
+
+// Some helpers for `RecordsGroup`...
+// *************************************************************************************************
+
+fn tag_count(records: &[OtapArrowRecords], tag: OtapArrowRecordTag) -> usize {
+    records
+        .iter()
+        .map(|records| (records.tag() == tag) as usize)
+        .sum()
+}
+
+/// Fetch the primary table for a given batch
+#[must_use]
+fn primary_table<const N: usize>(batches: &[Option<RecordBatch>; N]) -> Option<&RecordBatch> {
+    match N {
+        Logs::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]].as_ref(),
+        Metrics::COUNT => {
+            batches[POSITION_LOOKUP[ArrowPayloadType::UnivariateMetrics as usize]].as_ref()
+        }
+        Traces::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Spans as usize]].as_ref(),
+        _ => {
+            unreachable!()
+        }
+    }
+}
+
+/// In order to make `into_batches()` work, it has to return the maximally sized array of
+/// `Option<RecordBatch>` padding out the end with `None`s. This function undoes that for
+/// reintegrating the data into a generic context where we know exactly how big the array should be.
+fn shrink<T, const BIGGER: usize, const SMALLER: usize>(
+    array: [Option<T>; BIGGER],
+) -> [Option<T>; SMALLER] {
+    // Because the T we actually care about doesn't impl Copy, I think this is the simplest way to
+    // verify that the tail is all None.
+    for none in array[SMALLER..].iter() {
+        assert!(none.is_none());
+    }
+
+    assert!(SMALLER < BIGGER);
+    let mut iter = array.into_iter();
+    // SAFETY: we've already verified that the iterator won't run out with the assert above.
+    std::array::from_fn(|_| {
+        iter.next()
+            .expect("we will have the right number of elements")
+    })
+}
+
+// Code for splitting batches
+// *************************************************************************************************
+
+fn generic_split<const N: usize>(
+    mut batches: Vec<[Option<RecordBatch>; N]>,
+    max_output_batch: NonZeroU64,
+    allowed_payloads: &[ArrowPayloadType],
+    primary_payload: ArrowPayloadType,
+) -> Result<Vec<[Option<RecordBatch>; N]>> {
+    assert_eq!(N, allowed_payloads.len());
+    assert!(allowed_payloads.contains(&primary_payload));
+    assert!(!batches.is_empty());
+
+    // First, ensure that all RecordBatches are sorted by parent_id & id so that we can efficiently
+    // pluck ranges from them.
+    for batches in batches.iter_mut() {
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..N {
+            if let Some(rb) = std::mem::take(&mut batches[i]) {
+                let rb = sort_recordbatch_by_ids(rb).context(error::BatchingSnafu)?;
+                batches[i] = Some(rb);
+            }
+        }
+    }
+
+    // Next, split the primary table
+    let primary_offset = POSITION_LOOKUP[primary_payload as usize];
+    let mut result = Vec::with_capacity(
+        batches
+            .iter()
+            .map(batch_length)
+            .map(|l| l as u64)
+            .sum::<u64>()
+            .div_ceil(max_output_batch.get()) as usize,
+    );
+    // SAFETY: on 32-bit archs, `as` conversion from u64 to usize can be wrong for values >=
+    // u32::MAX, but we don't care about those cases because if they happen we'll only fail to avoid
+    // a reallocation.
+
+    let mut total_records_seen: u64 = 0; // think of this like iter::single(0).chain(batch_sizes.iter()).cumsum()
+    for batches in batches.iter_mut() {
+        let num_records = batch_length(batches) as u64;
+        // SAFETY: % panics if the second arg is 0, but we're relying on NonZeroU64 to ensure
+        // that can't happen.
+        let prev_batch_size = total_records_seen % max_output_batch.get();
+        let first_batch_size = max_output_batch.get() - prev_batch_size;
+
+        if num_records > first_batch_size {
+            // We're going to split `batches`!
+            if let Some(rb) = batches[primary_offset].as_ref() {
+                let (split_primary_parts, ids) = split_record_batch(
+                    first_batch_size as usize,
+                    max_output_batch.get() as usize,
+                    rb,
+                )?;
+
+                // use ids to split the child tables: call split_child_record_batch
+                let new_batch_count = split_primary_parts.len();
+                result.extend(repeat_n([const { None }; N], new_batch_count));
+                let result_len = result.len(); // only here to avoid immutable borrowing overlapping mutable borrowing
+                // this is where we're going to be writing the rest of this split batch into!
+                let new_batch = &mut result[result_len - new_batch_count..];
+
+                // Store the newly split primary tables into this function's result
+                for (i, split_primary) in split_primary_parts.into_iter().enumerate() {
+                    new_batch[i][primary_offset] = Some(split_primary);
+                }
+                for payload in allowed_payloads.iter().copied() {
+                    generic_split_helper(batches, payload, primary_payload, &ids, new_batch)?;
+                }
+            } else {
+                panic!("expected to have primary for every group");
+            }
+        } else {
+            // Don't bother splitting `batches` since it is smaller than our threshold....
+            result.push(std::mem::replace(batches, [const { None }; N]));
+        }
+
+        // When we're done, the input should be an empty husk; if there's anything still left there,
+        // that means we screwed up!
+        assert_eq!(batches, &[const { None }; N]);
+        total_records_seen += num_records;
+    }
+
+    Ok(result)
+}
+
+// This is a recursive helper function; the depth of recursion is bounded by parent-child
+// relationships described in `child_payload_types` so we won't blow the stack.
+fn generic_split_helper<const N: usize>(
+    input: &[Option<RecordBatch>; N],
+    payload: ArrowPayloadType,
+    primary_payload: ArrowPayloadType,
+    parent_ids: &IDSeqs,
+    output: &mut [[Option<RecordBatch>; N]],
+) -> Result<()> {
+    // First, do the splitting, but only for non-primary payloads since those have to be done
+    // specially.
+    assert_ne!(payload, primary_payload);
+
+    let payload_offset = POSITION_LOOKUP[payload as usize];
+    if let Some(table) = input[payload_offset].as_ref() {
+        // `table` is a parent table with some children!
+        let child_payloads = child_payload_types(payload);
+
+        // Let's split it...
+        let split_table_parts = parent_ids.split_child_record_batch(table)?;
+        assert_eq!(split_table_parts.len(), output.len());
+
+        // ...and then recursively call ourself to do the same with our children
+        if !child_payloads.is_empty()
+            && child_payloads
+                .iter()
+                .any(|&payload| input[POSITION_LOOKUP[payload as usize]].is_some())
+        {
+            // We don't want to construct `id` unless there are children. Note that leaf nodes
+            // won't have children and consequently won't have an `id` column so we shouldn't
+            // construct `id` blindly!
+            let id = IDSeqs::from_split_cols(&split_table_parts)?;
+
+            for child_payload in child_payloads {
+                generic_split_helper(input, *child_payload, primary_payload, &id, output)?;
+            }
+        }
+
+        // ...and stash the result in `output`
+        for (i, split_table) in split_table_parts.into_iter().enumerate() {
+            output[i][payload_offset] = Some(split_table);
+        }
+    }
+
+    Ok(())
+}
+
 /// I'm a convenient wrapper for dealing with ID and PARENT_ID columns in generic code.
 enum IDColumn<'rb> {
     U16(&'rb UInt16Array),
@@ -52,207 +367,6 @@ impl<'rb> IDColumn<'rb> {
                 }
                 .fail()
             }
-        }
-    }
-}
-
-/// I describe the indices and values in an ID column for reindexing
-struct IDRange<T> {
-    indices: RangeInclusive<usize>,
-    ids: RangeInclusive<T>,
-    is_gap_free: bool,
-}
-
-/// I describe the indices and values in an ID column for reindexing; if the column is all nulls, my
-/// interior values will be None.
-struct MaybeIDRange<T>(Option<IDRange<T>>);
-
-impl<T> MaybeIDRange<T> {
-    /// Make a new `MaybeIDRange` from an array reference
-    pub fn from_generic_array<Native, ArrowPrimitive>(
-        array: &PrimitiveArray<ArrowPrimitive>,
-    ) -> MaybeIDRange<Native>
-    where
-        Native: Add<Output = Native> + Copy + PartialEq + PartialOrd + ArrowNativeTypeOp,
-        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
-    {
-        // Null-handling
-        //
-        // We're going to rely heavily on the fact that we sorted with nulls first. Why first and not last?
-        // Because the more efficient PrimitiveArray.nulls().unwrap().valid_indices() iterator is not double ended
-        // unlike PrimitiveArray.nulls().unwrap().iter() which is slower.
-
-        let all_values = array.values();
-        let len = array.len();
-        use arrow::array::Array;
-
-        let (non_null_slice, indices) = match array.nulls() {
-            // There are no nulls at all, so everything is valid!
-            None => (&all_values[..], Some(0..=len - 1)),
-
-            // Everything is null, so nothing is valid
-            Some(nulls) if nulls.null_count() == len => (&all_values[0..0], None),
-
-            // There are some nulls but also some non-null values, so somethings are valid
-            Some(nulls) => {
-                // We rely on the fact that we've sorted so that nulls come at the front.
-
-                // SAFETY: unwrap is safe here because we've already verified that the entire array
-                // isn't null, which means there has to be at least one valid index which means
-                // .next() will return Some the first time we call it.
-                let first_valid_index = nulls
-                    .valid_indices()
-                    .next()
-                    .expect("a non-null must be here");
-                (
-                    &all_values[first_valid_index..],
-                    Some(first_valid_index..=len - 1),
-                )
-            }
-        };
-        let is_gap_free = non_null_slice
-            .windows(2)
-            .all(|pair| pair[0] == pair[1] || pair[1] == pair[0] + Native::ONE);
-
-        MaybeIDRange(indices.map(|indices| {
-            let ids = non_null_slice[0]..=non_null_slice[len - 1];
-            IDRange {
-                ids,
-                indices,
-                is_gap_free,
-            }
-        }))
-    }
-
-    fn reindex(
-        rb: RecordBatch,
-        column_name: &'static str,
-        mut next_starting_id: u32,
-    ) -> Result<(RecordBatch, u32)> {
-        let id = IDColumn::extract(&rb, column_name)?;
-
-        let maybe_new_ids = match id {
-            IDColumn::U16(array) => Self::generic_reindex_column(array, next_starting_id)?,
-            IDColumn::U32(array) => Self::generic_reindex_column(array, next_starting_id)?,
-        };
-
-        // Sigh. There doesn't seemt to be a way to mutate the values of a single column of a
-        // `RecordBatch` without taking it apart entirely and then putting it back together.
-        let (schema, mut columns, _len) = rb.into_parts();
-
-        if let Some((new_id_array, new_next_starting_id)) = maybe_new_ids {
-            let column_index = schema
-                .fields
-                .find(column_name)
-                .expect("we already extracted this column")
-                .0;
-            columns[column_index] = new_id_array;
-            next_starting_id = new_next_starting_id;
-        }
-
-        Ok((
-            RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?,
-            next_starting_id,
-        ))
-    }
-
-    fn generic_reindex_column<Native, ArrowPrimitive>(
-        array: &PrimitiveArray<ArrowPrimitive>,
-        next_starting_id: u32,
-    ) -> Result<Option<(Arc<dyn arrow::array::Array>, u32)>>
-    where
-        Native: Add<Output = Native>
-            + Copy
-            + PartialEq
-            + PartialOrd
-            + TryFrom<u32>
-            + TryFrom<i64>
-            + Into<i64>
-            + Into<u32>
-            + Clone
-            + ArrowNativeTypeOp,
-        RangeFrom<Native>: Iterator<Item = Native>,
-        <Native as TryFrom<u32>>::Error: std::fmt::Debug,
-        <Native as TryFrom<i64>>::Error: std::fmt::Debug,
-        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
-    {
-        // FIxME: resort as needed!
-        if let MaybeIDRange(Some(id_range)) = Self::from_generic_array(array) {
-            // We do our bounds checking in `i64`-land because the only types we care about are `u32`
-            // and `u16` and `i64` can repersent all those values and all offsets between them.
-            let start: i64 = (*id_range.ids.start()).into();
-            let end: i64 = (*id_range.ids.end()).into();
-            let offset = (next_starting_id as i64) - start;
-            let do_sub_offset = offset.signum() == -1;
-            let offset = offset.abs();
-
-            // If this statement works, then we know that all additions/subtractions will work
-            // because we rely on the fact that the slice is sorted, so `start` is the smallest
-            // possible value and `end` is the largest possible value.
-            let _ = Native::try_from(if do_sub_offset {
-                start - offset
-            } else {
-                end + offset
-            })
-            .expect("overflow occurred");
-
-            let offset = Native::try_from(offset).expect("this should never happen");
-
-            let array = if id_range.is_gap_free {
-                // Whee! We can just do vectorized addition/subtraction!
-                let scalar = PrimitiveArray::<ArrowPrimitive>::new_scalar(offset);
-
-                // The normal add/sub kernels check for overflow which we don't want since we've already
-                // verified that overflow can't happen, so we use the wrapping variants even though we
-                // know no wrapping will occur to avoid the cost of overflow checks.
-                let array = if do_sub_offset {
-                    arrow::compute::kernels::numeric::sub_wrapping(array, &scalar)
-                } else {
-                    arrow::compute::kernels::numeric::add_wrapping(array, &scalar)
-                };
-
-                // FIXME: downcast_array will panic if the types aren't right; all it is doing is
-                // PrimitiveArray<ArrowType>::from(input.data()); maybe try that with try_from instead?
-                let array: PrimitiveArray<ArrowPrimitive> = arrow::array::downcast_array(
-                    &array.expect("this array is of the expected type"),
-                );
-                array
-            } else {
-                // Ugh, there are gaps, so we need to do something slower and more complicated to
-                // replace the sequence with a gap free version. This is complicated by the presence of
-                // duplciates.
-                use itertools::Itertools;
-
-                let null_count = *(id_range.indices.start());
-                let valid_ids = &array.values()[id_range.indices];
-                let next_starting_id = Native::try_from(next_starting_id)
-                    .expect("we can convert next_starting_id to our element type");
-
-                let values = valid_ids
-                    .iter()
-                    // we convert the original values into a form of run-length encoding
-                    .dedup_with_count()
-                    // and combine it with a gap-free sequence of new integer values
-                    .zip(next_starting_id..)
-                    .flat_map(|((count, _old_id), new_id)| {
-                        // swapping out old for new values, repeating items as needed
-                        repeat_n(new_id, count)
-                    });
-                if null_count == 0 {
-                    PrimitiveArray::from_iter_values(values)
-                } else {
-                    // First, we start with as many nulls as the original...
-                    let nulls = repeat_n(None, null_count);
-                    // ...then we add the non-null values
-                    nulls.chain(values.map(Some)).collect()
-                }
-            };
-
-            let last_id: u32 = array.values()[array.len() - 1].into();
-            let next_starting_id = last_id.checked_add(1).expect("no overflow");
-            Ok(Some((Arc::new(array), next_starting_id)))
-        } else {
-            Ok(None)
         }
     }
 }
@@ -487,196 +601,8 @@ fn split_record_batch(
     Ok((result, ids))
 }
 
-/// Fetch the primary table for a given batch
-#[must_use]
-fn primary_table<const N: usize>(batches: &[Option<RecordBatch>; N]) -> Option<&RecordBatch> {
-    match N {
-        Logs::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]].as_ref(),
-        Metrics::COUNT => {
-            batches[POSITION_LOOKUP[ArrowPayloadType::UnivariateMetrics as usize]].as_ref()
-        }
-        Traces::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Spans as usize]].as_ref(),
-        _ => {
-            unreachable!()
-        }
-    }
-}
-
-/// I logically represent a sequence of OtapArrowRecords that all share exactly the same tag.  I
-/// maintain an invariant that the primary table for each telemetry type in each batch is not None
-/// and has more than zero records.
-pub enum RecordsGroup {
-    /// A sequence of batches representing log data
-    Logs(Vec<[Option<RecordBatch>; Logs::COUNT]>),
-    /// A sequence of batches representing metric data
-    Metrics(Vec<[Option<RecordBatch>; Metrics::COUNT]>),
-    /// A sequence of batches representing span data
-    Traces(Vec<[Option<RecordBatch>; Traces::COUNT]>),
-}
-
-fn tag_count(records: &[OtapArrowRecords], tag: OtapArrowRecordTag) -> usize {
-    records
-        .iter()
-        .map(|records| (records.tag() == tag) as usize)
-        .sum()
-}
-
-impl RecordsGroup {
-    /// Convert a sequence of `OtapArrowRecords` into three `RecordsGroup` objects
-    #[must_use]
-    pub fn split_by_type(records: Vec<OtapArrowRecords>) -> [Self; 3] {
-        let log_count = tag_count(&records, OtapArrowRecordTag::Logs);
-        let mut log_records = Vec::with_capacity(log_count);
-
-        let metric_count = tag_count(&records, OtapArrowRecordTag::Metrics);
-        let mut metric_records = Vec::with_capacity(metric_count);
-
-        let trace_count = tag_count(&records, OtapArrowRecordTag::Traces);
-        let mut trace_records = Vec::with_capacity(trace_count);
-
-        for records in records {
-            match records {
-                OtapArrowRecords::Logs(logs) => {
-                    let batches = shrink(logs.into_batches());
-                    if primary_table(&batches)
-                        .map(|batch| batch.num_rows() > 0)
-                        .unwrap_or(false)
-                    {
-                        log_records.push(batches);
-                    }
-                }
-                OtapArrowRecords::Metrics(metrics) => {
-                    let batches = metrics.into_batches();
-                    if primary_table(&batches)
-                        .map(|batch| batch.num_rows() > 0)
-                        .unwrap_or(false)
-                    {
-                        metric_records.push(batches);
-                    }
-                }
-                OtapArrowRecords::Traces(traces) => {
-                    let batches = shrink(traces.into_batches());
-                    if primary_table(&batches)
-                        .map(|batch| batch.num_rows() > 0)
-                        .unwrap_or(false)
-                    {
-                        trace_records.push(batches);
-                    }
-                }
-            }
-        }
-
-        [
-            RecordsGroup::Logs(log_records),
-            RecordsGroup::Metrics(metric_records),
-            RecordsGroup::Traces(trace_records),
-        ]
-    }
-
-    /// Split `RecordBatch`es as need when they're larger than our threshold or when we need them in
-    /// smaller pieces to concatenate together into our target size.
-    pub fn split(self, max_output_batch: NonZeroU64) -> Result<Self> {
-        Ok(match self {
-            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_split(
-                items,
-                max_output_batch,
-                Logs::allowed_payload_types(),
-                ArrowPayloadType::Logs,
-            )?),
-            RecordsGroup::Metrics(items) => RecordsGroup::Metrics(generic_split(
-                items,
-                max_output_batch,
-                Metrics::allowed_payload_types(),
-                ArrowPayloadType::UnivariateMetrics,
-            )?),
-            RecordsGroup::Traces(items) => RecordsGroup::Traces(generic_split(
-                items,
-                max_output_batch,
-                Traces::allowed_payload_types(),
-                ArrowPayloadType::Spans,
-            )?),
-        })
-    }
-
-    /// Merge `RecordBatch`es together so that they're no bigger than `max_output_batch`.
-    pub fn concatenate(self, max_output_batch: Option<NonZeroU64>) -> Result<Self> {
-        Ok(match self {
-            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(
-                items,
-                Logs::allowed_payload_types(),
-                max_output_batch,
-            )?),
-            RecordsGroup::Metrics(items) => RecordsGroup::Metrics(generic_concatenate(
-                items,
-                Metrics::allowed_payload_types(),
-                max_output_batch,
-            )?),
-            RecordsGroup::Traces(items) => RecordsGroup::Traces(generic_concatenate(
-                items,
-                Traces::allowed_payload_types(),
-                max_output_batch,
-            )?),
-        })
-    }
-
-    // FIXME: replace this with an Extend impl to avoid unnecessary allocations
-    /// Convert into a sequence of `OtapArrowRecords`
-    #[must_use]
-    pub fn into_otap_arrow_records(self) -> Vec<OtapArrowRecords> {
-        match self {
-            RecordsGroup::Logs(items) => items
-                .into_iter()
-                .map(|batches| OtapArrowRecords::Logs(Logs { batches }))
-                .collect(),
-            RecordsGroup::Metrics(items) => items
-                .into_iter()
-                .map(|batches| OtapArrowRecords::Metrics(Metrics { batches }))
-                .collect(),
-            RecordsGroup::Traces(items) => items
-                .into_iter()
-                .map(|batches| OtapArrowRecords::Traces(Traces { batches }))
-                .collect(),
-        }
-    }
-}
-
-fn generic_concatenate<const N: usize>(
-    batches: Vec<[Option<RecordBatch>; N]>,
-    allowed_payloads: &[ArrowPayloadType],
-    max_output_batch: Option<NonZeroU64>,
-) -> Result<Vec<[Option<RecordBatch>; N]>> {
-    let mut result = Vec::new();
-
-    let mut current = Vec::new();
-    let mut current_batch_length = 0;
-    for batches in batches {
-        let emit_new_batch = max_output_batch
-            .map(|max_output_batch| {
-                (current_batch_length + batch_length(&batches)) as u64 >= max_output_batch.get()
-            })
-            .unwrap_or(true);
-        if emit_new_batch {
-            reindex(&mut current, allowed_payloads)?;
-            result.push(generic_schemaless_concatenate(&mut current)?);
-            current_batch_length = 0;
-            current.clear();
-        } else {
-            current_batch_length += batch_length(&batches);
-            current.push(batches);
-        }
-    }
-
-    Ok(result)
-}
-
-/// This is basically a transpose view thats lets us look at a sequence of the `i`-th table given a
-/// sequence of `RecordBatch` arrays.
-fn select<const N: usize>(
-    batches: &[[Option<RecordBatch>; N]],
-    i: usize,
-) -> impl Iterator<Item = &RecordBatch> {
-    batches.iter().flat_map(move |batches| batches[i].as_ref())
-}
+// Reindexing code
+// *************************************************************************************************
 
 fn reindex<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
@@ -719,16 +645,291 @@ fn reindex<const N: usize>(
     Ok(())
 }
 
-/// A generic helper for `unify`
-fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
-    array: DictionaryArray<K>,
-) -> arrow::error::Result<Arc<dyn arrow::array::Array>> {
-    let (keys, values) = array.into_parts();
-    let options = Some(arrow::compute::TakeOptions {
-        check_bounds: false,
-    });
-    arrow::compute::take(&values, &keys, options)
+/// I describe the indices and values in an ID column for reindexing
+struct IDRange<T> {
+    indices: RangeInclusive<usize>,
+    ids: RangeInclusive<T>,
+    is_gap_free: bool,
 }
+
+/// I describe the indices and values in an ID column for reindexing; if the column is all nulls, my
+/// interior values will be None.
+struct MaybeIDRange<T>(Option<IDRange<T>>);
+
+impl<T> MaybeIDRange<T> {
+    /// Make a new `MaybeIDRange` from an array reference
+    pub fn from_generic_array<Native, ArrowPrimitive>(
+        array: &PrimitiveArray<ArrowPrimitive>,
+    ) -> MaybeIDRange<Native>
+    where
+        Native: Add<Output = Native> + Copy + PartialEq + PartialOrd + ArrowNativeTypeOp,
+        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
+    {
+        // Null-handling
+        //
+        // We're going to rely heavily on the fact that we sorted with nulls first. Why first and not last?
+        // Because the more efficient PrimitiveArray.nulls().unwrap().valid_indices() iterator is not double ended
+        // unlike PrimitiveArray.nulls().unwrap().iter() which is slower.
+
+        let all_values = array.values();
+        let len = array.len();
+        use arrow::array::Array;
+
+        let (non_null_slice, indices) = match array.nulls() {
+            // There are no nulls at all, so everything is valid!
+            None => (&all_values[..], Some(0..=len - 1)),
+
+            // Everything is null, so nothing is valid
+            Some(nulls) if nulls.null_count() == len => (&all_values[0..0], None),
+
+            // There are some nulls but also some non-null values, so somethings are valid
+            Some(nulls) => {
+                // We rely on the fact that we've sorted so that nulls come at the front.
+
+                // SAFETY: unwrap is safe here because we've already verified that the entire array
+                // isn't null, which means there has to be at least one valid index which means
+                // .next() will return Some the first time we call it.
+                let first_valid_index = nulls
+                    .valid_indices()
+                    .next()
+                    .expect("a non-null must be here");
+                (
+                    &all_values[first_valid_index..],
+                    Some(first_valid_index..=len - 1),
+                )
+            }
+        };
+        let is_gap_free = non_null_slice
+            .windows(2)
+            .all(|pair| pair[0] == pair[1] || pair[1] == pair[0] + Native::ONE);
+
+        MaybeIDRange(indices.map(|indices| {
+            let ids = non_null_slice[0]..=non_null_slice[len - 1];
+            IDRange {
+                ids,
+                indices,
+                is_gap_free,
+            }
+        }))
+    }
+
+    fn reindex(
+        rb: RecordBatch,
+        column_name: &'static str,
+        mut next_starting_id: u32,
+    ) -> Result<(RecordBatch, u32)> {
+        let id = IDColumn::extract(&rb, column_name)?;
+
+        let maybe_new_ids = match id {
+            IDColumn::U16(array) => Self::generic_reindex_column(array, next_starting_id)?,
+            IDColumn::U32(array) => Self::generic_reindex_column(array, next_starting_id)?,
+        };
+
+        // Sigh. There doesn't seemt to be a way to mutate the values of a single column of a
+        // `RecordBatch` without taking it apart entirely and then putting it back together.
+        let (schema, mut columns, _len) = rb.into_parts();
+
+        if let Some((new_id_array, new_next_starting_id)) = maybe_new_ids {
+            let column_index = schema
+                .fields
+                .find(column_name)
+                .expect("we already extracted this column")
+                .0;
+            columns[column_index] = new_id_array;
+            next_starting_id = new_next_starting_id;
+        }
+
+        Ok((
+            RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?,
+            next_starting_id,
+        ))
+    }
+
+    fn generic_reindex_column<Native, ArrowPrimitive>(
+        array: &PrimitiveArray<ArrowPrimitive>,
+        next_starting_id: u32,
+    ) -> Result<Option<(Arc<dyn arrow::array::Array>, u32)>>
+    where
+        Native: Add<Output = Native>
+            + Copy
+            + PartialEq
+            + PartialOrd
+            + TryFrom<u32>
+            + TryFrom<i64>
+            + Into<i64>
+            + Into<u32>
+            + Clone
+            + ArrowNativeTypeOp,
+        RangeFrom<Native>: Iterator<Item = Native>,
+        <Native as TryFrom<u32>>::Error: std::fmt::Debug,
+        <Native as TryFrom<i64>>::Error: std::fmt::Debug,
+        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
+    {
+        // FIxME: resort as needed!
+        if let MaybeIDRange(Some(id_range)) = Self::from_generic_array(array) {
+            // We do our bounds checking in `i64`-land because the only types we care about are `u32`
+            // and `u16` and `i64` can repersent all those values and all offsets between them.
+            let start: i64 = (*id_range.ids.start()).into();
+            let end: i64 = (*id_range.ids.end()).into();
+            let offset = (next_starting_id as i64) - start;
+            let do_sub_offset = offset.signum() == -1;
+            let offset = offset.abs();
+
+            // If this statement works, then we know that all additions/subtractions will work
+            // because we rely on the fact that the slice is sorted, so `start` is the smallest
+            // possible value and `end` is the largest possible value.
+            let _ = Native::try_from(if do_sub_offset {
+                start - offset
+            } else {
+                end + offset
+            })
+            .expect("overflow occurred");
+
+            let offset = Native::try_from(offset).expect("this should never happen");
+
+            let array = if id_range.is_gap_free {
+                // Whee! We can just do vectorized addition/subtraction!
+                let scalar = PrimitiveArray::<ArrowPrimitive>::new_scalar(offset);
+
+                // The normal add/sub kernels check for overflow which we don't want since we've already
+                // verified that overflow can't happen, so we use the wrapping variants even though we
+                // know no wrapping will occur to avoid the cost of overflow checks.
+                let array = if do_sub_offset {
+                    arrow::compute::kernels::numeric::sub_wrapping(array, &scalar)
+                } else {
+                    arrow::compute::kernels::numeric::add_wrapping(array, &scalar)
+                };
+
+                // FIXME: downcast_array will panic if the types aren't right; all it is doing is
+                // PrimitiveArray<ArrowType>::from(input.data()); maybe try that with try_from instead?
+                let array: PrimitiveArray<ArrowPrimitive> = arrow::array::downcast_array(
+                    &array.expect("this array is of the expected type"),
+                );
+                array
+            } else {
+                // Ugh, there are gaps, so we need to do something slower and more complicated to
+                // replace the sequence with a gap free version. This is complicated by the presence of
+                // duplciates.
+                use itertools::Itertools;
+
+                let null_count = *(id_range.indices.start());
+                let valid_ids = &array.values()[id_range.indices];
+                let next_starting_id = Native::try_from(next_starting_id)
+                    .expect("we can convert next_starting_id to our element type");
+
+                let values = valid_ids
+                    .iter()
+                    // we convert the original values into a form of run-length encoding
+                    .dedup_with_count()
+                    // and combine it with a gap-free sequence of new integer values
+                    .zip(next_starting_id..)
+                    .flat_map(|((count, _old_id), new_id)| {
+                        // swapping out old for new values, repeating items as needed
+                        repeat_n(new_id, count)
+                    });
+                if null_count == 0 {
+                    PrimitiveArray::from_iter_values(values)
+                } else {
+                    // First, we start with as many nulls as the original...
+                    let nulls = repeat_n(None, null_count);
+                    // ...then we add the non-null values
+                    nulls.chain(values.map(Some)).collect()
+                }
+            };
+
+            let last_id: u32 = array.values()[array.len() - 1].into();
+            let next_starting_id = last_id.checked_add(1).expect("no overflow");
+            Ok(Some((Arc::new(array), next_starting_id)))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+// Code for merging batches (concatenation)
+// *************************************************************************************************
+
+fn generic_concatenate<const N: usize>(
+    batches: Vec<[Option<RecordBatch>; N]>,
+    allowed_payloads: &[ArrowPayloadType],
+    max_output_batch: Option<NonZeroU64>,
+) -> Result<Vec<[Option<RecordBatch>; N]>> {
+    let mut result = Vec::new();
+
+    let mut current = Vec::new();
+    let mut current_batch_length = 0;
+    for batches in batches {
+        let emit_new_batch = max_output_batch
+            .map(|max_output_batch| {
+                (current_batch_length + batch_length(&batches)) as u64 >= max_output_batch.get()
+            })
+            .unwrap_or(true);
+        if emit_new_batch {
+            reindex(&mut current, allowed_payloads)?;
+            result.push(generic_schemaless_concatenate(&mut current)?);
+            current_batch_length = 0;
+            current.clear();
+        } else {
+            current_batch_length += batch_length(&batches);
+            current.push(batches);
+        }
+    }
+
+    Ok(result)
+}
+
+fn generic_schemaless_concatenate<const N: usize>(
+    batches: &mut [[Option<RecordBatch>; N]],
+) -> Result<[Option<RecordBatch>; N]> {
+    unify(batches)?;
+    let mut result = [const { None }; N];
+    for i in 0..N {
+        // ignore all the rows where every item is None
+        if select(batches, i).next().is_some() {
+            let schema = Arc::new(
+                Schema::try_merge(select(batches, i).map(|rb| Arc::unwrap_or_clone(rb.schema())))
+                    .context(error::BatchingSnafu)?,
+            );
+
+            let num_rows = select(batches, i).map(RecordBatch::num_rows).sum();
+            let mut batcher = arrow::compute::BatchCoalescer::new(schema.clone(), num_rows);
+            for row in batches.iter_mut() {
+                if let Some(rb) = row[i].take() {
+                    batcher
+                        .push_batch(
+                            rb.with_schema(schema.clone())
+                                .context(error::BatchingSnafu)?,
+                        )
+                        .context(error::BatchingSnafu)?;
+                }
+            }
+            batcher
+                .finish_buffered_batch()
+                .context(error::BatchingSnafu)?;
+            let concatenated = batcher
+                .next_completed_batch()
+                .expect("by construction this should never be empty");
+            result[i] = Some(concatenated);
+        }
+    }
+
+    for batches in batches {
+        assert_eq!(batches, &[const { None }; N]);
+    }
+    Ok(result)
+}
+
+/// This is basically a transpose view thats lets us look at a sequence of the `i`-th table given a
+/// sequence of `RecordBatch` arrays.
+fn select<const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
+    i: usize,
+) -> impl Iterator<Item = &RecordBatch> {
+    batches.iter().flat_map(move |batches| batches[i].as_ref())
+}
+
+// Part of concatenation is unifying batches into a common schema and data...
+// *************************************************************************************************
 
 // There are two problems we need to solve when concatenating `RecordBatch`es:
 //
@@ -879,195 +1080,13 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
     Ok(())
 }
 
-fn generic_schemaless_concatenate<const N: usize>(
-    batches: &mut [[Option<RecordBatch>; N]],
-) -> Result<[Option<RecordBatch>; N]> {
-    unify(batches)?;
-    let mut result = [const { None }; N];
-    for i in 0..N {
-        // ignore all the rows where every item is None
-        if select(batches, i).next().is_some() {
-            let schema = Arc::new(
-                Schema::try_merge(select(batches, i).map(|rb| Arc::unwrap_or_clone(rb.schema())))
-                    .context(error::BatchingSnafu)?,
-            );
-
-            let num_rows = select(batches, i).map(RecordBatch::num_rows).sum();
-            let mut batcher = arrow::compute::BatchCoalescer::new(schema.clone(), num_rows);
-            for row in batches.iter_mut() {
-                if let Some(rb) = row[i].take() {
-                    batcher
-                        .push_batch(
-                            rb.with_schema(schema.clone())
-                                .context(error::BatchingSnafu)?,
-                        )
-                        .context(error::BatchingSnafu)?;
-                }
-            }
-            batcher
-                .finish_buffered_batch()
-                .context(error::BatchingSnafu)?;
-            let concatenated = batcher
-                .next_completed_batch()
-                .expect("by construction this should never be empty");
-            result[i] = Some(concatenated);
-        }
-    }
-
-    for batches in batches {
-        assert_eq!(batches, &[const { None }; N]);
-    }
-    Ok(result)
-}
-
-fn generic_split<const N: usize>(
-    mut batches: Vec<[Option<RecordBatch>; N]>,
-    max_output_batch: NonZeroU64,
-    allowed_payloads: &[ArrowPayloadType],
-    primary_payload: ArrowPayloadType,
-) -> Result<Vec<[Option<RecordBatch>; N]>> {
-    assert_eq!(N, allowed_payloads.len());
-    assert!(allowed_payloads.contains(&primary_payload));
-    assert!(!batches.is_empty());
-
-    // First, ensure that all RecordBatches are sorted by parent_id & id so that we can efficiently
-    // pluck ranges from them.
-    for batches in batches.iter_mut() {
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..N {
-            if let Some(rb) = std::mem::take(&mut batches[i]) {
-                let rb = sort_recordbatch_by_ids(rb).context(error::BatchingSnafu)?;
-                batches[i] = Some(rb);
-            }
-        }
-    }
-
-    // Next, split the primary table
-    let primary_offset = POSITION_LOOKUP[primary_payload as usize];
-    let mut result = Vec::with_capacity(
-        batches
-            .iter()
-            .map(batch_length)
-            .map(|l| l as u64)
-            .sum::<u64>()
-            .div_ceil(max_output_batch.get()) as usize,
-    );
-    // SAFETY: on 32-bit archs, `as` conversion from u64 to usize can be wrong for values >=
-    // u32::MAX, but we don't care about those cases because if they happen we'll only fail to avoid
-    // a reallocation.
-
-    let mut total_records_seen: u64 = 0; // think of this like iter::single(0).chain(batch_sizes.iter()).cumsum()
-    for batches in batches.iter_mut() {
-        let num_records = batch_length(batches) as u64;
-        // SAFETY: % panics if the second arg is 0, but we're relying on NonZeroU64 to ensure
-        // that can't happen.
-        let prev_batch_size = total_records_seen % max_output_batch.get();
-        let first_batch_size = max_output_batch.get() - prev_batch_size;
-
-        if num_records > first_batch_size {
-            // We're going to split `batches`!
-            if let Some(rb) = batches[primary_offset].as_ref() {
-                let (split_primary_parts, ids) = split_record_batch(
-                    first_batch_size as usize,
-                    max_output_batch.get() as usize,
-                    rb,
-                )?;
-
-                // use ids to split the child tables: call split_child_record_batch
-                let new_batch_count = split_primary_parts.len();
-                result.extend(repeat_n([const { None }; N], new_batch_count));
-                let result_len = result.len(); // only here to avoid immutable borrowing overlapping mutable borrowing
-                // this is where we're going to be writing the rest of this split batch into!
-                let new_batch = &mut result[result_len - new_batch_count..];
-
-                // Store the newly split primary tables into this function's result
-                for (i, split_primary) in split_primary_parts.into_iter().enumerate() {
-                    new_batch[i][primary_offset] = Some(split_primary);
-                }
-                for payload in allowed_payloads.iter().copied() {
-                    generic_split_helper(batches, payload, primary_payload, &ids, new_batch)?;
-                }
-            } else {
-                panic!("expected to have primary for every group");
-            }
-        } else {
-            // Don't bother splitting `batches` since it is smaller than our threshold....
-            result.push(std::mem::replace(batches, [const { None }; N]));
-        }
-
-        // When we're done, the input should be an empty husk; if there's anything still left there,
-        // that means we screwed up!
-        assert_eq!(batches, &[const { None }; N]);
-        total_records_seen += num_records;
-    }
-
-    Ok(result)
-}
-
-// This is a recursive helper function; the depth of recursion is bounded by parent-child
-// relationships described in `child_payload_types` so we won't blow the stack.
-fn generic_split_helper<const N: usize>(
-    input: &[Option<RecordBatch>; N],
-    payload: ArrowPayloadType,
-    primary_payload: ArrowPayloadType,
-    parent_ids: &IDSeqs,
-    output: &mut [[Option<RecordBatch>; N]],
-) -> Result<()> {
-    // First, do the splitting, but only for non-primary payloads since those have to be done
-    // specially.
-    assert_ne!(payload, primary_payload);
-
-    let payload_offset = POSITION_LOOKUP[payload as usize];
-    if let Some(table) = input[payload_offset].as_ref() {
-        // `table` is a parent table with some children!
-        let child_payloads = child_payload_types(payload);
-
-        // Let's split it...
-        let split_table_parts = parent_ids.split_child_record_batch(table)?;
-        assert_eq!(split_table_parts.len(), output.len());
-
-        // ...and then recursively call ourself to do the same with our children
-        if !child_payloads.is_empty()
-            && child_payloads
-                .iter()
-                .any(|&payload| input[POSITION_LOOKUP[payload as usize]].is_some())
-        {
-            // We don't want to construct `id` unless there are children. Note that leaf nodes
-            // won't have children and consequently won't have an `id` column so we shouldn't
-            // construct `id` blindly!
-            let id = IDSeqs::from_split_cols(&split_table_parts)?;
-
-            for child_payload in child_payloads {
-                generic_split_helper(input, *child_payload, primary_payload, &id, output)?;
-            }
-        }
-
-        // ...and stash the result in `output`
-        for (i, split_table) in split_table_parts.into_iter().enumerate() {
-            output[i][payload_offset] = Some(split_table);
-        }
-    }
-
-    Ok(())
-}
-
-/// In order to make `into_batches()` work, it has to return the maximally sized array of
-/// `Option<RecordBatch>` padding out the end with `None`s. This function undoes that for
-/// reintegrating the data into a generic context where we know exactly how big the array should be.
-fn shrink<T, const BIGGER: usize, const SMALLER: usize>(
-    array: [Option<T>; BIGGER],
-) -> [Option<T>; SMALLER] {
-    // Because the T we actually care about doesn't impl Copy, I think this is the simplest way to
-    // verify that the tail is all None.
-    for none in array[SMALLER..].iter() {
-        assert!(none.is_none());
-    }
-
-    assert!(SMALLER < BIGGER);
-    let mut iter = array.into_iter();
-    // SAFETY: we've already verified that the iterator won't run out with the assert above.
-    std::array::from_fn(|_| {
-        iter.next()
-            .expect("we will have the right number of elements")
-    })
+/// A generic helper for `unify`
+fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
+    array: DictionaryArray<K>,
+) -> arrow::error::Result<Arc<dyn arrow::array::Array>> {
+    let (keys, values) = array.into_parts();
+    let options = Some(arrow::compute::TakeOptions {
+        check_bounds: false,
+    });
+    arrow::compute::take(&values, &keys, options)
 }

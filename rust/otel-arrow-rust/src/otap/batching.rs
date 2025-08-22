@@ -80,21 +80,9 @@ pub struct Batcher {
 }
 
 impl Batcher {
-    /// How to send `OtapArrowRecords` for batching.
-    #[must_use]
-    pub fn inbound(&self) -> UnboundedSender<OtapArrowRecords> {
-        self.input_tx.clone()
-    }
-
-    /// How to receive properly batched `OtapArrowRecords`
-    pub fn outbound(&mut self) -> Option<UnboundedReceiver<OtapArrowRecords>> {
-        self.output_rx.take()
-    }
-}
-
-impl Batcher {
     /// Create a new `Batcher`!
-    pub async fn new(config: Config) -> Self {
+    #[must_use]
+    pub fn new(config: Config) -> Self {
         let (input_tx, input_rx) = unbounded_channel();
         let (output_tx, output_rx) = unbounded_channel();
         let output_rx = Some(output_rx);
@@ -117,6 +105,17 @@ impl Batcher {
             termination_tx,
             _task_handle,
         }
+    }
+
+    /// How to send `OtapArrowRecords` for batching.
+    #[must_use]
+    pub fn inbound(&self) -> UnboundedSender<OtapArrowRecords> {
+        self.input_tx.clone()
+    }
+
+    /// How to receive properly batched `OtapArrowRecords`
+    pub fn outbound(&mut self) -> Option<UnboundedReceiver<OtapArrowRecords>> {
+        self.output_rx.take()
     }
 }
 
