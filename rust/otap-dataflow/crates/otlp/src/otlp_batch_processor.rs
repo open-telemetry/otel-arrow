@@ -14,6 +14,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
 use prost::Message as ProstMessage;
+use serde::Deserialize;
 use std::time::{Duration, Instant};
 
 const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
@@ -301,7 +302,8 @@ impl ExportTraceServiceRequest {
 }
 
 /// Defines the strategy for sizing batches in the batch processor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BatchSizer {
     /// Batch by the number of top-level requests (resource groups).
     Requests,
@@ -665,6 +667,92 @@ impl Processor<OTLPData> for GenericBatcher {
         }
     }
 }
+
+// ===== Processor factory and config validation =====
+use crate::OTLP_PROCESSOR_FACTORIES;
+use linkme::distributed_slice;
+use otap_df_config::error::Error as ConfigError;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ProcessorFactory;
+use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::node::NodeId;
+use otap_df_engine::processor::ProcessorWrapper;
+use serde_json::Value;
+use std::sync::Arc;
+use validator::Validate;
+
+fn default_timeout_millis() -> u64 {
+    5_000
+}
+fn default_send_batch_size() -> usize {
+    512
+}
+fn default_sizer() -> BatchSizer {
+    BatchSizer::Items
+}
+
+#[derive(Debug, Clone, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
+struct UserConfig {
+    #[serde(default = "default_sizer")]
+    pub sizer: BatchSizer,
+
+    #[serde(default = "default_send_batch_size")]
+    #[validate(range(min = 1))]
+    pub send_batch_size: usize,
+
+    /// Timeout for flushing partial batches, in milliseconds.
+    #[serde(default = "default_timeout_millis")]
+    #[validate(range(min = 1))]
+    pub timeout_millis: u64,
+}
+
+impl From<&UserConfig> for BatchConfig {
+    fn from(cfg: &UserConfig) -> Self {
+        BatchConfig {
+            sizer: cfg.sizer,
+            send_batch_size: cfg.send_batch_size,
+            timeout: Duration::from_millis(cfg.timeout_millis),
+        }
+    }
+}
+
+/// Factory function to create the OTLP batch processor from user config.
+pub fn create_otlp_batch_processor(
+    node: NodeId,
+    config: &Value,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OTLPData>, ConfigError> {
+    let cfg: UserConfig =
+        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+    if let Err(e) = cfg.validate() {
+        return Err(ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        });
+    }
+
+    let user_cfg = Arc::new(NodeUserConfig::new_processor_config(
+        _OTLP_BATCH_PROCESSOR_URN,
+    ));
+    Ok(ProcessorWrapper::local(
+        GenericBatcher::new(BatchConfig::from(&cfg)),
+        node,
+        user_cfg,
+        processor_config,
+    ))
+}
+
+/// Register the OTLP batch processor as an OTLP processor factory
+#[allow(unsafe_code)]
+#[distributed_slice(OTLP_PROCESSOR_FACTORIES)]
+pub static OTLP_BATCH_PROCESSOR: ProcessorFactory<OTLPData> = ProcessorFactory {
+    name: _OTLP_BATCH_PROCESSOR_URN,
+    create: |node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+        create_otlp_batch_processor(node, config, proc_cfg)
+    },
+};
 
 #[cfg(test)]
 mod tests {
@@ -1790,6 +1878,30 @@ mod tests {
                 assert_eq!(emitted.len(), 1, "Should emit 1 batch due to byte size");
             })
             .validate(|_ctx| async {});
+    }
+}
+
+#[cfg(test)]
+mod config_validation_tests {
+    use super::*;
+    use otap_df_engine::testing::test_node;
+
+    #[test]
+    fn invalid_send_batch_size_zero_is_rejected() {
+        let node = test_node("batch-config");
+        let proc_cfg = ProcessorConfig::new("batch_config_test");
+        let cfg = serde_json::json!({
+            "send_batch_size": 0,
+            "timeout_millis": 1000,
+            "sizer": "items"
+        });
+        let res = create_otlp_batch_processor(node, &cfg, &proc_cfg);
+        match res {
+            Err(ConfigError::InvalidUserConfig { error }) => {
+                assert!(error.contains("send_batch_size"), "error: {error}");
+            }
+            _other => panic!("expected InvalidUserConfig error, got unexpected result"),
+        }
     }
 }
 

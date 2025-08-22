@@ -95,10 +95,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 Err(e) => {
                     // Thread join failed, handle the error
                     return Err(error::Error::InternalError {
-                        message: format!(
-                            "Failed to join thread pipeline-core-{}: {:?}",
-                            core_id, e
-                        ),
+                        message: format!("Failed to join thread pipeline-core-{core_id}: {e:?}"),
                     });
                 }
             }
