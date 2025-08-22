@@ -9,12 +9,6 @@ use otap_df_telemetry_macros::attribute_set;
 #[attribute_set(name = "resource.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ResourceAttributeSet {
-    /// Core identifier.
-    #[attribute]
-    pub core_id: usize,
-    /// NUMA node identifier.
-    #[attribute]
-    pub numa_node_id: usize,
     /// Unique process instance identifier (base32-encoded UUID v7).
     #[attribute]
     pub process_instance_id: Cow<'static, str>,

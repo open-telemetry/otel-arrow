@@ -152,8 +152,6 @@ impl PipelineContext {
                 pipeline_attrs: PipelineAttributeSet {
                     engine_attrs: EngineAttributeSet {
                         resource_attrs: ResourceAttributeSet {
-                            core_id: self.core_id,
-                            numa_node_id: self.controller_context.numa_node_id,
                             process_instance_id: self.controller_context.process_instance_id.clone(),
                             host_id: self.controller_context.host_id.clone(),
                             container_id: self.controller_context.container_id.clone(),
