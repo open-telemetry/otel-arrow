@@ -952,7 +952,9 @@ mod test {
     use arrow::datatypes::{
         DataType, Field, Fields, Float64Type, Schema, TimeUnit, UInt8Type, UInt16Type, UInt64Type,
     };
+
     use otap_df_pdata_views::otlp::bytes::logs::RawLogsData;
+    use otap_df_pdata_views::otlp::bytes::traces::RawTraceData;
     use otel_arrow_rust::otlp::attributes::cbor::decode_pcommon_val;
     use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
     use otel_arrow_rust::proto::opentelemetry::common::v1::{
@@ -962,6 +964,11 @@ mod test {
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
     use otel_arrow_rust::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_rust::proto::opentelemetry::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, Status, TracesData,
+        span::{Event, Link, SpanKind},
+        status::StatusCode,
+    };
     use otel_arrow_rust::schema::{FieldExt, SpanId, TraceId, consts, no_nulls};
     use prost::Message;
 
@@ -3721,14 +3728,12 @@ mod test {
         _test_attributes_all_field_types_generic(RawLogsData::new(&logs_data_bytes));
     }
 
-    #[test]
-    fn test_spans_proto_struct() {
-        use otel_arrow_rust::proto::opentelemetry::trace::v1::*;
-
+    fn _generate_traces_data_all_fields() -> TracesData {
         let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
         let a_parent_span_id: SpanId = [27, 28, 19, 20, 21, 22, 23, 24];
-        let traces_data = TracesData::new(vec![
+
+        TracesData::new(vec![
             ResourceSpans::build(
                 Resource::build(vec![KeyValue::new(
                     "attr1",
@@ -3762,10 +3767,10 @@ mod test {
                     .dropped_attributes_count(7u32)
                     .dropped_events_count(11u32)
                     .dropped_links_count(29u32)
-                    .kind(span::SpanKind::Consumer)
-                    .status(Status::new("something happened", status::StatusCode::Error))
+                    .kind(SpanKind::Consumer)
+                    .status(Status::new("something happened", StatusCode::Error))
                     .events(vec![
-                        span::Event::build("an_event", 456u64)
+                        Event::build("an_event", 456u64)
                             .attributes(vec![KeyValue::new(
                                 "event_attr1",
                                 AnyValue::new_string("hi"),
@@ -3774,7 +3779,7 @@ mod test {
                             .finish(),
                     ])
                     .links(vec![
-                        span::Link::build(a_trace_id.to_vec(), a_span_id.to_vec())
+                        Link::build(a_trace_id.to_vec(), a_span_id.to_vec())
                             .trace_state("some link state")
                             .dropped_attributes_count(567u32)
                             .flags(7u32)
@@ -3789,13 +3794,22 @@ mod test {
                 .finish(),
             ])
             .finish(),
-        ]);
+        ])
+    }
 
-        let otap_batch = encode_spans_otap_batch(&traces_data).unwrap();
+    fn _test_traces_data_all_fields<T>(traces_view: &T)
+    where
+        T: TracesView,
+    {
+        let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
+        let a_parent_span_id: SpanId = [27, 28, 19, 20, 21, 22, 23, 24];
+
+        let otap_batch = encode_spans_otap_batch(traces_view).unwrap();
 
         let expected_span_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt16, true),
+                Field::new("id", DataType::UInt16, true).with_plain_encoding(),
                 Field::new(
                     "resource",
                     DataType::Struct(
@@ -4034,7 +4048,7 @@ mod test {
                 // kind
                 Arc::new(DictionaryArray::<UInt8Type>::new(
                     UInt8Array::from(vec![0]),
-                    Arc::new(Int32Array::from(vec![span::SpanKind::Consumer as i32])),
+                    Arc::new(Int32Array::from(vec![SpanKind::Consumer as i32])),
                 )),
                 // dropped_attributes_count
                 Arc::new(UInt32Array::from(vec![7])) as ArrayRef,
@@ -4056,7 +4070,7 @@ mod test {
                         )),
                         Arc::new(DictionaryArray::<UInt8Type>::new(
                             UInt8Array::from(vec![0]),
-                            Arc::new(Int32Array::from(vec![status::StatusCode::Error as i32])),
+                            Arc::new(Int32Array::from(vec![StatusCode::Error as i32])),
                         )) as ArrayRef,
                     ),
                     // status message
@@ -4084,8 +4098,8 @@ mod test {
 
         let expected_events_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, true),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, true).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -4121,8 +4135,8 @@ mod test {
 
         let expected_links_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("id", DataType::UInt32, true),
-                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("id", DataType::UInt32, true).with_plain_encoding(),
+                Field::new("parent_id", DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     "trace_id",
                     DataType::Dictionary(
@@ -4266,6 +4280,20 @@ mod test {
         let link_attrs_rb = otap_batch.get(ArrowPayloadType::SpanLinkAttrs).unwrap();
         compare_record_batches(link_attrs_rb, &expected_link_attrs_batch);
         assert_eq!(link_attrs_rb, &expected_link_attrs_batch);
+    }
+
+    #[test]
+    fn test_spans_all_fields_proto_struct() {
+        let traces_view = _generate_traces_data_all_fields();
+        _test_traces_data_all_fields(&traces_view);
+    }
+
+    #[test]
+    fn test_traces_all_fields_proto_bytes() {
+        let traces_data = _generate_traces_data_all_fields();
+        let mut traces_data_bytes = vec![];
+        traces_data.encode(&mut traces_data_bytes).unwrap();
+        _test_traces_data_all_fields(&RawTraceData::new(&traces_data_bytes));
     }
 
     /// I'm a small helper function for examining differences between expected and under-test
