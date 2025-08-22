@@ -9,13 +9,24 @@ use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use async_trait::async_trait;
+use linkme::distributed_slice;
+use otap_df_config::error::Error as ConfigError;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
+use otap_df_engine::ProcessorFactory;
+use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::node::NodeId;
+use otap_df_engine::processor::ProcessorWrapper;
 use prost::Message as ProstMessage;
 use serde::Deserialize;
+use serde_json::Value;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use validator::Validate;
+use crate::OTLP_PROCESSOR_FACTORIES;
 
 const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
 
@@ -669,17 +680,6 @@ impl Processor<OTLPData> for GenericBatcher {
 }
 
 // ===== Processor factory and config validation =====
-use crate::OTLP_PROCESSOR_FACTORIES;
-use linkme::distributed_slice;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ProcessorFactory;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use serde_json::Value;
-use std::sync::Arc;
-use validator::Validate;
 
 fn default_timeout_millis() -> u64 {
     5_000
