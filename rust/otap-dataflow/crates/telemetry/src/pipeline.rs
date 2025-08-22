@@ -28,7 +28,7 @@ pub trait MetricsPipeline {
 
 /// A simple line protocol pipeline that prints the metrics to stdout.
 /// This is a temporary solution for debugging and development purposes.
-pub(crate) struct LineProtocolPipeline;
+pub struct LineProtocolPipeline;
 
 impl MetricsPipeline for LineProtocolPipeline {
     fn report_iter<'a>(

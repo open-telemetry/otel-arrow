@@ -101,7 +101,7 @@ pub trait AttributeSetHandler {
     /// This method should return the actual values stored in the implementing struct.
     fn attribute_values(&self) -> &[AttributeValue];
 
-    /// Returns an optimized iterator over key-value pairs of all attributes in this set.
+    /// Returns an iterator over key-value pairs of all attributes in this set.
     /// This avoids heap allocations and leverages unsafe optimizations when enabled.
     fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
         AttributeIterator::new(self.descriptor().fields, self.attribute_values())

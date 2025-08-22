@@ -3,6 +3,7 @@
 //! Configuration of the metric system.
 
 /// Configuration for the telemetry metrics system.
+#[derive(Clone)]
 pub struct Config {
     /// The size of the reporting channel.
     pub reporting_channel_size: usize,

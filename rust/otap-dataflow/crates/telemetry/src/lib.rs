@@ -22,6 +22,7 @@
 //! * Client SDK generation with Weaver
 
 use crate::config::Config;
+use crate::pipeline::LineProtocolPipeline;
 use crate::registry::MetricsRegistryHandle;
 
 pub mod registry;
@@ -42,7 +43,7 @@ pub struct MetricsSystem {
     registry: MetricsRegistryHandle,
 
     /// The process collecting metrics from the pipelines and aggregating them into the registry.
-    collector: collector::MetricsCollector,
+    collector: collector::MetricsCollector<LineProtocolPipeline>,
 
     /// The process reporting metrics to an external system.
     reporter: reporter::MetricsReporter,
@@ -52,7 +53,8 @@ impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     pub fn new(config: Config) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
-        let (collector, reporter) = collector::MetricsCollector::new(config, metrics_registry.clone());
+        let pipeline = LineProtocolPipeline;
+        let (collector, reporter) = collector::MetricsCollector::new(config, metrics_registry.clone(), pipeline);
         Self {
             registry: metrics_registry,
             collector,
@@ -74,7 +76,8 @@ impl MetricsSystem {
     /// and aggregates them into the registry.
     ///
     /// This method runs indefinitely until the metrics channel is closed.
-    pub async fn run_collection_loop(self) -> Result<(), error::Error> {
+    /// Returns the pipeline instance when the loop ends.
+    pub async fn run_collection_loop(self) -> Result<LineProtocolPipeline, error::Error> {
         self.collector.run_collection_loop().await
     }
 }
