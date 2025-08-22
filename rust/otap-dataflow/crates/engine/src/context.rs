@@ -10,6 +10,7 @@ use otap_df_config::node::NodeKind;
 use crate::attributes::{EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet};
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
+// Choose UUID v7 for better sortability in telemetry signals
 use once_cell::sync::Lazy;
 use std::borrow::Cow;
 use uuid::Uuid;

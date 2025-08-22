@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Attributes describing the engine, pipeline, and node state.
+//! Attributes describing the resource, engine, pipeline, and node context.
+//!
+//! Note: At the moment, these attributes are used for metrics aggregation and reporting.
 
 use std::borrow::Cow;
 use otap_df_telemetry_macros::attribute_set;
