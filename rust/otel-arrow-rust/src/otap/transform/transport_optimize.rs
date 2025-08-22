@@ -32,6 +32,7 @@ use crate::{
         create_next_element_equality_array, create_next_eq_array_for_array,
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
         materialize_parent_ids_by_columns, remove_delta_encoding,
+        remove_delta_encoding_from_column,
     },
     otlp::attributes::{parent_id::ParentId, store::AttributeValueType},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
@@ -142,7 +143,7 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
 /// Replaces the column identified by `path` within the array of columns with the new column.
 fn replace_column(
     path: &str,
-    encoding: Encoding,
+    encoding: Option<Encoding>,
     schema: &Schema,
     columns: &mut [ArrayRef],
     new_column: ArrayRef,
@@ -181,7 +182,11 @@ fn replace_column(
 }
 
 /// Sets the encoding metadata on the field metadata for column at path.
-fn update_field_encoding_metadata(path: &str, encoding: Encoding, fields: &mut [FieldRef]) {
+///
+/// # Arguments
+/// - encoding: if `Some`, then the encoding metadata on the field will be updated to reflect the
+///   new encoding. `None` will be interpreted  as plain encoding.
+fn update_field_encoding_metadata(path: &str, encoding: Option<Encoding>, fields: &mut [FieldRef]) {
     if let Some(struct_col_name) = struct_column_name(path) {
         // replace the field metadata in some nested struct
         let found_field = fields
@@ -211,8 +216,9 @@ fn update_field_encoding_metadata(path: &str, encoding: Encoding, fields: &mut [
 
     if let Some((idx, field)) = found_field {
         let encoding = match encoding {
-            Encoding::Delta | Encoding::DeltaRemapped => consts::metadata::encodings::DELTA,
-            Encoding::AttributeQuasiDelta | Encoding::ColumnarQuasiDelta(_) => {
+            None => consts::metadata::encodings::PLAIN,
+            Some(Encoding::Delta | Encoding::DeltaRemapped) => consts::metadata::encodings::DELTA,
+            Some(Encoding::AttributeQuasiDelta | Encoding::ColumnarQuasiDelta(_)) => {
                 consts::metadata::encodings::QUASI_DELTA
             }
         };
@@ -870,14 +876,14 @@ pub fn apply_transport_optimized_encodings(
 
             replace_column(
                 column_encoding.path,
-                column_encoding.encoding,
+                Some(column_encoding.encoding),
                 &schema,
                 &mut columns,
                 encoding_result.new_column,
             );
             update_field_encoding_metadata(
                 column_encoding.path,
-                column_encoding.encoding,
+                Some(column_encoding.encoding),
                 &mut fields,
             );
         }
@@ -961,7 +967,42 @@ pub fn remove_transport_optimized_encodings(
         ArrowPayloadType::Logs
         | ArrowPayloadType::UnivariateMetrics
         | ArrowPayloadType::MultivariateMetrics
-        | ArrowPayloadType::Spans => remove_delta_encoding::<UInt16Type>(record_batch, consts::ID),
+        | ArrowPayloadType::Spans => {
+            // remove delta encoding from ID column on struct arrays ..
+            let schema = record_batch.schema_ref();
+            let mut columns = record_batch.columns().to_vec();
+            let mut fields = schema.fields.to_vec();
+            for struct_id_path in [RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH] {
+                if let Some(struct_ids) = access_column(struct_id_path, schema, &columns) {
+                    let struct_ids = struct_ids
+                        .as_any()
+                        .downcast_ref::<UInt16Array>()
+                        .with_context(|| error::InvalidListArraySnafu {
+                            expect_oneof: vec![DataType::UInt16],
+                            actual: struct_ids.data_type().clone(),
+                        })?;
+
+                    let new_struct_ids = remove_delta_encoding_from_column(struct_ids);
+                    replace_column(
+                        struct_id_path,
+                        None,
+                        schema,
+                        &mut columns,
+                        Arc::new(new_struct_ids),
+                    );
+                    update_field_encoding_metadata(struct_id_path, None, &mut fields);
+                }
+            }
+
+            // safety: we should have a valid schema with matching columns where all columns are the
+            // same length, so it should be safe to call expect here
+            let schema = Schema::new(fields);
+            let rb = RecordBatch::try_new(Arc::new(schema), columns)
+                .expect("could not create record batch after removing struct ID encodings");
+
+            // remove the delta encoding on the ID column and return
+            remove_delta_encoding::<UInt16Type>(&rb, consts::ID)
+        }
 
         ArrowPayloadType::LogAttrs
         | ArrowPayloadType::MetricAttrs
