@@ -12,6 +12,8 @@ COPY *.py ./
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV OTLP_ENDPOINT=localhost:4317
+ENV SYSLOG_SERVER=localhost
+ENV SYSLOG_PORT=514
 
 # Command to run the load generator
 ENTRYPOINT ["python", "loadgen.py"]

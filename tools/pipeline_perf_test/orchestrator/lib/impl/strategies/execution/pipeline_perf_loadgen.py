@@ -30,6 +30,7 @@ components:
         num_attributes: 2
         attribute_value_size: 15
         batch_size: 10000
+        load_type: otlp
 ```
 
 Raises:
@@ -69,6 +70,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
         attribute_value_size (Optional[int]): Size of each attribute's value. Defaults to 15.
         batch_size (Optional[int]): Number of events sent in each batch. Defaults to 10000.
         tcp_connection_per_thread(Optional[bool]): Use a dedicated tcp connection per-thread.
+        load_type (Optional[str]): Load generation type: 'otlp' or 'syslog'. Defaults to 'otlp'.
     """
 
     endpoint: Optional[str] = "http://localhost:5001/"
@@ -79,6 +81,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
     attribute_value_size: Optional[int] = 15
     batch_size: Optional[int] = 10000
     tcp_connection_per_thread: Optional[bool] = True
+    load_type: Optional[str] = "otlp"
 
 
 @execution_registry.register_class(STRATEGY_NAME)
@@ -118,6 +121,7 @@ components:
         num_attributes: 2
         attribute_value_size: 15
         batch_size: 10000
+        load_type: otlp
 """,
     )
 
@@ -153,6 +157,7 @@ components:
             "attribute_value_size": self.config.attribute_value_size,
             "batch_size": self.config.batch_size,
             "tcp_connection_per_thread": self.config.tcp_connection_per_thread,
+            "load_type": self.config.load_type,
         }
         ctx.record_event("Requesting Load Start", None, **parameters)
         resp = requests.post(
