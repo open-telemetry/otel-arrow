@@ -1,7 +1,6 @@
 settings:
   default_control_channel_size: 100
   default_pdata_channel_size: 100
-
 nodes:
   receiver:
     kind: receiver
@@ -19,3 +18,4 @@ nodes:
     plugin_urn: "urn:otel:otap:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:1235"
+
