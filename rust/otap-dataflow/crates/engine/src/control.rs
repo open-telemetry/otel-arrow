@@ -6,7 +6,6 @@
 //! configuration updates, and timer management.
 
 use crate::message::Sender;
-use crate::node::NodeIndex;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use std::time::Duration;
 
@@ -70,14 +69,14 @@ pub enum PipelineControlMsg {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
-        node_id: NodeIndex,
+        node_id: usize,
         /// Duration of the timer interval.
         duration: Duration,
     },
     /// Requests cancellation of a periodic timer for the specified node.
     CancelTimer {
         /// Identifier of the node for which the timer is being canceled.
-        node_id: NodeIndex,
+        node_id: usize,
     },
     /// Requests shutdown of the node request manager.
     Shutdown,

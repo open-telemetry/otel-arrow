@@ -5,9 +5,7 @@
 
 use crate::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
 use crate::error::Error;
-use crate::node::{
-    Node, NodeDefs, NodeId, NodeIndex, NodeType, NodeWithPDataReceiver, NodeWithPDataSender,
-};
+use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 
@@ -82,7 +80,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
-    pub fn run_forever(self) -> Result<Vec<()>, Error<PData>> {
+    pub fn run_forever(self) -> Result<(), Error<PData>> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let rt = Builder::new_current_thread()
@@ -133,14 +131,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         rt.block_on(async {
             local_tasks
                 .run_until(async {
-                    let mut task_results = Vec::new();
-
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
-                            Ok(Ok(res)) => {
-                                // Task completed successfully, collect its result
-                                task_results.push(res);
+                            Ok(Ok(())) => {
+                                // Task completed successfully, continue
                             }
                             Ok(Err(e)) => {
                                 // A task returned an error
@@ -156,7 +151,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                             }
                         }
                     }
-                    Ok(task_results)
+                    Ok(())
                 })
                 .await
         })
@@ -164,8 +159,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Gets a reference to any node by its ID as a Node trait object
     #[must_use]
-    pub fn get_node(&self, node: NodeIndex) -> Option<&dyn Node> {
-        let ndef = self.nodes.get(node)?;
+    pub fn get_node(&self, node_id: usize) -> Option<&dyn Node> {
+        let ndef = self.nodes.get(node_id)?;
 
         match ndef.ntype {
             NodeType::Receiver => self.receivers.get(ndef.inner.index).map(|r| r as &dyn Node),
@@ -181,9 +176,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     #[must_use]
     pub fn get_mut_node_with_pdata_sender(
         &mut self,
-        node: NodeIndex,
+        node_id: usize,
     ) -> Option<&mut dyn NodeWithPDataSender<PData>> {
-        let ndef = self.nodes.get(node)?;
+        let ndef = self.nodes.get(node_id)?;
 
         match ndef.ntype {
             NodeType::Receiver => self
@@ -202,9 +197,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     #[must_use]
     pub fn get_mut_node_with_pdata_receiver(
         &mut self,
-        node: NodeIndex,
+        node_id: usize,
     ) -> Option<&mut dyn NodeWithPDataReceiver<PData>> {
-        let ndef = self.nodes.get(node)?;
+        let ndef = self.nodes.get(node_id)?;
 
         match ndef.ntype {
             NodeType::Receiver => None,

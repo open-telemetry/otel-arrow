@@ -387,13 +387,14 @@ impl TryFrom<OtapArrowBytes> for OtapArrowRecords {
 impl TryFrom<OtapArrowRecords> for OtapArrowBytes {
     type Error = error::Error;
 
-    fn try_from(otap_batch: OtapArrowRecords) -> Result<Self, Self::Error> {
+    fn try_from(mut otap_batch: OtapArrowRecords) -> Result<Self, Self::Error> {
         let mut producer = Producer::new();
-        let bar = producer
-            .produce_bar(&otap_batch)
-            .map_err(|e| error::Error::ConversionError {
-                error: format!("error encoding BatchArrowRecords: {e}"),
-            })?;
+        let bar =
+            producer
+                .produce_bar(&mut otap_batch)
+                .map_err(|e| error::Error::ConversionError {
+                    error: format!("error encoding BatchArrowRecords: {e}"),
+                })?;
         Ok(match otap_batch {
             OtapArrowRecords::Logs(_) => Self::ArrowLogs(bar),
             OtapArrowRecords::Metrics(_) => Self::ArrowMetrics(bar),
