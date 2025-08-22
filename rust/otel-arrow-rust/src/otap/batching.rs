@@ -13,7 +13,7 @@ use tokio::{
     time::{Instant, sleep},
 };
 
-use super::{OtapArrowRecords, RecordsGroup, error::Result};
+use super::{OtapArrowRecords, error::Result, groups::RecordsGroup};
 
 /// Control how we batch data
 ///
