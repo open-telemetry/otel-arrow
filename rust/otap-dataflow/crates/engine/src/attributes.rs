@@ -5,10 +5,10 @@
 use std::borrow::Cow;
 use otap_df_telemetry_macros::attribute_set;
 
-/// Engine-specific attributes (core, NUMA, process info).
-#[attribute_set(name = "engine.attrs")]
+/// Resource attributes (host id, process instance id, container id, ...).
+#[attribute_set(name = "resource.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
-pub struct EngineAttributeSet {
+pub struct ResourceAttributeSet {
     /// Core identifier.
     #[attribute]
     pub core_id: usize,
@@ -18,21 +18,49 @@ pub struct EngineAttributeSet {
     /// Unique process instance identifier (base32-encoded UUID v7).
     #[attribute]
     pub process_instance_id: Cow<'static, str>,
-    /// Host identifier, when available (e.g., hostname).
+    /// Host identifier, when available (e.g. hostname).
     #[attribute]
     pub host_id: Cow<'static, str>,
-    /// Container identifier, when available (e.g., Docker or containerd container ID).
+    /// Container identifier, when available (e.g. Docker or containerd container ID).
     #[attribute]
     pub container_id: Cow<'static, str>,
 }
 
-/// Pipeline and node attributes (with engine attributes).
+/// Engine attributes (core id, numa node id, ...).
+#[attribute_set(name = "controller.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct EngineAttributeSet {
+    /// Resource attributes.
+    #[compose]
+    pub resource_attrs: ResourceAttributeSet,
+
+    /// Core identifier.
+    #[attribute]
+    pub core_id: usize,
+    /// NUMA node identifier.
+    #[attribute]
+    pub numa_node_id: usize,
+}
+
+/// Pipeline attributes.
 #[attribute_set(name = "pipeline.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct PipelineAttributeSet {
     /// Engine attributes.
     #[compose]
-    pub engine: EngineAttributeSet,
+    pub engine_attrs: EngineAttributeSet,
+
+    #[attribute]
+    pub pipeline_id: Cow<'static, str>,
+}
+
+/// Node attributes.
+#[attribute_set(name = "pipeline.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct NodeAttributeSet {
+    /// Pipeline attributes.
+    #[compose]
+    pub pipeline_attrs: PipelineAttributeSet,
 
     /// Node unique identifier (in scope of the pipeline).
     #[attribute]
@@ -40,7 +68,4 @@ pub struct PipelineAttributeSet {
     /// Node type (e.g., "receiver", "processor", "exporter").
     #[attribute]
     pub node_type: Cow<'static, str>,
-    /// Pipeline unique identifier (in scope of the process).
-    #[attribute]
-    pub pipeline_id: Cow<'static, str>,
 }

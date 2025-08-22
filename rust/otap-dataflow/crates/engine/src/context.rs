@@ -7,7 +7,7 @@ use otap_df_telemetry::metrics::{MetricSetHandler, MetricSet};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
 use otap_df_config::node::NodeKind;
-use crate::attributes::PipelineAttributeSet;
+use crate::attributes::{EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet};
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
 use once_cell::sync::Lazy;
@@ -145,20 +145,26 @@ impl PipelineContext {
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self
     ) -> MetricSet<T> {
-        use crate::attributes::EngineAttributeSet;
+        use crate::attributes::ResourceAttributeSet;
 
         self.controller_context.metrics_registry_handle.register::<T>(
-            PipelineAttributeSet {
-                engine: EngineAttributeSet {
-                    core_id: self.core_id,
-                    numa_node_id: self.controller_context.numa_node_id,
-                    process_instance_id: self.controller_context.process_instance_id.clone(),
-                    host_id: self.controller_context.host_id.clone(),
-                    container_id: self.controller_context.container_id.clone(),
+            NodeAttributeSet {
+                pipeline_attrs: PipelineAttributeSet {
+                    engine_attrs: EngineAttributeSet {
+                        resource_attrs: ResourceAttributeSet {
+                            core_id: self.core_id,
+                            numa_node_id: self.controller_context.numa_node_id,
+                            process_instance_id: self.controller_context.process_instance_id.clone(),
+                            host_id: self.controller_context.host_id.clone(),
+                            container_id: self.controller_context.container_id.clone(),
+                        },
+                        core_id: self.core_id,
+                        numa_node_id: self.controller_context.numa_node_id,
+                    },
+                    pipeline_id: self.pipeline_id.clone(),
                 },
                 node_id: self.node_id.clone(),
                 node_type: self.node_kind.into(),
-                pipeline_id: self.pipeline_id.clone(),
             },
         )
     }
