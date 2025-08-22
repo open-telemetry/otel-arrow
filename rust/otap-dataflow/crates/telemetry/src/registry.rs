@@ -339,3 +339,360 @@ impl MetricsRegistryHandle {
         self.metric_registry.lock().generate_semconv_registry()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptor::{AttributesDescriptor, AttributeField, AttributeValueType, Instrument};
+    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use std::fmt::Debug;
+
+    // Mock implementations for testing
+    #[derive(Debug)]
+    struct MockMetricSet {
+        values: Vec<u64>,
+    }
+
+    impl MockMetricSet {
+        fn new() -> Self {
+            Self {
+                values: vec![0, 0], // Initialize with 2 values to match MOCK_METRICS_DESCRIPTOR
+            }
+        }
+    }
+
+    impl Default for MockMetricSet {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    static MOCK_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test_metrics",
+        metrics: &[
+            MetricsField {
+                name: "counter1",
+                unit: "1",
+                brief: "Test counter 1",
+                instrument: Instrument::Counter,
+            },
+            MetricsField {
+                name: "counter2",
+                unit: "1",
+                brief: "Test counter 2",
+                instrument: Instrument::Counter,
+            },
+        ],
+    };
+
+    static MOCK_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "test_attributes",
+        fields: &[AttributeField {
+            key: "test_key",
+            r#type: AttributeValueType::String,
+            brief: "Test attribute",
+        }],
+    };
+
+    impl MetricSetHandler for MockMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &MOCK_METRICS_DESCRIPTOR
+        }
+
+        fn snapshot_values(&self) -> Vec<u64> {
+            self.values.clone()
+        }
+
+        fn clear_values(&mut self) {
+            self.values.iter_mut().for_each(|v| *v = 0);
+        }
+
+        fn needs_flush(&self) -> bool {
+            self.values.iter().any(|&v| v != 0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockAttributeSet {
+        value: String,
+    }
+
+    impl MockAttributeSet {
+        fn new(value: String) -> Self {
+            Self { value }
+        }
+    }
+
+    impl AttributeSetHandler for MockAttributeSet {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &MOCK_ATTRIBUTES_DESCRIPTOR
+        }
+
+        fn iter_attributes<'a>(&'a self) -> Box<dyn Iterator<Item = (&'static str, AttributeValue)> + 'a> {
+            Box::new(std::iter::once(("test_key", AttributeValue::String(self.value.clone()))))
+        }
+    }
+
+    #[test]
+    fn test_metrics_registry_new() {
+        let handle = MetricsRegistryHandle::new();
+        assert_eq!(handle.len(), 0);
+    }
+
+    #[test]
+    fn test_metrics_registry_register() {
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+
+        let _metric_set: MetricSet<MockMetricSet> = handle.register(attrs);
+        assert_eq!(handle.len(), 1);
+    }
+
+    #[test]
+    fn test_metrics_registry_multiple_registrations() {
+        let handle = MetricsRegistryHandle::new();
+
+        let attrs1 = MockAttributeSet::new("value1".to_string());
+        let attrs2 = MockAttributeSet::new("value2".to_string());
+
+        let _metric_set1: MetricSet<MockMetricSet> = handle.register(attrs1);
+        let _metric_set2: MetricSet<MockMetricSet> = handle.register(attrs2);
+
+        assert_eq!(handle.len(), 2);
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_basic() {
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+
+        let metric_set: MetricSet<MockMetricSet> = handle.register(attrs);
+        let metrics_key = metric_set.key;
+
+        // Accumulate some values
+        handle.accumulate_snapshot(metrics_key, &[10, 20]);
+        handle.accumulate_snapshot(metrics_key, &[5, 15]);
+
+        // Values should be accumulated
+        let mut accumulated_values = Vec::new();
+        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, iter| {
+            for (_field, value) in iter {
+                accumulated_values.push(value);
+            }
+        });
+
+        assert_eq!(accumulated_values, vec![15, 35]);
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_invalid_key() {
+        let handle = MetricsRegistryHandle::new();
+        let invalid_key = MetricsKey::default();
+
+        // This should not panic, just ignore the invalid key
+        handle.accumulate_snapshot(invalid_key, &[10, 20]);
+        assert_eq!(handle.len(), 0);
+    }
+
+    #[cfg(feature = "unchecked-arithmetic")]
+    #[test]
+    fn test_accumulate_snapshot_overflow_wrapping() {
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+
+        let metric_set: MetricSet<MockMetricSet> = handle.register(attrs);
+        let metrics_key = metric_set.key;
+
+        // Test wrapping behavior with overflow
+        handle.accumulate_snapshot(metrics_key, &[u64::MAX, u64::MAX - 5]);
+        handle.accumulate_snapshot(metrics_key, &[10, 10]);
+
+        let mut accumulated_values = Vec::new();
+        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, iter| {
+            for (_field, value) in iter {
+                accumulated_values.push(value);
+            }
+        });
+
+        // Should wrap around: u64::MAX + 10 = 9, (u64::MAX - 5) + 10 = 4
+        assert_eq!(accumulated_values, vec![9, 4]);
+    }
+
+    #[cfg(not(feature = "unchecked-arithmetic"))]
+    #[test]
+    #[should_panic]
+    fn test_accumulate_snapshot_overflow_panic() {
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+
+        let metric_set: MetricSet<MockMetricSet> = handle.register(attrs);
+        let metrics_key = metric_set.key;
+
+        // This should panic on overflow when unchecked-arithmetic is disabled
+        handle.accumulate_snapshot(metrics_key, &[u64::MAX]);
+        handle.accumulate_snapshot(metrics_key, &[1]);
+    }
+
+    #[test]
+    fn test_visit_non_zero_metrics_and_reset() {
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+
+        let metric_set: MetricSet<MockMetricSet> = handle.register(attrs);
+        let metrics_key = metric_set.key;
+
+        // Add some metrics
+        handle.accumulate_snapshot(metrics_key, &[100, 0]);
+
+        let mut visit_count = 0;
+        let mut collected_values = Vec::new();
+
+        handle.visit_non_zero_metrics_and_reset(|desc, _attrs, iter| {
+            visit_count += 1;
+            assert_eq!(desc.name, "test_metrics");
+
+            for (field, value) in iter {
+                collected_values.push((field.name, value));
+            }
+        });
+
+        assert_eq!(visit_count, 1);
+        assert_eq!(collected_values, vec![("counter1", 100)]);
+
+        // After reset, should not visit again
+        visit_count = 0;
+        collected_values.clear();
+
+        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, _iter| {
+            visit_count += 1;
+        });
+
+        assert_eq!(visit_count, 0);
+    }
+
+    #[test]
+    fn test_visit_no_non_zero_metrics() {
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+
+        let _metric_set: MetricSet<MockMetricSet> = handle.register(attrs);
+
+        let mut visit_count = 0;
+        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, _iter| {
+            visit_count += 1;
+        });
+
+        assert_eq!(visit_count, 0);
+    }
+
+    #[test]
+    fn test_non_zero_metrics_iterator() {
+        let fields = &[
+            MetricsField {
+                name: "metric1",
+                unit: "1",
+                brief: "Test metric 1",
+                instrument: Instrument::Counter,
+            },
+            MetricsField {
+                name: "metric2",
+                unit: "1",
+                brief: "Test metric 2",
+                instrument: Instrument::Counter,
+            },
+        ];
+
+        let values = [0, 5, 0, 10, 0];
+        let mut iter = NonZeroMetrics::new(fields, &values[..2]);
+
+        // Should only return non-zero values
+        let item1 = iter.next().unwrap();
+        assert_eq!(item1.0.name, "metric2");
+        assert_eq!(item1.1, 5);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_non_zero_metrics_iterator_size_hint() {
+        let fields = &[
+            MetricsField {
+                name: "metric1",
+                unit: "1",
+                brief: "Test metric 1",
+                instrument: Instrument::Counter,
+            },
+        ];
+
+        let values = [10];
+        let iter = NonZeroMetrics::new(fields, &values);
+
+        let (lower, upper) = iter.size_hint();
+        assert_eq!(lower, 0);
+        assert_eq!(upper, Some(1));
+    }
+
+    #[test]
+    fn test_non_zero_metrics_iterator_fused() {
+        let fields = &[
+            MetricsField {
+                name: "metric1",
+                unit: "1",
+                brief: "Test metric 1",
+                instrument: Instrument::Counter,
+            },
+        ];
+
+        let values = [10];
+        let mut iter = NonZeroMetrics::new(fields, &values);
+
+        // Consume the iterator
+        let _first = iter.next();
+
+        // Should consistently return None after exhaustion
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_metrics_registry_clone() {
+        let handle1 = MetricsRegistryHandle::new();
+        let handle2 = handle1.clone();
+
+        let attrs = MockAttributeSet::new("test_value".to_string());
+        let _metric_set: MetricSet<MockMetricSet> = handle1.register(attrs);
+
+        // Both handles should see the same registry
+        assert_eq!(handle1.len(), 1);
+        assert_eq!(handle2.len(), 1);
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        use std::thread;
+
+        let handle = MetricsRegistryHandle::new();
+        let mut handles = Vec::new();
+
+        // Spawn multiple threads to test concurrent access
+        for i in 0..5 {
+            let handle_clone = handle.clone();
+            let thread_handle = thread::spawn(move || {
+                let attrs = MockAttributeSet::new(format!("value_{}", i));
+                let metric_set: MetricSet<MockMetricSet> = handle_clone.register(attrs);
+                let metrics_key = metric_set.key;
+
+                // Accumulate some values
+                handle_clone.accumulate_snapshot(metrics_key, &[i * 10, i * 20]);
+            });
+            handles.push(thread_handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(handle.len(), 5);
+    }
+}
