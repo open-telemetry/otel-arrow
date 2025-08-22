@@ -15,7 +15,7 @@ use crate::{
         },
         decode::{
             FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
-            from_option_nonzero_range_to_primitive, read_varint, to_nonzero_range,
+            from_option_nonzero_range_to_primitive, read_dropped_count, to_nonzero_range,
         },
     },
     views::resource::ResourceView,
@@ -105,16 +105,9 @@ impl ResourceView for RawResource<'_> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        if let Some(slice) = self
+        let slice = self
             .bytes_parser
-            .advance_to_find_field(RESOURCE_DROPPED_ATTRIBUTES_COUNT)
-        {
-            if let Some((val, _)) = read_varint(slice, 0) {
-                return val as u32;
-            }
-        }
-
-        // default = 0 = no attributes dropped
-        0
+            .advance_to_find_field(RESOURCE_DROPPED_ATTRIBUTES_COUNT);
+        read_dropped_count(slice)
     }
 }
