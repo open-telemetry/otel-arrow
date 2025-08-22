@@ -85,41 +85,39 @@ struct ColumnEncoding<'a> {
     encoding: Encoding,
 }
 
-impl<'a> ColumnEncoding<'a> {
-    /// checks if the column associated with this [`ColumnEncoding`] has already had the column
-    /// encoding applied.
-    ///
-    /// this is done by inspecting the field metadata, and specifically checking that the column
-    /// encoding is not 'plain'. if there is no field metadata, we assume the column is already
-    /// encoded. we make this assumption because it probably means we received this OTAP data from
-    /// the golang OTAP exporter, which always encodes the columns and never adds metadata
-    ///
-    /// returns `None` if the field associated with `self.path` isn't found in passed schema
-    fn is_column_encoded(&self, schema: &Schema) -> Option<bool> {
-        let field = if let Some(struct_col_name) = struct_column_name(self.path) {
-            // get the ID field out of the struct column
-            let struct_col = schema.field_with_name(struct_col_name).ok()?;
-            if let DataType::Struct(fields) = struct_col.data_type() {
-                fields.find(consts::ID).map(|(_, field)| field)?
-            } else {
-                return None;
-            }
+/// checks if the column associated with this [`ColumnEncoding`] has already had the column
+/// encoding applied.
+///
+/// this is done by inspecting the field metadata, and specifically checking that the column
+/// encoding is not 'plain'. if there is no field metadata, we assume the column is already
+/// encoded. we make this assumption because it probably means we received this OTAP data from
+/// the golang OTAP exporter, which always encodes the columns and never adds metadata
+///
+/// returns `None` if the field associated with `self.path` isn't found in passed schema
+fn is_column_encoded(path: &str, schema: &Schema) -> Option<bool> {
+    let field = if let Some(struct_col_name) = struct_column_name(path) {
+        // get the ID field out of the struct column
+        let struct_col = schema.field_with_name(struct_col_name).ok()?;
+        if let DataType::Struct(fields) = struct_col.data_type() {
+            fields.find(consts::ID).map(|(_, field)| field)?
         } else {
-            // otherwise just look at field with path == name
-            schema.field_with_name(self.path).ok()?
-        };
+            return None;
+        }
+    } else {
+        // otherwise just look at field with path == name
+        schema.field_with_name(path).ok()?
+    };
 
-        // check the field metadata to determine if field is encoded
-        let field_metadata = field.metadata();
-        let is_encoded = match field_metadata.get(consts::metadata::COLUMN_ENCODING) {
-            Some(encoding) => encoding != consts::metadata::encodings::PLAIN,
+    // check the field metadata to determine if field is encoded
+    let field_metadata = field.metadata();
+    let is_encoded = match field_metadata.get(consts::metadata::COLUMN_ENCODING) {
+        Some(encoding) => encoding != consts::metadata::encodings::PLAIN,
 
-            // assume if there is no metadata, then the column is already encoded
-            None => true,
-        };
+        // assume if there is no metadata, then the column is already encoded
+        None => true,
+    };
 
-        Some(is_encoded)
-    }
+    Some(is_encoded)
 }
 
 /// Helper function for accessing the column associated for the (possibly nested) path
@@ -825,7 +823,7 @@ pub fn apply_transport_optimized_encodings(
     let mut count_to_apply = 0;
     let mut count_already_encoded = 0;
     for column_encoding in column_encodings {
-        match column_encoding.is_column_encoded(&schema) {
+        match is_column_encoded(column_encoding.path, &schema) {
             Some(true) => count_already_encoded += 1,
             Some(false) => count_to_apply += 1,
             None => {}
@@ -973,6 +971,10 @@ pub fn remove_transport_optimized_encodings(
             let mut columns = record_batch.columns().to_vec();
             let mut fields = schema.fields.to_vec();
             for struct_id_path in [RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH] {
+                if is_column_encoded(struct_id_path, schema) == Some(false) {
+                    continue;
+                }
+
                 if let Some(struct_ids) = access_column(struct_id_path, schema, &columns) {
                     let struct_ids = struct_ids
                         .as_any()
@@ -1391,11 +1393,11 @@ mod test {
             encoding: Encoding::DeltaRemapped,
         };
 
-        assert!(!column_encoding.is_column_encoded(&schema).unwrap());
+        assert!(!is_column_encoded("a", &schema).unwrap());
 
         // ensure that no metadata means column is encoded
         column_encoding.path = "b";
-        assert!(column_encoding.is_column_encoded(&schema).unwrap());
+        assert!(is_column_encoded("b", &schema).unwrap());
     }
 
     #[test]
@@ -1415,15 +1417,8 @@ mod test {
             ),
         ]);
 
-        let mut column_encoding = ColumnEncoding {
-            path: RESOURCE_ID_COL_PATH,
-            data_type: DataType::UInt16,
-            encoding: Encoding::DeltaRemapped,
-        };
-
-        assert!(!column_encoding.is_column_encoded(&schema).unwrap());
-        column_encoding.path = SCOPE_ID_COL_PATH;
-        assert!(column_encoding.is_column_encoded(&schema).unwrap());
+        assert!(!is_column_encoded(RESOURCE_ID_COL_PATH, &schema).unwrap());
+        assert!(is_column_encoded(SCOPE_ID_COL_PATH, &schema).unwrap());
     }
 
     #[test]
