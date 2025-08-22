@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_strlen_expression(
     strlen_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strlen_expression_rule);
 
@@ -41,7 +41,7 @@ pub(crate) fn parse_strlen_expression(
 
 pub(crate) fn parse_replace_string_expression(
     replace_string_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&replace_string_expression_rule);
 
@@ -59,7 +59,7 @@ pub(crate) fn parse_replace_string_expression(
 
     fn parse_and_validate_string_rule(
         rule: Pair<Rule>,
-        state: &ParserState,
+        state: &dyn ParserScope,
     ) -> Result<ScalarExpression, ParserError> {
         let location = to_query_location(&rule);
 
@@ -85,7 +85,7 @@ pub(crate) fn parse_replace_string_expression(
 
 pub(crate) fn parse_substring_expression(
     substring_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&substring_expression_rule);
 
@@ -143,7 +143,7 @@ pub(crate) fn parse_substring_expression(
 
 pub(crate) fn parse_parse_json_expression(
     parse_json_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&parse_json_expression_rule);
 

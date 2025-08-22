@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_aggregate_assignment_expression(
     aggregate_assignment_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<(Box<str>, AggregationExpression), ParserError> {
     let mut aggregate_assignment_rules = aggregate_assignment_expression_rule.into_inner();
 
@@ -24,7 +24,7 @@ pub(crate) fn parse_aggregate_assignment_expression(
 
 fn parse_aggregate_expression(
     aggregate_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<AggregationExpression, ParserError> {
     let query_location = to_query_location(&aggregate_expression_rule);
 

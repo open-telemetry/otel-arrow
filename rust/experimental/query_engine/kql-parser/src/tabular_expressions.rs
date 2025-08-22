@@ -19,7 +19,7 @@ use crate::{
 
 pub(crate) fn parse_extend_expression(
     extend_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let extend_rules = extend_expression_rule.into_inner();
 
@@ -61,7 +61,7 @@ pub(crate) fn parse_extend_expression(
 
 pub(crate) fn parse_project_expression(
     project_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_expression_rule);
 
@@ -145,7 +145,7 @@ pub(crate) fn parse_project_expression(
 
 pub(crate) fn parse_project_keep_expression(
     project_keep_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_keep_expression_rule);
 
@@ -220,7 +220,7 @@ pub(crate) fn parse_project_keep_expression(
 
 pub(crate) fn parse_project_away_expression(
     project_away_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_away_expression_rule);
 
@@ -295,7 +295,7 @@ pub(crate) fn parse_project_away_expression(
 
 pub(crate) fn parse_where_expression(
     where_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<DataExpression, ParserError> {
     let query_location = to_query_location(&where_expression_rule);
 
@@ -318,13 +318,13 @@ pub(crate) fn parse_where_expression(
 
 pub(crate) fn parse_summarize_expression(
     summarize_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<DataExpression, ParserError> {
     let query_location = to_query_location(&summarize_expression_rule);
 
     let mut aggregation_expressions: HashMap<Box<str>, AggregationExpression> = HashMap::new();
     let mut group_by_expressions: HashMap<Box<str>, ScalarExpression> = HashMap::new();
-    let mut pipeline_expressions = Vec::new();
+    let mut post_expressions = Vec::new();
 
     for summarize_rule in summarize_expression_rule.into_inner() {
         match summarize_rule.as_rule() {
@@ -357,8 +357,26 @@ pub(crate) fn parse_summarize_expression(
                 group_by_expressions.insert(identifier.into(), scalar);
             }
             _ => {
-                for e in parse_tabular_expression_rule(summarize_rule, state)? {
-                    pipeline_expressions.push(e);
+                /*
+                todo: Fix bugs with extend and then enable this
+
+                let mut schema = ParserMapSchema::new();
+
+                for (name, _) in &group_by_expressions {
+                    schema = schema.with_key_definition(name, ParserMapKeySchema::Any);
+                }
+
+                for (name, _) in &aggregation_expressions {
+                    schema = schema.with_key_definition(name, ParserMapKeySchema::Any);
+                }
+
+                let scope = state.create_scope(ParserOptions::new().with_source_map_schema(schema));
+                */
+
+                let scope = state.create_scope(ParserOptions::new());
+
+                for e in parse_tabular_expression_rule(summarize_rule, &scope)? {
+                    post_expressions.push(e);
                 }
             }
         }
@@ -376,18 +394,10 @@ pub(crate) fn parse_summarize_expression(
             aggregation_expressions,
         );
 
-        if !pipeline_expressions.is_empty() {
-            let mut pipeline_builder = PipelineExpressionBuilder::new(state.get_query());
-
-            for e in pipeline_expressions {
-                pipeline_builder.push_expression(e);
+        if !post_expressions.is_empty() {
+            for e in post_expressions {
+                summary.push_post_expression(e);
             }
-
-            let pipeline = pipeline_builder
-                .build()
-                .map_err(|e| ParserError::from(e.first().unwrap()))?;
-
-            summary = summary.with_pipeline(pipeline);
         }
 
         Ok(DataExpression::Summary(summary))
@@ -396,7 +406,7 @@ pub(crate) fn parse_summarize_expression(
 
 pub(crate) fn parse_tabular_expression(
     tabular_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<Vec<DataExpression>, ParserError> {
     let mut rules = tabular_expression_rule.into_inner();
 
@@ -417,7 +427,7 @@ pub(crate) fn parse_tabular_expression(
 
 pub(crate) fn parse_tabular_expression_rule(
     tabular_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<Vec<DataExpression>, ParserError> {
     let mut expressions = Vec::new();
 
@@ -491,7 +501,7 @@ enum IdentifierOrPattern {
 }
 
 fn parse_identifier_or_pattern_literal(
-    state: &ParserState,
+    state: &dyn ParserScope,
     location: QueryLocation,
     identifier_or_pattern_literal: Pair<Rule>,
 ) -> Result<Option<IdentifierOrPattern>, ParserError> {
@@ -556,7 +566,7 @@ fn parse_identifier_or_pattern_literal(
 
 fn process_map_selection_source_scalar_expression(
     expression_name: &str,
-    state: &ParserState,
+    state: &dyn ParserScope,
     source: &SourceScalarExpression,
     reduction: &mut MapReductionState,
 ) -> Result<(), ParserError> {
@@ -644,7 +654,7 @@ impl MapReductionState {
 
 fn push_map_transformation_expression(
     expression_name: &str,
-    state: &ParserState,
+    state: &dyn ParserScope,
     expressions: &mut Vec<TransformExpression>,
     query_location: &QueryLocation,
     retain: bool,
@@ -2327,31 +2337,26 @@ mod tests {
                     ),
                 )]),
             )
-            .with_pipeline(
-                PipelineExpressionBuilder::new("summarize c = count() by a | extend v = 1")
-                    .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
+            .with_post_expressions(vec![DataExpression::Transform(
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
                             QueryLocation::new_fake(),
-                            ImmutableValueExpression::Scalar(ScalarExpression::Static(
-                                StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    1,
-                                )),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
+                            1,
+                        )),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                    StaticScalarExpression::String(StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "v",
-                                    )),
-                                )]),
+                                "v",
                             )),
-                        ),
-                    ))])
-                    .build()
-                    .unwrap(),
-            ),
+                        )]),
+                    )),
+                )),
+            )]),
         );
 
         run_test_failure(

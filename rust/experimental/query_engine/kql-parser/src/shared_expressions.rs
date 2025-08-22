@@ -12,7 +12,7 @@ use crate::{
 
 pub(crate) fn parse_assignment_expression(
     assignment_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<TransformExpression, ParserError> {
     let query_location = to_query_location(&assignment_expression_rule);
 
@@ -75,7 +75,7 @@ pub(crate) fn parse_assignment_expression(
 
 pub(crate) fn parse_let_expression(
     let_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<TransformExpression, ParserError> {
     let query_location = to_query_location(&let_expression_rule);
 

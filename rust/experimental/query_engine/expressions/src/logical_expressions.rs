@@ -112,7 +112,7 @@ impl ChainLogicalExpression {
             .push(ChainedLogicalExpression::And(expression));
     }
 
-    pub fn get_expressions(&self) -> (&LogicalExpression, &Vec<ChainedLogicalExpression>) {
+    pub fn get_expressions(&self) -> (&LogicalExpression, &[ChainedLogicalExpression]) {
         (&self.first_expression, &self.chain_expressions)
     }
 
