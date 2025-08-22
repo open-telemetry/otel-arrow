@@ -110,6 +110,36 @@ impl Value<'_> {
         }
     }
 
+    pub fn convert_to_regex<F>(&self, mut action: F) -> Result<(), regex::Error>
+    where
+        F: FnMut(&Regex),
+    {
+        match self {
+            Value::Regex(r) => {
+                (action)(r.get_value());
+                Ok(())
+            }
+            v => {
+                let mut result = None;
+
+                v.convert_to_string(&mut |s| match Regex::new(s) {
+                    Ok(r) => {
+                        (action)(&r);
+                        result = Some(Ok(()))
+                    }
+                    Err(e) => result = Some(Err(e)),
+                });
+
+                match result {
+                    Some(e) => e,
+                    None => panic!(
+                        "Encountered a Value which does not correctly implement convert_to_string"
+                    ),
+                }
+            }
+        }
+    }
+
     pub fn convert_to_string<F>(&self, action: &mut F)
     where
         F: FnMut(&str),
@@ -465,6 +495,34 @@ impl Value<'_> {
                     haystack.get_value_type(),
                 ),
             )),
+        }
+    }
+
+    pub fn matches(
+        query_location: &QueryLocation,
+        haystack: &Value,
+        pattern: &Value,
+    ) -> Result<bool, ExpressionError> {
+        let mut result = None;
+
+        pattern
+            .convert_to_regex(&mut |r: &Regex| {
+                haystack.convert_to_string(&mut |s| {
+                    result = Some(r.is_match(s));
+                });
+            })
+            .map_err(|e| {
+                ExpressionError::ParseError(
+                    query_location.clone(),
+                    format!("Failed to parse Regex from pattern: {e}"),
+                )
+            })?;
+
+        match result {
+            Some(b) => Ok(b),
+            None => panic!(
+                "Encountered a Value type which does not correctly implement convert_to_string"
+            ),
         }
     }
 
