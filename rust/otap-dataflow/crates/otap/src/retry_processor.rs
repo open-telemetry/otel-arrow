@@ -373,8 +373,11 @@ mod tests {
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
     use crate::grpc::OtapArrowBytes;
     use otap_df_channel::mpsc;
+    use otap_df_config::experimental::SignalType;
+    use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::testing::test_node;
+    use serde_json::json;
     use tokio::time::{Duration, sleep};
 
     fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
@@ -429,12 +432,28 @@ mod tests {
     }
 
     /// Test helper to compare two OtapPdata instances for equivalence.
-    /// Currently uses a simple row count comparison, but will be upgraded
-    /// to full semantic equivalence checking in the future.
     fn requests_match(expected: &OtapPdata, actual: &OtapPdata) -> bool {
-        // For now, just compare the number of rows as a basic validation
-        // TODO: Implement full semantic equivalence checking similar to Go's assert.Equiv()
-        crate::pdata::test::num_rows(expected) == crate::pdata::test::num_rows(actual)
+        // ToDo: Implement full semantic equivalence checking similar to Go's assert.Equiv()
+        num_rows(expected) == num_rows(actual)
+    }
+
+    #[test]
+    fn test_factory_creation() {
+        let config = json!({
+            "max_retries": 5,
+            "initial_retry_delay_ms": 500,
+            "max_retry_delay_ms": 15000,
+            "backoff_multiplier": 1.5,
+            "max_pending_messages": 5000,
+            "cleanup_interval_secs": 30
+        });
+        let processor_config = ProcessorConfig::new("test_retry");
+        let result = create_retry_processor(
+            test_node(processor_config.name.clone()),
+            &config,
+            &processor_config,
+        );
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
