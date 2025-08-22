@@ -9,11 +9,72 @@ use std::fmt::Debug;
 use otap_df_config::node::NodeKind;
 use crate::attributes::PipelineAttributeSet;
 
+// Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
+use once_cell::sync::Lazy;
+use std::borrow::Cow;
+use uuid::Uuid;
+use data_encoding::BASE32_NOPAD;
+
+static PROCESS_INSTANCE_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
+    let uuid = Uuid::now_v7();
+    let encoded = BASE32_NOPAD.encode(uuid.as_bytes());
+    Cow::Owned(encoded)
+});
+
+// Best-effort host id detection
+fn detect_host_id() -> Option<String> {
+    // Priority 1: HOSTNAME env var
+    if let Ok(h) = std::env::var("HOSTNAME") {
+        if !h.is_empty() { return Some(h); }
+    }
+    // Priority 2: /etc/hostname
+    if let Ok(s) = std::fs::read_to_string("/etc/hostname") {
+        let h = s.trim().to_string();
+        if !h.is_empty() { return Some(h); }
+    }
+    None
+}
+
+// Best-effort container id detection (Docker/containerd/k8s) from /proc/self/cgroup
+fn detect_container_id() -> Option<String> {
+    let Ok(cg) = std::fs::read_to_string("/proc/self/cgroup") else { return None; };
+    // Look for 64-hex tokens which commonly represent container IDs
+    for line in cg.lines() {
+        // Format: hierarchy-ID:controller-list:cgroup-path
+        let path = line.split(':').nth(2).unwrap_or("");
+        for part in path.split('/') {
+            let token = part.trim();
+            if token.len() >= 32 && token.len() <= 128 {
+                // Heuristic: mostly hex
+                if token.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == '-' || c == '_' ) {
+                    // Pick the longest plausible hex-ish token
+                    // Further refine: prefer 64-hex
+                    let hex_only: String = token.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                    if hex_only.len() >= 32 {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+static HOST_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
+    detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned)
+});
+
+static CONTAINER_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
+    detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned)
+});
+
 /// A lightweight/cloneable controller context.
 #[derive(Clone)]
 pub struct ControllerContext {
     metrics_registry_handle: MetricsRegistryHandle,
-    process_id: u32,
+    process_instance_id: Cow<'static, str>,
+    host_id: Cow<'static, str>,
+    container_id: Cow<'static, str>,
     numa_node_id: usize,
 }
 
@@ -34,7 +95,9 @@ impl ControllerContext {
     pub fn new(metrics_registry_handle: MetricsRegistryHandle) -> Self {
         Self {
             metrics_registry_handle,
-            process_id: std::process::id(),
+            process_instance_id: PROCESS_INSTANCE_ID.clone(),
+            host_id: HOST_ID.clone(),
+            container_id: CONTAINER_ID.clone(),
             numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
         }
     }
@@ -89,7 +152,9 @@ impl PipelineContext {
                 engine: EngineAttributeSet {
                     core_id: self.core_id,
                     numa_node_id: self.controller_context.numa_node_id,
-                    process_id: self.controller_context.process_id,
+                    process_instance_id: self.controller_context.process_instance_id.clone(),
+                    host_id: self.controller_context.host_id.clone(),
+                    container_id: self.controller_context.container_id.clone(),
                 },
                 node_id: self.node_id.clone(),
                 node_type: self.node_kind.into(),

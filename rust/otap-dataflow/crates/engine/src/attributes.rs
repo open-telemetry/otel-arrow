@@ -15,9 +15,15 @@ pub struct EngineAttributeSet {
     /// NUMA node identifier.
     #[attribute]
     pub numa_node_id: usize,
-    /// Unique process identifier.
+    /// Unique process instance identifier (base32-encoded UUID v7).
     #[attribute]
-    pub process_id: u32,
+    pub process_instance_id: Cow<'static, str>,
+    /// Host identifier, when available (e.g., hostname).
+    #[attribute]
+    pub host_id: Cow<'static, str>,
+    /// Container identifier, when available (e.g., Docker or containerd container ID).
+    #[attribute]
+    pub container_id: Cow<'static, str>,
 }
 
 /// Pipeline and node attributes (with engine attributes).

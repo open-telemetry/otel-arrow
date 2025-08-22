@@ -60,6 +60,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
 
+        // Start the metrics aggregation thread
         let metrics_aggr_handle = thread::Builder::new()
             .name("metrics-aggregator".to_owned())
             .spawn(move || {
