@@ -370,63 +370,105 @@ impl Default for RetryProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    //use otap_df_engine::local::message::LocalSender;
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
     use crate::grpc::OtapArrowBytes;
-    use otap_df_engine::testing::{
-        processor::{TestContext, TestRuntime},
-        test_node,
-    };
-    use std::pin::Pin;
+    use otap_df_channel::mpsc;
+    use otap_df_engine::local::message::LocalSender;
+    use otap_df_engine::testing::test_node;
+    //use std::pin::Pin;
     //use tokio::time::{Duration, sleep};
 
-    fn logs_scenario(
-        num_rows: usize,
-    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = TestContext<OtapPdata>>>>
-    {
-        move |mut ctx| {
-            Box::pin(async move {
-                let otap_batch = OtapArrowBytes::ArrowLogs(
-                    create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                        num_rows,
-                        ..Default::default()
-                    }),
-                );
+    fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+        mpsc::Channel::new(capacity)
+    }
 
-                ctx.process(Message::PData(otap_batch.into()))
-                    .await
-                    .expect("Failed to send  logs message");
+    fn create_test_processor() -> RetryProcessor {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_retry_delay_ms: 100,
+            max_retry_delay_ms: 1000,
+            backoff_multiplier: 2.0,
+            max_pending_messages: 10,
+            cleanup_interval_secs: 1,
+        };
+        RetryProcessor::with_config(config)
+    }
 
-                ctx
-            })
-        }
+    fn create_test_data(_id: u64) -> OtapPdata {
+        OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowLogs(
+            create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                num_rows: 1,
+                ..Default::default()
+            }),
+        ))
     }
 
     #[tokio::test]
     async fn test_process_pdata_message() {
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let processor = RetryProcessor::with_config(RetryConfig::default());
-        let node_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
-        let processor = ProcessorWrapper::<OtapPdata>::local::<RetryProcessor>(
-            processor,
-            test_node(test_runtime.config().name.clone()),
-            node_config,
-            test_runtime.config(),
-        );
+        let mut processor = create_test_processor();
+        let (sender, receiver) = create_test_channel(10);
+        let mut senders_map = HashMap::new();
+        let _ = senders_map.insert("out".into(), LocalSender::MpscSender(sender));
+        let mut effect_handler = EffectHandler::new(test_node("retry"), senders_map, None);
 
-        let num_rows = 100;
-        test_runtime
-            .set_processor(processor)
-            .run_test(logs_scenario(num_rows))
+        let test_data = create_test_data(1);
+        let message = Message::PData(test_data.clone());
+
+        processor
+            .process(message, &mut effect_handler)
             .await
-            .validate(move |mut ctx| {
-                Box::pin(async move {
-                    let result = ctx.test_context().drain_pdata().await;
-                    assert_eq!(result.len(), 1);
-                })
-            })
-            .await;
+            .unwrap();
+
+        // Should have one pending message
+        assert_eq!(processor.pending_messages.len(), 1);
+
+        // Should have sent message downstream
+        let received = receiver.recv().await.unwrap();
+        assert_eq!(crate::pdata::test::num_rows(&received), 1);
     }
+
+    // fn logs_scenario(
+    //     num_rows: usize,
+    // ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = TestContext<OtapPdata>>>>
+    // {
+    //     move |mut ctx| {
+    //         Box::pin(async move {
+    //             let otap_batch = OtapArrowBytes::ArrowLogs(
+    //                 create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+    //                     num_rows,
+    //                     ..Default::default()
+    //                 }),
+    //             );
+    //             ctx.process(Message::PData(otap_batch.into()))
+    //                 .await
+    //                 .expect("Failed to send  logs message");
+    //             ctx
+    //         })
+    //     }
+    // }
+    // #[tokio::test]
+    // async fn jmacd_bogus() {
+    //     let test_runtime = TestRuntime::<OtapPdata>::new();
+    //     let processor = RetryProcessor::with_config(RetryConfig::default());
+    //     let node_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
+    //     let processor = ProcessorWrapper::<OtapPdata>::local::<RetryProcessor>(
+    //         processor,
+    //         test_node(test_runtime.config().name.clone()),
+    //         node_config,
+    //         test_runtime.config(),
+    //     );
+    //     let num_rows = 100;
+    //     test_runtime
+    //         .set_processor(processor)
+    //         .run_test(logs_scenario(num_rows))
+    //         .validate(move |mut ctx| {
+    //             Box::pin(async move {
+    //                 let result = ctx.test_context().drain_pdata().await;
+    //                 assert_eq!(result.len(), 1);
+    //             })
+    //         })
+    //         .await;
+    // }
 
     // #[tokio::test]
     // async fn test_ack_removes_pending_

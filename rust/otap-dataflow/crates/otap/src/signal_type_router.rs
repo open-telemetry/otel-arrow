@@ -162,8 +162,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn test_process_messages_pass_through() {
+    #[test]
+    fn test_process_messages_pass_through() {
         use otap_df_config::node::NodeUserConfig;
         use std::sync::Arc;
 
@@ -193,11 +193,10 @@ mod tests {
                     .expect("data processing failed");
                 let forwarded = ctx.drain_pdata().await;
                 assert_eq!(forwarded.len(), 1);
-                ctx
             })
         });
 
         // No-op validation closure
-        validation.await.validate(|_| async {}).await;
+        validation.validate(|_| async {});
     }
 }
