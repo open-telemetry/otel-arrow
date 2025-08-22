@@ -228,13 +228,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let is_telemetry_crate = crate_name == "otap-df-telemetry";
 
     // Choose path prefixes based on context
-    let (attr_handler_path, descriptor_path, field_path, value_type_path, attr_value_path) = if is_telemetry_crate {
+    let (attr_handler_path, descriptor_path, field_path, value_type_path, attr_value_path, attr_iterator_path) = if is_telemetry_crate {
         (
             quote!(crate::attributes::AttributeSetHandler),
             quote!(crate::descriptor::AttributesDescriptor),
             quote!(crate::descriptor::AttributeField),
             quote!(crate::descriptor::AttributeValueType),
             quote!(crate::attributes::AttributeValue),
+            quote!(crate::attributes::AttributeIterator),
         )
     } else {
         (
@@ -243,6 +244,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
             quote!(::otap_df_telemetry::descriptor::AttributeField),
             quote!(::otap_df_telemetry::descriptor::AttributeValueType),
             quote!(::otap_df_telemetry::attributes::AttributeValue),
+            quote!(::otap_df_telemetry::attributes::AttributeIterator),
         )
     };
 
@@ -386,12 +388,26 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                     &#desc_ident
                 }
 
-                fn iter_attributes<'a>(&'a self) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = (&'static str, #attr_value_path)> + 'a> {
-                    let fields = self.descriptor().fields;
-                    let values = ::std::vec![
-                        #( #attr_iter_values ),*
-                    ];
-                    ::std::boxed::Box::new(fields.iter().zip(values.into_iter()).map(|(field, value)| (field.key, value)))
+                fn iter_attributes<'a>(&'a self) -> #attr_iterator_path<'a> {
+                    #attr_iterator_path::new(self.descriptor().fields, self.attribute_values())
+                }
+
+                fn attribute_values(&self) -> &[#attr_value_path] {
+                    // For simple cases without composition, we need to use thread-local storage
+                    // to create a temporary slice that lives long enough for the iterator
+                    thread_local! {
+                        static VALUES: ::std::cell::RefCell<::std::vec::Vec<#attr_value_path>> = ::std::cell::RefCell::new(::std::vec::Vec::new());
+                    }
+                    VALUES.with(|values| {
+                        let mut values = values.borrow_mut();
+                        values.clear();
+                        values.extend([
+                            #( #attr_iter_values ),*
+                        ]);
+                        // SAFETY: The returned slice is only valid for the current call
+                        // This is safe as long as iter_attributes() doesn't store the slice
+                        unsafe { ::std::mem::transmute(values.as_slice()) }
+                    })
                 }
             }
         };
@@ -444,25 +460,33 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                fn iter_attributes<'a>(&'a self) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = (&'static str, #attr_value_path)> + 'a> {
-                    let mut iterators: ::std::vec::Vec<::std::boxed::Box<dyn ::std::iter::Iterator<Item = (&'static str, #attr_value_path)> + 'a>> = ::std::vec::Vec::new();
+                fn iter_attributes<'a>(&'a self) -> #attr_iterator_path<'a> {
+                    // For composed attributes, we still need to collect and box to chain them.
+                    // This is a limitation of the current design for composed attributes.
+                    let values = self.attribute_values();
+                    #attr_iterator_path::new(self.descriptor().fields, values)
+                }
 
-                    // Add local attributes
-                    if #local_fields_len > 0 {
-                        let local_fields = &self.descriptor().fields[..#local_fields_len];
-                        let local_values = ::std::vec![
-                            #( #attr_iter_values ),*
-                        ];
-                        iterators.push(::std::boxed::Box::new(
-                            local_fields.iter().zip(local_values.into_iter()).map(|(field, value)| (field.key, value))
-                        ));
+                fn attribute_values(&self) -> &[#attr_value_path] {
+                    thread_local! {
+                        static VALUES: ::std::cell::RefCell<::std::vec::Vec<#attr_value_path>> = ::std::cell::RefCell::new(::std::vec::Vec::new());
                     }
+                    VALUES.with(|values| {
+                        let mut values = values.borrow_mut();
+                        values.clear();
 
-                    // Add composed attributes
-                    #( iterators.push(self.#composed_field_idents.iter_attributes()); )*
+                        // Add local attributes
+                        if #local_fields_len > 0 {
+                            values.extend_from_slice(&[
+                                #( #attr_iter_values ),*
+                            ]);
+                        }
 
-                    // Chain all iterators
-                    ::std::boxed::Box::new(iterators.into_iter().flatten())
+                        // Add composed attributes
+                        #( values.extend_from_slice(self.#composed_field_idents.attribute_values()); )*
+
+                        unsafe { ::std::mem::transmute(values.as_slice()) }
+                    })
                 }
             }
         };

@@ -415,11 +415,14 @@ mod tests {
     #[derive(Debug)]
     struct MockAttributeSet {
         value: String,
+        // Store the attribute values as owned data that we can return references to
+        attribute_values: Vec<AttributeValue>,
     }
 
     impl MockAttributeSet {
         fn new(value: String) -> Self {
-            Self { value }
+            let attribute_values = vec![AttributeValue::String(value.clone())];
+            Self { value, attribute_values }
         }
     }
 
@@ -428,8 +431,15 @@ mod tests {
             &MOCK_ATTRIBUTES_DESCRIPTOR
         }
 
-        fn iter_attributes<'a>(&'a self) -> Box<dyn Iterator<Item = (&'static str, AttributeValue)> + 'a> {
-            Box::new(std::iter::once(("test_key", AttributeValue::String(self.value.clone()))))
+        fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
+            crate::attributes::AttributeIterator::new(
+                &MOCK_ATTRIBUTES_DESCRIPTOR.fields,
+                &self.attribute_values
+            )
+        }
+
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.attribute_values
         }
     }
 
