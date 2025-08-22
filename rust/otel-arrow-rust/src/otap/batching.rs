@@ -163,38 +163,38 @@ async fn update_state(mut state: BatcherState) {
         #[rustfmt::skip]
         let action = tokio::select! {
             _time_to_die = &mut state.termination_rx => {
-		// Early termination: we exit regardless of what unprocessed data is lying around in
-		// `state.current`.
-		return;
+                // Early termination: we exit regardless of what unprocessed data is lying around in
+                // `state.current`.
+                return;
             },
 
             incoming = state.input_rx.recv() => {
-		match incoming {
-		    Some(incoming) => {
-			state.current.push(incoming);
-			let do_emit = size_triggers_emission(&state);
-			let do_shutdown = false;
-			Action {do_emit, do_shutdown}
-		    },
-		    None => {
-			// The channel is closed, so we can never get any new batches. We can't
-			// necessarily shut down right away because `state.current` might still have
-			// stuff in it.
-			let do_emit = !state.current.is_empty();
-			let do_shutdown = true;
-			Action {do_emit, do_shutdown}
-		    }
-		}
+                match incoming {
+                    Some(incoming) => {
+                        state.current.push(incoming);
+                        let do_emit = size_triggers_emission(&state);
+                        let do_shutdown = false;
+                        Action {do_emit, do_shutdown}
+                    },
+                    None => {
+                        // The channel is closed, so we can never get any new batches. We can't
+                        // necessarily shut down right away because `state.current` might still have
+                        // stuff in it.
+                        let do_emit = !state.current.is_empty();
+                        let do_shutdown = true;
+                        Action {do_emit, do_shutdown}
+                    }
+                }
 
             }
 
-	    _ = &mut sleep, if state.config.time_trigger.is_some() => {
-		let do_emit = true;
-		let do_shutdown = false;
-		Action {do_emit, do_shutdown}
-	    }
+            _ = &mut sleep, if state.config.time_trigger.is_some() => {
+                let do_emit = true;
+                let do_shutdown = false;
+                Action {do_emit, do_shutdown}
+            }
 
-	    else => Action {do_emit: false, do_shutdown: false}
+            else => Action {do_emit: false, do_shutdown: false}
         };
 
         if action.do_emit {

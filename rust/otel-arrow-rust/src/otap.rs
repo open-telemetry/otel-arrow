@@ -755,7 +755,7 @@ impl<T> MaybeIDRange<T> {
             } else {
                 end + offset
             })
-            .expect("boo");
+            .expect("overflow occurred");
 
             let offset = Native::try_from(offset).expect("this should never happen");
 
@@ -789,22 +789,22 @@ impl<T> MaybeIDRange<T> {
                 let next_starting_id = Native::try_from(next_starting_id)
                     .expect("we can convert next_starting_id to our element type");
 
-                let values =                         // ...then we add the non-null values
-                        valid_ids
-                            .iter()
-                            // we convert the original values into a form of run-length encoding
-                            .dedup_with_count()
-                            // and combine it with a gap-free sequence of new integer values
-                            .zip(next_starting_id..)
-                            .flat_map(|((count, _old_id), new_id)| {
-                                // swapping out old for new values, repeating items as needed
-                                repeat_n(new_id, count)
-                            });
+                let values = valid_ids
+                    .iter()
+                    // we convert the original values into a form of run-length encoding
+                    .dedup_with_count()
+                    // and combine it with a gap-free sequence of new integer values
+                    .zip(next_starting_id..)
+                    .flat_map(|((count, _old_id), new_id)| {
+                        // swapping out old for new values, repeating items as needed
+                        repeat_n(new_id, count)
+                    });
                 if null_count == 0 {
                     PrimitiveArray::from_iter_values(values)
                 } else {
                     // First, we start with as many nulls as the original...
                     let nulls = repeat_n(None, null_count);
+                    // ...then we add the non-null values
                     nulls.chain(values.map(Some)).collect()
                 }
             };
