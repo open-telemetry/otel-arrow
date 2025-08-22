@@ -14,6 +14,9 @@ workspace = true
 
 [features]
 testing = []
+unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
+unchecked-index = []
+unchecked-arithmetic = []
 
 [dependencies]
 flume = { workspace = true }

@@ -68,6 +68,12 @@ weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0
 once_cell = "1.20.2"
 flume = { version = "0.11.1", default-features = false, features = ["async"] }
 
+[features]
+default = []
+unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
+unchecked-index = []
+unchecked-arithmetic = []
+
 [workspace.lints.rust]
 # General compatibility lints
 rust_2018_idioms = { level = "warn", priority = -1 }

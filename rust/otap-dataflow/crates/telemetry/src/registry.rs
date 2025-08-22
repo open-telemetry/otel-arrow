@@ -97,20 +97,34 @@ impl<'a> Iterator for NonZeroMetrics<'a> {
             let i = self.idx;
             self.idx += 1;
 
-            // Use unchecked in release, safe in debug to catch issues early.
+            // Use unchecked indexing when the feature is enabled, otherwise use safe indexing
             let v = {
-                #[cfg(debug_assertions)]
-                { self.values[i] }
-                #[cfg(not(debug_assertions))]
-                { unsafe { *self.values.get_unchecked(i) } }
+                #[cfg(feature = "unchecked-index")]
+                {
+                    // SAFETY: We know `i` is valid because:
+                    // 1. `i` was captured from `self.idx` before incrementing
+                    // 2. Loop condition ensures `self.idx < self.values.len()` when we enter
+                    // 3. `values` slice is immutable for the iterator's lifetime
+                    unsafe { *self.values.get_unchecked(i) }
+                }
+                #[cfg(not(feature = "unchecked-index"))]
+                {
+                    self.values[i]
+                }
             };
 
             if v != 0 {
                 let field = {
-                    #[cfg(debug_assertions)]
-                    { &self.fields[i] }
-                    #[cfg(not(debug_assertions))]
-                    { unsafe { self.fields.get_unchecked(i) } }
+                    #[cfg(feature = "unchecked-index")]
+                    {
+                        // SAFETY: Same invariants as above apply to fields array
+                        // fields.len() == values.len() is asserted in new()
+                        unsafe { self.fields.get_unchecked(i) }
+                    }
+                    #[cfg(not(feature = "unchecked-index"))]
+                    {
+                        &self.fields[i]
+                    }
                 };
                 return Some((field, v));
             }
@@ -196,7 +210,19 @@ impl MetricsRegistry {
                 .metric_values
                 .iter_mut()
                 .zip(metrics_values)
-                .for_each(|(e, v)| *e += v);
+                .for_each(|(e, v)| {
+                    #[cfg(feature = "unchecked-arithmetic")]
+                    {
+                        // SAFETY: Metric values are expected to be well-behaved and not overflow
+                        // in typical telemetry scenarios. This is a performance optimization for
+                        // hot path metric accumulation.
+                        *e = e.wrapping_add(*v);
+                    }
+                    #[cfg(not(feature = "unchecked-arithmetic"))]
+                    {
+                        *e += v;
+                    }
+                });
         } else {
             // TODO: consider logging missing key
         }

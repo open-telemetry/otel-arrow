@@ -62,7 +62,16 @@ impl From<u64> for Counter<u64> {
 
 impl AddAssign<u64> for Counter<u64> {
     fn add_assign(&mut self, rhs: u64) {
-        self.0 = self.0 + rhs;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Counter values are expected to be well-behaved in telemetry scenarios.
+            // Wrapping behavior is acceptable for performance-critical metric collection.
+            self.0 = self.0.wrapping_add(rhs);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 + rhs;
+        }
     }
 }
 
@@ -70,13 +79,29 @@ impl Counter<u64> {
     /// Increments the counter by 1.
     #[inline]
     pub fn inc(&mut self) {
-        self.0 = self.0 + 1;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Incrementing by 1 is safe for wrapping arithmetic in telemetry contexts
+            self.0 = self.0.wrapping_add(1);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 + 1;
+        }
     }
 
     /// Adds an arbitrary value to the counter.
     #[inline]
     pub fn add(&mut self, v: u64) {
-        self.0 = self.0 + v;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Counter additions are expected to be well-behaved in telemetry scenarios
+            self.0 = self.0.wrapping_add(v);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 + v;
+        }
     }
 }
 
@@ -134,13 +159,31 @@ impl From<u64> for UpDownCounter<u64> {
 
 impl AddAssign<u64> for UpDownCounter<u64> {
     fn add_assign(&mut self, rhs: u64) {
-        self.0 = self.0 + rhs;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: UpDownCounter arithmetic is expected to be well-behaved in telemetry scenarios.
+            // Wrapping behavior is acceptable for performance-critical metric operations.
+            self.0 = self.0.wrapping_add(rhs);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 + rhs;
+        }
     }
 }
 
 impl SubAssign<u64> for UpDownCounter<u64> {
     fn sub_assign(&mut self, rhs: u64) {
-        self.0 = self.0 - rhs;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: UpDownCounter subtraction is expected to be well-behaved in telemetry scenarios.
+            // Wrapping behavior is acceptable for performance-critical metric operations.
+            self.0 = self.0.wrapping_sub(rhs);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 - rhs;
+        }
     }
 }
 
@@ -148,13 +191,29 @@ impl UpDownCounter<u64> {
     /// Increments the up-down-counter by 1.
     #[inline]
     pub fn inc(&mut self) {
-        self.0 = self.0 + 1;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Incrementing by 1 is safe for wrapping arithmetic in telemetry contexts
+            self.0 = self.0.wrapping_add(1);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 + 1;
+        }
     }
 
     /// Decrements the up-down-counter by 1.
     #[inline]
     pub fn dec(&mut self) {
-        self.0 = self.0 - 1;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Decrementing by 1 is safe for wrapping arithmetic in telemetry contexts
+            self.0 = self.0.wrapping_sub(1);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 - 1;
+        }
     }
 }
 
@@ -216,13 +275,31 @@ impl From<u64> for Gauge<u64> {
 
 impl AddAssign<u64> for Gauge<u64> {
     fn add_assign(&mut self, rhs: u64) {
-        self.0 = self.0 + rhs;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Gauge arithmetic is expected to be well-behaved in telemetry scenarios.
+            // Wrapping behavior is acceptable for performance-critical metric operations.
+            self.0 = self.0.wrapping_add(rhs);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 + rhs;
+        }
     }
 }
 
 impl SubAssign<u64> for Gauge<u64> {
     fn sub_assign(&mut self, rhs: u64) {
-        self.0 = self.0 - rhs;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Gauge subtraction is expected to be well-behaved in telemetry scenarios.
+            // Wrapping behavior is acceptable for performance-critical metric operations.
+            self.0 = self.0.wrapping_sub(rhs);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 - rhs;
+        }
     }
 }
 
@@ -230,12 +307,183 @@ impl Gauge<u64> {
     /// Increments the gauge by 1.
     #[inline]
     pub fn inc(&mut self) {
-        self.0 = self.0 + 1;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Incrementing by 1 is safe for wrapping arithmetic in telemetry contexts
+            self.0 = self.0.wrapping_add(1);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 + 1;
+        }
     }
 
     /// Decrements the gauge by 1.
     #[inline]
     pub fn dec(&mut self) {
-        self.0 = self.0 - 1;
+        #[cfg(feature = "unchecked-arithmetic")]
+        {
+            // SAFETY: Decrementing by 1 is safe for wrapping arithmetic in telemetry contexts
+            self.0 = self.0.wrapping_sub(1);
+        }
+        #[cfg(not(feature = "unchecked-arithmetic"))]
+        {
+            self.0 = self.0 - 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_counter_new() {
+        let counter = Counter::new(42u64);
+        assert_eq!(counter.get(), 42);
+    }
+
+    #[test]
+    fn test_counter_default() {
+        let counter: Counter<u64> = Counter::default();
+        assert_eq!(counter.get(), 0);
+    }
+
+    #[test]
+    fn test_counter_from() {
+        let counter = Counter::from(100u64);
+        assert_eq!(counter.get(), 100);
+    }
+
+    #[test]
+    fn test_counter_reset() {
+        let mut counter = Counter::new(42u64);
+        counter.reset();
+        assert_eq!(counter.get(), 0);
+    }
+
+    #[test]
+    fn test_counter_inc() {
+        let mut counter = Counter::new(0u64);
+        counter.inc();
+        assert_eq!(counter.get(), 1);
+
+        counter.inc();
+        assert_eq!(counter.get(), 2);
+    }
+
+    #[test]
+    fn test_counter_add() {
+        let mut counter = Counter::new(10u64);
+        counter.add(5);
+        assert_eq!(counter.get(), 15);
+
+        counter.add(0);
+        assert_eq!(counter.get(), 15);
+
+        counter.add(100);
+        assert_eq!(counter.get(), 115);
+    }
+
+    #[test]
+    fn test_counter_add_assign() {
+        let mut counter = Counter::new(10u64);
+        counter += 5;
+        assert_eq!(counter.get(), 15);
+
+        counter += 0;
+        assert_eq!(counter.get(), 15);
+
+        counter += 100;
+        assert_eq!(counter.get(), 115);
+    }
+
+    #[test]
+    fn test_counter_large_values() {
+        let mut counter = Counter::new(u64::MAX - 10);
+        counter.add(5);
+        assert_eq!(counter.get(), u64::MAX - 5);
+    }
+
+    #[cfg(feature = "unchecked-arithmetic")]
+    #[test]
+    fn test_counter_overflow_wrapping_with_feature() {
+        // When unchecked-arithmetic is enabled, operations should wrap
+        let mut counter = Counter::new(u64::MAX);
+        counter.inc(); // Should wrap to 0
+        assert_eq!(counter.get(), 0);
+
+        let mut counter2 = Counter::new(u64::MAX - 1);
+        counter2.add(5); // Should wrap to 3
+        assert_eq!(counter2.get(), 3);
+
+        let mut counter3 = Counter::new(u64::MAX);
+        counter3 += 10; // Should wrap to 9
+        assert_eq!(counter3.get(), 9);
+    }
+
+    #[cfg(not(feature = "unchecked-arithmetic"))]
+    #[test]
+    #[should_panic]
+    fn test_counter_overflow_panic_without_feature() {
+        // When unchecked-arithmetic is disabled, operations should panic on overflow
+        let mut counter = Counter::new(u64::MAX);
+        counter.inc(); // Should panic
+    }
+
+    #[cfg(not(feature = "unchecked-arithmetic"))]
+    #[test]
+    #[should_panic]
+    fn test_counter_add_overflow_panic_without_feature() {
+        // When unchecked-arithmetic is disabled, operations should panic on overflow
+        let mut counter = Counter::new(u64::MAX - 1);
+        counter.add(5); // Should panic
+    }
+
+    #[cfg(not(feature = "unchecked-arithmetic"))]
+    #[test]
+    #[should_panic]
+    fn test_counter_add_assign_overflow_panic_without_feature() {
+        // When unchecked-arithmetic is disabled, operations should panic on overflow
+        let mut counter = Counter::new(u64::MAX);
+        counter += 10; // Should panic
+    }
+
+    #[test]
+    fn test_counter_copy() {
+        let counter1 = Counter::new(42u64);
+        let counter2 = counter1; // Should copy, not move
+        assert_eq!(counter1.get(), 42); // counter1 should still be usable
+        assert_eq!(counter2.get(), 42);
+    }
+
+    #[test]
+    fn test_counter_sequential_operations() {
+        let mut counter = Counter::new(0u64);
+
+        // Test a sequence of operations
+        counter.inc();              // 1
+        counter.add(10);           // 11
+        counter += 5;              // 16
+        counter.inc();             // 17
+        counter.add(3);            // 20
+
+        assert_eq!(counter.get(), 20);
+    }
+
+    #[test]
+    fn test_counter_edge_cases() {
+        // Test with maximum safe values
+        let mut counter = Counter::new(u64::MAX / 2);
+        counter.add(100);
+        assert_eq!(counter.get(), (u64::MAX / 2) + 100);
+
+        // Test reset after operations
+        counter.reset();
+        assert_eq!(counter.get(), 0);
+
+        // Test operations after reset
+        counter.inc();
+        assert_eq!(counter.get(), 1);
     }
 }
