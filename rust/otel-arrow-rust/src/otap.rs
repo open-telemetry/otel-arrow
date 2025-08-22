@@ -910,17 +910,38 @@ mod test {
 
     #[test]
     fn test_log_decode_transport_optimized_ids() {
+        let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
         let logs_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                true,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter(vec![
-                Some(1),
-                Some(1),
-                None,
-            ]))],
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(1), None])),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(0),
+                        Some(1),
+                        Some(1),
+                    ]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(1),
+                        Some(0),
+                        Some(1),
+                    ]))],
+                    None,
+                )),
+            ],
         )
         .unwrap();
 
@@ -950,16 +971,48 @@ mod test {
 
         batch.decode_transport_optimized_ids().unwrap();
 
-        // check log.ids
+        let expected_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let expected_logs_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(expected_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(expected_struct_fields.clone()),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(2), None])),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(0),
+                        Some(1),
+                        Some(2),
+                    ]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(1),
+                        Some(1),
+                        Some(2),
+                    ]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
         let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
-        let logs_ids = logs_rb
-            .column_by_name(consts::ID)
-            .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
-        let expected = UInt16Array::from_iter(vec![Some(1), Some(2), None]);
-        assert_eq!(&expected, logs_ids);
+        assert_eq!(logs_rb, &expected_logs_rb);
 
         // check the attributes IDs
         for payload_type in [
@@ -1265,17 +1318,38 @@ mod test {
 
     #[test]
     fn test_metrics_decode_transport_optimized_ids() {
+        let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
         let metrics_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                true,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter(vec![
-                Some(1),
-                Some(1),
-                None,
-            ]))],
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(1), None])),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(0),
+                        Some(1),
+                        Some(1),
+                    ]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(1),
+                        Some(0),
+                        Some(1),
+                    ]))],
+                    None,
+                )),
+            ],
         )
         .unwrap();
 
@@ -1387,15 +1461,48 @@ mod test {
 
         otap_batch.decode_transport_optimized_ids().unwrap();
 
+        let expected_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let expected_metrics_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(expected_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(expected_struct_fields.clone()),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(2), None])),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(0),
+                        Some(1),
+                        Some(2),
+                    ]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(1),
+                        Some(1),
+                        Some(2),
+                    ]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
         let metrics_rb = otap_batch.get(ArrowPayloadType::UnivariateMetrics).unwrap();
-        let span_ids = metrics_rb
-            .column_by_name(consts::ID)
-            .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
-        let expected = UInt16Array::from_iter(vec![Some(1), Some(2), None]);
-        assert_eq!(&expected, span_ids);
+        assert_eq!(metrics_rb, &expected_metrics_rb);
 
         // check the attributes parent IDs
         for payload_type in [
@@ -1490,17 +1597,38 @@ mod test {
 
     #[test]
     fn test_trace_decode_transport_optimized_ids() {
+        let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
         let spans_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                true,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter(vec![
-                Some(1),
-                Some(1),
-                None,
-            ]))],
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(1), None])),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(0),
+                        Some(1),
+                        Some(1),
+                    ]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(1),
+                        Some(0),
+                        Some(1),
+                    ]))],
+                    None,
+                )),
+            ],
         )
         .unwrap();
 
@@ -1601,16 +1729,48 @@ mod test {
 
         otap_batch.decode_transport_optimized_ids().unwrap();
 
-        // check log.ids
+        let expected_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let expected_spans_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(expected_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(expected_struct_fields.clone()),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(2), None])),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(0),
+                        Some(1),
+                        Some(2),
+                    ]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    expected_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(1),
+                        Some(1),
+                        Some(2),
+                    ]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
         let spans_rb = otap_batch.get(ArrowPayloadType::Spans).unwrap();
-        let span_ids = spans_rb
-            .column_by_name(consts::ID)
-            .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
-        let expected = UInt16Array::from_iter(vec![Some(1), Some(2), None]);
-        assert_eq!(&expected, span_ids);
+        assert_eq!(spans_rb, &expected_spans_rb);
 
         // check the attributes parent IDs
         for payload_type in [

@@ -32,6 +32,7 @@ use crate::{
         create_next_element_equality_array, create_next_eq_array_for_array,
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
         materialize_parent_ids_by_columns, remove_delta_encoding,
+        remove_delta_encoding_from_column,
     },
     otlp::attributes::{parent_id::ParentId, store::AttributeValueType},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
@@ -84,41 +85,39 @@ struct ColumnEncoding<'a> {
     encoding: Encoding,
 }
 
-impl<'a> ColumnEncoding<'a> {
-    /// checks if the column associated with this [`ColumnEncoding`] has already had the column
-    /// encoding applied.
-    ///
-    /// this is done by inspecting the field metadata, and specifically checking that the column
-    /// encoding is not 'plain'. if there is no field metadata, we assume the column is already
-    /// encoded. we make this assumption because it probably means we received this OTAP data from
-    /// the golang OTAP exporter, which always encodes the columns and never adds metadata
-    ///
-    /// returns `None` if the field associated with `self.path` isn't found in passed schema
-    fn is_column_encoded(&self, schema: &Schema) -> Option<bool> {
-        let field = if let Some(struct_col_name) = struct_column_name(self.path) {
-            // get the ID field out of the struct column
-            let struct_col = schema.field_with_name(struct_col_name).ok()?;
-            if let DataType::Struct(fields) = struct_col.data_type() {
-                fields.find(consts::ID).map(|(_, field)| field)?
-            } else {
-                return None;
-            }
+/// checks if the column associated with this [`ColumnEncoding`] has already had the column
+/// encoding applied.
+///
+/// this is done by inspecting the field metadata, and specifically checking that the column
+/// encoding is not 'plain'. if there is no field metadata, we assume the column is already
+/// encoded. we make this assumption because it probably means we received this OTAP data from
+/// the golang OTAP exporter, which always encodes the columns and never adds metadata
+///
+/// returns `None` if the field associated with `self.path` isn't found in passed schema
+fn is_column_encoded(path: &str, schema: &Schema) -> Option<bool> {
+    let field = if let Some(struct_col_name) = struct_column_name(path) {
+        // get the ID field out of the struct column
+        let struct_col = schema.field_with_name(struct_col_name).ok()?;
+        if let DataType::Struct(fields) = struct_col.data_type() {
+            fields.find(consts::ID).map(|(_, field)| field)?
         } else {
-            // otherwise just look at field with path == name
-            schema.field_with_name(self.path).ok()?
-        };
+            return None;
+        }
+    } else {
+        // otherwise just look at field with path == name
+        schema.field_with_name(path).ok()?
+    };
 
-        // check the field metadata to determine if field is encoded
-        let field_metadata = field.metadata();
-        let is_encoded = match field_metadata.get(consts::metadata::COLUMN_ENCODING) {
-            Some(encoding) => encoding != consts::metadata::encodings::PLAIN,
+    // check the field metadata to determine if field is encoded
+    let field_metadata = field.metadata();
+    let is_encoded = match field_metadata.get(consts::metadata::COLUMN_ENCODING) {
+        Some(encoding) => encoding != consts::metadata::encodings::PLAIN,
 
-            // assume if there is no metadata, then the column is already encoded
-            None => true,
-        };
+        // assume if there is no metadata, then the column is already encoded
+        None => true,
+    };
 
-        Some(is_encoded)
-    }
+    Some(is_encoded)
 }
 
 /// Helper function for accessing the column associated for the (possibly nested) path
@@ -142,7 +141,7 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
 /// Replaces the column identified by `path` within the array of columns with the new column.
 fn replace_column(
     path: &str,
-    encoding: Encoding,
+    encoding: Option<Encoding>,
     schema: &Schema,
     columns: &mut [ArrayRef],
     new_column: ArrayRef,
@@ -181,7 +180,11 @@ fn replace_column(
 }
 
 /// Sets the encoding metadata on the field metadata for column at path.
-fn update_field_encoding_metadata(path: &str, encoding: Encoding, fields: &mut [FieldRef]) {
+///
+/// # Arguments
+/// - encoding: if `Some`, then the encoding metadata on the field will be updated to reflect the
+///   new encoding. `None` will be interpreted  as plain encoding.
+fn update_field_encoding_metadata(path: &str, encoding: Option<Encoding>, fields: &mut [FieldRef]) {
     if let Some(struct_col_name) = struct_column_name(path) {
         // replace the field metadata in some nested struct
         let found_field = fields
@@ -211,8 +214,9 @@ fn update_field_encoding_metadata(path: &str, encoding: Encoding, fields: &mut [
 
     if let Some((idx, field)) = found_field {
         let encoding = match encoding {
-            Encoding::Delta | Encoding::DeltaRemapped => consts::metadata::encodings::DELTA,
-            Encoding::AttributeQuasiDelta | Encoding::ColumnarQuasiDelta(_) => {
+            None => consts::metadata::encodings::PLAIN,
+            Some(Encoding::Delta | Encoding::DeltaRemapped) => consts::metadata::encodings::DELTA,
+            Some(Encoding::AttributeQuasiDelta | Encoding::ColumnarQuasiDelta(_)) => {
                 consts::metadata::encodings::QUASI_DELTA
             }
         };
@@ -819,7 +823,7 @@ pub fn apply_transport_optimized_encodings(
     let mut count_to_apply = 0;
     let mut count_already_encoded = 0;
     for column_encoding in column_encodings {
-        match column_encoding.is_column_encoded(&schema) {
+        match is_column_encoded(column_encoding.path, &schema) {
             Some(true) => count_already_encoded += 1,
             Some(false) => count_to_apply += 1,
             None => {}
@@ -870,14 +874,14 @@ pub fn apply_transport_optimized_encodings(
 
             replace_column(
                 column_encoding.path,
-                column_encoding.encoding,
+                Some(column_encoding.encoding),
                 &schema,
                 &mut columns,
                 encoding_result.new_column,
             );
             update_field_encoding_metadata(
                 column_encoding.path,
-                column_encoding.encoding,
+                Some(column_encoding.encoding),
                 &mut fields,
             );
         }
@@ -961,7 +965,46 @@ pub fn remove_transport_optimized_encodings(
         ArrowPayloadType::Logs
         | ArrowPayloadType::UnivariateMetrics
         | ArrowPayloadType::MultivariateMetrics
-        | ArrowPayloadType::Spans => remove_delta_encoding::<UInt16Type>(record_batch, consts::ID),
+        | ArrowPayloadType::Spans => {
+            // remove delta encoding from ID column on struct arrays ..
+            let schema = record_batch.schema_ref();
+            let mut columns = record_batch.columns().to_vec();
+            let mut fields = schema.fields.to_vec();
+            for struct_id_path in [RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH] {
+                if is_column_encoded(struct_id_path, schema) == Some(false) {
+                    continue;
+                }
+
+                if let Some(struct_ids) = access_column(struct_id_path, schema, &columns) {
+                    let struct_ids = struct_ids
+                        .as_any()
+                        .downcast_ref::<UInt16Array>()
+                        .with_context(|| error::InvalidListArraySnafu {
+                            expect_oneof: vec![DataType::UInt16],
+                            actual: struct_ids.data_type().clone(),
+                        })?;
+
+                    let new_struct_ids = remove_delta_encoding_from_column(struct_ids);
+                    replace_column(
+                        struct_id_path,
+                        None,
+                        schema,
+                        &mut columns,
+                        Arc::new(new_struct_ids),
+                    );
+                    update_field_encoding_metadata(struct_id_path, None, &mut fields);
+                }
+            }
+
+            // safety: we should have a valid schema with matching columns where all columns are the
+            // same length, so it should be safe to call expect here
+            let schema = Schema::new(fields);
+            let rb = RecordBatch::try_new(Arc::new(schema), columns)
+                .expect("could not create record batch after removing struct ID encodings");
+
+            // remove the delta encoding on the ID column and return
+            remove_delta_encoding::<UInt16Type>(&rb, consts::ID)
+        }
 
         ArrowPayloadType::LogAttrs
         | ArrowPayloadType::MetricAttrs
@@ -1350,11 +1393,11 @@ mod test {
             encoding: Encoding::DeltaRemapped,
         };
 
-        assert!(!column_encoding.is_column_encoded(&schema).unwrap());
+        assert!(!is_column_encoded("a", &schema).unwrap());
 
         // ensure that no metadata means column is encoded
         column_encoding.path = "b";
-        assert!(column_encoding.is_column_encoded(&schema).unwrap());
+        assert!(is_column_encoded("b", &schema).unwrap());
     }
 
     #[test]
@@ -1374,15 +1417,8 @@ mod test {
             ),
         ]);
 
-        let mut column_encoding = ColumnEncoding {
-            path: RESOURCE_ID_COL_PATH,
-            data_type: DataType::UInt16,
-            encoding: Encoding::DeltaRemapped,
-        };
-
-        assert!(!column_encoding.is_column_encoded(&schema).unwrap());
-        column_encoding.path = SCOPE_ID_COL_PATH;
-        assert!(column_encoding.is_column_encoded(&schema).unwrap());
+        assert!(!is_column_encoded(RESOURCE_ID_COL_PATH, &schema).unwrap());
+        assert!(is_column_encoded(SCOPE_ID_COL_PATH, &schema).unwrap());
     }
 
     #[test]
