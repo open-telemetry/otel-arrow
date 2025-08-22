@@ -375,7 +375,6 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::testing::test_node;
-    //use std::pin::Pin;
     use tokio::time::{Duration, sleep};
 
     fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
@@ -401,6 +400,32 @@ mod tests {
                 ..Default::default()
             }),
         ))
+    }
+
+    /// num_rows is a placeholder for maybe a testing helper library for OTAP pdata?
+    fn num_rows(pdata: &OtapPdata) -> usize {
+        match pdata.signal_type() {
+            SignalType::Logs => {
+                let records: otel_arrow_rust::otap::OtapArrowRecords =
+                    pdata.clone().try_into().unwrap();
+                records
+                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
+                    .map_or(0, |batch| batch.num_rows())
+            }
+            SignalType::Traces => {
+                let records: otel_arrow_rust::otap::OtapArrowRecords =
+                    pdata.clone().try_into().unwrap();
+                records
+                    .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
+                    .map_or(0, |batch| batch.num_rows())
+            }
+            SignalType::Metrics => {
+                let records: otel_arrow_rust::otap::OtapArrowRecords =
+                    pdata.clone().try_into().unwrap();
+                records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
+                    .map_or(0, |batch| batch.num_rows())
+            }
+        }
     }
 
     /// Test helper to compare two OtapPdata instances for equivalence.
