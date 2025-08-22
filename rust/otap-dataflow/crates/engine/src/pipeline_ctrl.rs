@@ -15,8 +15,16 @@ use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver
 use crate::error::Error;
 use crate::message::Sender;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
+use std::time::Duration;
 use tokio::time::Instant;
+
+/// Timer state for a node.
+struct TimerState {
+    scheduled_time: Instant,
+    duration: Duration,
+    is_canceled: bool,
+}
 
 /// Manages pipeline control messages such as recurrent and cancelable timers.
 ///
@@ -26,8 +34,7 @@ use tokio::time::Instant;
 /// Design notes:
 /// - Only one timer per node is supported at a time.
 /// - All data structures are optimized for single-threaded async use.
-/// - The combination of `timer_map` and `canceled` ensures correctness and avoids spurious timer
-///   events.
+/// - The timer_states map consolidates all timer information for efficiency and correctness.
 pub struct PipelineCtrlMsgManager {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
@@ -35,12 +42,8 @@ pub struct PipelineCtrlMsgManager {
     control_senders: HashMap<usize, Sender<NodeControlMsg>>,
     /// Min-heap of (Instant, usize) for timer expirations.
     timers: BinaryHeap<Reverse<(Instant, usize)>>,
-    /// Set of node IDs with canceled timers, so we can skip them when they pop.
-    canceled: HashSet<usize>,
-    /// Maps node ID to the currently scheduled expiration Instant, to avoid firing outdated timers.
-    timer_map: HashMap<usize, Instant>,
-    /// Maps node ID to the timer duration, for recurring timers.
-    durations: HashMap<usize, std::time::Duration>,
+    /// Maps node ID to timer state (scheduled time, duration, and cancellation status).
+    timer_states: HashMap<usize, TimerState>,
 }
 
 impl PipelineCtrlMsgManager {
@@ -54,9 +57,7 @@ impl PipelineCtrlMsgManager {
             pipeline_ctrl_msg_receiver,
             control_senders,
             timers: BinaryHeap::new(),
-            canceled: HashSet::new(),
-            timer_map: HashMap::new(),
-            durations: HashMap::new(),
+            timer_states: HashMap::new(),
         }
     }
 
@@ -81,15 +82,17 @@ impl PipelineCtrlMsgManager {
                             // Schedule a new timer for this node.
                             let when = Instant::now() + duration;
                             self.timers.push(Reverse((when, node_id)));
-                            let _ = self.timer_map.insert(node_id, when);
-                            let _ = self.durations.insert(node_id, duration);
-                            let _ = self.canceled.remove(&node_id); // Un-cancel if previously canceled.
+                            let _ = self.timer_states.insert(node_id, TimerState {
+                                scheduled_time: when,
+                                duration,
+                                is_canceled: false,
+                            });
                         }
                         PipelineControlMsg::CancelTimer { node_id } => {
-                            // Mark the timer as canceled and remove from maps.
-                            let _ = self.canceled.insert(node_id);
-                            let _ = self.timer_map.remove(&node_id);
-                            let _ = self.durations.remove(&node_id);
+                            // Mark the timer as canceled.
+                            if let Some(timer_state) = self.timer_states.get_mut(&node_id) {
+                                timer_state.is_canceled = true;
+                            }
                         }
                     }
                 }
@@ -107,28 +110,23 @@ impl PipelineCtrlMsgManager {
                 }, if next_expiry.is_some() => {
                     if let Some(Reverse((when, node_id))) = self.timers.pop() {
                         // Only fire the timer if not canceled and not outdated.
-                        if !self.canceled.contains(&node_id) {
-                            if let Some(&exp) = self.timer_map.get(&node_id) {
-                                if exp == when {
-                                    // Timer fires: handle expiration.
-                                    if let Some(sender) = self.control_senders.get(&node_id) {
-                                        let _ = sender.send(NodeControlMsg::TimerTick {}).await;
-                                    } else {
-                                        return Err(Error::InternalError {message: format!("No control sender for node: {node_id:?}")});
-                                    }
-
-                                    // Schedule next recurrence if still not canceled
-                                    if let Some(&duration) = self.durations.get(&node_id) {
-                                        let next_when = Instant::now() + duration;
-                                        self.timers.push(Reverse((next_when, node_id)));
-                                        let _ = self.timer_map.insert(node_id, next_when);
-                                    }
+                        if let Some(timer_state) = self.timer_states.get_mut(&node_id) {
+                            if !timer_state.is_canceled && timer_state.scheduled_time == when {
+                                // Timer fires: handle expiration.
+                                if let Some(sender) = self.control_senders.get(&node_id) {
+                                    let _ = sender.send(NodeControlMsg::TimerTick {}).await;
+                                } else {
+                                    return Err(Error::InternalError {message: format!("No control sender for node: {node_id:?}")});
                                 }
+
+                                // Schedule next recurrence
+                                let next_when = Instant::now() + timer_state.duration;
+                                self.timers.push(Reverse((next_when, node_id)));
+                                timer_state.scheduled_time = next_when;
+                            } else if timer_state.is_canceled {
+                                // Clean up canceled timers
+                                let _ = self.timer_states.remove(&node_id);
                             }
-                        } else {
-                            let _ = self.timer_map.remove(&node_id);
-                            let _ = self.durations.remove(&node_id);
-                            let _ = self.canceled.remove(&node_id);
                         }
                     }
                 }
@@ -662,19 +660,9 @@ mod tests {
             "Timer queue should be empty initially"
         );
         assert_eq!(
-            manager.canceled.len(),
+            manager.timer_states.len(),
             0,
-            "Canceled set should be empty initially"
-        );
-        assert_eq!(
-            manager.timer_map.len(),
-            0,
-            "Timer map should be empty initially"
-        );
-        assert_eq!(
-            manager.durations.len(),
-            0,
-            "Durations map should be empty initially"
+            "Timer states map should be empty initially"
         );
         assert_eq!(
             manager.control_senders.len(),
