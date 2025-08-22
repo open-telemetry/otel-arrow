@@ -8,7 +8,8 @@ use pest::iterators::Pair;
 use crate::{
     Rule, logical_expressions::parse_logical_expression,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
-    scalar_primitive_expressions::*, scalar_string_function_expressions::*,
+    scalar_mathematical_function_expressions::*, scalar_primitive_expressions::*,
+    scalar_string_function_expressions::*, scalar_temporal_function_expressions::*,
 };
 
 pub(crate) fn parse_scalar_expression(
@@ -23,6 +24,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::datetime_expression => {
             ScalarExpression::Static(parse_datetime_expression(scalar_rule)?)
         }
+        Rule::time_expression => ScalarExpression::Static(parse_timespan_expression(scalar_rule)?),
         Rule::conditional_expression => parse_conditional_expression(scalar_rule, state)?,
         Rule::case_expression => parse_case_expression(scalar_rule, state)?,
         Rule::coalesce_expression => parse_coalesce_expression(scalar_rule, state)?,
@@ -34,6 +36,7 @@ pub(crate) fn parse_scalar_expression(
         Rule::toreal_expression => parse_toreal_expression(scalar_rule, state)?,
         Rule::todouble_expression => parse_todouble_expression(scalar_rule, state)?,
         Rule::todatetime_expression => parse_todatetime_expression(scalar_rule, state)?,
+        Rule::totimespan_expression => parse_totimespan_expression(scalar_rule, state)?,
         Rule::strlen_expression => parse_strlen_expression(scalar_rule, state)?,
         Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
         Rule::substring_expression => parse_substring_expression(scalar_rule, state)?,
@@ -48,6 +51,9 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_standard_integer_literal(scalar_rule)?)
         }
         Rule::string_literal => ScalarExpression::Static(parse_string_literal(scalar_rule)),
+        Rule::negate_expression => parse_negate_expression(scalar_rule, state)?,
+        Rule::bin_expression => parse_bin_expression(scalar_rule, state)?,
+        Rule::now_expression => parse_now_expression(scalar_rule, state)?,
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
             // accessor to fold into a static at the root so
@@ -57,6 +63,7 @@ pub(crate) fn parse_scalar_expression(
             // fold to iff([logical], String("constant1"), String("constant2")).
             parse_accessor_expression(scalar_rule, state, true)?
         }
+        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
         Rule::logical_expression => {
             let l = parse_logical_expression(scalar_rule, state)?;
 
@@ -66,7 +73,7 @@ pub(crate) fn parse_scalar_expression(
                 ScalarExpression::Logical(l.into())
             }
         }
-        Rule::scalar_expression => parse_scalar_expression(scalar_rule, state)?,
+        Rule::arithmetic_expression => parse_arithmetic_expression(scalar_rule, state)?,
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 

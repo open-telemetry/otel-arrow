@@ -10,11 +10,16 @@
 WHITESPACE = _{ " " | NEWLINE | "\t" }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
-// Tokens
+// Math Tokens
 minus_token = { "-" }
 plus_token = { "+" }
+multiply_token = { "*" }
+divide_token = { "/" }
+modulo_token = { "%" }
 positive_infinity_token = { "+inf" }
 negative_infinity_token = { "-inf" }
+
+// Logical Tokens
 equals_token = @{ "==" }
 equals_insensitive_token = @{ "=~" }
 not_equals_token = @{ "!=" }
@@ -25,6 +30,8 @@ less_than_token = @{ "<" ~ !"=" }
 less_than_or_equal_to_token = @{ "<=" }
 and_token = @{ "and" }
 or_token = @{ "or" }
+
+// Misc Tokens
 contains_token = @{ "contains" }
 contains_cs_token = @{ "contains_cs" }
 has_token = @{ "has" }
@@ -92,6 +99,28 @@ accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
 boolean_expression = _{ true_literal | false_literal }
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
 datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")" }
+time_units = @{
+    "day" ~ "s"?
+    | "hour" ~ "s"?
+    | "microsecond" ~ "s"?
+    | "millisecond" ~ "s"?
+    | "minute" ~ "s"?
+    | "second" ~ "s"?
+    | "tick" ~ "s"?
+    | "ms"
+    | "d"
+    | "h"
+    | "m"
+    | "s"
+}
+time_literal = {
+    "-"? ~ (ASCII_DIGIT+ ~ ".")? ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+}
+time_expression = {
+    (double_literal|integer_literal) ~ time_units
+    | "timespan(" ~ (time_literal|string_literal) ~ ")"
+    | "timespan(" ~ (double_literal|integer_literal) ~ time_units? ~ ")"
+}
 
 conditional_expression = { ("iff"|"iif") ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 case_expression = { "case" ~ "(" ~ logical_expression ~ "," ~ scalar_expression ~ ("," ~ logical_expression ~ "," ~ scalar_expression)* ~ "," ~ scalar_expression ~ ")" }
@@ -110,6 +139,7 @@ tolong_expression = { "tolong" ~ "(" ~ scalar_expression ~ ")" }
 toreal_expression = { "toreal" ~ "(" ~ scalar_expression ~ ")" }
 todouble_expression = { "todouble" ~ "(" ~ scalar_expression ~ ")" }
 todatetime_expression = { "todatetime" ~ "(" ~ scalar_expression ~ ")" }
+totimespan_expression = { "totimespan" ~ "(" ~ scalar_expression ~ ")" }
 conversion_expressions = _{
     tostring_expression
     | toint_expression
@@ -119,6 +149,7 @@ conversion_expressions = _{
     | toreal_expression
     | todouble_expression
     | todatetime_expression
+    | totimespan_expression
 }
 
 strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
@@ -132,10 +163,31 @@ string_expressions = _{
     | parse_json_expression
 }
 
+negate_expression = { "-" ~ scalar_expression }
+bin_expression = { "bin" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
+math_expressions = _{
+    negate_expression
+    | bin_expression
+}
+
+now_expression = { "now" ~ "(" ~ scalar_expression? ~ ")" }
+temporal_expressions = _{
+    now_expression
+}
+
+arithmetic_factor = {
+    scalar_expression ~ ((multiply_token | divide_token | modulo_token) ~ scalar_expression)*
+}
+arithmetic_expression = {
+    arithmetic_factor ~ ((plus_token | minus_token) ~ arithmetic_factor)*
+}
+
+// Modify scalar_expression to include arithmetic_expression as first option
 scalar_expression = {
     null_literal
     | real_expression
     | datetime_expression
+    | time_expression
     | conditional_expressions
     | conversion_expressions
     | string_expressions
@@ -143,9 +195,12 @@ scalar_expression = {
     | double_literal
     | integer_literal
     | string_literal
+    | math_expressions
+    | temporal_expressions
     | accessor_expression
     | ("(" ~ scalar_expression ~ ")")
     | ("(" ~ logical_expression ~ ")")
+    | ("(" ~ arithmetic_expression ~ ")")
 }
 
 comparison_expression = {

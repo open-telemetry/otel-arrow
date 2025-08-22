@@ -3,7 +3,7 @@
 
 use std::{ops::Range, str::FromStr, sync::LazyLock};
 
-use chrono::{DateTime, FixedOffset, NaiveDate};
+use chrono::{DateTime, FixedOffset, NaiveDate, TimeDelta};
 use chrono::{Datelike, Month, Utc};
 use regex::Regex;
 
@@ -20,6 +20,8 @@ static LOCAL_TIME_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("(\\d+)(?::(\\d+))?\\s*([AaPp][Mm])").unwrap());
 static ISO_TIME_OFFSET_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("([-+])(\\d+)(?::(\\d+))?").unwrap());
+static ISO_TIME_SPAN_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(-)?(?:(\\d+)\\.)?(\\d+):(\\d+):(\\d+)(?:\\.(\\d+))?").unwrap());
 
 fn expand_year(mut year: u32) -> u32 {
     if year < 50 {
@@ -124,6 +126,73 @@ pub(crate) fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> 
         chrono::offset::LocalResult::Single(date_time) => Ok(date_time),
         _ => Err(()),
     }
+}
+
+pub(crate) fn parse_timespan(input: &str) -> Result<TimeDelta, ()> {
+    let trimmed_input = input.trim();
+
+    let iso = ISO_TIME_SPAN_REGEX.captures(trimmed_input);
+    if let Some(captures) = iso {
+        let r = captures.get(0).unwrap().range();
+
+        if trimmed_input.len() != r.len() {
+            return Err(());
+        }
+
+        let sign = captures.get(1);
+        let days = if let Some(d) = captures.get(2) {
+            d.as_str().parse::<i64>().map_err(|_| ())?
+        } else {
+            0
+        };
+        let hours = captures
+            .get(3)
+            .unwrap()
+            .as_str()
+            .parse::<i64>()
+            .map_err(|_| ())?;
+        let minutes = captures
+            .get(4)
+            .unwrap()
+            .as_str()
+            .parse::<i64>()
+            .map_err(|_| ())?;
+        let seconds = captures
+            .get(5)
+            .unwrap()
+            .as_str()
+            .parse::<i64>()
+            .map_err(|_| ())?;
+        let fraction_seconds = captures.get(6);
+
+        let mut total_seconds = (days * 24 * 3600) + (hours * 3600) + (minutes * 60) + seconds;
+
+        let mut total_nanoseconds: u32 = 0;
+        if let Some(f) = fraction_seconds {
+            let digits = f.as_str();
+            let mut n = 0u32;
+            let mut m = 100_000_000;
+            for d in digits.bytes() {
+                let v = d - 48u8;
+                n += v as u32 * m;
+                m /= 10;
+            }
+            total_nanoseconds += n;
+        }
+
+        if sign.is_some() {
+            if total_nanoseconds > 0 {
+                total_seconds = -total_seconds - 1;
+                total_nanoseconds = 1_000_000_000 - total_nanoseconds;
+            } else {
+                total_seconds *= -1;
+            }
+        }
+
+        return TimeDelta::new(total_seconds, total_nanoseconds).ok_or(());
+    }
+
+    Err(())
 }
 
 fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
@@ -278,6 +347,7 @@ mod tests {
         let now = Utc::now();
 
         run_test_success("12/31/2025", create_utc(2025, 12, 31, 0, 0, 0, 0));
+        run_test_success("   12/31/2025   ", create_utc(2025, 12, 31, 0, 0, 0, 0));
         run_test_success("12/31/50", create_utc(1950, 12, 31, 0, 0, 0, 0));
         run_test_success("12/31/49", create_utc(2049, 12, 31, 0, 0, 0, 0));
         run_test_success("2025/12/31", create_utc(2025, 12, 31, 0, 0, 0, 0));
@@ -382,5 +452,81 @@ mod tests {
         );
         run_test_success("2014-11-08T15:05", create_utc(2014, 11, 8, 15, 5, 0, 0));
         run_test_success("2014-11-08T15:05 GMT", create_utc(2014, 11, 8, 15, 5, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_timespan() {
+        let run_test = |input: &str, expected: TimeDelta| {
+            let actual = parse_timespan(input).unwrap();
+            assert_eq!(expected, actual);
+        };
+
+        let run_test_failure = |input: &str| {
+            parse_timespan(input).unwrap_err();
+        };
+
+        run_test_failure("hello world");
+        run_test_failure("hello 1.00:00:00 world");
+
+        run_test("1.00:00:00", TimeDelta::days(1));
+        run_test("   1.00:00:00   ", TimeDelta::days(1));
+        run_test("18.00:00:00", TimeDelta::days(18));
+
+        run_test("01:00:00", TimeDelta::hours(1));
+        run_test("23:00:00", TimeDelta::hours(23));
+
+        run_test("00:01:00", TimeDelta::minutes(1));
+        run_test("00:59:00", TimeDelta::minutes(59));
+
+        run_test("00:00:01", TimeDelta::seconds(1));
+        run_test("00:00:59", TimeDelta::seconds(59));
+
+        run_test("00:00:00.001", TimeDelta::milliseconds(1));
+        run_test("00:00:00.9", TimeDelta::milliseconds(900));
+        run_test("00:00:00.999", TimeDelta::milliseconds(999));
+
+        run_test("00:00:00.000001", TimeDelta::microseconds(1));
+        run_test("00:00:00.0000001", TimeDelta::nanoseconds(100));
+
+        run_test(
+            "00:00:00.0010011",
+            TimeDelta::milliseconds(1) + TimeDelta::microseconds(1) + TimeDelta::nanoseconds(100),
+        );
+
+        run_test(
+            "23:59:59",
+            TimeDelta::hours(23) + TimeDelta::minutes(59) + TimeDelta::seconds(59),
+        );
+
+        run_test(
+            "-23:59:59",
+            -(TimeDelta::hours(23) + TimeDelta::minutes(59) + TimeDelta::seconds(59)),
+        );
+
+        run_test(
+            "1.23:59:59.001",
+            TimeDelta::days(1)
+                + TimeDelta::hours(23)
+                + TimeDelta::minutes(59)
+                + TimeDelta::seconds(59)
+                + TimeDelta::milliseconds(1),
+        );
+
+        run_test(
+            "-1.23:59:59.001",
+            -(TimeDelta::days(1)
+                + TimeDelta::hours(23)
+                + TimeDelta::minutes(59)
+                + TimeDelta::seconds(59)
+                + TimeDelta::milliseconds(1)),
+        );
+
+        run_test(
+            "1.2:3:4",
+            TimeDelta::days(1)
+                + TimeDelta::hours(2)
+                + TimeDelta::minutes(3)
+                + TimeDelta::seconds(4),
+        );
     }
 }

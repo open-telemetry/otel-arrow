@@ -5,9 +5,8 @@
 
 use crate::control::{PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
+use crate::node::NodeId;
 use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
-use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
@@ -69,12 +68,11 @@ impl EffectHandlerCore {
     pub(crate) fn tcp_listener<PData>(
         &self,
         addr: SocketAddr,
-        receiver_name: impl Into<Cow<'static, str>>,
+        receiver_id: NodeId,
     ) -> Result<TcpListener, Error<PData>> {
-        let node_name: Cow<'static, str> = receiver_name.into();
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
-            node: node_name.clone(),
+            node: receiver_id.clone(),
             error,
         };
 
@@ -118,12 +116,11 @@ impl EffectHandlerCore {
     pub(crate) fn udp_socket<PData>(
         &self,
         addr: SocketAddr,
-        receiver_name: impl Into<Cow<'static, str>>,
+        receiver_id: NodeId,
     ) -> Result<UdpSocket, Error<PData>> {
-        let node_name: Cow<'static, str> = receiver_name.into();
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
-            node: node_name.clone(),
+            node: receiver_id.clone(),
             error,
         };
 
@@ -163,14 +160,14 @@ impl EffectHandlerCore {
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::StartTimer {
-                node_id: self.node_id.clone(),
+                node_id: self.node_id.index,
                 duration,
             })
             .await
             .map_err(Error::PipelineControlMsgError)?;
 
         Ok(TimerCancelHandle {
-            node_id: self.node_id.clone(),
+            node_id: self.node_id.index,
             pipeline_ctrl_msg_sender,
         })
     }
@@ -178,7 +175,7 @@ impl EffectHandlerCore {
 
 /// Handle to cancel a running timer.
 pub struct TimerCancelHandle {
-    node_id: NodeId,
+    node_id: usize,
     pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
 }
 
