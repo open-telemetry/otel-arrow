@@ -30,6 +30,8 @@ Endpoints:
 
 Environment Variables:
 - OTLP_ENDPOINT: Target OTLP gRPC endpoint (default: localhost:4317).
+- SYSLOG_SERVER: Target syslog server hostname/IP (default: localhost).
+- SYSLOG_PORT: Target syslog server port (default: 514).
 """
 
 import argparse
@@ -42,6 +44,7 @@ import string
 import sys
 import threading
 import time
+from datetime import datetime as dt, timezone
 from typing import Optional
 
 import grpc  # type: ignore
@@ -79,6 +82,9 @@ class LoadGenConfig(BaseModel):
     tcp_connection_per_thread: bool = Field(
         True, description="Use a dedicated TCP connection per-thread"
     )
+    load_type: str = Field(
+        "otlp", description="Load generation type: 'otlp' or 'syslog'"
+    )
 
     @field_validator(
         "body_size", "num_attributes", "attribute_value_size", "batch_size", "threads"
@@ -88,6 +94,13 @@ class LoadGenConfig(BaseModel):
         if v <= 0:
             raise ValueError("must be a positive integer")
         return v
+
+    @field_validator("load_type")
+    def validate_load_type(cls, v):
+        """Ensure load_type is either 'otlp' or 'syslog'."""
+        if v.lower() not in ["otlp", "syslog"]:
+            raise ValueError("load_type must be 'otlp' or 'syslog'")
+        return v.lower()
 
 
 class LoadGenerator:
@@ -209,18 +222,144 @@ class LoadGenerator:
                     self.increment_metric("late_batches")
                 next_send_time += batch_interval
 
+    def syslog_worker_thread(self, thread_id: int, args: dict) -> None:
+        """
+        Worker thread that sends syslog messages to a syslog server.
+        """
+        syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
+        syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
+
+        # Create TCP socket for syslog
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((syslog_server, syslog_port))
+
+        batch_size = args["batch_size"]
+        thread_count = args["threads"]
+        target_rate = args.get("target_rate")
+
+        if target_rate:
+            thread_rate = target_rate / thread_count
+            batch_interval = batch_size / thread_rate
+            print(
+                f"Thread {thread_id} started with rate limit: {thread_rate} "
+                f"logs/sec (interval: {batch_interval:.4f}s)"
+            )
+        else:
+            batch_interval = None
+            print(f"Thread {thread_id} started with no rate limit")
+
+        # Pre-generate syslog messages batch (similar to OTLP log_batch)
+        syslog_batch = []
+        for _ in range(batch_size):
+            syslog_message = self.create_syslog_message(
+                body_size=args["body_size"],
+                num_attributes=args["num_attributes"],
+                attribute_value_size=args["attribute_value_size"],
+            )
+            syslog_batch.append(syslog_message)
+
+        # Combine all messages into a single buffer for efficient sending
+        batch_buffer = b''.join(syslog_batch)
+        batch_total_size = len(batch_buffer)
+
+        next_send_time = time.perf_counter()
+        while not self.stop_event.is_set():
+            try:
+                sock.sendall(batch_buffer)
+                self.increment_metric("sent", args["batch_size"])
+                self.increment_metric("bytes_sent", batch_total_size)
+            except Exception as e:
+                print(f"Thread {thread_id}: Failed to send syslog batch: {e}")
+                self.increment_metric("failed", args["batch_size"])
+                # Try to reconnect
+                try:
+                    sock.close()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)
+                    sock.connect((syslog_server, syslog_port))
+                except Exception as reconnect_error:
+                    print(f"Thread {thread_id}: Reconnection failed: {reconnect_error}")
+                    break
+
+            # If we're targeting a specific rate we do additional calculations
+            # to ensure we're not exceeding it via sleep. If we're not reaching
+            # the target rate (e.g. we're sending without sleep and it's
+            # still too slow), we increment a metric to inform observers.
+            if batch_interval:
+                now = time.perf_counter()
+                sleep_time = next_send_time - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif now - next_send_time > batch_interval:
+                    # More than 1 interval behind
+                    self.increment_metric("late_batches")
+                next_send_time += batch_interval
+        
+        sock.close()
+
+    def create_syslog_message(
+        self,
+        body_size: int = 25,
+        num_attributes: int = 2,
+        attribute_value_size: int = 15,
+    ) -> bytes:
+        """
+        Create a single syslog message with structure similar to OTLP log record.
+        """
+        hostname = socket.gethostname()
+        
+        # Pre-generate static parts of the message
+        pri = "<134>"  # local0.info = 16*8+6 = 134
+        tag = "loadgen"
+        
+        # Generate timestamp (RFC3164 format with space-padded day)
+        utc_time = dt.now(timezone.utc)
+        day = utc_time.day
+        timestamp = utc_time.strftime(f"%b {day:2d} %H:%M:%S")
+        
+        # Create log message body (similar to OTLP body)
+        log_message = self.generate_random_string(body_size)
+        
+        # Create attributes (similar to OTLP attributes)
+        attributes = []
+        for i in range(num_attributes):
+            attr_value = self.generate_random_string(attribute_value_size)
+            attributes.append(f"attr{i+1}={attr_value}")
+        
+        # Combine everything into syslog format
+        attributes_str = " ".join(attributes) if attributes else ""
+        message_content = f"{log_message} {attributes_str}".strip()
+        
+        syslog_message = f"{pri}{timestamp} {hostname} {tag}: {message_content}\n"
+        return syslog_message.encode('utf-8')
+
     def run_loadgen(self, args_dict):
         """
         Start the load generation process by launching multiple worker threads.
+        Chooses between OTLP and syslog workers based on configuration.
         """
         with self.lock:
             self.metrics.update({"sent": 0, "failed": 0, "bytes_sent": 0})
+
+        # Determine which worker thread to use based on configuration
+        load_type = args_dict.get("load_type", "otlp").lower()
+        
+        if load_type == "syslog":
+            worker_func = self.syslog_worker_thread
+            syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
+            syslog_port = os.getenv("SYSLOG_PORT", "514")
+            print(f"Using syslog worker, target: {syslog_server}:{syslog_port}")
+        else:
+            worker_func = self.worker_thread
+            endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
+            print(f"Using OTLP worker, target: {endpoint}")
 
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=args_dict.get("threads", 4)
         ) as executor:
             futures = [
-                executor.submit(self.worker_thread, i, args_dict)
+                executor.submit(worker_func, i, args_dict)
                 for i in range(args_dict.get("threads", 4))
             ]
             concurrent.futures.wait(futures)

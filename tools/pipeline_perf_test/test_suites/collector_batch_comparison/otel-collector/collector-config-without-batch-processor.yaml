@@ -3,6 +3,10 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+  syslog:
+    tcp:
+      listen_address: "0.0.0.0:514"
+    protocol: rfc3164
 
 exporters:
   debug:
@@ -28,5 +32,5 @@ service:
       receivers: [otlp]
       exporters: [debug]
     logs:
-      receivers: [otlp]
+      receivers: [otlp, syslog]
       exporters: [otlp]
