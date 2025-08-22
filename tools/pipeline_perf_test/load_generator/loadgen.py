@@ -232,7 +232,7 @@ class LoadGenerator:
         # Create TCP socket for syslog
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
-        
+
         try:
             sock.connect((syslog_server, syslog_port))
             print(f"Thread {thread_id}: Successfully connected to syslog server {syslog_server}:{syslog_port}")

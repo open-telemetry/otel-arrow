@@ -4,6 +4,7 @@ receivers:
       grpc:
         endpoint: 0.0.0.0:4317
   syslog:
+  # TODO: Add udp too
     tcp:
       listen_address: "0.0.0.0:514"
     protocol: rfc3164
