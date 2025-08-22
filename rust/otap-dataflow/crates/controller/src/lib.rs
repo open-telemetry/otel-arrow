@@ -80,11 +80,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     message: format!("Failed to spawn thread {thread_id}: {e}"),
                 })?;
 
-            threads.push(handle);
+            threads.push((core_id.id, handle));
         }
 
         // Wait for all threads to finish
-        for (thread_id, handle) in threads.into_iter().enumerate() {
+        for (core_id, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
                     // Thread completed successfully
@@ -96,7 +96,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     // Thread join failed, handle the error
                     return Err(error::Error::InternalError {
                         message: format!(
-                            "Failed to join thread pipeline-core-{thread_id:?}: {e:?}"
+                            "Failed to join thread pipeline-core-{}: {:?}",
+                            core_id, e
                         ),
                     });
                 }
@@ -111,7 +112,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         core_id: core_affinity::CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
-    ) -> Result<Vec<()>, error::Error> {
+    ) -> Result<(), error::Error> {
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.

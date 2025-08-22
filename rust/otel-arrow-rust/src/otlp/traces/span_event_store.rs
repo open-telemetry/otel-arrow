@@ -10,7 +10,7 @@ use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::traces::delta_decoder::DeltaDecoder;
 use crate::otlp::traces::span_event::SpanEvent;
 use crate::proto::opentelemetry::trace::v1::span::Event;
-use crate::schema::consts;
+use crate::schema::{consts, is_id_plain_encoded, is_parent_id_plain_encoded};
 use arrow::array::{RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Array};
 use std::collections::HashMap;
 
@@ -68,6 +68,8 @@ struct SpanEventIDIterator<'a> {
     num_rows: usize,
     parent_id_decoder: DeltaDecoder<String, u16>,
     attr_store: Option<&'a mut Attribute32Store>,
+    ids_plain_encoded: bool,
+    parent_ids_plain_encoded: bool,
 }
 
 impl<'a> SpanEventIDIterator<'a> {
@@ -88,6 +90,9 @@ impl<'a> SpanEventIDIterator<'a> {
             .map(UInt32ArrayAccessor::try_new)
             .transpose()?;
 
+        let ids_plain_encoded = is_id_plain_encoded(rb);
+        let parent_ids_plain_encoded = is_parent_id_plain_encoded(rb);
+
         Ok(Self {
             id,
             name,
@@ -98,6 +103,8 @@ impl<'a> SpanEventIDIterator<'a> {
             num_rows,
             parent_id_decoder: Default::default(),
             attr_store,
+            ids_plain_encoded,
+            parent_ids_plain_encoded,
         })
     }
 }
@@ -112,17 +119,24 @@ impl Iterator for SpanEventIDIterator<'_> {
         let id = self.id.value_at(self.offset);
         let name = self.name.value_at(self.offset).unwrap_or_default();
         let parent_id = self.parent_id.value_at_or_default(self.offset);
-        let decoded_parent_id = self.parent_id_decoder.decode(&name, parent_id);
+        let decoded_parent_id = if self.parent_ids_plain_encoded {
+            parent_id
+        } else {
+            self.parent_id_decoder.decode(&name, parent_id)
+        };
+
         let time_unix_nano = self.time_unix_nano.value_at_or_default(self.offset) as u64;
         let dropped_attributes_count = self
             .dropped_attributes_count
             .value_at_or_default(self.offset);
         let attributes = if let Some((id, attr_store)) = id.zip(self.attr_store.as_deref_mut()) {
+            let attrs = if self.ids_plain_encoded {
+                attr_store.attribute_by_id(id)
+            } else {
+                attr_store.attribute_by_delta_id(id)
+            };
             // Copy attributes
-            attr_store
-                .attribute_by_delta_id(id)
-                .unwrap_or_default()
-                .to_vec()
+            attrs.unwrap_or_default().to_vec()
         } else {
             vec![]
         };
