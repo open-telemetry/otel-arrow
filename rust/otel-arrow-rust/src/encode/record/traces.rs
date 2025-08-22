@@ -21,7 +21,7 @@ use crate::{
         },
         logs::{ResourceBuilder, ScopeBuilder},
     },
-    schema::{SpanId, TraceId, consts},
+    schema::{FieldExt, SpanId, TraceId, consts},
 };
 
 /// Record batch builder for traces
@@ -244,7 +244,7 @@ impl TracesRecordBatchBuilder {
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
         let array = self.id.finish().expect("finish returns `Some(array)`");
-        fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+        fields.push(Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding());
         columns.push(array);
 
         let resource = self.resource.finish()?;
@@ -494,7 +494,7 @@ impl EventsRecordBatchBuilder {
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
         let array = self.id.finish().expect("finish returns `Some(array)`");
-        fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+        fields.push(Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding());
         columns.push(array);
 
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
@@ -503,11 +503,9 @@ impl EventsRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
@@ -659,7 +657,7 @@ impl LinksRecordBatchBuilder {
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
         // non-optional arrays, `finish()` will always return an array, even if it is empty.
         let array = self.id.finish().expect("finish returns `Some(array)`");
-        fields.push(Field::new(consts::ID, array.data_type().clone(), true));
+        fields.push(Field::new(consts::ID, array.data_type().clone(), true).with_plain_encoding());
         columns.push(array);
 
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
@@ -668,11 +666,9 @@ impl LinksRecordBatchBuilder {
             .parent_id
             .finish()
             .expect("finish returns `Some(array)`");
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            array.data_type().clone(),
-            false,
-        ));
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
         columns.push(array);
 
         // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for

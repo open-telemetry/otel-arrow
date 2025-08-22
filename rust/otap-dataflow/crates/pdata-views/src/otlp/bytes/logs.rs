@@ -18,7 +18,8 @@ use crate::otlp::bytes::consts::field_num::logs::{
 use crate::otlp::bytes::consts::wire_types;
 use crate::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
-    from_option_nonzero_range_to_primitive, read_len_delim, read_varint, to_nonzero_range,
+    from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
+    to_nonzero_range,
 };
 use crate::otlp::bytes::resource::RawResource;
 use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
@@ -240,10 +241,9 @@ impl<'a> Iterator for ResourceLogsIter<'a> {
     }
 }
 
-/// Iterator of ScopeLogs - produces implementation of `ResourceLogs` view from byte array
-/// containing a serialized LogsData message
+/// Iterator of ScopeLogs - produces implementation of `ScopeLogs` view from byte array
+/// containing a serialized ResourceLogs message
 pub struct ScopeLogsIter<'a> {
-    // field_index: usize,
     byte_parser: RepeatedFieldProtoBytesParser<'a, ResourceLogsFieldOffsets>,
 }
 
@@ -259,8 +259,8 @@ impl<'a> Iterator for ScopeLogsIter<'a> {
     }
 }
 
-/// Iterator of LogsRecord - produces implementation of `ResourceLogs` view from byte array
-/// containing a serialized LogsData message
+/// Iterator of LogsRecord - produces implementation of `LogRecord` view from byte array
+/// containing a serialized ScopeLogs message
 pub struct LogRecordsIter<'a> {
     byte_parser: RepeatedFieldProtoBytesParser<'a, ScopeLogsFieldOffsets>,
 }
@@ -333,8 +333,6 @@ impl ResourceLogsView for RawResourceLogs<'_> {
     #[inline]
     fn scopes(&self) -> Self::ScopesIter<'_> {
         ScopeLogsIter {
-            // field_index: 0,
-            // byte_parser: self.byte_parser.clone(),
             byte_parser: RepeatedFieldProtoBytesParser::from_byte_parser(
                 &self.byte_parser,
                 RESOURCE_LOGS_SCOPE_LOGS,
@@ -418,16 +416,10 @@ impl LogRecordView for RawLogRecord<'_> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        match self
+        let slice = self
             .bytes_parser
-            .advance_to_find_field(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT)
-        {
-            Some(slice) => match read_varint(slice, 0) {
-                Some((val, _)) => val as u32,
-                None => 0,
-            },
-            None => 0,
-        }
+            .advance_to_find_field(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT);
+        read_dropped_count(slice)
     }
 
     #[inline]
