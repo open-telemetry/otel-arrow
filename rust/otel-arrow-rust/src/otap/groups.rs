@@ -1182,7 +1182,24 @@ impl<T> IDRange<T> {
         } else {
             Ok(None)
         }
-    }
+        _ => unreachable!(),
+    };
+
+    // FIXME: we don't need a Vec here...
+    let indices = lexsort_to_indices(&sort_columns, None).context(error::BatchingSnafu)?;
+    let input_was_already_sorted = indices.values().is_sorted();
+    let columns = if input_was_already_sorted {
+        // Don't bother with take if the input was already sorted as we need.
+        columns
+    } else {
+        columns
+            .iter()
+            .map(|c| take(c.as_ref(), &indices, None))
+            .collect::<arrow::error::Result<Vec<_>>>()
+            .context(error::BatchingSnafu)?
+    };
+
+    RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)
 }
 
 // Part of concatenation is unifying batches into a common schema and data...
