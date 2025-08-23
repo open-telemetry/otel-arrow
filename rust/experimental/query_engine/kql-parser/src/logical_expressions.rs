@@ -203,12 +203,13 @@ pub(crate) fn parse_logical_expression(
                     Ok(parse_comparison_expression(logical_expression_rule, state)?)
                 }
                 Rule::scalar_expression => {
-                    let scalar = parse_scalar_expression(logical_expression_rule, state)?;
+                    let mut scalar = parse_scalar_expression(logical_expression_rule, state)?;
 
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
+                        let value_type_result = scalar
+                            .try_resolve_value_type(&state.get_pipeline().get_resolution_scope());
                         if let Err(e) = value_type_result {
                             return Err(ParserError::from(&e));
                         }

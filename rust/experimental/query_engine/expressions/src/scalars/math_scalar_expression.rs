@@ -36,12 +36,12 @@ pub enum MathScalarExpression {
 
 impl MathScalarExpression {
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
             MathScalarExpression::Ceiling(u) | MathScalarExpression::Floor(u) => {
-                match u.get_value_expression().try_resolve_value_type(pipeline)? {
+                match u.value_expression.try_resolve_value_type(scope)? {
                     Some(v) if ConvertScalarExpression::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Integer))
                     }
@@ -50,8 +50,8 @@ impl MathScalarExpression {
             }
             MathScalarExpression::Negate(u) => {
                 let value = u
-                    .get_value_expression()
-                    .try_resolve_value_type(pipeline)?
+                    .value_expression
+                    .try_resolve_value_type(scope)?
                     .unwrap_or(ValueType::Null);
                 match value {
                     ValueType::Integer => Ok(Some(ValueType::Integer)),
@@ -68,12 +68,12 @@ impl MathScalarExpression {
             }
             MathScalarExpression::Bin(b) => {
                 let left = b
-                    .get_left_expression()
-                    .try_resolve_value_type(pipeline)?
+                    .left_expression
+                    .try_resolve_value_type(scope)?
                     .unwrap_or(ValueType::Null);
                 let right = b
-                    .get_right_expression()
-                    .try_resolve_value_type(pipeline)?
+                    .right_expression
+                    .try_resolve_value_type(scope)?
                     .unwrap_or(ValueType::Null);
                 match (left, right) {
                     (ValueType::Integer, ValueType::Integer) => Ok(Some(ValueType::Integer)),
@@ -109,12 +109,12 @@ impl MathScalarExpression {
             }
             MathScalarExpression::Add(b) | MathScalarExpression::Subtract(b) => {
                 let left = b
-                    .get_left_expression()
-                    .try_resolve_value_type(pipeline)?
+                    .left_expression
+                    .try_resolve_value_type(scope)?
                     .unwrap_or(ValueType::Null);
                 let right = b
-                    .get_right_expression()
-                    .try_resolve_value_type(pipeline)?
+                    .right_expression
+                    .try_resolve_value_type(scope)?
                     .unwrap_or(ValueType::Null);
                 match (left, right) {
                     (ValueType::Integer, ValueType::Integer) => Ok(Some(ValueType::Integer)),
@@ -152,12 +152,12 @@ impl MathScalarExpression {
             | MathScalarExpression::Modulus(b)
             | MathScalarExpression::Multiply(b) => {
                 let left = b
-                    .get_left_expression()
-                    .try_resolve_value_type(pipeline)?
+                    .left_expression
+                    .try_resolve_value_type(scope)?
                     .unwrap_or(ValueType::Null);
                 let right = b
-                    .get_right_expression()
-                    .try_resolve_value_type(pipeline)?
+                    .right_expression
+                    .try_resolve_value_type(scope)?
                     .unwrap_or(ValueType::Null);
                 match (left, right) {
                     (ValueType::Integer, ValueType::Integer) => Ok(Some(ValueType::Integer)),
@@ -180,60 +180,56 @@ impl MathScalarExpression {
         }
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
         match self {
             MathScalarExpression::Add(b) => {
-                Self::try_resolve_static_binary_operation(pipeline, b, Value::add)
+                Self::try_resolve_static_binary_operation(scope, b, Value::add)
             }
             MathScalarExpression::Bin(b) => {
-                Self::try_resolve_static_binary_operation(pipeline, b, Value::bin)
+                Self::try_resolve_static_binary_operation(scope, b, Value::bin)
             }
             MathScalarExpression::Ceiling(u) => {
-                Self::try_resolve_static_unary_operation(pipeline, u, |v| {
+                Self::try_resolve_static_unary_operation(scope, u, |v| {
                     Value::ceiling(v).map(NumericValue::Integer)
                 })
             }
             MathScalarExpression::Divide(b) => {
-                Self::try_resolve_static_binary_operation(pipeline, b, Value::divide)
+                Self::try_resolve_static_binary_operation(scope, b, Value::divide)
             }
             MathScalarExpression::Floor(u) => {
-                Self::try_resolve_static_unary_operation(pipeline, u, |v| {
+                Self::try_resolve_static_unary_operation(scope, u, |v| {
                     Value::floor(v).map(NumericValue::Integer)
                 })
             }
             MathScalarExpression::Modulus(b) => {
-                Self::try_resolve_static_binary_operation(pipeline, b, Value::modulus)
+                Self::try_resolve_static_binary_operation(scope, b, Value::modulus)
             }
             MathScalarExpression::Multiply(b) => {
-                Self::try_resolve_static_binary_operation(pipeline, b, Value::multiply)
+                Self::try_resolve_static_binary_operation(scope, b, Value::multiply)
             }
             MathScalarExpression::Negate(u) => {
-                Self::try_resolve_static_unary_operation(pipeline, u, Value::negate)
+                Self::try_resolve_static_unary_operation(scope, u, Value::negate)
             }
             MathScalarExpression::Subtract(b) => {
-                Self::try_resolve_static_binary_operation(pipeline, b, Value::subtract)
+                Self::try_resolve_static_binary_operation(scope, b, Value::subtract)
             }
         }
     }
 
     fn try_resolve_static_unary_operation<'a, F>(
-        pipeline: &PipelineExpression,
-        unary_expression: &UnaryMathematicalScalarExpression,
+        scope: &PipelineResolutionScope<'a>,
+        unary_expression: &'a mut UnaryMathematicalScalarExpression,
         op: F,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
     where
         F: FnOnce(&Value) -> Option<NumericValue>,
     {
         if let Some(v) = unary_expression
-            .get_value_expression()
-            .try_resolve_static(pipeline)?
+            .value_expression
+            .try_resolve_static(scope)?
         {
             if let Some(v) = (op)(&v.to_value()) {
                 Ok(Some(Self::numeric_value_to_static_value(
@@ -253,19 +249,19 @@ impl MathScalarExpression {
     }
 
     fn try_resolve_static_binary_operation<'a, F>(
-        pipeline: &PipelineExpression,
-        binary_expression: &BinaryMathematicalScalarExpression,
+        scope: &PipelineResolutionScope<'a>,
+        binary_expression: &'a mut BinaryMathematicalScalarExpression,
         op: F,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError>
     where
         F: FnOnce(&Value, &Value) -> Option<NumericValue>,
     {
         let left = binary_expression
-            .get_left_expression()
-            .try_resolve_static(pipeline)?;
+            .left_expression
+            .try_resolve_static(scope)?;
         let right = binary_expression
-            .get_right_expression()
-            .try_resolve_static(pipeline)?;
+            .right_expression
+            .try_resolve_static(scope)?;
 
         match (left, right) {
             (Some(l), Some(r)) => {
@@ -431,17 +427,21 @@ mod tests {
             F: Fn(UnaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (inner, expected_type, expected_value) in input {
-                let e = build(UnaryMathematicalScalarExpression::new(
+                let mut e = build(UnaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     inner,
                 ));
 
-                let pipeline = Default::default();
+                let pipeline: PipelineExpression = Default::default();
 
-                let actual_type = e.try_resolve_value_type(&pipeline).unwrap();
+                let actual_type = e
+                    .try_resolve_value_type(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_type, actual_type);
 
-                let actual_value = e.try_resolve_static(&pipeline).unwrap();
+                let actual_value = e
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
             }
         }
@@ -611,18 +611,22 @@ mod tests {
             F: Fn(BinaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (left, right, expected_type, expected_value) in input {
-                let e = build(BinaryMathematicalScalarExpression::new(
+                let mut e = build(BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     left,
                     right,
                 ));
 
-                let pipeline = Default::default();
+                let pipeline: PipelineExpression = Default::default();
 
-                let actual_type = e.try_resolve_value_type(&pipeline).unwrap();
+                let actual_type = e
+                    .try_resolve_value_type(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_type, actual_type);
 
-                let actual_value = e.try_resolve_static(&pipeline).unwrap();
+                let actual_value = e
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
             }
         }

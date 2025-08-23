@@ -337,9 +337,10 @@ pub(crate) fn parse_accessor_expression(
                 true
             }
             Rule::scalar_expression => {
-                let scalar = parse_scalar_expression(pair, state)?;
+                let mut scalar = parse_scalar_expression(pair, state)?;
 
-                let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
+                let value_type_result =
+                    scalar.try_resolve_value_type(&state.get_pipeline().get_resolution_scope());
                 if let Err(e) = value_type_result {
                     return Err(ParserError::from(&e));
                 }

@@ -37,12 +37,12 @@ impl ConvertScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
             ConvertScalarExpression::Boolean(c) => {
-                match c.get_inner_expression().try_resolve_value_type(pipeline)? {
+                match c.inner_expression.try_resolve_value_type(scope)? {
                     Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Boolean))
                     }
@@ -50,7 +50,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::DateTime(c) => {
-                match c.get_inner_expression().try_resolve_value_type(pipeline)? {
+                match c.inner_expression.try_resolve_value_type(scope)? {
                     Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::DateTime))
                     }
@@ -58,7 +58,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::Double(c) => {
-                match c.get_inner_expression().try_resolve_value_type(pipeline)? {
+                match c.inner_expression.try_resolve_value_type(scope)? {
                     Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Double))
                     }
@@ -66,7 +66,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::Integer(c) => {
-                match c.get_inner_expression().try_resolve_value_type(pipeline)? {
+                match c.inner_expression.try_resolve_value_type(scope)? {
                     Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::Integer))
                     }
@@ -75,7 +75,7 @@ impl ConvertScalarExpression {
             }
             ConvertScalarExpression::String(_) => Ok(Some(ValueType::String)),
             ConvertScalarExpression::TimeSpan(t) => {
-                match t.get_inner_expression().try_resolve_value_type(pipeline)? {
+                match t.inner_expression.try_resolve_value_type(scope)? {
                     Some(v) if Self::is_always_convertable_to_numeric(&v) => {
                         Ok(Some(ValueType::TimeSpan))
                     }
@@ -85,17 +85,13 @@ impl ConvertScalarExpression {
         }
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         match self {
             ConvertScalarExpression::Boolean(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(b) = v.to_value().convert_to_bool() {
                         Ok(Some(ResolvedStaticScalarExpression::Value(
                             StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -115,7 +111,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::DateTime(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(d) = v.to_value().convert_to_datetime() {
                         Ok(Some(ResolvedStaticScalarExpression::Value(
                             StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
@@ -135,7 +131,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::Double(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(d) = v.to_value().convert_to_double() {
                         Ok(Some(ResolvedStaticScalarExpression::Value(
                             StaticScalarExpression::Double(DoubleScalarExpression::new(
@@ -155,7 +151,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::Integer(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(i) = v.to_value().convert_to_integer() {
                         Ok(Some(ResolvedStaticScalarExpression::Value(
                             StaticScalarExpression::Integer(IntegerScalarExpression::new(
@@ -175,7 +171,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::String(c) => {
-                if let Some(v) = c.get_inner_expression().try_resolve_static(pipeline)? {
+                if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     let v = v.to_value();
                     if let Value::Null = v {
                         Ok(Some(ResolvedStaticScalarExpression::Value(
@@ -202,7 +198,7 @@ impl ConvertScalarExpression {
                 }
             }
             ConvertScalarExpression::TimeSpan(t) => {
-                if let Some(v) = t.get_inner_expression().try_resolve_static(pipeline)? {
+                if let Some(v) = t.inner_expression.try_resolve_static(scope)? {
                     if let Some(ts) = v.to_value().convert_to_timespan() {
                         Ok(Some(ResolvedStaticScalarExpression::Value(
                             StaticScalarExpression::TimeSpan(TimeSpanScalarExpression::new(
@@ -292,17 +288,21 @@ mod tests {
             F: Fn(ConversionScalarExpression) -> ConvertScalarExpression,
         {
             for (inner, expected_type, expected_value) in input {
-                let e = build(ConversionScalarExpression::new(
+                let mut e = build(ConversionScalarExpression::new(
                     QueryLocation::new_fake(),
                     inner,
                 ));
 
-                let pipeline = Default::default();
+                let pipeline: PipelineExpression = Default::default();
 
-                let actual_type = e.try_resolve_value_type(&pipeline).unwrap();
+                let actual_type = e
+                    .try_resolve_value_type(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_type, actual_type);
 
-                let actual_value = e.try_resolve_static(&pipeline).unwrap();
+                let actual_value = e
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
             }
         }
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     pub fn test_string_try_resolve_value_type() {
         // Test string conversion always returns string value type
-        let expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
+        let mut expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
             QueryLocation::new_fake(),
             ScalarExpression::Source(SourceScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -506,10 +506,12 @@ mod tests {
             )),
         ));
 
+        let pipeline: PipelineExpression = Default::default();
+
         assert_eq!(
             Some(ValueType::String),
             expression
-                .try_resolve_value_type(&Default::default())
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
                 .unwrap()
         );
     }
@@ -517,14 +519,16 @@ mod tests {
     #[test]
     pub fn test_string_try_resolve_static() {
         let run_test = |input: StaticScalarExpression, expected: Value| {
-            let expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
+            let mut expression = ConvertScalarExpression::String(ConversionScalarExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Static(input),
             ));
 
-            let pipeline = Default::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            let actual = expression.try_resolve_static(&pipeline).unwrap();
+            let actual = expression
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
 
             assert_eq!(Some(expected), actual.as_ref().map(|v| v.to_value()));
         };

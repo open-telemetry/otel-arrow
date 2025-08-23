@@ -16,26 +16,22 @@ pub enum ParseScalarExpression {
 
 impl ParseScalarExpression {
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
-            ParseScalarExpression::Json(p) => p.try_resolve_value_type(pipeline),
-            ParseScalarExpression::Regex(p) => p.try_resolve_value_type(pipeline),
+            ParseScalarExpression::Json(p) => p.try_resolve_value_type(scope),
+            ParseScalarExpression::Regex(p) => p.try_resolve_value_type(scope),
         }
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         match self {
-            ParseScalarExpression::Json(p) => p.try_resolve_static(pipeline),
-            ParseScalarExpression::Regex(p) => p.try_resolve_static(pipeline),
+            ParseScalarExpression::Json(p) => p.try_resolve_static(scope),
+            ParseScalarExpression::Regex(p) => p.try_resolve_static(scope),
         }
     }
 }
@@ -78,25 +74,25 @@ impl ParseJsonScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        Ok(self
-            .try_resolve_static(pipeline)?
-            .map(|v| v.get_value_type()))
+        Ok(self.try_resolve_static(scope)?.map(|v| v.get_value_type()))
     }
 
     pub(crate) fn try_resolve_static(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
-        match self.inner_expression.try_resolve_static(pipeline)? {
+        let query_location = &self.query_location;
+
+        match &mut self.inner_expression.try_resolve_static(scope)? {
             Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
                 if let Value::String(s) = v.to_value() {
                     StaticScalarExpression::from_json(self.query_location.clone(), s.get_value())?
                 } else {
                     return Err(ExpressionError::ParseError(
-                        self.get_query_location().clone(),
+                        query_location.clone(),
                         format!(
                             "Input of '{:?}' type could not be pased as JSON",
                             v.get_value_type()
@@ -148,22 +144,20 @@ impl ParseRegexScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        Ok(self
-            .try_resolve_static(pipeline)?
-            .map(|v| v.get_value_type()))
+        Ok(self.try_resolve_static(scope)?.map(|v| v.get_value_type()))
     }
 
     pub(crate) fn try_resolve_static(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
-        let pattern = self.pattern.try_resolve_static(pipeline)?;
+        let pattern = self.pattern.try_resolve_static(scope)?;
 
-        let options = if let Some(o) = &self.options {
-            match o.try_resolve_static(pipeline)? {
+        let options = if let Some(o) = &mut self.options {
+            match o.try_resolve_static(scope)? {
                 Some(v) => Some(v),
                 None => return Ok(None),
             }
@@ -211,19 +205,23 @@ mod tests {
     #[test]
     pub fn test_parse_json_scalar_expression_try_resolve() {
         fn run_test_success(input: &str, expected_value: Value) {
-            let pipeline = Default::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            let expression = ParseJsonScalarExpression::new(
+            let mut expression = ParseJsonScalarExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), input),
                 )),
             );
 
-            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            let actual_type = expression
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
             assert_eq!(Some(expected_value.get_value_type()), actual_type);
 
-            let actual_value = expression.try_resolve_static(&pipeline).unwrap();
+            let actual_value = expression
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
             assert_eq!(
                 Some(expected_value),
                 actual_value.as_ref().map(|v| v.to_value())
@@ -231,22 +229,26 @@ mod tests {
         }
 
         fn run_test_failure(input: &str) {
-            let pipeline = Default::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            let expression = ParseJsonScalarExpression::new(
+            let mut expression = ParseJsonScalarExpression::new(
                 QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), input),
                 )),
             );
 
-            let actual_type_error = expression.try_resolve_value_type(&pipeline).unwrap_err();
+            let actual_type_error = expression
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap_err();
             assert!(matches!(
                 actual_type_error,
                 ExpressionError::ParseError(_, _)
             ));
 
-            let actual_value_error = expression.try_resolve_static(&pipeline).unwrap_err();
+            let actual_value_error = expression
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
             assert!(matches!(
                 actual_value_error,
                 ExpressionError::ParseError(_, _)
@@ -267,30 +269,36 @@ mod tests {
             options: Option<ScalarExpression>,
             expected: Option<ValueType>,
         ) {
-            let pipeline = Default::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            let expression =
+            let mut expression =
                 ParseRegexScalarExpression::new(QueryLocation::new_fake(), pattern, options);
 
-            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            let actual_type = expression
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
             assert_eq!(expected, actual_type);
 
             let actual_value = expression
-                .try_resolve_static(&pipeline)
+                .try_resolve_static(&pipeline.get_resolution_scope())
                 .unwrap()
                 .map(|v| v.get_value_type());
             assert_eq!(expected, actual_value);
         }
 
         fn run_test_failure(pattern: ScalarExpression, options: Option<ScalarExpression>) {
-            let pipeline = Default::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            let expression =
+            let mut expression =
                 ParseRegexScalarExpression::new(QueryLocation::new_fake(), pattern, options);
 
-            expression.try_resolve_value_type(&pipeline).unwrap_err();
+            expression
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap_err();
 
-            expression.try_resolve_static(&pipeline).unwrap_err();
+            expression
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
         }
 
         run_test_success(

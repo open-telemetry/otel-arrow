@@ -67,20 +67,22 @@ pub(crate) fn parse_query(
                         if let MutableValueExpression::Variable(v) = s.get_destination() {
                             let name = v.get_name().get_value();
 
-                            match s.get_source() {
-                                ImmutableValueExpression::Scalar(scalar) => {
+                            match s.get_source().clone() {
+                                ImmutableValueExpression::Scalar(mut scalar) => {
                                     if let ScalarExpression::Static(s) = scalar {
-                                        state.push_constant(name, s.clone())
+                                        state.push_constant(name, s)
                                     } else {
-                                        match scalar.try_resolve_static(state.get_pipeline()) {
+                                        match scalar.try_resolve_static(
+                                            &state.get_pipeline().get_resolution_scope(),
+                                        ) {
                                             Ok(Some(ResolvedStaticScalarExpression::Value(s))) => {
-                                                state.push_constant(name, s.clone())
+                                                state.push_constant(name, s)
                                             }
                                             Ok(None)
                                             | Ok(Some(
                                                 ResolvedStaticScalarExpression::Reference(_),
                                             )) => {
-                                                state.push_global_variable(name, scalar.clone());
+                                                state.push_global_variable(name, scalar);
                                             }
                                             Err(e) => errors.push((&e).into()),
                                         }

@@ -12,24 +12,20 @@ pub enum TextScalarExpression {
 
 impl TextScalarExpression {
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
-            TextScalarExpression::Replace(r) => r.try_resolve_value_type(pipeline),
+            TextScalarExpression::Replace(r) => r.try_resolve_value_type(scope),
         }
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         match self {
-            TextScalarExpression::Replace(r) => r.try_resolve_static(pipeline),
+            TextScalarExpression::Replace(r) => r.try_resolve_static(scope),
         }
     }
 }
@@ -91,37 +87,34 @@ impl ReplaceTextScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        if let Some(v) = self
-            .get_haystack_expression()
-            .try_resolve_value_type(pipeline)?
-        {
-            Ok(Some(match v {
-                ValueType::String => ValueType::String,
-                _ => ValueType::Null,
-            }))
-        } else {
-            Ok(None)
-        }
+        let haystack_type = self.haystack_expression.try_resolve_value_type(scope)?;
+
+        let needle_type = self.needle_expression.try_resolve_value_type(scope)?;
+
+        let replacement_type = self.replacement_expression.try_resolve_value_type(scope)?;
+
+        Ok(match (haystack_type, needle_type, replacement_type) {
+            (Some(ValueType::String), Some(ValueType::String), Some(ValueType::String)) => {
+                Some(ValueType::String)
+            }
+            (Some(ValueType::String), Some(ValueType::Regex), Some(ValueType::String)) => {
+                Some(ValueType::String)
+            }
+            (Some(_), Some(_), Some(_)) => Some(ValueType::Null),
+            _ => None,
+        })
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        let haystack_static = self
-            .get_haystack_expression()
-            .try_resolve_static(pipeline)?;
-        let needle_static = self.get_needle_expression().try_resolve_static(pipeline)?;
-        let replacement_static = self
-            .get_replacement_expression()
-            .try_resolve_static(pipeline)?;
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+        let haystack_static = self.haystack_expression.try_resolve_static(scope)?;
+        let needle_static = self.needle_expression.try_resolve_static(scope)?;
+        let replacement_static = self.replacement_expression.try_resolve_static(scope)?;
 
         if let (Some(haystack), Some(needle), Some(replacement)) =
             (haystack_static, needle_static, replacement_static)
@@ -182,7 +175,7 @@ mod tests {
             )>,
         ) {
             for (text, lookup, replacement, expected_type, expected_value) in input {
-                let e = ReplaceTextScalarExpression::new(
+                let mut e = ReplaceTextScalarExpression::new(
                     QueryLocation::new_fake(),
                     text,
                     lookup,
@@ -190,12 +183,16 @@ mod tests {
                     false, // case_insensitive
                 );
 
-                let pipeline = Default::default();
+                let pipeline: PipelineExpression = Default::default();
 
-                let actual_type = e.try_resolve_value_type(&pipeline).unwrap();
+                let actual_type = e
+                    .try_resolve_value_type(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_type, actual_type);
 
-                let actual_value = e.try_resolve_static(&pipeline).unwrap();
+                let actual_value = e
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
             }
         }
