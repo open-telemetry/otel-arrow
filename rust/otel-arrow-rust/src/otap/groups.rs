@@ -224,7 +224,7 @@ fn generic_split<const N: usize>(
         #[allow(clippy::needless_range_loop)]
         for i in 0..N {
             if let Some(rb) = std::mem::take(&mut batches[i]) {
-                let rb = sort_recordbatch_by_ids(rb).context(error::BatchingSnafu)?;
+                let rb = sort_record_batch(rb, HowToSort::SortByParentIdAndId)?;
                 batches[i] = Some(rb);
             }
         }
@@ -514,64 +514,6 @@ impl IDSeqs {
     }
 }
 
-/// Return a `RecordBatch` lexically sorted by either the `parent_id` column and secondarily by the
-/// `id` column or just by the `id` column.
-fn sort_recordbatch_by_ids(rb: RecordBatch) -> arrow::error::Result<RecordBatch> {
-    let (schema, columns, _num_rows) = rb.into_parts();
-    let id_column_index = schema.column_with_name(consts::ID).map(|pair| pair.0);
-    let parent_id_column_index = schema
-        .column_with_name(consts::PARENT_ID)
-        .map(|pair| pair.0);
-
-    use arrow::compute::{SortColumn, SortOptions, lexsort_to_indices, take};
-    let options = Some(SortOptions {
-        descending: false,
-        nulls_first: true, // We rely on this heavily later on!
-    });
-    let sort_columns = match (parent_id_column_index, id_column_index) {
-        (Some(parent_id), Some(id)) => {
-            // FIXME: use row format for faster sorts right here
-            let parent_id_values = columns[parent_id].clone();
-            let id_values = columns[id].clone();
-            vec![
-                SortColumn {
-                    values: parent_id_values,
-                    options,
-                },
-                SortColumn {
-                    values: id_values,
-                    options,
-                },
-            ]
-        }
-        (None, Some(id)) => {
-            let id_values = columns[id].clone();
-            vec![SortColumn {
-                values: id_values,
-                options,
-            }]
-        }
-        _ => {
-            panic!("no ID column found")
-        }
-    };
-
-    // FIXME: we don't need a Vec here...
-    let indices = lexsort_to_indices(&sort_columns, None)?;
-    let input_was_already_sorted = indices.values().is_sorted();
-    let columns = if input_was_already_sorted {
-        // Don't bother with take if the input was already sorted as we need.
-        columns
-    } else {
-        columns
-            .iter()
-            .map(|c| take(c.as_ref(), &indices, None))
-            .collect::<arrow::error::Result<Vec<_>>>()?
-    };
-
-    RecordBatch::try_new(schema, columns)
-}
-
 fn split_record_batch(
     first_batch_size: usize,
     rest_batch_size: usize,
@@ -601,249 +543,70 @@ fn split_record_batch(
     Ok((result, ids))
 }
 
-// Reindexing code
+// Sorting `RecordBatch`es!
 // *************************************************************************************************
 
-fn reindex<const N: usize>(
-    batches: &mut [[Option<RecordBatch>; N]],
-    allowed_payloads: &[ArrowPayloadType],
-) -> Result<()> {
-    let mut starting_ids: [u32; N] = [0; N];
-    for payload in allowed_payloads {
-        let child_payloads = child_payload_types(*payload);
-        if !child_payloads.is_empty() {
-            for batches in batches.iter_mut() {
-                let parent_offset = POSITION_LOOKUP[*payload as usize];
-                let parent = batches[parent_offset].take();
-                if let Some(parent) = parent {
-                    let parent_starting_offset = starting_ids[parent_offset];
-                    let (parent, next_starting_id) =
-                        MaybeIDRange::<u16>::reindex(parent, consts::ID, parent_starting_offset)?;
-                    starting_ids[parent_offset] += next_starting_id;
-                    // return parent to batches since we took it!
-                    let _ = batches[parent_offset].replace(parent);
-                    for child in child_payloads {
-                        let child_offset = POSITION_LOOKUP[*child as usize];
-                        if let Some(child) = batches[child_offset].take() {
-                            let (child, next_starting_id) = MaybeIDRange::<u16>::reindex(
-                                child,
-                                consts::PARENT_ID,
-                                parent_starting_offset,
-                            )?;
-                            starting_ids[child_offset] += next_starting_id;
-                            // return child to batches since we took it!
-                            let _ = batches[child_offset].replace(child);
-                            // We don't have to reindex child's id column since we'll get to it in a
-                            // later iteration of the loop if it exists.
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
+enum HowToSort {
+    SortByParentIdAndId,
+    SortById,
 }
 
-/// I describe the indices and values in an ID column for reindexing
-struct IDRange<T> {
-    indices: RangeInclusive<usize>,
-    ids: RangeInclusive<T>,
-    is_gap_free: bool,
-}
+/// Return a `RecordBatch` lexically sorted by either the `parent_id` column and secondarily by the
+/// `id` column or just by the `id` column.
+fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
+    let (schema, columns, _num_rows) = rb.into_parts();
+    let id_column_index = schema.column_with_name(consts::ID).map(|pair| pair.0);
+    let parent_id_column_index = schema
+        .column_with_name(consts::PARENT_ID)
+        .map(|pair| pair.0);
 
-/// I describe the indices and values in an ID column for reindexing; if the column is all nulls, my
-/// interior values will be None.
-struct MaybeIDRange<T>(Option<IDRange<T>>);
-
-impl<T> MaybeIDRange<T> {
-    /// Make a new `MaybeIDRange` from an array reference
-    pub fn from_generic_array<Native, ArrowPrimitive>(
-        array: &PrimitiveArray<ArrowPrimitive>,
-    ) -> MaybeIDRange<Native>
-    where
-        Native: Add<Output = Native> + Copy + PartialEq + PartialOrd + ArrowNativeTypeOp,
-        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
-    {
-        // Null-handling
-        //
-        // We're going to rely heavily on the fact that we sorted with nulls first. Why first and not last?
-        // Because the more efficient PrimitiveArray.nulls().unwrap().valid_indices() iterator is not double ended
-        // unlike PrimitiveArray.nulls().unwrap().iter() which is slower.
-
-        let all_values = array.values();
-        let len = array.len();
-        use arrow::array::Array;
-
-        let (non_null_slice, indices) = match array.nulls() {
-            // There are no nulls at all, so everything is valid!
-            None => (&all_values[..], Some(0..=len - 1)),
-
-            // Everything is null, so nothing is valid
-            Some(nulls) if nulls.null_count() == len => (&all_values[0..0], None),
-
-            // There are some nulls but also some non-null values, so somethings are valid
-            Some(nulls) => {
-                // We rely on the fact that we've sorted so that nulls come at the front.
-
-                // SAFETY: unwrap is safe here because we've already verified that the entire array
-                // isn't null, which means there has to be at least one valid index which means
-                // .next() will return Some the first time we call it.
-                let first_valid_index = nulls
-                    .valid_indices()
-                    .next()
-                    .expect("a non-null must be here");
-                (
-                    &all_values[first_valid_index..],
-                    Some(first_valid_index..=len - 1),
-                )
-            }
-        };
-        let is_gap_free = non_null_slice
-            .windows(2)
-            .all(|pair| pair[0] == pair[1] || pair[1] == pair[0] + Native::ONE);
-
-        MaybeIDRange(indices.map(|indices| {
-            let ids = non_null_slice[0]..=non_null_slice[len - 1];
-            IDRange {
-                ids,
-                indices,
-                is_gap_free,
-            }
-        }))
-    }
-
-    fn reindex(
-        rb: RecordBatch,
-        column_name: &'static str,
-        mut next_starting_id: u32,
-    ) -> Result<(RecordBatch, u32)> {
-        let id = IDColumn::extract(&rb, column_name)?;
-
-        let maybe_new_ids = match id {
-            IDColumn::U16(array) => Self::generic_reindex_column(array, next_starting_id)?,
-            IDColumn::U32(array) => Self::generic_reindex_column(array, next_starting_id)?,
-        };
-
-        // Sigh. There doesn't seemt to be a way to mutate the values of a single column of a
-        // `RecordBatch` without taking it apart entirely and then putting it back together.
-        let (schema, mut columns, _len) = rb.into_parts();
-
-        if let Some((new_id_array, new_next_starting_id)) = maybe_new_ids {
-            let column_index = schema
-                .fields
-                .find(column_name)
-                .expect("we already extracted this column")
-                .0;
-            columns[column_index] = new_id_array;
-            next_starting_id = new_next_starting_id;
+    use arrow::compute::{SortColumn, SortOptions, lexsort_to_indices, take};
+    let options = Some(SortOptions {
+        descending: false,
+        nulls_first: true, // We rely on this heavily later on!
+    });
+    use HowToSort::*;
+    let sort_columns = match (how, parent_id_column_index, id_column_index) {
+        (SortByParentIdAndId, Some(parent_id), Some(id)) => {
+            // FIXME: use row format for faster sorts right here
+            let parent_id_values = columns[parent_id].clone();
+            let id_values = columns[id].clone();
+            vec![
+                SortColumn {
+                    values: parent_id_values,
+                    options,
+                },
+                SortColumn {
+                    values: id_values,
+                    options,
+                },
+            ]
         }
-
-        Ok((
-            RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?,
-            next_starting_id,
-        ))
-    }
-
-    fn generic_reindex_column<Native, ArrowPrimitive>(
-        array: &PrimitiveArray<ArrowPrimitive>,
-        next_starting_id: u32,
-    ) -> Result<Option<(Arc<dyn arrow::array::Array>, u32)>>
-    where
-        Native: Add<Output = Native>
-            + Copy
-            + PartialEq
-            + PartialOrd
-            + TryFrom<u32>
-            + TryFrom<i64>
-            + Into<i64>
-            + Into<u32>
-            + Clone
-            + ArrowNativeTypeOp,
-        RangeFrom<Native>: Iterator<Item = Native>,
-        <Native as TryFrom<u32>>::Error: std::fmt::Debug,
-        <Native as TryFrom<i64>>::Error: std::fmt::Debug,
-        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
-    {
-        // FIxME: resort as needed!
-        if let MaybeIDRange(Some(id_range)) = Self::from_generic_array(array) {
-            // We do our bounds checking in `i64`-land because the only types we care about are `u32`
-            // and `u16` and `i64` can repersent all those values and all offsets between them.
-            let start: i64 = (*id_range.ids.start()).into();
-            let end: i64 = (*id_range.ids.end()).into();
-            let offset = (next_starting_id as i64) - start;
-            let do_sub_offset = offset.signum() == -1;
-            let offset = offset.abs();
-
-            // If this statement works, then we know that all additions/subtractions will work
-            // because we rely on the fact that the slice is sorted, so `start` is the smallest
-            // possible value and `end` is the largest possible value.
-            let _ = Native::try_from(if do_sub_offset {
-                start - offset
-            } else {
-                end + offset
-            })
-            .expect("overflow occurred");
-
-            let offset = Native::try_from(offset).expect("this should never happen");
-
-            let array = if id_range.is_gap_free {
-                // Whee! We can just do vectorized addition/subtraction!
-                let scalar = PrimitiveArray::<ArrowPrimitive>::new_scalar(offset);
-
-                // The normal add/sub kernels check for overflow which we don't want since we've already
-                // verified that overflow can't happen, so we use the wrapping variants even though we
-                // know no wrapping will occur to avoid the cost of overflow checks.
-                let array = if do_sub_offset {
-                    arrow::compute::kernels::numeric::sub_wrapping(array, &scalar)
-                } else {
-                    arrow::compute::kernels::numeric::add_wrapping(array, &scalar)
-                };
-
-                // FIXME: downcast_array will panic if the types aren't right; all it is doing is
-                // PrimitiveArray<ArrowType>::from(input.data()); maybe try that with try_from instead?
-                let array: PrimitiveArray<ArrowPrimitive> = arrow::array::downcast_array(
-                    &array.expect("this array is of the expected type"),
-                );
-                array
-            } else {
-                // Ugh, there are gaps, so we need to do something slower and more complicated to
-                // replace the sequence with a gap free version. This is complicated by the presence of
-                // duplciates.
-                use itertools::Itertools;
-
-                let null_count = *(id_range.indices.start());
-                let valid_ids = &array.values()[id_range.indices];
-                let next_starting_id = Native::try_from(next_starting_id)
-                    .expect("we can convert next_starting_id to our element type");
-
-                let values = valid_ids
-                    .iter()
-                    // we convert the original values into a form of run-length encoding
-                    .dedup_with_count()
-                    // and combine it with a gap-free sequence of new integer values
-                    .zip(next_starting_id..)
-                    .flat_map(|((count, _old_id), new_id)| {
-                        // swapping out old for new values, repeating items as needed
-                        repeat_n(new_id, count)
-                    });
-                if null_count == 0 {
-                    PrimitiveArray::from_iter_values(values)
-                } else {
-                    // First, we start with as many nulls as the original...
-                    let nulls = repeat_n(None, null_count);
-                    // ...then we add the non-null values
-                    nulls.chain(values.map(Some)).collect()
-                }
-            };
-
-            let last_id: u32 = array.values()[array.len() - 1].into();
-            let next_starting_id = last_id.checked_add(1).expect("no overflow");
-            Ok(Some((Arc::new(array), next_starting_id)))
-        } else {
-            Ok(None)
+        (_, None, Some(id)) => {
+            let id_values = columns[id].clone();
+            vec![SortColumn {
+                values: id_values,
+                options,
+            }]
         }
-    }
+        _ => unreachable!(),
+    };
+
+    // FIXME: we don't need a Vec here...
+    let indices = lexsort_to_indices(&sort_columns, None).context(error::BatchingSnafu)?;
+    let input_was_already_sorted = indices.values().is_sorted();
+    let columns = if input_was_already_sorted {
+        // Don't bother with take if the input was already sorted as we need.
+        columns
+    } else {
+        columns
+            .iter()
+            .map(|c| take(c.as_ref(), &indices, None))
+            .collect::<arrow::error::Result<Vec<_>>>()
+            .context(error::BatchingSnafu)?
+    };
+
+    RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)
 }
 
 // Code for merging batches (concatenation)
@@ -926,6 +689,259 @@ fn select<const N: usize>(
     i: usize,
 ) -> impl Iterator<Item = &RecordBatch> {
     batches.iter().flat_map(move |batches| batches[i].as_ref())
+}
+
+// Concatenation requires that we solve two problems: reindexing and unification!
+
+// Reindexing code
+// *************************************************************************************************
+
+fn reindex<const N: usize>(
+    batches: &mut [[Option<RecordBatch>; N]],
+    allowed_payloads: &[ArrowPayloadType],
+) -> Result<()> {
+    let mut starting_ids: [u32; N] = [0; N];
+    for payload in allowed_payloads {
+        let child_payloads = child_payload_types(*payload);
+        if !child_payloads.is_empty() {
+            for batches in batches.iter_mut() {
+                let parent_offset = POSITION_LOOKUP[*payload as usize];
+                let parent = batches[parent_offset].take();
+                if let Some(mut parent) = parent {
+                    let parent_starting_offset = starting_ids[parent_offset];
+
+                    // When `parent` has both ID and PARENT_ID columns, resort by ID. Why? Because
+                    // the reindexing code requires that the input be sorted. For all these cases,
+                    // we've already reindexed by PARENT_ID in an earlier iteration of this loop.
+                    if parent.column_by_name(consts::PARENT_ID).is_some()
+                        && parent.column_by_name(consts::ID).is_some()
+                    {
+                        parent = sort_record_batch(parent, HowToSort::SortById)?;
+                    }
+
+                    let (parent, next_starting_id) =
+                        reindex_record_batch(parent, consts::ID, parent_starting_offset)?;
+                    starting_ids[parent_offset] += next_starting_id;
+                    // return parent to batches since we took it!
+                    let _ = batches[parent_offset].replace(parent);
+
+                    for child in child_payloads {
+                        let child_offset = POSITION_LOOKUP[*child as usize];
+                        if let Some(child) = batches[child_offset].take() {
+                            let (child, next_starting_id) = reindex_record_batch(
+                                child,
+                                consts::PARENT_ID,
+                                parent_starting_offset,
+                            )?;
+                            starting_ids[child_offset] += next_starting_id;
+                            // return child to batches since we took it!
+                            let _ = batches[child_offset].replace(child);
+                            // We don't have to reindex child's id column since we'll get to it in a
+                            // later iteration of the loop if it exists.
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn reindex_record_batch(
+    rb: RecordBatch,
+    column_name: &'static str,
+    mut next_starting_id: u32,
+) -> Result<(RecordBatch, u32)> {
+    let id = IDColumn::extract(&rb, column_name)?;
+
+    let maybe_new_ids = match id {
+        IDColumn::U16(array) => IDRange::<u16>::reindex_column(array, next_starting_id)?,
+        IDColumn::U32(array) => IDRange::<u32>::reindex_column(array, next_starting_id)?,
+    };
+
+    // Sigh. There doesn't seemt to be a way to mutate the values of a single column of a
+    // `RecordBatch` without taking it apart entirely and then putting it back together.
+    let (schema, mut columns, _len) = rb.into_parts();
+
+    if let Some((new_id_array, new_next_starting_id)) = maybe_new_ids {
+        let column_index = schema
+            .fields
+            .find(column_name)
+            .expect("we already extracted this column")
+            .0;
+        columns[column_index] = new_id_array;
+        next_starting_id = new_next_starting_id;
+    }
+
+    Ok((
+        RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?,
+        next_starting_id,
+    ))
+}
+
+/// I describe the indices and values in an ID column for reindexing
+struct IDRange<T> {
+    indices: RangeInclusive<usize>,
+    ids: RangeInclusive<T>,
+    is_gap_free: bool,
+}
+
+impl<T> IDRange<T> {
+    /// Maybe make a new `IDRange` from an array reference
+    fn from_generic_array<Native, ArrowPrimitive>(
+        array: &PrimitiveArray<ArrowPrimitive>,
+    ) -> Option<IDRange<Native>>
+    where
+        Native: Add<Output = Native> + Copy + PartialEq + PartialOrd + ArrowNativeTypeOp,
+        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
+    {
+        // Null-handling
+        //
+        // We're going to rely heavily on the fact that we sorted with nulls first. Why first and not last?
+        // Because the more efficient PrimitiveArray.nulls().unwrap().valid_indices() iterator is not double ended
+        // unlike PrimitiveArray.nulls().unwrap().iter() which is slower.
+
+        let all_values = array.values();
+        let len = array.len();
+        use arrow::array::Array;
+
+        let (non_null_slice, indices) = match array.nulls() {
+            // There are no nulls at all, so everything is valid!
+            None => (&all_values[..], Some(0..=len - 1)),
+
+            // Everything is null, so nothing is valid
+            Some(nulls) if nulls.null_count() == len => (&all_values[0..0], None),
+
+            // There are some nulls but also some non-null values, so somethings are valid
+            Some(nulls) => {
+                // We rely on the fact that we've sorted so that nulls come at the front.
+
+                // SAFETY: unwrap is safe here because we've already verified that the entire array
+                // isn't null, which means there has to be at least one valid index which means
+                // .next() will return Some the first time we call it.
+                let first_valid_index = nulls
+                    .valid_indices()
+                    .next()
+                    .expect("a non-null must be here");
+                (
+                    &all_values[first_valid_index..],
+                    Some(first_valid_index..=len - 1),
+                )
+            }
+        };
+        let is_gap_free = non_null_slice
+            .windows(2)
+            .all(|pair| pair[0] == pair[1] || pair[1] == pair[0] + Native::ONE);
+
+        indices.map(|indices| {
+            let ids = non_null_slice[0]..=non_null_slice[len - 1];
+            IDRange {
+                ids,
+                indices,
+                is_gap_free,
+            }
+        })
+    }
+
+    fn reindex_column<Native, ArrowPrimitive>(
+        array: &PrimitiveArray<ArrowPrimitive>,
+        next_starting_id: u32,
+    ) -> Result<Option<(Arc<dyn arrow::array::Array>, u32)>>
+    where
+        Native: Add<Output = Native>
+            + Copy
+            + PartialEq
+            + PartialOrd
+            + TryFrom<u32>
+            + TryFrom<i64>
+            + Into<i64>
+            + Into<u32>
+            + Clone
+            + ArrowNativeTypeOp,
+        RangeFrom<Native>: Iterator<Item = Native>,
+        <Native as TryFrom<u32>>::Error: std::fmt::Debug,
+        <Native as TryFrom<i64>>::Error: std::fmt::Debug,
+        ArrowPrimitive: ArrowPrimitiveType<Native = Native>,
+    {
+        if let Some(id_range) = Self::from_generic_array(array) {
+            // We do our bounds checking in `i64`-land because the only types we care about are `u32`
+            // and `u16` and `i64` can repersent all those values and all offsets between them.
+            let start: i64 = (*id_range.ids.start()).into();
+            let end: i64 = (*id_range.ids.end()).into();
+            let offset = (next_starting_id as i64) - start;
+            let do_sub_offset = offset.signum() == -1;
+            let offset = offset.abs();
+
+            // If this statement works, then we know that all additions/subtractions will work
+            // because we rely on the fact that the slice is sorted, so `start` is the smallest
+            // possible value and `end` is the largest possible value.
+            let _ = Native::try_from(if do_sub_offset {
+                start - offset
+            } else {
+                end + offset
+            })
+            .expect("overflow occurred");
+
+            let offset = Native::try_from(offset).expect("this should never happen");
+
+            let array = if id_range.is_gap_free {
+                // Whee! We can just do vectorized addition/subtraction!
+                let scalar = PrimitiveArray::<ArrowPrimitive>::new_scalar(offset);
+
+                // The normal add/sub kernels check for overflow which we don't want since we've already
+                // verified that overflow can't happen, so we use the wrapping variants even though we
+                // know no wrapping will occur to avoid the cost of overflow checks.
+                let array = if do_sub_offset {
+                    arrow::compute::kernels::numeric::sub_wrapping(array, &scalar)
+                } else {
+                    arrow::compute::kernels::numeric::add_wrapping(array, &scalar)
+                };
+
+                // FIXME: downcast_array will panic if the types aren't right; all it is doing is
+                // PrimitiveArray<ArrowType>::from(input.data()); maybe try that with try_from instead?
+                let array: PrimitiveArray<ArrowPrimitive> = arrow::array::downcast_array(
+                    &array.expect("this array is of the expected type"),
+                );
+                array
+            } else {
+                // Ugh, there are gaps, so we need to do something slower and more complicated to
+                // replace the sequence with a gap free version. This is complicated by the presence of
+                // duplciates.
+                use itertools::Itertools;
+
+                let null_count = *(id_range.indices.start());
+                let valid_ids = &array.values()[id_range.indices];
+                let next_starting_id = Native::try_from(next_starting_id)
+                    .expect("we can convert next_starting_id to our element type");
+
+                let values = valid_ids
+                    .iter()
+                    // we convert the original values into a form of run-length encoding
+                    .dedup_with_count()
+                    // and combine it with a gap-free sequence of new integer values
+                    .zip(next_starting_id..)
+                    .flat_map(|((count, _old_id), new_id)| {
+                        // swapping out old for new values, repeating items as needed
+                        repeat_n(new_id, count)
+                    });
+                if null_count == 0 {
+                    PrimitiveArray::from_iter_values(values)
+                } else {
+                    // First, we start with as many nulls as the original...
+                    let nulls = repeat_n(None, null_count);
+                    // ...then we add the non-null values
+                    nulls.chain(values.map(Some)).collect()
+                }
+            };
+
+            let last_id: u32 = array.values()[array.len() - 1].into();
+            let next_starting_id = last_id.checked_add(1).expect("no overflow");
+            Ok(Some((Arc::new(array), next_starting_id)))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 // Part of concatenation is unifying batches into a common schema and data...
