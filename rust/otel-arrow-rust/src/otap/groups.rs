@@ -364,6 +364,10 @@ impl<'rb> IDColumn<'rb> {
             .column_by_name(column_name)
             .context(error::ColumnNotFoundSnafu { name: column_name })?;
 
+        Self::from_array(column_name, id)
+    }
+
+    fn from_array(column_name: &'static str, id: &'rb dyn Array) -> Result<IDColumn<'rb>> {
         match (
             id.as_any().downcast_ref::<UInt16Array>(),
             id.as_any().downcast_ref::<UInt32Array>(),
@@ -511,16 +515,8 @@ impl IDSeqs {
         }
         .context(error::BatchingSnafu)?;
 
-        Ok(
-            match (
-                concatenated_array.as_any().downcast_ref::<UInt16Array>(),
-                concatenated_array.as_any().downcast_ref::<UInt32Array>(),
-            ) {
-                (Some(ids), None) => Self::from_generic_array(ids, &lengths),
-                (None, Some(ids)) => Self::from_generic_array(ids, &lengths),
-                _ => unreachable!(),
-            },
-        )
+        let ids = IDColumn::from_array(column_name, &concatenated_array)?;
+        Ok(Self::from_col(ids, &lengths))
     }
 
     fn split_child_record_batch(&self, input: &RecordBatch) -> Result<Vec<RecordBatch>> {
