@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Handle to a task running on a dedicated thread.
 ///
-/// - `shutdown()` requests cancellation via the token (idempotent; best-effort).
+/// - `shutdown()` requests cancellation via the token (idempotent, best-effort).
 /// - `shutdown_and_join()` requests shutdown and then waits for completion, returning controller::Error on failure.
 /// - `join_raw()` waits for the thread to finish and returns the raw nested result.
 pub struct ThreadLocalTaskHandle<T, E> {
@@ -23,15 +23,6 @@ impl<T, E> ThreadLocalTaskHandle<T, E> {
     /// Request a graceful shutdown by cancelling the token.
     pub fn shutdown(&mut self) {
         self.cancel_token.cancel();
-    }
-
-    /// Wait for the underlying thread to finish and return the task result (raw nested result).
-    pub fn join_raw(mut self) -> thread::Result<Result<T, E>> {
-        if let Some(handle) = self.join_handle.take() {
-            handle.join()
-        } else {
-            panic!("ThreadLocalTaskHandle already joined");
-        }
     }
 
     /// Request shutdown and then join, mapping errors into controller::Error.
