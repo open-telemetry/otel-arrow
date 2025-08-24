@@ -106,7 +106,10 @@ impl ScalarExpression {
             ScalarExpression::Source(_) => Ok(None),
             ScalarExpression::Attached(_) => Ok(None),
             ScalarExpression::Variable(_) => Ok(None),
-            ScalarExpression::Static(s) => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
+            ScalarExpression::Static(s) => match s.try_fold() {
+                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(v))),
+                None => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
+            },
             ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(scope))),
             ScalarExpression::List(l) => l.try_resolve_static(scope),
             ScalarExpression::Logical(l) => match l.try_resolve_static(scope)? {
@@ -352,14 +355,28 @@ impl ConstantScalarExpression {
             ConstantScalarExpression::Reference(r) => {
                 let constant_id = r.get_constant_id();
 
-                ResolvedStaticScalarExpression::Reference(
-                    scope.get_constant(constant_id).unwrap_or_else(|| {
-                        panic!("Constant for id '{constant_id}' was not found on pipeline")
-                    }),
-                )
+                let value = scope.get_constant(constant_id).unwrap_or_else(|| {
+                    panic!("Constant for id '{constant_id}' was not found on pipeline")
+                });
+
+                match value.try_fold() {
+                    Some(v) => {
+                        // Note: If we get a folded static we convert the
+                        // constant expression to a copy instead of a reference.
+                        // The effect this has is for small constants a copy is
+                        // made in the tree to bypass a lookup at runtime.
+                        *self = ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
+                            self.get_query_location().clone(),
+                            constant_id,
+                            v.clone(),
+                        ));
+                        ResolvedStaticScalarExpression::Value(v)
+                    }
+                    None => ResolvedStaticScalarExpression::Reference(value),
+                }
             }
             ConstantScalarExpression::Copy(c) => {
-                ResolvedStaticScalarExpression::Reference(c.get_value())
+                ResolvedStaticScalarExpression::Value(c.value.clone())
             }
         }
     }
@@ -816,8 +833,11 @@ impl ListScalarExpression {
 
         for v in &mut self.value_expressions {
             match v.try_resolve_static(scope)? {
-                Some(ResolvedStaticScalarExpression::Reference(v)) => {
-                    values.push(v.clone());
+                Some(ResolvedStaticScalarExpression::Reference(_)) => {
+                    // Note: Don't copy referenced statics because if they were
+                    // foldable they would already have switched to values. For
+                    // example the reference could be to a large constant array.
+                    return Ok(None);
                 }
                 Some(ResolvedStaticScalarExpression::Value(v)) => {
                     values.push(v);

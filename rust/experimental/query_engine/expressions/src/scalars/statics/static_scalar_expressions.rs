@@ -42,6 +42,35 @@ pub enum StaticScalarExpression {
 }
 
 impl StaticScalarExpression {
+    pub(crate) fn try_fold(&self) -> Option<StaticScalarExpression> {
+        // Note: The goal here is to diferentiate which statics can be
+        // folded/copied in the expression tree and which ones should always be
+        // referenced.
+        match self {
+            StaticScalarExpression::Array(_) => None,
+            StaticScalarExpression::Boolean(b) => Some(StaticScalarExpression::Boolean(b.clone())),
+            StaticScalarExpression::DateTime(d) => {
+                Some(StaticScalarExpression::DateTime(d.clone()))
+            }
+            StaticScalarExpression::Double(d) => Some(StaticScalarExpression::Double(d.clone())),
+            StaticScalarExpression::Integer(i) => Some(StaticScalarExpression::Integer(i.clone())),
+            StaticScalarExpression::Map(_) => None,
+            StaticScalarExpression::Null(n) => Some(StaticScalarExpression::Null(n.clone())),
+            StaticScalarExpression::Regex(_) => None,
+            StaticScalarExpression::String(s) => {
+                let value = &s.value;
+                if value.len() < 32 {
+                    Some(StaticScalarExpression::String(s.clone()))
+                } else {
+                    None
+                }
+            }
+            StaticScalarExpression::TimeSpan(t) => {
+                Some(StaticScalarExpression::TimeSpan(t.clone()))
+            }
+        }
+    }
+
     pub fn from_json(
         query_location: QueryLocation,
         input: &str,
