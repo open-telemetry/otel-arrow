@@ -7,27 +7,25 @@ use std::thread;
 use std::future::Future;
 use tokio::{
     runtime::Builder as RtBuilder,
-    sync::oneshot,
     task::LocalSet,
 };
+use tokio_util::sync::CancellationToken;
 
 /// Handle to a task running on a dedicated thread.
 ///
-/// - `shutdown()` sends the shutdown signal (idempotent; best-effort).
+/// - `shutdown()` requests cancellation via the token (idempotent; best-effort).
 /// - `shutdown_and_join()` requests shutdown and then waits for completion, returning controller::Error on failure.
 /// - `join_raw()` waits for the thread to finish and returns the raw nested result.
 pub struct ThreadLocalTaskHandle<T, E> {
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    cancel_token: CancellationToken,
     join_handle: Option<thread::JoinHandle<Result<T, E>>>,
     name: String,
 }
 
 impl<T, E> ThreadLocalTaskHandle<T, E> {
-    /// Request a graceful shutdown by sending the oneshot signal.
+    /// Request a graceful shutdown by cancelling the token.
     pub fn shutdown(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
+        self.cancel_token.cancel();
     }
 
     /// Wait for the underlying thread to finish and return the task result (raw nested result).
@@ -68,11 +66,11 @@ impl<T, E> ThreadLocalTaskHandle<T, E> {
 /// Spawn a non-Send async task on a dedicated OS thread running a single-threaded
 /// Tokio runtime with a LocalSet. Returns a handle to signal shutdown and join.
 ///
-/// The `task_factory` receives a oneshot receiver that resolves when shutdown is requested
+/// The `task_factory` receives a CancellationToken that is cancelled when shutdown is requested
 /// and must return the async task to run. The task's `Output` is surfaced by `shutdown_and_join()`.
 ///
 /// Contract:
-/// - The task should observe the shutdown receiver and exit promptly when it resolves.
+/// - The task should observe the cancellation token and exit promptly when it is cancelled.
 /// - `T` and `E` must be `Send + 'static` to cross the thread boundary.
 pub fn spawn_thread_local_task<T, E, Fut, F>(
     thread_name: impl Into<String>,
@@ -82,11 +80,12 @@ where
     T: Send + 'static,
     E: Send + 'static,
     Fut: 'static + Future<Output = Result<T, E>>,
-    F: 'static + Send + FnOnce(oneshot::Receiver<()>) -> Fut,
+    F: 'static + Send + FnOnce(CancellationToken) -> Fut,
 {
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let name = thread_name.into();
     let name_for_thread = name.clone();
+    let token = CancellationToken::new();
+    let token_for_task = token.clone();
 
     let join_handle = thread::Builder::new()
         .name(name_for_thread)
@@ -97,8 +96,8 @@ where
                 .expect("Failed to create runtime");
             let local = LocalSet::new();
 
-            // Build the task future using the provided factory, passing the shutdown rx.
-            let fut = task_factory(shutdown_rx);
+            // Build the task future using the provided factory, passing the cancellation token.
+            let fut = task_factory(token_for_task);
             // Run the future to completion on the LocalSet and return its result to the caller.
             rt.block_on(local.run_until(fut))
         })
@@ -107,7 +106,7 @@ where
         })?;
 
     Ok(ThreadLocalTaskHandle {
-        shutdown_tx: Some(shutdown_tx),
+        cancel_token: token,
         join_handle: Some(join_handle),
         name,
     })

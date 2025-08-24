@@ -23,7 +23,7 @@
 
 use crate::config::Config;
 use crate::registry::MetricsRegistryHandle;
-use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use crate::error::Error;
 
 pub mod attributes;
@@ -78,8 +78,8 @@ impl MetricsSystem {
     /// This method returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
     pub async fn run(
         self,
-        mut shutdown_rx: oneshot::Receiver<()>,
-    ) -> Result<(), Error> {
+        cancel: CancellationToken,
+     ) -> Result<(), Error> {
         // Run the collector and race it against the shutdown signal.
         let collector = self.collector;
 
@@ -87,7 +87,7 @@ impl MetricsSystem {
             res = collector.run_collection_loop() => {
                 res
             }
-            _ = &mut shutdown_rx => {
+            _ = cancel.cancelled() => {
                 // Shutdown requested; cancel the collection loop by dropping its future.
                 Ok(())
             }

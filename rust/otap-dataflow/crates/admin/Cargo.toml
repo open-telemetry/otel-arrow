@@ -19,6 +19,7 @@ otap-df-telemetry = { path = "../telemetry" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+tokio-util = { workspace = true }
 axum = { version = "0.8.4" }
 tower = "0.5.2"
 chrono = { version = "0.4", features = ["serde"] }

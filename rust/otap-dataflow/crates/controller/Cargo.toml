@@ -25,3 +25,4 @@ thiserror = { workspace = true }
 miette = { workspace = true }
 core_affinity = "0.8.3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio-util = { workspace = true }

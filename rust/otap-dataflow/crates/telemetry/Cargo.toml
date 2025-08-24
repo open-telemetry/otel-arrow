@@ -21,6 +21,7 @@ unchecked-arithmetic = []
 [dependencies]
 flume = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+tokio-util = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 slotmap = "1.0.7"

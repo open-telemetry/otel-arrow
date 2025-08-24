@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
@@ -29,7 +30,7 @@ struct AppState {
 pub async fn run(
     config: HttpAdminSettings,
     metrics_registry: MetricsRegistryHandle,
-    shutdown_rx: oneshot::Receiver<()>,
+    cancel: CancellationToken,
 ) -> Result<(), Error> {
     let app_state = AppState { metrics_registry };
 
@@ -60,7 +61,7 @@ pub async fn run(
     // Start serving requests, with graceful shutdown on signal.
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.await;
+            cancel.cancelled().await;
         })
         .await
         .map_err(|e| Error::ServerError {
