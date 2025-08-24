@@ -8,11 +8,11 @@
 //! A node can have multiple outgoing named ports, each connected to a hyper-edge that defines how
 //! data flows from this node to one or more target nodes.
 
-use std::borrow::Cow;
 use crate::{Description, NodeId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 /// User configuration for a node in the pipeline.

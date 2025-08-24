@@ -14,6 +14,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -21,7 +22,6 @@ use otap_df_engine::processor::ProcessorWrapper;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use otap_df_engine::context::PipelineContext;
 
 /// URN for the SignalTypeRouter processor
 pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router";

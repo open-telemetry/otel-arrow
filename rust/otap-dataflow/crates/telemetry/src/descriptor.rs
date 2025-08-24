@@ -5,8 +5,7 @@
 use serde::Serialize;
 
 /// The type of instrument used to record the metric. Must be one of the following variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Instrument {
     /// A value that can only go up or be reset to 0, used for counts
@@ -20,8 +19,7 @@ pub enum Instrument {
 }
 
 /// Metadata describing a single field inside a metrics struct.
-#[derive(Debug, Clone, Copy)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct MetricsField {
     /// Canonical metric name (e.g., "bytes.rx"). Uniquely identifies the metric.
     pub name: &'static str,
@@ -35,8 +33,7 @@ pub struct MetricsField {
 }
 
 /// Descriptor for a multivariate metrics.
-#[derive(Debug)]
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct MetricsDescriptor {
     /// Human-friendly group name.
     pub name: &'static str,
@@ -45,8 +42,7 @@ pub struct MetricsDescriptor {
 }
 
 /// Supported attribute value kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttributeValueType {
     /// String attribute value
@@ -60,8 +56,7 @@ pub enum AttributeValueType {
 }
 
 /// Metadata describing a single attribute field.
-#[derive(Debug, Clone, Copy)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct AttributeField {
     /// Attribute key (canonical, may contain dots instead of underscores).
     pub key: &'static str,

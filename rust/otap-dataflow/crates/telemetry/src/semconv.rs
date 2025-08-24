@@ -2,9 +2,9 @@
 
 //! Semantic convention file.
 
-use std::borrow::Cow;
-use serde::Serialize;
 use crate::descriptor::{AttributeField, MetricsDescriptor};
+use serde::Serialize;
+use std::borrow::Cow;
 
 /// A semantic convention registry containing attributes and metrics definitions.
 #[derive(Serialize)]

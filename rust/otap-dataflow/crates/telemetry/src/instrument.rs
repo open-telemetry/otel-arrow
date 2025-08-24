@@ -462,11 +462,11 @@ mod tests {
         let mut counter = Counter::new(0u64);
 
         // Test a sequence of operations
-        counter.inc();              // 1
-        counter.add(10);           // 11
-        counter += 5;              // 16
-        counter.inc();             // 17
-        counter.add(3);            // 20
+        counter.inc(); // 1
+        counter.add(10); // 11
+        counter += 5; // 16
+        counter.inc(); // 17
+        counter.add(3); // 20
 
         assert_eq!(counter.get(), 20);
     }

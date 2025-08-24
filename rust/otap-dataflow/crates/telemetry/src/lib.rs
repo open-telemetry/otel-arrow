@@ -22,9 +22,9 @@
 //! * Client SDK generation with Weaver
 
 use crate::config::Config;
+use crate::error::Error;
 use crate::registry::MetricsRegistryHandle;
 use tokio_util::sync::CancellationToken;
-use crate::error::Error;
 
 pub mod attributes;
 pub mod collector;
@@ -53,10 +53,8 @@ impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     pub fn new(config: Config) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
-        let (collector, reporter) = collector::MetricsCollector::new(
-            config.clone(),
-            metrics_registry.clone(),
-        );
+        let (collector, reporter) =
+            collector::MetricsCollector::new(config.clone(), metrics_registry.clone());
         Self {
             registry: metrics_registry,
             collector,
@@ -73,13 +71,10 @@ impl MetricsSystem {
     pub fn reporter(&self) -> reporter::MetricsReporter {
         self.reporter.clone()
     }
-    
+
     /// Starts the metrics collection loop and listens for a shutdown signal.
     /// This method returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
-    pub async fn run(
-        self,
-        cancel: CancellationToken,
-     ) -> Result<(), Error> {
+    pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
         // Run the collector and race it against the shutdown signal.
         let collector = self.collector;
 

@@ -27,7 +27,7 @@ pub struct EngineSettings {
     pub http_admin: Option<HttpAdminSettings>,
 
     /// Telemetry settings.
-    pub telemetry: TelemetrySettings
+    pub telemetry: TelemetrySettings,
 }
 
 /// Configuration for the telemetry metrics system.

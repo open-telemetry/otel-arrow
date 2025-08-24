@@ -11,8 +11,10 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr};
 use syn::parse_quote;
+use syn::{
+    Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, parse_macro_input, spanned::Spanned,
+};
 
 /// Derive implementation of `otap_df_telemetry::metrics::MetricSetHandler` for a struct.
 ///
@@ -48,15 +50,21 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         Data::Struct(s) => match &s.fields {
             Fields::Named(named) => &named.named,
             _ => {
-                return syn::Error::new(input_span, "MetricSetHandler can only be derived for structs with named fields")
-                    .to_compile_error()
-                    .into();
+                return syn::Error::new(
+                    input_span,
+                    "MetricSetHandler can only be derived for structs with named fields",
+                )
+                .to_compile_error()
+                .into();
             }
         },
         _ => {
-            return syn::Error::new(input.span(), "MetricSetHandler can only be derived for structs")
-                .to_compile_error()
-                .into();
+            return syn::Error::new(
+                input.span(),
+                "MetricSetHandler can only be derived for structs",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -75,9 +83,15 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         for attr in &field.attrs {
             if attr.meta.path().is_ident("doc") {
                 if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(ls), .. }) = &nv.value {
+                    if let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(ls),
+                        ..
+                    }) = &nv.value
+                    {
                         let line = ls.value().trim().to_string();
-                        if !line.is_empty() { brief_lines.push(line); }
+                        if !line.is_empty() {
+                            brief_lines.push(line);
+                        }
                     }
                 }
             }
@@ -89,7 +103,9 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         let mut unit_attr: Option<String> = None;
         for attr in &field.attrs {
             if let Some((maybe_name, u)) = parse_metric_field_attr(attr) {
-                if maybe_name.is_some() { name_attr = maybe_name; }
+                if maybe_name.is_some() {
+                    name_attr = maybe_name;
+                }
                 unit_attr = Some(u);
             }
         }
@@ -107,11 +123,13 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                         // Expect generic arguments <u64>
                         let is_u64 = match &seg.arguments {
                             syn::PathArguments::AngleBracketed(ab) => {
-                                if ab.args.len() != 1 { false } else {
+                                if ab.args.len() != 1 {
+                                    false
+                                } else {
                                     matches!(ab.args.first(), Some(syn::GenericArgument::Type(syn::Type::Path(p)) ) if p.path.is_ident("u64"))
                                 }
-                            },
-                            _ => false
+                            }
+                            _ => false,
                         };
                         if !is_u64 {
                             return syn::Error::new(seg.ident.span(), "Metric field type must be one of Counter<u64>, UpDownCounter<u64>, Gauge<u64>")
@@ -119,18 +137,30 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                         }
                         match ident_ty.as_str() {
                             "Counter" => quote!(otap_df_telemetry::descriptor::Instrument::Counter),
-                            "UpDownCounter" => quote!(otap_df_telemetry::descriptor::Instrument::UpDownCounter),
+                            "UpDownCounter" => {
+                                quote!(otap_df_telemetry::descriptor::Instrument::UpDownCounter)
+                            }
                             "Gauge" => quote!(otap_df_telemetry::descriptor::Instrument::Gauge),
-                            other => return syn::Error::new(seg.ident.span(), format!("Unsupported metric instrument type: {other}" ))
-                                .to_compile_error().into(),
+                            other => {
+                                return syn::Error::new(
+                                    seg.ident.span(),
+                                    format!("Unsupported metric instrument type: {other}"),
+                                )
+                                .to_compile_error()
+                                .into();
+                            }
                         }
                     } else {
                         return syn::Error::new(field.ty.span(), "Unsupported metric field type")
-                            .to_compile_error().into();
+                            .to_compile_error()
+                            .into();
                     }
-                },
-                _ => return syn::Error::new(field.ty.span(), "Unsupported metric field type")
-                    .to_compile_error().into(),
+                }
+                _ => {
+                    return syn::Error::new(field.ty.span(), "Unsupported metric field type")
+                        .to_compile_error()
+                        .into();
+                }
             };
             metric_field_idents.push(ident);
             metric_field_units.push(unit);
@@ -201,9 +231,12 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let attributes_name = match attributes_name {
         Some(n) => n,
         None => {
-            return syn::Error::new(input.span(), "missing #[attributes(name = \"...\")] on struct")
-                .to_compile_error()
-                .into();
+            return syn::Error::new(
+                input.span(),
+                "missing #[attributes(name = \"...\")] on struct",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -211,15 +244,21 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         Data::Struct(s) => match &s.fields {
             Fields::Named(named) => &named.named,
             _ => {
-                return syn::Error::new(input_span, "AttributeSetHandler can only be derived for structs with named fields")
-                    .to_compile_error()
-                    .into();
+                return syn::Error::new(
+                    input_span,
+                    "AttributeSetHandler can only be derived for structs with named fields",
+                )
+                .to_compile_error()
+                .into();
             }
         },
         _ => {
-            return syn::Error::new(input.span(), "AttributeSetHandler can only be derived for structs")
-                .to_compile_error()
-                .into();
+            return syn::Error::new(
+                input.span(),
+                "AttributeSetHandler can only be derived for structs",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -228,7 +267,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let is_telemetry_crate = crate_name == "otap-df-telemetry";
 
     // Choose path prefixes based on context
-    let (attr_handler_path, descriptor_path, field_path, value_type_path, attr_value_path, attr_iterator_path) = if is_telemetry_crate {
+    let (
+        attr_handler_path,
+        descriptor_path,
+        field_path,
+        value_type_path,
+        attr_value_path,
+        attr_iterator_path,
+    ) = if is_telemetry_crate {
         (
             quote!(crate::attributes::AttributeSetHandler),
             quote!(crate::descriptor::AttributesDescriptor),
@@ -261,7 +307,10 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         let ident = field.ident.clone().unwrap();
 
         // Check if this field is marked with #[compose]
-        let is_composed = field.attrs.iter().any(|attr| attr.path().is_ident("compose"));
+        let is_composed = field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("compose"));
 
         if is_composed {
             // This field should implement AttributeSetHandler
@@ -270,7 +319,10 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         }
 
         // Check if this field has #[attribute] annotation
-        let has_attribute_attr = field.attrs.iter().any(|attr| attr.path().is_ident("attribute"));
+        let has_attribute_attr = field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("attribute"));
 
         if !has_attribute_attr {
             // Skip fields without #[attribute] or #[compose] annotations
@@ -282,9 +334,15 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         for attr in &field.attrs {
             if attr.meta.path().is_ident("doc") {
                 if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(ls), .. }) = &nv.value {
+                    if let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(ls),
+                        ..
+                    }) = &nv.value
+                    {
                         let line = ls.value().trim().to_string();
-                        if !line.is_empty() { desc_lines.push(line); }
+                        if !line.is_empty() {
+                            desc_lines.push(line);
+                        }
                     }
                 }
             }
@@ -314,23 +372,23 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                     match ident_ty.as_str() {
                         "String" => (
                             quote!(#value_type_path::String),
-                            quote!(#attr_value_path::String(self.#ident.clone()))
+                            quote!(#attr_value_path::String(self.#ident.clone())),
                         ),
                         "u32" | "u64" | "usize" => (
                             quote!(#value_type_path::Int),
-                            quote!(#attr_value_path::UInt(self.#ident as u64))
+                            quote!(#attr_value_path::UInt(self.#ident as u64)),
                         ),
                         "i32" | "i64" | "isize" => (
                             quote!(#value_type_path::Int),
-                            quote!(#attr_value_path::Int(self.#ident as i64))
+                            quote!(#attr_value_path::Int(self.#ident as i64)),
                         ),
                         "f32" | "f64" => (
                             quote!(#value_type_path::Double),
-                            quote!(#attr_value_path::Double(self.#ident as f64))
+                            quote!(#attr_value_path::Double(self.#ident as f64)),
                         ),
                         "bool" => (
                             quote!(#value_type_path::Boolean),
-                            quote!(#attr_value_path::Boolean(self.#ident))
+                            quote!(#attr_value_path::Boolean(self.#ident)),
                         ),
                         _ => {
                             // Check if it's a generic type like Cow<'static, str>
@@ -339,25 +397,37 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                                     // Assume Cow<'static, str>
                                     (
                                         quote!(#value_type_path::String),
-                                        quote!(#attr_value_path::String(self.#ident.to_string()))
+                                        quote!(#attr_value_path::String(self.#ident.to_string())),
                                     )
                                 } else {
-                                    return syn::Error::new(seg.ident.span(), format!("Unsupported attribute field type: {}", ident_ty))
-                                        .to_compile_error().into();
+                                    return syn::Error::new(
+                                        seg.ident.span(),
+                                        format!("Unsupported attribute field type: {}", ident_ty),
+                                    )
+                                    .to_compile_error()
+                                    .into();
                                 }
                             } else {
-                                return syn::Error::new(seg.ident.span(), format!("Unsupported attribute field type: {}", ident_ty))
-                                    .to_compile_error().into();
+                                return syn::Error::new(
+                                    seg.ident.span(),
+                                    format!("Unsupported attribute field type: {}", ident_ty),
+                                )
+                                .to_compile_error()
+                                .into();
                             }
                         }
                     }
                 } else {
                     return syn::Error::new(field.ty.span(), "Unsupported attribute field type")
-                        .to_compile_error().into();
+                        .to_compile_error()
+                        .into();
                 }
-            },
-            _ => return syn::Error::new(field.ty.span(), "Unsupported attribute field type")
-                .to_compile_error().into(),
+            }
+            _ => {
+                return syn::Error::new(field.ty.span(), "Unsupported attribute field type")
+                    .to_compile_error()
+                    .into();
+            }
         };
 
         attr_field_idents.push(ident);
@@ -510,20 +580,29 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let ident: syn::Ident = input.parse()?;
                 let _: syn::Token![=] = input.parse()?;
                 let lit: LitStr = input.parse()?;
-                if ident == "name" { name_val = Some(lit.value()); }
-                if input.peek(syn::Token![,]) { let _: syn::Token![,] = input.parse()?; }
+                if ident == "name" {
+                    name_val = Some(lit.value());
+                }
+                if input.peek(syn::Token![,]) {
+                    let _: syn::Token![,] = input.parse()?;
+                }
             }
             Ok(())
-        }, args) {
+        },
+        args,
+    ) {
         return err.to_compile_error().into();
     }
 
     let metrics_name = match name_val {
         Some(n) => n,
         None => {
-            return syn::Error::new(proc_macro2::Span::call_site(), "missing `name = \"...\"` in metric_set attribute")
-                .to_compile_error()
-                .into();
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "missing `name = \"...\"` in metric_set attribute",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -534,10 +613,13 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let repr_attr: Attribute = parse_quote!(#[repr(C, align(64))]);
     // Only add if not already present
     let has_repr = s.attrs.iter().any(|a| a.path().is_ident("repr"));
-    if !has_repr { s.attrs.push(repr_attr); }
+    if !has_repr {
+        s.attrs.push(repr_attr);
+    }
 
     // Ensure the MetricSetHandler derive is attached
-    let derive_attr: Attribute = parse_quote!(#[derive(otap_df_telemetry_macros::MetricSetHandler)]);
+    let derive_attr: Attribute =
+        parse_quote!(#[derive(otap_df_telemetry_macros::MetricSetHandler)]);
     s.attrs.push(derive_attr);
 
     // Add container descriptor attribute consumed by the derive
@@ -563,20 +645,29 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let ident: syn::Ident = input.parse()?;
                 let _: syn::Token![=] = input.parse()?;
                 let lit: LitStr = input.parse()?;
-                if ident == "name" { name_val = Some(lit.value()); }
-                if input.peek(syn::Token![,]) { let _: syn::Token![,] = input.parse()?; }
+                if ident == "name" {
+                    name_val = Some(lit.value());
+                }
+                if input.peek(syn::Token![,]) {
+                    let _: syn::Token![,] = input.parse()?;
+                }
             }
             Ok(())
-        }, args) {
+        },
+        args,
+    ) {
         return err.to_compile_error().into();
     }
 
     let attributes_name = match name_val {
         Some(n) => n,
         None => {
-            return syn::Error::new(proc_macro2::Span::call_site(), "missing `name = \"...\"` in attribute_set attribute")
-                .to_compile_error()
-                .into();
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "missing `name = \"...\"` in attribute_set attribute",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -584,7 +675,8 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut s = parse_macro_input!(item as ItemStruct);
 
     // Ensure the AttributeSetHandler derive is attached
-    let derive_attr: Attribute = parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
+    let derive_attr: Attribute =
+        parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
     s.attrs.push(derive_attr);
 
     // Add container descriptor attribute consumed by the derive
@@ -595,7 +687,9 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn parse_metrics_name_attr(attr: &Attribute) -> Option<String> {
-    if !attr.path().is_ident("metrics") { return None; }
+    if !attr.path().is_ident("metrics") {
+        return None;
+    }
     let mut out: Option<String> = None;
     let _ = attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("name") {
@@ -608,7 +702,9 @@ fn parse_metrics_name_attr(attr: &Attribute) -> Option<String> {
 }
 
 fn parse_metric_field_attr(attr: &Attribute) -> Option<(Option<String>, String)> {
-    if !attr.path().is_ident("metric") { return None; }
+    if !attr.path().is_ident("metric") {
+        return None;
+    }
     let mut name: Option<String> = None;
     let mut unit: Option<String> = None;
     let _ = attr.parse_nested_meta(|meta| {
@@ -621,11 +717,16 @@ fn parse_metric_field_attr(attr: &Attribute) -> Option<(Option<String>, String)>
         }
         Ok(())
     });
-    match unit { Some(u) => Some((name, u)), _ => None }
+    match unit {
+        Some(u) => Some((name, u)),
+        _ => None,
+    }
 }
 
 fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
-    if !attr.path().is_ident("attributes") { return None; }
+    if !attr.path().is_ident("attributes") {
+        return None;
+    }
     let mut out: Option<String> = None;
     let _ = attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("name") {
@@ -638,7 +739,9 @@ fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
 }
 
 fn parse_attribute_field_attr(attr: &Attribute) -> Option<String> {
-    if !attr.path().is_ident("attribute") { return None; }
+    if !attr.path().is_ident("attribute") {
+        return None;
+    }
     let mut out: Option<String> = None;
     let _ = attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("key") {

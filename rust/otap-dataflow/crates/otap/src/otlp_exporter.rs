@@ -9,19 +9,19 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::instrument::Counter;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -46,7 +46,9 @@ pub struct OTLPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTLPExporter::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -57,7 +59,10 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 
 impl OTLPExporter {
     /// create a new instance of the `[OTLPExporter]` from json config value
-    pub fn from_config(pipeline_ctx: PipelineContext, config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &serde_json::Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let metrics = pipeline_ctx.register_metrics::<OtlpExporterMetrics>();
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
@@ -158,7 +163,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
-                Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
                     _ = metrics_reporter.report(&mut self.metrics).await;
                 }
                 Message::PData(data) => {
@@ -221,15 +228,15 @@ mod tests {
     use otap_df_otlp::grpc::OTLPData;
     use otap_df_otlp::mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use otap_df_otlp::proto::opentelemetry::collector::{
-        logs::v1::{logs_service_server::LogsServiceServer, ExportLogsServiceRequest},
-        metrics::v1::{metrics_service_server::MetricsServiceServer, ExportMetricsServiceRequest},
-        trace::v1::{trace_service_server::TraceServiceServer, ExportTraceServiceRequest},
+        logs::v1::{ExportLogsServiceRequest, logs_service_server::LogsServiceServer},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
+        trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
     use prost::Message;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 

@@ -2,7 +2,7 @@
 
 //! Metrics reporter handle.
 
-use crate::metrics::{MetricSetSnapshot, MetricSetHandler, MetricSet};
+use crate::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
 
 /// A sharable/clonable metrics reporter sending metrics to a `MetricsCollector`.
 #[derive(Clone, Debug)]
@@ -19,10 +19,7 @@ impl MetricsReporter {
     }
 
     /// Report multivariate metrics and reset the metrics if successful.
-    pub async fn report<M: MetricSetHandler + 'static>(
-        &mut self,
-        metrics: &mut MetricSet<M>,
-    ) {
+    pub async fn report<M: MetricSetHandler + 'static>(&mut self, metrics: &mut MetricSet<M>) {
         if !metrics.needs_flush() {
             return;
         }

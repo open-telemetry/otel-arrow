@@ -3,12 +3,9 @@
 //! Utilities to run a non-Send async task on a dedicated OS thread with a
 //! single-threaded Tokio runtime and LocalSet, plus a shutdown signal.
 
-use std::thread;
 use std::future::Future;
-use tokio::{
-    runtime::Builder as RtBuilder,
-    task::LocalSet,
-};
+use std::thread;
+use tokio::{runtime::Builder as RtBuilder, task::LocalSet};
 use tokio_util::sync::CancellationToken;
 
 /// Handle to a task running on a dedicated thread.
@@ -53,11 +50,9 @@ impl<T, E> ThreadLocalTaskHandle<T, E> {
         match self.join_handle.take().expect("join handle missing").join() {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(e.into()),
-            Err(panic) => Err(crate::error::Error::InternalError {
-                message: format!(
-                    "Failed to join thread '{}': panicked with: {:?}",
-                    self.name, panic
-                ),
+            Err(panic) => Err(crate::error::Error::ThreadJoinPanic {
+                thread_name: self.name,
+                panic_message: format!("{panic:?}"),
             }),
         }
     }
@@ -101,8 +96,9 @@ where
             // Run the future to completion on the LocalSet and return its result to the caller.
             rt.block_on(local.run_until(fut))
         })
-        .map_err(|e| crate::error::Error::InternalError {
-            message: format!("Failed to spawn thread: {e}"),
+        .map_err(|e| crate::error::Error::ThreadSpawnError {
+            thread_name: name.clone(),
+            source: e,
         })?;
 
     Ok(ThreadLocalTaskHandle {

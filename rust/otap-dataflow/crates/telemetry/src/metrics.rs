@@ -20,7 +20,10 @@ pub struct MetricSet<M: MetricSetHandler> {
 impl<M: MetricSetHandler> MetricSet<M> {
     /// Creates a snapshot of the current metrics values.
     pub fn snapshot(&self) -> MetricSetSnapshot {
-        MetricSetSnapshot { key: self.key.clone(), metrics: self.metrics.snapshot_values() }
+        MetricSetSnapshot {
+            key: self.key.clone(),
+            metrics: self.metrics.snapshot_values(),
+        }
     }
 }
 

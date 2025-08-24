@@ -29,6 +29,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -39,7 +40,6 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-use otap_df_engine::context::PipelineContext;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -83,7 +83,9 @@ pub struct DebugExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static DEBUG_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: DEBUG_EXPORTER_URN,
-    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             DebugExporter::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -101,7 +103,10 @@ impl DebugExporter {
     }
 
     /// Creates a new DebugExporter from a configuration object
-    pub fn from_config(_pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -428,7 +433,7 @@ async fn push_profile(
 mod tests {
 
     use crate::debug_exporter::config::{Config, Verbosity};
-    use crate::debug_exporter::exporter::{DebugExporter, DEBUG_EXPORTER_URN};
+    use crate::debug_exporter::exporter::{DEBUG_EXPORTER_URN, DebugExporter};
     use crate::grpc::OTLPData;
     use crate::mock::{
         create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
@@ -438,12 +443,12 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     use otap_df_config::node::NodeUserConfig;
-    use std::fs::{remove_file, File};
+    use std::fs::{File, remove_file};
     use std::future::Future;
-    use std::io::{read_to_string, BufReader};
+    use std::io::{BufReader, read_to_string};
     use std::sync::Arc;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,

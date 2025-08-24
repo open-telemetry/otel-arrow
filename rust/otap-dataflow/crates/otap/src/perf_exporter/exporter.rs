@@ -12,6 +12,7 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OtapArrowBytes;
 use crate::pdata::OtapPdata;
 use crate::perf_exporter::config::Config;
+use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
 use async_trait::async_trait;
 use byte_unit::Byte;
 use fluke_hpack::Decoder;
@@ -23,7 +24,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
-use otap_df_engine::{distributed_slice, ExporterFactory};
+use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_telemetry::metrics::MetricSet;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde_json::Value;
@@ -31,13 +32,12 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
-    get_current_pid, CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind,
-    RefreshKind, System,
+    CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
+    System, get_current_pid,
 };
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
-use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
@@ -111,13 +111,15 @@ impl PerfExporter {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        Ok(PerfExporter::new(pipeline_ctx, serde_json::from_value(config.clone()).map_err(|e| {
+        Ok(PerfExporter::new(
+            pipeline_ctx,
+            serde_json::from_value(config.clone()).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
-            })?, None)
-
-        )
+            })?,
+            None,
+        ))
     }
 }
 
@@ -164,11 +166,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
             writer
                 .write("====================Pipeline Report====================\n")
                 .await?;
-            display_report_pipeline(
-                average_pipeline_latency,
-                writer,
-            )
-            .await?;
+            display_report_pipeline(average_pipeline_latency, writer).await?;
 
             // update sysinfo data
             system.refresh_specifics(sys_refresh_list);
@@ -249,7 +247,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 
                     // Keep track of batches and Arrow records received
                     self.metrics.batches.inc();
-                    self.metrics.arrow_records.add(batch.arrow_payloads.len() as u64);
+                    self.metrics
+                        .arrow_records
+                        .add(batch.arrow_payloads.len() as u64);
 
                     // Increment counters per type of OTLP signals
                     for arrow_payload in &batch.arrow_payloads {
@@ -589,7 +589,7 @@ mod tests {
     use crate::grpc::OtapArrowBytes;
     use crate::pdata::OtapPdata;
     use crate::perf_exporter::config::Config;
-    use crate::perf_exporter::exporter::{PerfExporter, OTAP_PERF_EXPORTER_URN};
+    use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
     use fluke_hpack::Encoder;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -601,12 +601,12 @@ mod tests {
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };
-    use std::fs::{remove_file, File};
+    use std::fs::{File, remove_file};
     use std::future::Future;
-    use std::io::{prelude::*, BufReader};
+    use std::io::{BufReader, prelude::*};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     const TRACES_BATCH_ID: i64 = 0;
     const LOGS_BATCH_ID: i64 = 1;
@@ -792,7 +792,8 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
-        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let exporter = ExporterWrapper::local(
             PerfExporter::new(pipeline_ctx, config, Some(output_file.clone())),
             node_config,

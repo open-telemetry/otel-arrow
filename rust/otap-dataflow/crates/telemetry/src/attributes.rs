@@ -3,8 +3,8 @@
 //! Interface defining a collection of attributes (pairs of key -> value) associated with a
 //! [`metrics::MetricSet`].
 
+use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
 use serde::Serialize;
-use crate::descriptor::{AttributesDescriptor, AttributeValueType, AttributeField};
 
 /// Specialized iterator over attribute key-value pairs with performance optimizations.
 /// This iterator avoids heap allocations and can leverage unsafe optimizations when enabled.
@@ -28,7 +28,12 @@ impl<'a> AttributeIterator<'a> {
             len,
             "descriptor.fields and attribute values length must match"
         );
-        Self { fields, values, idx: 0, len }
+        Self {
+            fields,
+            values,
+            idx: 0,
+            len,
+        }
     }
 }
 
@@ -131,7 +136,7 @@ impl AttributeValue {
             AttributeValue::String(_) => AttributeValueType::String,
             AttributeValue::Int(_) => AttributeValueType::Int,
             // Semantic Convention: UInt is treated as Int
-            AttributeValue::UInt(_) => AttributeValueType::Int, 
+            AttributeValue::UInt(_) => AttributeValueType::Int,
             AttributeValue::Double(_) => AttributeValueType::Double,
             AttributeValue::Boolean(_) => AttributeValueType::Boolean,
         }
@@ -230,13 +235,11 @@ mod tests {
 
     #[test]
     fn test_attribute_iterator_exact_size() {
-        let fields = &[
-            AttributeField {
-                key: "attr1",
-                r#type: AttributeValueType::Double,
-                brief: "Test attribute 1",
-            },
-        ];
+        let fields = &[AttributeField {
+            key: "attr1",
+            r#type: AttributeValueType::Double,
+            brief: "Test attribute 1",
+        }];
 
         let values = [AttributeValue::Double(3.14)];
 
@@ -249,13 +252,11 @@ mod tests {
 
     #[test]
     fn test_attribute_iterator_fused() {
-        let fields = &[
-            AttributeField {
-                key: "attr1",
-                r#type: AttributeValueType::Int,
-                brief: "Test attribute 1",
-            },
-        ];
+        let fields = &[AttributeField {
+            key: "attr1",
+            r#type: AttributeValueType::Int,
+            brief: "Test attribute 1",
+        }];
 
         let values = [AttributeValue::UInt(100)];
 
@@ -321,13 +322,11 @@ mod tests {
     fn test_attribute_iterator_unchecked_optimization() {
         // This test ensures that the unchecked indexing path is exercised
         // when the feature is enabled. The behavior should be identical to safe indexing.
-        let fields = &[
-            AttributeField {
-                key: "test_attr",
-                r#type: AttributeValueType::String,
-                brief: "Test attribute",
-            },
-        ];
+        let fields = &[AttributeField {
+            key: "test_attr",
+            r#type: AttributeValueType::String,
+            brief: "Test attribute",
+        }];
 
         let values = [AttributeValue::String("unchecked_test".to_string())];
 
@@ -341,16 +340,34 @@ mod tests {
 
     #[test]
     fn test_attribute_value_type() {
-        assert_eq!(AttributeValue::String("test".to_string()).value_type(), AttributeValueType::String);
-        assert_eq!(AttributeValue::Int(42).value_type(), AttributeValueType::Int);
-        assert_eq!(AttributeValue::UInt(42).value_type(), AttributeValueType::Int); // UInt treated as Int
-        assert_eq!(AttributeValue::Double(3.14).value_type(), AttributeValueType::Double);
-        assert_eq!(AttributeValue::Boolean(true).value_type(), AttributeValueType::Boolean);
+        assert_eq!(
+            AttributeValue::String("test".to_string()).value_type(),
+            AttributeValueType::String
+        );
+        assert_eq!(
+            AttributeValue::Int(42).value_type(),
+            AttributeValueType::Int
+        );
+        assert_eq!(
+            AttributeValue::UInt(42).value_type(),
+            AttributeValueType::Int
+        ); // UInt treated as Int
+        assert_eq!(
+            AttributeValue::Double(3.14).value_type(),
+            AttributeValueType::Double
+        );
+        assert_eq!(
+            AttributeValue::Boolean(true).value_type(),
+            AttributeValueType::Boolean
+        );
     }
 
     #[test]
     fn test_attribute_value_to_string() {
-        assert_eq!(AttributeValue::String("hello".to_string()).to_string_value(), "hello");
+        assert_eq!(
+            AttributeValue::String("hello".to_string()).to_string_value(),
+            "hello"
+        );
         assert_eq!(AttributeValue::Int(-42).to_string_value(), "-42");
         assert_eq!(AttributeValue::UInt(42).to_string_value(), "42");
         assert_eq!(AttributeValue::Double(3.14).to_string_value(), "3.14");
@@ -393,6 +410,9 @@ mod tests {
         let result: Vec<_> = iter.collect();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "test_key");
-        assert_eq!(*result[0].1, AttributeValue::String("test_value".to_string()));
+        assert_eq!(
+            *result[0].1,
+            AttributeValue::String("test_value".to_string())
+        );
     }
 }

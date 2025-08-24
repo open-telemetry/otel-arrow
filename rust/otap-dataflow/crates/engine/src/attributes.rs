@@ -4,8 +4,8 @@
 //!
 //! Note: At the moment, these attributes are used for metrics aggregation and reporting.
 
-use std::borrow::Cow;
 use otap_df_telemetry_macros::attribute_set;
+use std::borrow::Cow;
 
 /// Resource attributes (host id, process instance id, container id, ...).
 #[attribute_set(name = "resource.attrs")]

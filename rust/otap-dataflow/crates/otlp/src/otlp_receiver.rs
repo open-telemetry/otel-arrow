@@ -24,6 +24,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -34,7 +35,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use otap_df_engine::context::PipelineContext;
 
 /// URN for the OTLP receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
@@ -62,7 +62,9 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTLP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineContext,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTLPReceiver::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -82,7 +84,10 @@ impl OTLPReceiver {
     }
 
     /// Creates a new OTLPReceiver from a configuration object
-    pub fn from_config(_pipeline: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -186,14 +191,14 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
 #[cfg(test)]
 mod tests {
     use crate::grpc::OTLPData;
-    use crate::otlp_receiver::{OTLPReceiver, OTLP_RECEIVER_URN};
+    use crate::otlp_receiver::{OTLP_RECEIVER_URN, OTLPReceiver};
     use crate::proto::opentelemetry::collector::{
-        logs::v1::{logs_service_client::LogsServiceClient, ExportLogsServiceRequest},
-        metrics::v1::{metrics_service_client::MetricsServiceClient, ExportMetricsServiceRequest},
+        logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
         profiles::v1development::{
-            profiles_service_client::ProfilesServiceClient, ExportProfilesServiceRequest,
+            ExportProfilesServiceRequest, profiles_service_client::ProfilesServiceClient,
         },
-        trace::v1::{trace_service_client::TraceServiceClient, ExportTraceServiceRequest},
+        trace::v1::{ExportTraceServiceRequest, trace_service_client::TraceServiceClient},
     };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -202,7 +207,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(

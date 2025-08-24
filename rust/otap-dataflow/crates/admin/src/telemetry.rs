@@ -6,18 +6,18 @@
 //! - /telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
 //! - /telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
-use std::collections::{HashMap, HashSet};
-use std::collections::hash_map::Entry;
-use serde::{Deserialize, Serialize};
+use crate::AppState;
+use axum::Json;
+use axum::extract::{Query, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::registry::{MetricsRegistryHandle, NonZeroMetrics};
-use axum::extract::{Query, State};
-use axum::response::{IntoResponse, Response};
-use axum::http::{header, StatusCode};
-use axum::Json;
 use otap_df_telemetry::semconv::SemConvRegistry;
-use crate::AppState;
+use serde::{Deserialize, Serialize};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// All metric sets.
@@ -52,9 +52,9 @@ struct MetricDataPointWithMetadata {
     value: u64,
 }
 
-/// Compact JSON representation of aggregated metrics (no metadata).
+/// Container of all aggregated metrics (no metadata).
 #[derive(Serialize)]
-struct Metrics {
+struct AllMetrics {
     timestamp: String,
     metric_sets: Vec<MetricSet>,
 }
@@ -66,15 +66,31 @@ struct MetricSet {
     metrics: HashMap<String, u64>,
 }
 
+/// Output format for telemetry endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFormat {
+    Json,
+    JsonCompact,
+    LineProtocol,
+    Prometheus,
+}
+
+impl Default for OutputFormat {
+    fn default() -> Self {
+        OutputFormat::Json
+    }
+}
+
 /// Query parameters for /telemetry/metrics
 #[derive(Debug, Default, Deserialize)]
 pub struct MetricsQuery {
     /// When true, reset metrics after reading. Default: true.
     #[serde(default = "default_true")]
     reset: bool,
-    /// Output format: json (default), line, prometheus
+    /// Output format: json (default), json_compact, line_protocol, prometheus
     #[serde(default)]
-    format: Option<String>,
+    format: Option<OutputFormat>,
 }
 
 /// Query parameters for /telemetry/metrics/aggregate
@@ -86,9 +102,9 @@ pub struct AggregateQuery {
     /// Comma-separated list of attribute names to group by (in addition to metric set name).
     #[serde(default)]
     attrs: Option<String>,
-    /// Output format: json (default), compact, line_protocol, prometheus
+    /// Output format: json (default), json_compact, line_protocol, prometheus
     #[serde(default)]
-    format: Option<String>,
+    format: Option<OutputFormat>,
 }
 
 /// Internal representation of an aggregated group.
@@ -104,7 +120,9 @@ struct AggregateGroup {
 }
 
 #[inline]
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// Handler for the /live-schema endpoint.
 ///
@@ -128,11 +146,11 @@ pub async fn get_metrics(
     let now = chrono::Utc::now();
     let timestamp = now.to_rfc3339();
 
-    // Normalize format string
-    let fmt = q.format.as_deref().unwrap_or("json").to_ascii_lowercase();
+    // Resolve format (default json)
+    let fmt = q.format.unwrap_or_default();
 
-    match fmt.as_str() {
-        "json" => {
+    match fmt {
+        OutputFormat::Json => {
             // Snapshot with optional reset
             let metric_sets = if q.reset {
                 collect_metrics_snapshot_and_reset(&state.metrics_registry)
@@ -147,27 +165,33 @@ pub async fn get_metrics(
 
             Ok(Json(response).into_response())
         }
-        "json_compact" => {
+        OutputFormat::JsonCompact => {
             let metric_sets = if q.reset {
                 collect_compact_snapshot_and_reset(&state.metrics_registry)
             } else {
                 collect_compact_snapshot(&state.metrics_registry)
             };
 
-            let response = Metrics { timestamp, metric_sets };
+            let response = AllMetrics {
+                timestamp,
+                metric_sets,
+            };
             Ok(Json(response).into_response())
         }
-        "line_protocol" => {
+        OutputFormat::LineProtocol => {
             let body = if q.reset {
                 format_line_protocol(&state.metrics_registry, true, Some(now.timestamp_millis()))
             } else {
                 format_line_protocol(&state.metrics_registry, false, Some(now.timestamp_millis()))
             };
             let mut resp = body.into_response();
-            let _ = resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain; charset=utf-8"));
+            let _ = resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
             Ok(resp)
         }
-        "prometheus" => {
+        OutputFormat::Prometheus => {
             let body = if q.reset {
                 format_prometheus_text(&state.metrics_registry, true, Some(now.timestamp_millis()))
             } else {
@@ -175,10 +199,12 @@ pub async fn get_metrics(
             };
             let mut resp = body.into_response();
             // Prometheus text exposition format 0.0.4
-            let _ = resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"));
+            let _ = resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+            );
             Ok(resp)
         }
-        _ => Err(StatusCode::BAD_REQUEST),
     }
 }
 
@@ -210,37 +236,42 @@ pub async fn get_metrics_aggregate(
     // Aggregate groups with or without reset
     let groups = aggregate_metric_groups(&state.metrics_registry, q.reset, &group_attrs);
 
-    // Normalize format string
-    let fmt = q.format.as_deref().unwrap_or("json").to_ascii_lowercase();
+    // Resolve format (default json)
+    let fmt = q.format.unwrap_or_default();
 
-    match fmt.as_str() {
-        "json" => {
+    match fmt {
+        OutputFormat::Json => {
             let response = MetricsWithMetadata {
                 timestamp,
                 metric_sets: groups_with_metadata(&groups),
             };
             Ok(Json(response).into_response())
         }
-        "json_compact" => {
-            let response = Metrics {
+        OutputFormat::JsonCompact => {
+            let response = AllMetrics {
                 timestamp,
                 metric_sets: groups_without_metadata(&groups),
             };
             Ok(Json(response).into_response())
         }
-        "line_protocol" => {
+        OutputFormat::LineProtocol => {
             let body = agg_line_protocol_text(&groups, Some(now.timestamp_millis()));
             let mut resp = body.into_response();
-            let _ = resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain; charset=utf-8"));
+            let _ = resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
             Ok(resp)
         }
-        "prometheus" => {
+        OutputFormat::Prometheus => {
             let body = agg_prometheus_text(&groups, Some(now.timestamp_millis()));
             let mut resp = body.into_response();
-            let _ = resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"));
+            let _ = resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+            );
             Ok(resp)
         }
-        _ => Err(StatusCode::BAD_REQUEST),
     }
 }
 
@@ -251,7 +282,14 @@ fn aggregate_metric_groups(
 ) -> Vec<AggregateGroup> {
     // Aggregation map keyed by (set name, sorted list of (attr, Option<val_string>))
     type GroupKey = (String, Vec<(String, Option<String>)>);
-    let mut agg: HashMap<GroupKey, (HashMap<String, AttributeValue>, HashMap<String, u64>, &'static MetricsDescriptor)> = HashMap::new();
+    let mut agg: HashMap<
+        GroupKey,
+        (
+            HashMap<String, AttributeValue>,
+            HashMap<String, u64>,
+            &'static MetricsDescriptor,
+        ),
+    > = HashMap::new();
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
@@ -374,7 +412,9 @@ fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
 
 fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
     let mut out = String::new();
-    let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
+    let ts_suffix = timestamp_millis
+        .map(|ms| format!(" {}", ms))
+        .unwrap_or_default();
 
     for g in groups {
         let measurement = escape_lp_measurement(&g.name);
@@ -391,7 +431,11 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
         let mut fields = String::new();
         let mut first = true;
         for (fname, val) in &g.metrics {
-            if first { first = false; } else { fields.push(','); }
+            if first {
+                first = false;
+            } else {
+                fields.push(',');
+            }
             let _ = write!(&mut fields, "{}={}i", escape_lp_field_key(fname), val);
         }
         if !fields.is_empty() {
@@ -404,20 +448,28 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
 
 fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
     let mut out = String::new();
-    let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
+    let ts_suffix = timestamp_millis
+        .map(|ms| format!(" {}", ms))
+        .unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
 
     for g in groups {
         // Base labels include set name and selected attributes
         let mut base_labels = String::new();
         if !g.name.is_empty() {
-            let _ = write!(&mut base_labels, "set=\"{}\"", escape_prom_label_value(&g.name));
+            let _ = write!(
+                &mut base_labels,
+                "set=\"{}\"",
+                escape_prom_label_value(&g.name)
+            );
         }
         // ensure deterministic order of attributes in output
         let mut attrs: Vec<(&String, &AttributeValue)> = g.attributes.iter().collect();
         attrs.sort_by(|a, b| a.0.cmp(b.0));
         for (k, v) in attrs {
-            if !base_labels.is_empty() { base_labels.push(','); }
+            if !base_labels.is_empty() {
+                base_labels.push(',');
+            }
             let _ = write!(
                 &mut base_labels,
                 "{}=\"{}\"",
@@ -432,7 +484,12 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                 let metric_name = sanitize_prom_metric_name(field.name);
                 if seen.insert(metric_name.clone()) {
                     if !field.brief.is_empty() {
-                        let _ = writeln!(&mut out, "# HELP {} {}", metric_name, escape_prom_help(field.brief));
+                        let _ = writeln!(
+                            &mut out,
+                            "# HELP {} {}",
+                            metric_name,
+                            escape_prom_help(field.brief)
+                        );
                     }
                     let prom_type = match field.instrument {
                         Instrument::Counter => "counter",
@@ -445,7 +502,11 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                 if base_labels.is_empty() {
                     let _ = writeln!(&mut out, "{} {}{}", metric_name, value, ts_suffix);
                 } else {
-                    let _ = writeln!(&mut out, "{}{{{}}} {}{}", metric_name, base_labels, value, ts_suffix);
+                    let _ = writeln!(
+                        &mut out,
+                        "{}{{{}}} {}{}",
+                        metric_name, base_labels, value, ts_suffix
+                    );
                 }
             }
         }
@@ -488,7 +549,9 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWi
 }
 
 /// Collects a snapshot of current metrics and resets them afterwards.
-fn collect_metrics_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<MetricSetWithMetadata> {
+fn collect_metrics_snapshot_and_reset(
+    registry: &MetricsRegistryHandle,
+) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
     registry.visit_non_zero_metrics_and_reset(|descriptor, attributes, metrics_iter| {
@@ -580,13 +643,19 @@ fn format_line_protocol(
     timestamp_millis: Option<i64>,
 ) -> String {
     let mut out = String::new();
-    let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
+    let ts_suffix = timestamp_millis
+        .map(|ms| format!(" {}", ms))
+        .unwrap_or_default();
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
                      metrics_iter: NonZeroMetrics<'_>| {
         // Measurement is the metric set name when available; fallback to "metrics".
-        let measurement_name = if descriptor.name.is_empty() { "metrics" } else { descriptor.name };
+        let measurement_name = if descriptor.name.is_empty() {
+            "metrics"
+        } else {
+            descriptor.name
+        };
         let measurement = escape_lp_measurement(measurement_name);
 
         // Tags from attributes only.
@@ -604,7 +673,11 @@ fn format_line_protocol(
         let mut fields = String::new();
         let mut first = true;
         for (field, value) in metrics_iter {
-            if first { first = false; } else { fields.push(','); }
+            if first {
+                first = false;
+            } else {
+                fields.push(',');
+            }
             let _ = write!(
                 &mut fields,
                 "{}={}i",
@@ -614,14 +687,7 @@ fn format_line_protocol(
         }
 
         if !fields.is_empty() {
-            let _ = writeln!(
-                &mut out,
-                "{}{} {}{}",
-                measurement,
-                tags,
-                fields,
-                ts_suffix
-            );
+            let _ = writeln!(&mut out, "{}{} {}{}", measurement, tags, fields, ts_suffix);
         }
     };
 
@@ -640,7 +706,9 @@ fn format_prometheus_text(
     timestamp_millis: Option<i64>,
 ) -> String {
     let mut out = String::new();
-    let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
+    let ts_suffix = timestamp_millis
+        .map(|ms| format!(" {}", ms))
+        .unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
@@ -656,7 +724,9 @@ fn format_prometheus_text(
             );
         }
         for (key, value) in attributes.iter_attributes() {
-            if !base_labels.is_empty() { base_labels.push(','); }
+            if !base_labels.is_empty() {
+                base_labels.push(',');
+            }
             let _ = write!(
                 &mut base_labels,
                 "{}=\"{}\"",
@@ -671,7 +741,12 @@ fn format_prometheus_text(
             // HELP/TYPE once per metric name
             if seen.insert(metric_name.clone()) {
                 if !field.brief.is_empty() {
-                    let _ = writeln!(&mut out, "# HELP {} {}", metric_name, escape_prom_help(field.brief));
+                    let _ = writeln!(
+                        &mut out,
+                        "# HELP {} {}",
+                        metric_name,
+                        escape_prom_help(field.brief)
+                    );
                 }
                 let prom_type = match field.instrument {
                     Instrument::Counter => "counter",
@@ -685,7 +760,11 @@ fn format_prometheus_text(
             if base_labels.is_empty() {
                 let _ = writeln!(&mut out, "{} {}{}", metric_name, value, ts_suffix);
             } else {
-                let _ = writeln!(&mut out, "{}{{{}}} {}{}", metric_name, base_labels, value, ts_suffix);
+                let _ = writeln!(
+                    &mut out,
+                    "{}{{{}}} {}{}",
+                    metric_name, base_labels, value, ts_suffix
+                );
             }
         }
     };
@@ -704,11 +783,15 @@ fn escape_lp_measurement(s: &str) -> String {
 }
 
 fn escape_lp_tag_key(s: &str) -> String {
-    s.replace(',', "\\,").replace(' ', "\\ ").replace('=', "\\=")
+    s.replace(',', "\\,")
+        .replace(' ', "\\ ")
+        .replace('=', "\\=")
 }
 
 fn escape_lp_tag_value(s: &str) -> String {
-    s.replace(',', "\\,").replace(' ', "\\ ").replace('=', "\\=")
+    s.replace(',', "\\,")
+        .replace(' ', "\\ ")
+        .replace('=', "\\=")
 }
 
 fn escape_lp_field_key(s: &str) -> String {
@@ -734,7 +817,11 @@ fn sanitize_prom_metric_name(s: &str) -> String {
             out.push('_');
         }
     }
-    if out.is_empty() { "metric".to_string() } else { out }
+    if out.is_empty() {
+        "metric".to_string()
+    } else {
+        out
+    }
 }
 
 fn sanitize_prom_label_key(s: &str) -> String {
@@ -755,16 +842,29 @@ fn sanitize_prom_label_key(s: &str) -> String {
             out.push('_');
         }
     }
-    if out.is_empty() { "label".to_string() } else { out }
+    if out.is_empty() {
+        "label".to_string()
+    } else {
+        out
+    }
 }
 
 fn escape_prom_label_value(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
-            '\\' => { out.push('\\'); out.push('\\'); }
-            '"' => { out.push('\\'); out.push('"'); }
-            '\n' => { out.push('\\'); out.push('n'); }
+            '\\' => {
+                out.push('\\');
+                out.push('\\');
+            }
+            '"' => {
+                out.push('\\');
+                out.push('"');
+            }
+            '\n' => {
+                out.push('\\');
+                out.push('n');
+            }
             _ => out.push(ch),
         }
     }

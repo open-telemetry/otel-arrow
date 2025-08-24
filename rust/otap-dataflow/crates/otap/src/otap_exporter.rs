@@ -15,6 +15,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -28,7 +29,6 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use otap_df_engine::context::PipelineContext;
 
 /// The URN for the OTAP exporter
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
@@ -47,7 +47,9 @@ pub struct OTAPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
-    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTAPExporter::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -68,7 +70,10 @@ impl OTAPExporter {
     }
 
     /// Creates a new OTAPExporter from a configuration object
-    pub fn from_config(_pipeline_handle: PipelineContext, _config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline_handle: PipelineContext,
+        _config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         // ToDo: implement config parsing
         Ok(OTAPExporter {
             grpc_endpoint: "127.0.0.1:4317".to_owned(),
@@ -195,8 +200,8 @@ mod tests {
 
     use crate::grpc::OtapArrowBytes;
     use crate::mock::{
-        create_batch_arrow_record, ArrowLogsServiceMock, ArrowMetricsServiceMock,
-        ArrowTracesServiceMock,
+        ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock,
+        create_batch_arrow_record,
     };
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
@@ -208,15 +213,15 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-        arrow_logs_service_server::ArrowLogsServiceServer, arrow_metrics_service_server::ArrowMetricsServiceServer,
+        ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
+        arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
-        ArrowPayloadType,
     };
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 

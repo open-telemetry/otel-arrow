@@ -16,6 +16,8 @@
 //! - TODO: Monitoring
 //! - TODO: Support pipeline groups
 
+use crate::thread_task::spawn_thread_local_task;
+use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::{
     PipelineGroupId, PipelineId, pipeline::PipelineConfig, pipeline_group::Quota,
 };
@@ -24,8 +26,6 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
-use otap_df_config::engine::HttpAdminSettings;
-use crate::thread_task::spawn_thread_local_task;
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -66,19 +66,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the admin HTTP server
         let metrics_registry = metrics_system.registry();
-        let admin_server_handle = spawn_thread_local_task(
-            "http-admin",
-            move |shutdown_rx| otap_df_admin::run(http_settings, metrics_registry, shutdown_rx),
-        )?;
+        let admin_server_handle =
+            spawn_thread_local_task("http-admin", move |cancellation_token| {
+                otap_df_admin::run(http_settings, metrics_registry, cancellation_token)
+            })?;
 
         // Start the metrics aggregation
-        let metrics_agg_handle = spawn_thread_local_task("metrics-aggregator", move |shutdown_rx| metrics_system.run(shutdown_rx))?;
+        let metrics_agg_handle =
+            spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
+                metrics_system.run(cancellation_token)
+            })?;
 
         // Get available CPU cores for pinning
         let all_core_ids =
-            core_affinity::get_core_ids().ok_or_else(|| error::Error::InternalError {
-                message: "Failed to get available CPU cores".to_owned(),
-            })?;
+            core_affinity::get_core_ids().ok_or_else(|| error::Error::CoreDetectionUnavailable)?;
 
         // Determine the number of CPU cores available and requested
         // If quota.num_cores is 0, use all available cores
@@ -109,8 +110,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             );
             let metrics_reporter = metrics_reporter.clone();
 
+            let thread_name = format!("pipeline-core-{}", core_id.id);
             let handle = thread::Builder::new()
-                .name(format!("pipeline-core-{}", core_id.id))
+                .name(thread_name.clone())
                 .spawn(move || {
                     Self::run_pipeline_thread(
                         core_id,
@@ -120,8 +122,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         metrics_reporter,
                     )
                 })
-                .map_err(|e| error::Error::InternalError {
-                    message: format!("Failed to spawn thread {thread_id}: {e}"),
+                .map_err(|e| error::Error::ThreadSpawnError {
+                    thread_name: thread_name.clone(),
+                    source: e,
                 })?;
 
             threads.push(handle);
@@ -141,10 +144,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 }
                 Err(e) => {
                     // Thread join failed, handle the error
-                    return Err(error::Error::InternalError {
-                        message: format!(
-                            "Failed to join thread pipeline-core-{thread_id:?}: {e:?}"
-                        ),
+                    return Err(error::Error::ThreadPanic {
+                        thread_id,
+                        panic_message: format!("{e:?}"),
                     });
                 }
             }

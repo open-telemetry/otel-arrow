@@ -24,7 +24,9 @@ pub mod processor;
 pub mod receiver;
 pub mod retry_processor;
 
+mod attributes;
 pub mod config;
+pub mod context;
 pub mod control;
 mod effect_handler;
 pub mod local;
@@ -33,15 +35,13 @@ pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
-pub mod context;
-mod attributes;
 
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::Receiver;
 use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
-pub use linkme::distributed_slice;
 use context::PipelineContext;
+pub use linkme::distributed_slice;
 use node::Node;
 use otap_df_config::node::{DispatchStrategy, NodeUserConfig};
 use otap_df_config::{NodeId, PortName};
@@ -258,15 +258,24 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         for (node_id, node_config) in config.node_iter() {
             let pipeline_ctx = pipeline_ctx.with_node_context(node_id.clone(), node_config.kind);
             match node_config.kind {
-                otap_df_config::node::NodeKind::Receiver => {
-                    self.create_receiver(pipeline_ctx, &mut receivers, node_id.clone(), node_config.clone())?
-                }
-                otap_df_config::node::NodeKind::Processor => {
-                    self.create_processor(pipeline_ctx, &mut processors, node_id.clone(), node_config.clone())?
-                }
-                otap_df_config::node::NodeKind::Exporter => {
-                    self.create_exporter(pipeline_ctx, &mut exporters, node_id.clone(), node_config.clone())?
-                }
+                otap_df_config::node::NodeKind::Receiver => self.create_receiver(
+                    pipeline_ctx,
+                    &mut receivers,
+                    node_id.clone(),
+                    node_config.clone(),
+                )?,
+                otap_df_config::node::NodeKind::Processor => self.create_processor(
+                    pipeline_ctx,
+                    &mut processors,
+                    node_id.clone(),
+                    node_config.clone(),
+                )?,
+                otap_df_config::node::NodeKind::Exporter => self.create_exporter(
+                    pipeline_ctx,
+                    &mut exporters,
+                    node_id.clone(),
+                    node_config.clone(),
+                )?,
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     return Err(Error::UnsupportedNodeKind {
@@ -451,7 +460,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let prev_node = receivers.insert(
             receiver_id.clone(),
-            create(pipeline_ctx, node_config, &runtime_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(pipeline_ctx, node_config, &runtime_config)
+                .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ReceiverAlreadyExists {
@@ -508,7 +518,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let create = factory.create;
         let prev_node = nodes.insert(
             exporter_id.clone(),
-            create(pipeline_ctx, node_config, &exporter_config).map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(pipeline_ctx, node_config, &exporter_config)
+                .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         if prev_node.is_some() {
             return Err(Error::ExporterAlreadyExists {

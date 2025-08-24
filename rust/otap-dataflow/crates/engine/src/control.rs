@@ -8,8 +8,8 @@ use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::error::SendError;
 use otap_df_config::NodeId;
-use std::time::Duration;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
@@ -58,7 +58,7 @@ pub enum NodeControlMsg {
     /// fine-grained scheduling of telemetry without conflating it with other periodic tasks.
     CollectTelemetry {
         /// Metrics reporter used to collect telemetry metrics.
-        metrics_reporter: MetricsReporter
+        metrics_reporter: MetricsReporter,
     },
 
     /// Requests a graceful shutdown, requiring the node to finish processing messages and

@@ -2,11 +2,11 @@
 
 //! Task periodically collecting the metrics emitted by the engine and the pipelines.
 
+use crate::config::Config;
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
 use crate::registry::MetricsRegistryHandle;
 use crate::reporter::MetricsReporter;
-use crate::config::Config;
 
 /// Metrics collector.
 ///
@@ -25,7 +25,8 @@ pub struct MetricsCollector {
 impl MetricsCollector {
     /// Creates a new `MetricsCollector` with a pipeline.
     pub(crate) fn new(config: Config, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
-        let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
+        let (metrics_sender, metrics_receiver) =
+            flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
 
         (
             Self {
@@ -43,7 +44,8 @@ impl MetricsCollector {
         loop {
             match self.metrics_receiver.recv_async().await {
                 Ok(metrics) => {
-                    self.registry.accumulate_snapshot(metrics.key, &metrics.metrics);
+                    self.registry
+                        .accumulate_snapshot(metrics.key, &metrics.metrics);
                 }
                 Err(_) => {
                     // Channel closed, exit the loop
@@ -57,10 +59,13 @@ impl MetricsCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::MetricsKey;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
-    use crate::descriptor::{MetricsDescriptor, MetricsField, AttributesDescriptor, AttributeField, AttributeValueType, Instrument};
+    use crate::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsDescriptor,
+        MetricsField,
+    };
     use crate::metrics::MetricSetHandler;
+    use crate::registry::MetricsKey;
     use std::fmt::Debug;
     use std::time::Duration;
 
@@ -78,27 +83,51 @@ mod tests {
     }
 
     impl Default for MockMetricSet {
-        fn default() -> Self { Self::new() }
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     static MOCK_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
         metrics: &[
-            MetricsField { name: "counter1", unit: "1", brief: "Test counter 1", instrument: Instrument::Counter },
-            MetricsField { name: "counter2", unit: "1", brief: "Test counter 2", instrument: Instrument::Counter },
+            MetricsField {
+                name: "counter1",
+                unit: "1",
+                brief: "Test counter 1",
+                instrument: Instrument::Counter,
+            },
+            MetricsField {
+                name: "counter2",
+                unit: "1",
+                brief: "Test counter 2",
+                instrument: Instrument::Counter,
+            },
         ],
     };
 
     static MOCK_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
         name: "test_attributes",
-        fields: &[AttributeField { key: "test_key", r#type: AttributeValueType::String, brief: "Test attribute" }],
+        fields: &[AttributeField {
+            key: "test_key",
+            r#type: AttributeValueType::String,
+            brief: "Test attribute",
+        }],
     };
 
     impl MetricSetHandler for MockMetricSet {
-        fn descriptor(&self) -> &'static MetricsDescriptor { &MOCK_METRICS_DESCRIPTOR }
-        fn snapshot_values(&self) -> Vec<u64> { self.values.clone() }
-        fn clear_values(&mut self) { self.values.iter_mut().for_each(|v| *v = 0); }
-        fn needs_flush(&self) -> bool { self.values.iter().any(|&v| v != 0) }
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &MOCK_METRICS_DESCRIPTOR
+        }
+        fn snapshot_values(&self) -> Vec<u64> {
+            self.values.clone()
+        }
+        fn clear_values(&mut self) {
+            self.values.iter_mut().for_each(|v| *v = 0);
+        }
+        fn needs_flush(&self) -> bool {
+            self.values.iter().any(|&v| v != 0)
+        }
     }
 
     #[derive(Debug)]
@@ -110,28 +139,46 @@ mod tests {
     impl MockAttributeSet {
         fn new(value: impl Into<String>) -> Self {
             let v = value.into();
-            Self { value: v.clone(), attribute_values: vec![AttributeValue::String(v)] }
+            Self {
+                value: v.clone(),
+                attribute_values: vec![AttributeValue::String(v)],
+            }
         }
     }
 
     impl AttributeSetHandler for MockAttributeSet {
-        fn descriptor(&self) -> &'static AttributesDescriptor { &MOCK_ATTRIBUTES_DESCRIPTOR }
-        fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
-            crate::attributes::AttributeIterator::new(&MOCK_ATTRIBUTES_DESCRIPTOR.fields, &self.attribute_values)
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &MOCK_ATTRIBUTES_DESCRIPTOR
         }
-        fn attribute_values(&self) -> &[AttributeValue] { &self.attribute_values }
+        fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
+            crate::attributes::AttributeIterator::new(
+                &MOCK_ATTRIBUTES_DESCRIPTOR.fields,
+                &self.attribute_values,
+            )
+        }
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.attribute_values
+        }
     }
 
     fn create_test_config(_flush_interval_ms: u64) -> Config {
         // Flush interval is irrelevant when no pipeline is configured; keep field for completeness.
-        Config { reporting_channel_size: 10, flush_interval: Duration::from_millis(_flush_interval_ms) }
+        Config {
+            reporting_channel_size: 10,
+            flush_interval: Duration::from_millis(_flush_interval_ms),
+        }
     }
 
     fn create_test_snapshot(key: MetricsKey, values: Vec<u64>) -> MetricSetSnapshot {
-        MetricSetSnapshot { key, metrics: values }
+        MetricSetSnapshot {
+            key,
+            metrics: values,
+        }
     }
 
-    fn create_test_registry() -> MetricsRegistryHandle { MetricsRegistryHandle::new() }
+    fn create_test_registry() -> MetricsRegistryHandle {
+        MetricsRegistryHandle::new()
+    }
 
     // --- Tests without any pipeline, asserting on the registry state ---
 
@@ -152,7 +199,8 @@ mod tests {
         let registry = create_test_registry();
 
         // Register a metric set to get a valid key
-        let metric_set: crate::metrics::MetricSet<MockMetricSet> = registry.register(MockAttributeSet::new("attr"));
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
         let (collector, reporter) = MetricsCollector::new(config, registry.clone());
@@ -160,8 +208,14 @@ mod tests {
         let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
         // Send two snapshots that should be accumulated: [10,20] + [5,15] => [15,35]
-        reporter.report_snapshot(create_test_snapshot(key, vec![10, 20])).await.unwrap();
-        reporter.report_snapshot(create_test_snapshot(key, vec![5, 15])).await.unwrap();
+        reporter
+            .report_snapshot(create_test_snapshot(key, vec![10, 20]))
+            .await
+            .unwrap();
+        reporter
+            .report_snapshot(create_test_snapshot(key, vec![5, 15]))
+            .await
+            .unwrap();
 
         // Give the collector a brief moment to process
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -169,7 +223,9 @@ mod tests {
         // Inspect current metrics without resetting
         let mut collected = Vec::new();
         registry.visit_current_metrics(|_desc, _attrs, iter| {
-            for (field, value) in iter { collected.push((field.name, value)); }
+            for (field, value) in iter {
+                collected.push((field.name, value));
+            }
         });
 
         assert_eq!(collected.len(), 2);
@@ -188,25 +244,33 @@ mod tests {
     async fn test_visit_non_zero_then_reset_via_registry_api() {
         let config = create_test_config(10);
         let registry = create_test_registry();
-        let metric_set: crate::metrics::MetricSet<MockMetricSet> = registry.register(MockAttributeSet::new("attr"));
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
         let (collector, reporter) = MetricsCollector::new(config, registry.clone());
         let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
-        reporter.report_snapshot(create_test_snapshot(key, vec![7, 0])).await.unwrap();
+        reporter
+            .report_snapshot(create_test_snapshot(key, vec![7, 0]))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         // First visit should see the non-zero and then reset
         let mut first = Vec::new();
         registry.visit_non_zero_metrics_and_reset(|_d, _a, iter| {
-            for (f, v) in iter { first.push((f.name, v)); }
+            for (f, v) in iter {
+                first.push((f.name, v));
+            }
         });
         assert_eq!(first, vec![("counter1", 7)]);
 
         // Second visit should see nothing
         let mut count = 0;
-        registry.visit_non_zero_metrics_and_reset(|_, _, _| { count += 1; });
+        registry.visit_non_zero_metrics_and_reset(|_, _, _| {
+            count += 1;
+        });
         assert_eq!(count, 0);
 
         drop(reporter);

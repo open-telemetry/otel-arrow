@@ -10,6 +10,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -24,7 +25,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use otap_df_engine::context::PipelineContext;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn::otel::otlp::receiver";
@@ -48,7 +48,9 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |pipeline: PipelineContext, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineContext,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
             OTLPReceiver::from_config(pipeline, &node_config.config)?,
             node_config,
@@ -59,7 +61,10 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 
 impl OTLPReceiver {
     /// Creates a new OTLPReceiver from a configuration object
-    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -93,7 +98,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<(), Error<OtapPdata>> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
-    let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+        let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
 
         loop {

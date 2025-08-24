@@ -14,10 +14,10 @@ use crate::control::{NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver
 use crate::error::Error;
 use crate::message::Sender;
 use otap_df_config::NodeId;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use tokio::time::Instant;
-use otap_df_telemetry::reporter::MetricsReporter;
 
 /// Manages pipeline control messages such as recurrent and cancelable timers.
 ///
@@ -75,7 +75,9 @@ impl TimerSet {
     /// Reschedules recurring timers automatically when still active.
     fn fire_due<F: FnMut(&NodeId)>(&mut self, now: Instant, mut on_fire: F) {
         while let Some(Reverse((when, node_id))) = self.timers.peek().cloned() {
-            if when > now { break; }
+            if when > now {
+                break;
+            }
             // Pop the entry and validate it.
             let _ = self.timers.pop();
             if self.canceled.contains(&node_id) {
@@ -115,7 +117,7 @@ pub struct PipelineCtrlMsgManager {
     /// Repeating timers for telemetry collection (CollectTelemetry).
     telemetry_timers: TimerSet,
     /// Global metrics reporter.
-    metrics_reporter: MetricsReporter
+    metrics_reporter: MetricsReporter,
 }
 
 impl PipelineCtrlMsgManager {
@@ -124,14 +126,14 @@ impl PipelineCtrlMsgManager {
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
         control_senders: HashMap<NodeId, Sender<NodeControlMsg>>,
-        metrics_reporter: MetricsReporter
+        metrics_reporter: MetricsReporter,
     ) -> Self {
         Self {
             pipeline_ctrl_msg_receiver,
             control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
-            metrics_reporter
+            metrics_reporter,
         }
     }
 
@@ -767,19 +769,29 @@ mod tests {
         let (manager, _pipeline_tx, _control_receivers) = setup_test_manager();
 
         // Verify manager is created with correct initial state
-    let (t_len, c_len, m_len, d_len) = manager.test_tick_counts();
-    assert_eq!(t_len, 0, "Tick timer queue should be empty initially");
-    assert_eq!(c_len, 0, "Tick canceled set should be empty initially");
-    assert_eq!(m_len, 0, "Tick timer map should be empty initially");
-    assert_eq!(d_len, 0, "Tick durations map should be empty initially");
+        let (t_len, c_len, m_len, d_len) = manager.test_tick_counts();
+        assert_eq!(t_len, 0, "Tick timer queue should be empty initially");
+        assert_eq!(c_len, 0, "Tick canceled set should be empty initially");
+        assert_eq!(m_len, 0, "Tick timer map should be empty initially");
+        assert_eq!(d_len, 0, "Tick durations map should be empty initially");
 
-    let (tt_len, tc_len, tm_len, td_len) = manager.test_telemetry_counts();
-    assert_eq!(tt_len, 0, "Telemetry timer queue should be empty initially");
-    assert_eq!(tc_len, 0, "Telemetry canceled set should be empty initially");
-    assert_eq!(tm_len, 0, "Telemetry timer map should be empty initially");
-    assert_eq!(td_len, 0, "Telemetry durations map should be empty initially");
+        let (tt_len, tc_len, tm_len, td_len) = manager.test_telemetry_counts();
+        assert_eq!(tt_len, 0, "Telemetry timer queue should be empty initially");
+        assert_eq!(
+            tc_len, 0,
+            "Telemetry canceled set should be empty initially"
+        );
+        assert_eq!(tm_len, 0, "Telemetry timer map should be empty initially");
+        assert_eq!(
+            td_len, 0,
+            "Telemetry durations map should be empty initially"
+        );
 
-    assert_eq!(manager.test_control_senders_len(), 3, "Should have 3 mock control senders");
+        assert_eq!(
+            manager.test_control_senders_len(),
+            3,
+            "Should have 3 mock control senders"
+        );
     }
 
     /// Validates the internal timer priority queue data structure:
@@ -802,15 +814,19 @@ mod tests {
         let when3 = now + Duration::from_millis(200); // Middle
 
         // Add timers in non-chronological order to test heap behavior
-    manager.test_push_tick_heap(when1, node1.clone());
-    manager.test_push_tick_heap(when2, node2.clone());
-    manager.test_push_tick_heap(when3, node3.clone());
+        manager.test_push_tick_heap(when1, node1.clone());
+        manager.test_push_tick_heap(when2, node2.clone());
+        manager.test_push_tick_heap(when3, node3.clone());
 
         // Verify heap maintains correct size
-    assert_eq!(manager.test_tick_heap_len(), 3, "All timers should be in the heap");
+        assert_eq!(
+            manager.test_tick_heap_len(),
+            3,
+            "All timers should be in the heap"
+        );
 
         // Pop timers and verify they come out in chronological order (min-heap behavior)
-    if let Some((first_when, first_node)) = manager.test_pop_tick_heap() {
+        if let Some((first_when, first_node)) = manager.test_pop_tick_heap() {
             assert_eq!(first_when, when2, "Earliest timer should be popped first");
             assert_eq!(
                 first_node, node2,
@@ -818,7 +834,7 @@ mod tests {
             );
         }
 
-    if let Some((second_when, second_node)) = manager.test_pop_tick_heap() {
+        if let Some((second_when, second_node)) = manager.test_pop_tick_heap() {
             assert_eq!(second_when, when3, "Middle timer should be popped second");
             assert_eq!(
                 second_node, node3,
@@ -826,7 +842,7 @@ mod tests {
             );
         }
 
-    if let Some((third_when, third_node)) = manager.test_pop_tick_heap() {
+        if let Some((third_when, third_node)) = manager.test_pop_tick_heap() {
             assert_eq!(third_when, when1, "Latest timer should be popped last");
             assert_eq!(
                 third_node, node1,

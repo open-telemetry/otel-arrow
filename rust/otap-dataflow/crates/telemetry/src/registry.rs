@@ -11,7 +11,7 @@ use crate::descriptor::MetricsField;
 use crate::metrics::{MetricSet, MetricSetHandler};
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{SlotMap, new_key_type};
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -80,7 +80,12 @@ impl<'a> NonZeroMetrics<'a> {
             len,
             "descriptor.fields and metric values length must match"
         );
-        Self { fields, values, idx: 0, len }
+        Self {
+            fields,
+            values,
+            idx: 0,
+            len,
+        }
     }
 }
 
@@ -193,7 +198,7 @@ impl MetricsRegistry {
             metrics.snapshot_values(),
             Box::new(static_attrs),
         ));
-        
+
         MetricSet {
             key: metrics_key,
             metrics,
@@ -234,11 +239,8 @@ impl MetricsRegistry {
     /// of (MetricsField, value), then resets the values to zero.
     pub(crate) fn visit_non_zero_metrics_and_reset<F>(&mut self, mut f: F)
     where
-            for<'a> F: FnMut(
-        &'static MetricsDescriptor,
-        &'a dyn AttributeSetHandler,
-        NonZeroMetrics<'a>,
-    ),
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, NonZeroMetrics<'a>),
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
@@ -320,11 +322,8 @@ impl MetricsRegistryHandle {
     /// of (MetricsField, value), then resets the values to zero.
     pub fn visit_non_zero_metrics_and_reset<F>(&self, f: F)
     where
-            for<'a> F: FnMut(
-        &'static MetricsDescriptor,
-        &'a dyn AttributeSetHandler,
-        NonZeroMetrics<'a>,
-    ),
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, NonZeroMetrics<'a>),
     {
         let mut reg = self.metric_registry.lock();
         reg.visit_non_zero_metrics_and_reset(f);
@@ -340,11 +339,8 @@ impl MetricsRegistryHandle {
     /// This is useful for read-only access to metrics for HTTP endpoints.
     pub fn visit_current_metrics<F>(&self, mut f: F)
     where
-        for<'a> F: FnMut(
-            &'static MetricsDescriptor,
-            &'a dyn AttributeSetHandler,
-            NonZeroMetrics<'a>,
-        ),
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, NonZeroMetrics<'a>),
     {
         let reg = self.metric_registry.lock();
         for entry in reg.metrics.values() {
@@ -362,8 +358,8 @@ impl MetricsRegistryHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{AttributesDescriptor, AttributeField, AttributeValueType, Instrument};
     use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor, Instrument};
     use std::fmt::Debug;
 
     // Mock implementations for testing
@@ -441,7 +437,10 @@ mod tests {
     impl MockAttributeSet {
         fn new(value: String) -> Self {
             let attribute_values = vec![AttributeValue::String(value.clone())];
-            Self { value, attribute_values }
+            Self {
+                value,
+                attribute_values,
+            }
         }
     }
 
@@ -453,7 +452,7 @@ mod tests {
         fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
             crate::attributes::AttributeIterator::new(
                 &MOCK_ATTRIBUTES_DESCRIPTOR.fields,
-                &self.attribute_values
+                &self.attribute_values,
             )
         }
 
@@ -644,14 +643,12 @@ mod tests {
 
     #[test]
     fn test_non_zero_metrics_iterator_size_hint() {
-        let fields = &[
-            MetricsField {
-                name: "metric1",
-                unit: "1",
-                brief: "Test metric 1",
-                instrument: Instrument::Counter,
-            },
-        ];
+        let fields = &[MetricsField {
+            name: "metric1",
+            unit: "1",
+            brief: "Test metric 1",
+            instrument: Instrument::Counter,
+        }];
 
         let values = [10];
         let iter = NonZeroMetrics::new(fields, &values);
@@ -663,14 +660,12 @@ mod tests {
 
     #[test]
     fn test_non_zero_metrics_iterator_fused() {
-        let fields = &[
-            MetricsField {
-                name: "metric1",
-                unit: "1",
-                brief: "Test metric 1",
-                instrument: Instrument::Counter,
-            },
-        ];
+        let fields = &[MetricsField {
+            name: "metric1",
+            unit: "1",
+            brief: "Test metric 1",
+            instrument: Instrument::Counter,
+        }];
 
         let values = [10];
         let mut iter = NonZeroMetrics::new(fields, &values);

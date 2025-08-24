@@ -2,19 +2,19 @@
 
 //! Context providing general information on the current controller and the current pipeline.
 
+use crate::attributes::{EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet};
+use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
-use otap_df_telemetry::metrics::{MetricSetHandler, MetricSet};
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
-use otap_df_config::node::NodeKind;
-use crate::attributes::{EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet};
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
 // Choose UUID v7 for better sortability in telemetry signals
+use data_encoding::BASE32_NOPAD;
 use once_cell::sync::Lazy;
 use std::borrow::Cow;
 use uuid::Uuid;
-use data_encoding::BASE32_NOPAD;
 
 static PROCESS_INSTANCE_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
     let uuid = Uuid::now_v7();
@@ -26,19 +26,25 @@ static PROCESS_INSTANCE_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
 fn detect_host_id() -> Option<String> {
     // Priority 1: HOSTNAME env var
     if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.is_empty() { return Some(h); }
+        if !h.is_empty() {
+            return Some(h);
+        }
     }
     // Priority 2: /etc/hostname
     if let Ok(s) = std::fs::read_to_string("/etc/hostname") {
         let h = s.trim().to_string();
-        if !h.is_empty() { return Some(h); }
+        if !h.is_empty() {
+            return Some(h);
+        }
     }
     None
 }
 
 // Best-effort container id detection (Docker/containerd/k8s) from /proc/self/cgroup
 fn detect_container_id() -> Option<String> {
-    let Ok(cg) = std::fs::read_to_string("/proc/self/cgroup") else { return None; };
+    let Ok(cg) = std::fs::read_to_string("/proc/self/cgroup") else {
+        return None;
+    };
     // Look for 64-hex tokens which commonly represent container IDs
     for line in cg.lines() {
         // Format: hierarchy-ID:controller-list:cgroup-path
@@ -47,10 +53,14 @@ fn detect_container_id() -> Option<String> {
             let token = part.trim();
             if token.len() >= 32 && token.len() <= 128 {
                 // Heuristic: mostly hex
-                if token.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == '-' || c == '_' ) {
+                if token
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() || c == '.' || c == '-' || c == '_')
+                {
                     // Pick the longest plausible hex-ish token
                     // Further refine: prefer 64-hex
-                    let hex_only: String = token.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                    let hex_only: String =
+                        token.chars().filter(|c| c.is_ascii_hexdigit()).collect();
                     if hex_only.len() >= 32 {
                         return Some(token.to_string());
                     }
@@ -61,13 +71,11 @@ fn detect_container_id() -> Option<String> {
     None
 }
 
-static HOST_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
-    detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned)
-});
+static HOST_ID: Lazy<Cow<'static, str>> =
+    Lazy::new(|| detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
-static CONTAINER_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
-    detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned)
-});
+static CONTAINER_ID: Lazy<Cow<'static, str>> =
+    Lazy::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
 /// A lightweight/cloneable controller context.
 #[derive(Clone)]
@@ -144,16 +152,20 @@ impl PipelineContext {
 
     /// Registers a new multivariate metrics instance with the metrics registry.
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self
+        &self,
     ) -> MetricSet<T> {
         use crate::attributes::ResourceAttributeSet;
 
-        self.controller_context.metrics_registry_handle.register::<T>(
-            NodeAttributeSet {
+        self.controller_context
+            .metrics_registry_handle
+            .register::<T>(NodeAttributeSet {
                 pipeline_attrs: PipelineAttributeSet {
                     engine_attrs: EngineAttributeSet {
                         resource_attrs: ResourceAttributeSet {
-                            process_instance_id: self.controller_context.process_instance_id.clone(),
+                            process_instance_id: self
+                                .controller_context
+                                .process_instance_id
+                                .clone(),
                             host_id: self.controller_context.host_id.clone(),
                             container_id: self.controller_context.container_id.clone(),
                         },
@@ -164,8 +176,7 @@ impl PipelineContext {
                 },
                 node_id: self.node_id.clone(),
                 node_type: self.node_kind.into(),
-            },
-        )
+            })
     }
 
     /// Returns a metrics registry handle.
