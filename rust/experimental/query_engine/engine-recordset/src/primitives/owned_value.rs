@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 
 use data_engine_expressions::*;
@@ -15,6 +18,7 @@ pub enum OwnedValue {
     Null,
     Regex(RegexValueStorage),
     String(StringValueStorage),
+    TimeSpan(TimeSpanValueStorage),
 }
 
 impl OwnedValue {
@@ -85,6 +89,7 @@ impl AsStaticValue for OwnedValue {
             OwnedValue::Null => StaticValue::Null,
             OwnedValue::Regex(r) => StaticValue::Regex(r),
             OwnedValue::String(s) => StaticValue::String(s),
+            OwnedValue::TimeSpan(t) => StaticValue::TimeSpan(t),
         }
     }
 }
@@ -103,16 +108,7 @@ impl AsStaticValueMut for OwnedValue {
 impl From<Value<'_>> for OwnedValue {
     fn from(value: Value<'_>) -> Self {
         match value {
-            Value::Array(a) => {
-                let mut values = Vec::new();
-
-                a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
-                    values.push(v.into());
-                    true
-                }));
-
-                OwnedValue::Array(ArrayValueStorage::new(values))
-            }
+            Value::Array(a) => OwnedValue::Array(a.into()),
             Value::Boolean(b) => OwnedValue::Boolean(BooleanValueStorage::new(b.get_value())),
             Value::DateTime(d) => OwnedValue::DateTime(DateTimeValueStorage::new(d.get_value())),
             Value::Double(d) => OwnedValue::Double(DoubleValueStorage::new(d.get_value())),
@@ -130,7 +126,21 @@ impl From<Value<'_>> for OwnedValue {
             Value::Null => OwnedValue::Null,
             Value::Regex(r) => OwnedValue::Regex(RegexValueStorage::new(r.get_value().clone())),
             Value::String(s) => OwnedValue::String(StringValueStorage::new(s.get_value().into())),
+            Value::TimeSpan(t) => OwnedValue::TimeSpan(TimeSpanValueStorage::new(t.get_value())),
         }
+    }
+}
+
+impl From<&dyn ArrayValue> for ArrayValueStorage<OwnedValue> {
+    fn from(value: &dyn ArrayValue) -> Self {
+        let mut values = Vec::new();
+
+        value.get_items(&mut IndexValueClosureCallback::new(|_, v| {
+            values.push(v.into());
+            true
+        }));
+
+        ArrayValueStorage::new(values)
     }
 }
 

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -11,7 +14,6 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
 use prost::Message as ProstMessage;
-use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
@@ -147,19 +149,13 @@ pub trait HierarchicalBatchSplit: Sized {
     /// # Returns
     ///
     /// A `Result` containing a vector of batches, or an error if the batch size is zero.
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>>;
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self>;
 }
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
-        if max_batch_size == 0 {
-            return Err(Error::ProcessorError {
-                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportTraceServiceRequest"),
-                error: "max_batch_size must be greater than zero".into(),
-            });
-        }
-        Ok(split_into_batches(self, max_batch_size))
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self> {
+        split_into_batches(self, max_batch_size)
     }
 }
 
@@ -206,14 +202,8 @@ impl ScopeGroup for ScopeMetrics {
 }
 
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
-        if max_batch_size == 0 {
-            return Err(Error::ProcessorError {
-                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportMetricsServiceRequest"),
-                error: "max_batch_size must be greater than zero".into(),
-            });
-        }
-        Ok(split_into_batches(self, max_batch_size))
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self> {
+        split_into_batches(self, max_batch_size)
     }
 }
 
@@ -275,14 +265,8 @@ impl ScopeGroup for ScopeLogs {
 }
 
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
-    fn split_into_batches(self, max_batch_size: usize) -> Result<Vec<Self>, Error<OTLPData>> {
-        if max_batch_size == 0 {
-            return Err(Error::ProcessorError {
-                processor: Cow::Borrowed("HierarchicalBatchSplit::ExportLogsServiceRequest"),
-                error: "max_batch_size must be greater than zero".into(),
-            });
-        }
-        Ok(split_into_batches(self, max_batch_size))
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self> {
+        split_into_batches(self, max_batch_size)
     }
 }
 
@@ -390,6 +374,10 @@ impl GenericBatcher {
     #[must_use]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
+        // ToDo: Validate should check self.config.send_batch_size > 0
+        if config.send_batch_size == 0 {
+            panic!("max_batch_size must be greater than zero");
+        }
         Self {
             traces_pending: None,
             metrics_pending: None,
@@ -583,10 +571,10 @@ impl Processor<OTLPData> for GenericBatcher {
                         }
                         let mut batches = match self.config.sizer {
                             BatchSizer::Requests => {
-                                Ok(req.split_by_requests(self.config.send_batch_size))
+                                req.split_by_requests(self.config.send_batch_size)
                             }
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        }?;
+                        };
                         // The last batch may not be full: buffer it, emit the rest
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
@@ -611,10 +599,10 @@ impl Processor<OTLPData> for GenericBatcher {
                         }
                         let mut batches = match self.config.sizer {
                             BatchSizer::Requests => {
-                                Ok(req.split_by_requests(self.config.send_batch_size))
+                                req.split_by_requests(self.config.send_batch_size)
                             }
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        }?;
+                        };
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler
@@ -637,10 +625,10 @@ impl Processor<OTLPData> for GenericBatcher {
                         }
                         let mut batches = match self.config.sizer {
                             BatchSizer::Requests => {
-                                Ok(req.split_by_requests(self.config.send_batch_size))
+                                req.split_by_requests(self.config.send_batch_size)
                             }
                             _ => req.split_into_batches(self.config.send_batch_size),
-                        }?;
+                        };
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler
@@ -691,12 +679,13 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::control::NodeControlMsg;
+    use otap_df_engine::node::NodeId;
     use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::{processor::TestRuntime, test_node};
     use std::sync::Arc;
 
     /// Wraps a processor in a local test wrapper.
-    fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
+    fn wrap_local<P>(node: NodeId, processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
@@ -704,7 +693,7 @@ mod tests {
             _OTLP_BATCH_PROCESSOR_URN,
         ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, node_config, &config)
+        ProcessorWrapper::local(processor, node, node_config, &config)
     }
 
     #[test]
@@ -715,7 +704,7 @@ mod tests {
             send_batch_size: 2, // force batching
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -832,7 +821,7 @@ mod tests {
             send_batch_size: 1, // force a flush after every log record
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -871,11 +860,14 @@ mod tests {
     #[test]
     fn does_not_emit_empty_trace_batches() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 3,
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            test_node("batch"),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 3,
+                timeout: Duration::from_secs(1),
+            }),
+        );
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -910,7 +902,7 @@ mod tests {
             send_batch_size: 10, // Large, so won't flush by size
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -979,7 +971,7 @@ mod tests {
             send_batch_size: 10, // large, so won't flush by size
             timeout: Duration::from_millis(10),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1020,7 +1012,7 @@ mod tests {
             send_batch_size: 2, // force batching
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1113,7 +1105,7 @@ mod tests {
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1223,7 +1215,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1330,7 +1322,7 @@ mod tests {
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1432,11 +1424,14 @@ mod tests {
     #[test]
     fn handles_empty_input_batch() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 10,
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            test_node("batch"),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 10,
+                timeout: Duration::from_secs(1),
+            }),
+        );
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1462,11 +1457,14 @@ mod tests {
     #[test]
     fn skips_empty_resource_spans() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 3,
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            test_node("batch"),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 3,
+                timeout: Duration::from_secs(1),
+            }),
+        );
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1512,7 +1510,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1569,7 +1567,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1624,7 +1622,7 @@ mod tests {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1679,7 +1677,7 @@ mod tests {
             send_batch_size: 1, // very small, should flush immediately
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1720,7 +1718,7 @@ mod tests {
             send_batch_size: 1, // very small, should flush immediately
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1761,7 +1759,7 @@ mod tests {
             send_batch_size: 1, // very small, should flush immediately
             timeout: Duration::from_secs(60),
         };
-        let wrapper = wrap_local(GenericBatcher::new(config));
+        let wrapper = wrap_local(test_node("batch"), GenericBatcher::new(config));
         runtime
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -1808,13 +1806,15 @@ mod integration_tests {
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::local::processor::Processor;
+    use otap_df_engine::node::NodeId;
     use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::testing::test_node;
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
+    fn wrap_local<P>(node: NodeId, processor: P) -> ProcessorWrapper<OTLPData>
     where
         P: Processor<OTLPData> + 'static,
     {
@@ -1822,7 +1822,7 @@ mod integration_tests {
             _OTLP_BATCH_PROCESSOR_URN,
         ));
         let config = ProcessorConfig::new("simple_generic_batch_processor_test");
-        ProcessorWrapper::local(processor, node_config, &config)
+        ProcessorWrapper::local(processor, node, node_config, &config)
     }
 
     // Helper: Write string to a file (async version)
@@ -1927,11 +1927,14 @@ mod integration_tests {
         std::fs::write("/tmp/generic_batch_proc_test.json", "").unwrap();
 
         let runtime = otap_df_engine::testing::processor::TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
-            sizer: BatchSizer::Items,
-            send_batch_size: 2, // test splitting
-            timeout: Duration::from_secs(1),
-        }));
+        let wrapper = wrap_local(
+            test_node("batch"),
+            GenericBatcher::new(BatchConfig {
+                sizer: BatchSizer::Items,
+                send_batch_size: 2, // test splitting
+                timeout: Duration::from_secs(1),
+            }),
+        );
 
         runtime
             .set_processor(wrapper)

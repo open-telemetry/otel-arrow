@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Trait and structures used to implement shared exporters (Send bound).
@@ -35,10 +36,10 @@ use crate::control::NodeControlMsg;
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::Message;
+use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use otap_df_config::NodeId;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;

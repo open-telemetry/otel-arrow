@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTLP Debug exporter node
@@ -35,8 +36,8 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::node::NodeId;
 use serde_json::Value;
-use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -44,11 +45,11 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
     writer: Box<dyn AsyncWrite + Unpin>,
-    exporter_id: Cow<'static, str>,
+    exporter_id: NodeId,
 }
 
 impl OutputWriter {
-    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: Cow<'static, str>) -> Self {
+    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: NodeId) -> Self {
         Self {
             writer,
             exporter_id,
@@ -84,10 +85,12 @@ pub struct DebugExporter {
 pub static DEBUG_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: DEBUG_EXPORTER_URN,
     create: |pipeline: PipelineContext,
+             exporter_id: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             DebugExporter::from_config(pipeline, &node_config.config)?,
+            exporter_id,
             node_config,
             exporter_config,
         ))
@@ -443,6 +446,7 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::test_node;
     use tokio::time::{Duration, sleep};
 
     use otap_df_config::node::NodeUserConfig;
@@ -538,6 +542,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -559,6 +564,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -580,6 +586,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(DEBUG_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             DebugExporter::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

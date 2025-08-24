@@ -19,6 +19,10 @@ spec:
         env:
         - name: OTLP_ENDPOINT
           value: "otel-collector-service:4317"
+        - name: SYSLOG_SERVER
+          value: "otel-collector-service"
+        - name: SYSLOG_PORT
+          value: "514"
         args:
         - "--duration"
         - "{{DURATION}}"  # This will be replaced by the orchestrator

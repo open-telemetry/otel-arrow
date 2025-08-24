@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::ScalarExpression;
 
 /// Contains the rules used to resolve data from a target
@@ -33,7 +36,7 @@ impl ValueAccessor {
         !self.selectors.is_empty()
     }
 
-    pub fn get_selectors(&self) -> &Vec<ScalarExpression> {
+    pub fn get_selectors(&self) -> &[ScalarExpression] {
         &self.selectors
     }
 

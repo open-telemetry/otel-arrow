@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 #![warn(missing_docs)]
 
@@ -9,7 +9,7 @@
 pub mod syslog_cef_receiver;
 
 /// Parser module for syslog message parsing
-mod parser;
+pub mod parser;
 
 /// Arrow records encoder for syslog messages
-mod arrow_records_encoder;
+pub mod arrow_records_encoder;

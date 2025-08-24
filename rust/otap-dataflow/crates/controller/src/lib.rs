@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! OTAP Dataflow Engine Controller
@@ -127,14 +128,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     source: e,
                 })?;
 
-            threads.push(handle);
+            threads.push((core_id.id, handle));
         }
 
         // Drop the original metrics sender so only pipeline threads hold references
         drop(metrics_reporter);
 
         // Wait for all pipeline threads to finish
-        for (thread_id, handle) in threads.into_iter().enumerate() {
+        for (core_id, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
                     // Thread completed successfully
@@ -145,7 +146,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 Err(e) => {
                     // Thread join failed, handle the error
                     return Err(error::Error::ThreadPanic {
-                        thread_id,
+                        core_id,
                         panic_message: format!("{e:?}"),
                     });
                 }

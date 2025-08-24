@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Provides types and traits for control messages exchanged between the pipeline engine and nodes.
@@ -80,28 +81,28 @@ pub enum PipelineControlMsg {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
-        node_id: NodeId,
+        node_id: usize,
         /// Duration of the timer interval.
         duration: Duration,
     },
     /// Requests cancellation of a periodic timer for the specified node.
     CancelTimer {
         /// Identifier of the node for which the timer is being canceled.
-        node_id: NodeId,
+        node_id: usize,
     },
 
     /// Requests the pipeline engine to start a periodic telemetry collection timer
     /// for the specified node.
     StartTelemetryTimer {
         /// Identifier of the node for which the timer is being started.
-        node_id: NodeId,
+        node_id: usize,
         /// Duration of the telemetry timer interval.
         duration: Duration,
     },
     /// Requests cancellation of the periodic telemetry collection timer for the specified node.
     CancelTelemetryTimer {
         /// Identifier of the node for which the telemetry timer is being canceled.
-        node_id: NodeId,
+        node_id: usize,
     },
     /// Requests shutdown of the node request manager.
     Shutdown,
@@ -113,11 +114,6 @@ pub enum PipelineControlMsg {
 /// updates, shutdown requests, or timer events. Implementers are not required to be thread-safe.
 #[async_trait::async_trait(?Send)]
 pub trait Controllable {
-    /// Sends a control message to the node asynchronously.
-    ///
-    /// Returns an error if the message could not be delivered.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
-
     /// Returns the sender for control messages to this node.
     ///
     /// Used for direct message passing from the pipeline engine.

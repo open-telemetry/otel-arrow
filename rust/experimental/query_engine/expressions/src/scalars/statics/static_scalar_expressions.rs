@@ -1,6 +1,9 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, TimeDelta};
 use regex::Regex;
 
 use crate::*;
@@ -33,6 +36,9 @@ pub enum StaticScalarExpression {
 
     /// Resolve a static string value provided directly in a query.
     String(StringScalarExpression),
+
+    /// Resolve a static TimeSpan value provided directly in a query.
+    TimeSpan(TimeSpanScalarExpression),
 }
 
 impl StaticScalarExpression {
@@ -119,6 +125,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::Null(n) => n.get_query_location(),
             StaticScalarExpression::Regex(r) => r.get_query_location(),
             StaticScalarExpression::String(s) => s.get_query_location(),
+            StaticScalarExpression::TimeSpan(t) => t.get_query_location(),
         }
     }
 
@@ -133,6 +140,7 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::Null(_) => "StaticScalar(Null)",
             StaticScalarExpression::String(_) => "StaticScalar(String)",
             StaticScalarExpression::Regex(_) => "StaticScalar(Regex)",
+            StaticScalarExpression::TimeSpan(_) => "StaticScalar(TimeSpan)",
         }
     }
 }
@@ -149,6 +157,7 @@ impl AsStaticValue for StaticScalarExpression {
             StaticScalarExpression::Null(_) => StaticValue::Null,
             StaticScalarExpression::Regex(r) => StaticValue::Regex(r),
             StaticScalarExpression::String(s) => StaticValue::String(s),
+            StaticScalarExpression::TimeSpan(t) => StaticValue::TimeSpan(t),
         }
     }
 }
@@ -370,6 +379,37 @@ impl Expression for StringScalarExpression {
 impl StringValue for StringScalarExpression {
     fn get_value(&self) -> &str {
         &self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimeSpanScalarExpression {
+    query_location: QueryLocation,
+    value: TimeDelta,
+}
+
+impl TimeSpanScalarExpression {
+    pub fn new(query_location: QueryLocation, value: TimeDelta) -> TimeSpanScalarExpression {
+        Self {
+            query_location,
+            value,
+        }
+    }
+}
+
+impl Expression for TimeSpanScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "TimeSpanScalarExpression"
+    }
+}
+
+impl TimeSpanValue for TimeSpanScalarExpression {
+    fn get_value(&self) -> TimeDelta {
+        self.value
     }
 }
 

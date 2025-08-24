@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Signal type router processor for OTAP pipelines.
@@ -18,6 +19,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -90,6 +92,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 
 /// Factory function to create a SignalTypeRouter processor
 pub fn create_signal_type_router(
+    node: NodeId,
     config: &Value,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
@@ -107,6 +110,7 @@ pub fn create_signal_type_router(
 
     Ok(ProcessorWrapper::local(
         router,
+        node,
         user_config,
         processor_config,
     ))
@@ -117,15 +121,15 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |_pipeline: PipelineContext, config: &Value, proc_cfg: &ProcessorConfig| {
-        create_signal_type_router(config, proc_cfg)
+    create: |_pipeline: PipelineContext, node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+        create_signal_type_router(node, config, proc_cfg)
     },
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::{processor::TestRuntime, test_node};
     use serde_json::json;
 
     #[test]
@@ -138,7 +142,11 @@ mod tests {
     fn test_factory_creation_ok() {
         let config = json!({});
         let processor_config = ProcessorConfig::new("test_router");
-        let result = create_signal_type_router(&config, &processor_config);
+        let result = create_signal_type_router(
+            test_node(processor_config.name.clone()),
+            &config,
+            &processor_config,
+        );
         assert!(result.is_ok());
     }
 
@@ -147,7 +155,11 @@ mod tests {
         // An invalid type (e.g., number instead of object) should error
         let config = json!(42);
         let processor_config = ProcessorConfig::new("test_router");
-        let result = create_signal_type_router(&config, &processor_config);
+        let result = create_signal_type_router(
+            test_node(processor_config.name.clone()),
+            &config,
+            &processor_config,
+        );
         assert!(result.is_err());
     }
 
@@ -160,6 +172,7 @@ mod tests {
         let user_cfg = Arc::new(NodeUserConfig::new_processor_config("sig_router_test"));
         let wrapper = ProcessorWrapper::local(
             SignalTypeRouter::new(SignalTypeRouterConfig::default()),
+            test_node(test_runtime.config().name.clone()),
             user_cfg,
             test_runtime.config(),
         );

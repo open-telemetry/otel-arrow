@@ -1,9 +1,18 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{cell::Ref, fmt::Display};
 
 use data_engine_expressions::*;
 use regex::Regex;
 
 use crate::*;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BorrowSource {
+    Source,
+    Variable,
+}
 
 #[derive(Debug)]
 pub enum ResolvedValue<'a> {
@@ -18,31 +27,22 @@ pub enum ResolvedValue<'a> {
     Computed(OwnedValue),
 
     /// A slice of characters from a string or items from an array
-    Slice(Option<BorrowSource>, Slice<'a>),
-}
+    Slice(Slice<'a>),
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum BorrowSource {
-    Source,
-    Variable,
+    /// A list of resolved values
+    List(List<'a>),
 }
 
 impl<'a> ResolvedValue<'a> {
-    pub fn get_borrow_source(&self) -> Option<BorrowSource> {
-        match self {
-            ResolvedValue::Borrowed(b, _) => Some(b.clone()),
-            ResolvedValue::Slice(b, _) => b.clone(),
-            _ => None,
-        }
-    }
-
     pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
         let v = match self {
             ResolvedValue::Borrowed(b, v) => Some((b, v.to_value())),
-            ResolvedValue::Slice(Some(b), v) => match v {
-                Slice::Array(a) => Some((b, Value::Array(a))),
-                Slice::String(s) => Some((b, Value::String(s))),
-            },
+            ResolvedValue::Slice(s) => {
+                return s.copy_if_borrowed_from_target(target);
+            }
+            ResolvedValue::List(l) => {
+                return l.copy_if_borrowed_from_target(target);
+            }
             _ => None,
         };
 
@@ -97,10 +97,11 @@ impl<'a> ResolvedValue<'a> {
                     panic!()
                 }
             }
-            ResolvedValue::Slice(b, s) => match s {
+            ResolvedValue::Slice(s) => match s {
                 Slice::Array(_) => panic!(),
-                Slice::String(s) => Ok(ResolvedStringValue::Slice(b, s.into())),
+                Slice::String(s) => Ok(ResolvedStringValue::Slice(s.into())),
             },
+            ResolvedValue::List(_) => panic!(),
         }
     }
 
@@ -136,7 +137,8 @@ impl<'a> ResolvedValue<'a> {
                     panic!()
                 }
             }
-            ResolvedValue::Slice(_, _) => panic!(),
+            ResolvedValue::Slice(_) => panic!(),
+            ResolvedValue::List(_) => panic!(),
         }
     }
 
@@ -172,10 +174,11 @@ impl<'a> ResolvedValue<'a> {
                     panic!()
                 }
             }
-            ResolvedValue::Slice(b, s) => match s {
-                Slice::Array(a) => Ok(ResolvedArrayValue::Slice(b, a.into())),
+            ResolvedValue::Slice(s) => match s {
+                Slice::Array(a) => Ok(ResolvedArrayValue::Slice(a.into())),
                 Slice::String(_) => panic!(),
             },
+            ResolvedValue::List(l) => Ok(ResolvedArrayValue::List(l)),
         }
     }
 }
@@ -186,10 +189,11 @@ impl From<ResolvedValue<'_>> for OwnedValue {
             ResolvedValue::Value(v) => v.into(),
             ResolvedValue::Borrowed(_, b) => b.to_value().into(),
             ResolvedValue::Computed(o) => o,
-            ResolvedValue::Slice(_, s) => match &s {
+            ResolvedValue::Slice(s) => match &s {
                 Slice::Array(a) => Value::Array(a).into(),
                 Slice::String(s) => Value::String(s).into(),
             },
+            ResolvedValue::List(l) => Value::Array(&l).into(),
         }
     }
 }
@@ -200,10 +204,11 @@ impl AsValue for ResolvedValue<'_> {
             ResolvedValue::Value(v) => v.get_value_type(),
             ResolvedValue::Borrowed(_, b) => b.get_value_type(),
             ResolvedValue::Computed(c) => c.get_value_type(),
-            ResolvedValue::Slice(_, s) => match s {
+            ResolvedValue::Slice(s) => match s {
                 Slice::Array(_) => ValueType::Array,
                 Slice::String(_) => ValueType::String,
             },
+            ResolvedValue::List(_) => ValueType::Array,
         }
     }
 
@@ -212,10 +217,11 @@ impl AsValue for ResolvedValue<'_> {
             ResolvedValue::Value(v) => v.clone(),
             ResolvedValue::Borrowed(_, b) => b.to_value(),
             ResolvedValue::Computed(c) => c.to_value(),
-            ResolvedValue::Slice(_, s) => match s {
+            ResolvedValue::Slice(s) => match s {
                 Slice::Array(a) => Value::Array(a),
                 Slice::String(s) => Value::String(s),
             },
+            ResolvedValue::List(l) => Value::Array(l),
         }
     }
 }
@@ -227,9 +233,73 @@ impl Display for ResolvedValue<'_> {
 }
 
 #[derive(Debug)]
+pub struct List<'a> {
+    values: Vec<ResolvedValue<'a>>,
+}
+
+impl<'a> List<'a> {
+    pub fn new(values: Vec<ResolvedValue<'a>>) -> List<'a> {
+        Self { values }
+    }
+
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+        let mut copied = false;
+
+        for value in &mut self.values {
+            if value.copy_if_borrowed_from_target(target) {
+                copied = true;
+            }
+        }
+
+        copied
+    }
+}
+
+impl ArrayValue for List<'_> {
+    fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
+        self.values.get(index).map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, _: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Err("List does not support static access".to_string())
+    }
+
+    fn get_item_range(
+        &self,
+        range: ArrayRange,
+        item_callback: &mut dyn IndexValueCallback,
+    ) -> bool {
+        for (index, value) in range.get_slice(&self.values).iter().enumerate() {
+            if !item_callback.next(index, value.to_value()) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+#[derive(Debug)]
 pub enum Slice<'a> {
     Array(ArraySlice<'a>),
     String(StringSlice<'a>),
+}
+
+impl Slice<'_> {
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+        match self {
+            Slice::Array(a) => a.inner_value.copy_if_borrowed_from_target(target),
+            Slice::String(s) => s.inner_value.copy_if_borrowed_from_target(target),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -262,8 +332,13 @@ impl ArrayValue for ArraySlice<'_> {
         self.range_end_exclusive - self.range_start_inclusive
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
+    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
         self.inner_value.get(self.range_start_inclusive + index)
+    }
+
+    fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        self.inner_value
+            .get_static(self.range_start_inclusive + index)
     }
 
     fn get_item_range(
@@ -359,16 +434,37 @@ pub enum ResolvedStringValue<'a> {
     Computed(StringValueStorage),
 
     /// A slice of characters from a string
-    Slice(Option<BorrowSource>, Box<StringSlice<'a>>),
+    Slice(Box<StringSlice<'a>>),
 }
 
 impl ResolvedStringValue<'_> {
-    pub fn get_borrow_source(&self) -> Option<BorrowSource> {
-        match self {
-            ResolvedStringValue::Borrowed(b, _) => Some(b.clone()),
-            ResolvedStringValue::Slice(b, _) => b.clone(),
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+        let v = match self {
+            ResolvedStringValue::Borrowed(b, v) => Some((b, v)),
+            ResolvedStringValue::Slice(s) => {
+                return s.inner_value.copy_if_borrowed_from_target(target);
+            }
             _ => None,
+        };
+
+        if let Some((s, v)) = v {
+            let writing_while_holding_borrow = match target {
+                MutableValueExpression::Source(_) => {
+                    matches!(s, BorrowSource::Source)
+                }
+                MutableValueExpression::Variable(_) => {
+                    matches!(s, BorrowSource::Variable)
+                }
+            };
+
+            if writing_while_holding_borrow {
+                *self =
+                    ResolvedStringValue::Computed(StringValueStorage::new(v.get_value().into()));
+                return true;
+            }
         }
+
+        false
     }
 }
 
@@ -378,7 +474,7 @@ impl StringValue for ResolvedStringValue<'_> {
             ResolvedStringValue::Value(s) => s.get_value(),
             ResolvedStringValue::Borrowed(_, b) => b.get_value(),
             ResolvedStringValue::Computed(v) => v.get_raw_value(),
-            ResolvedStringValue::Slice(_, s) => s.get_value(),
+            ResolvedStringValue::Slice(s) => s.get_value(),
         }
     }
 }
@@ -393,7 +489,7 @@ impl AsValue for ResolvedStringValue<'_> {
             ResolvedStringValue::Value(v) => Value::String(*v),
             ResolvedStringValue::Borrowed(_, b) => Value::String(&**b),
             ResolvedStringValue::Computed(c) => Value::String(c),
-            ResolvedStringValue::Slice(_, s) => Value::String(&**s),
+            ResolvedStringValue::Slice(s) => Value::String(&**s),
         }
     }
 }
@@ -458,16 +554,42 @@ pub enum ResolvedArrayValue<'a> {
     Computed(ArrayValueStorage<OwnedValue>),
 
     /// A slice of items from an array
-    Slice(Option<BorrowSource>, Box<ArraySlice<'a>>),
+    Slice(Box<ArraySlice<'a>>),
+
+    /// A list of resolved values
+    List(List<'a>),
 }
 
 impl ResolvedArrayValue<'_> {
-    pub fn get_borrow_source(&self) -> Option<BorrowSource> {
-        match self {
-            ResolvedArrayValue::Borrowed(b, _) => Some(b.clone()),
-            ResolvedArrayValue::Slice(b, _) => b.clone(),
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+        let v = match self {
+            ResolvedArrayValue::Borrowed(b, v) => Some((b, v)),
+            ResolvedArrayValue::Slice(s) => {
+                return s.inner_value.copy_if_borrowed_from_target(target);
+            }
+            ResolvedArrayValue::List(l) => {
+                return l.copy_if_borrowed_from_target(target);
+            }
             _ => None,
+        };
+
+        if let Some((s, v)) = v {
+            let writing_while_holding_borrow = match target {
+                MutableValueExpression::Source(_) => {
+                    matches!(s, BorrowSource::Source)
+                }
+                MutableValueExpression::Variable(_) => {
+                    matches!(s, BorrowSource::Variable)
+                }
+            };
+
+            if writing_while_holding_borrow {
+                *self = ResolvedArrayValue::Computed((&**v).into());
+                return true;
+            }
         }
+
+        false
     }
 
     fn get_array(&self) -> &dyn ArrayValue {
@@ -475,7 +597,8 @@ impl ResolvedArrayValue<'_> {
             ResolvedArrayValue::Value(v) => *v,
             ResolvedArrayValue::Borrowed(_, b) => &**b,
             ResolvedArrayValue::Computed(c) => c,
-            ResolvedArrayValue::Slice(_, s) => &**s,
+            ResolvedArrayValue::Slice(s) => &**s,
+            ResolvedArrayValue::List(l) => l,
         }
     }
 }
@@ -489,8 +612,12 @@ impl ArrayValue for ResolvedArrayValue<'_> {
         self.get_array().len()
     }
 
-    fn get(&self, index: usize) -> Option<&(dyn AsStaticValue + 'static)> {
+    fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
         self.get_array().get(index)
+    }
+
+    fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        self.get_array().get_static(index)
     }
 
     fn get_item_range(

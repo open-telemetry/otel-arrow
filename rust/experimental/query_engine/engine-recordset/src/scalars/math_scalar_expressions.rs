@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 
 use crate::{execution_context::*, scalars::execute_scalar_expression, *};
@@ -47,7 +50,7 @@ where
 
 fn execute_unary_operation<'a, 'b, TRecord: Record, F>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
-    unary_expression: &'a UnaryMathmaticalScalarExpression,
+    unary_expression: &'a UnaryMathematicalScalarExpression,
     op: F,
 ) -> Result<ResolvedValue<'b>, ExpressionError>
 where
@@ -57,21 +60,14 @@ where
         execute_scalar_expression(execution_context, unary_expression.get_value_expression())?;
 
     match (op)(&value.to_value()) {
-        Some(i) => match i {
-            NumericValue::Integer(i) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
-                IntegerValueStorage::new(i),
-            ))),
-            NumericValue::Double(d) => Ok(ResolvedValue::Computed(OwnedValue::Double(
-                DoubleValueStorage::new(d),
-            ))),
-        },
+        Some(v) => Ok(numeric_value_to_resolved_value(v)),
         None => Ok(ResolvedValue::Computed(OwnedValue::Null)),
     }
 }
 
 fn execute_binary_operation<'a, 'b, TRecord: Record, F>(
     execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
-    binary_expression: &'a BinaryMathmaticalScalarExpression,
+    binary_expression: &'a BinaryMathematicalScalarExpression,
     op: F,
 ) -> Result<ResolvedValue<'b>, ExpressionError>
 where
@@ -83,15 +79,25 @@ where
         execute_scalar_expression(execution_context, binary_expression.get_right_expression())?;
 
     match (op)(&left.to_value(), &right.to_value()) {
-        Some(v) => match v {
-            NumericValue::Integer(v) => Ok(ResolvedValue::Computed(OwnedValue::Integer(
-                IntegerValueStorage::new(v),
-            ))),
-            NumericValue::Double(v) => Ok(ResolvedValue::Computed(OwnedValue::Double(
-                DoubleValueStorage::new(v),
-            ))),
-        },
+        Some(v) => Ok(numeric_value_to_resolved_value(v)),
         None => Ok(ResolvedValue::Computed(OwnedValue::Null)),
+    }
+}
+
+fn numeric_value_to_resolved_value<'a>(value: NumericValue) -> ResolvedValue<'a> {
+    match value {
+        NumericValue::Integer(i) => {
+            ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
+        }
+        NumericValue::DateTime(d) => {
+            ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
+        }
+        NumericValue::Double(d) => {
+            ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
+        }
+        NumericValue::TimeSpan(t) => {
+            ResolvedValue::Computed(OwnedValue::TimeSpan(TimeSpanValueStorage::new(t)))
+        }
     }
 }
 
@@ -103,10 +109,10 @@ mod tests {
     fn test_execute_ceiling_floor_negate_math_scalar_expression() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, Value)>)
         where
-            F: Fn(UnaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(UnaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (inner, expected_value) in input {
-                let e = ScalarExpression::Math(build(UnaryMathmaticalScalarExpression::new(
+                let e = ScalarExpression::Math(build(UnaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     inner,
                 )));
@@ -233,10 +239,10 @@ mod tests {
     fn test_execute_add_subtract_multiply_divide_math_scalar_expression() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, ScalarExpression, Value)>)
         where
-            F: Fn(BinaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(BinaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (left, right, expected_value) in input {
-                let e = ScalarExpression::Math(build(BinaryMathmaticalScalarExpression::new(
+                let e = ScalarExpression::Math(build(BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     left,
                     right,
@@ -532,10 +538,10 @@ mod tests {
     fn test_execute_modulus_and_bin_math_scalar_expression() {
         fn run_test<F>(build: F, input: Vec<(ScalarExpression, ScalarExpression, Value)>)
         where
-            F: Fn(BinaryMathmaticalScalarExpression) -> MathScalarExpression,
+            F: Fn(BinaryMathematicalScalarExpression) -> MathScalarExpression,
         {
             for (left, right, expected_value) in input {
-                let e = ScalarExpression::Math(build(BinaryMathmaticalScalarExpression::new(
+                let e = ScalarExpression::Math(build(BinaryMathematicalScalarExpression::new(
                     QueryLocation::new_fake(),
                     left,
                     right,

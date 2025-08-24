@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTAP nodes (receiver, exporter, processor).
@@ -37,8 +38,14 @@ pub mod fake_data_generator;
 #[cfg(test)]
 mod mock;
 
+#[cfg(test)]
+mod fixtures;
+
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
+
+/// Attributes processor (OTAP-based)
+pub mod attributes_processor;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

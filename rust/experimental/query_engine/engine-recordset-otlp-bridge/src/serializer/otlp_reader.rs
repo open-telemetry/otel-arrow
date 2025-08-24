@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashMap, str::FromStr};
 
 use chrono::{TimeZone, Utc};

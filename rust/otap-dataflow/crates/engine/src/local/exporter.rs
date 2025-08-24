@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Trait and structures used to implement local exporters (!Send).
@@ -35,8 +36,8 @@
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
+use crate::node::NodeId;
 use async_trait::async_trait;
-use otap_df_config::NodeId;
 use std::marker::PhantomData;
 use std::time::Duration;
 
