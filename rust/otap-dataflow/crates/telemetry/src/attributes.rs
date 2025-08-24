@@ -3,6 +3,7 @@
 //! Interface defining a collection of attributes (pairs of key -> value) associated with a
 //! [`metrics::MetricSet`].
 
+use serde::Serialize;
 use crate::descriptor::{AttributesDescriptor, AttributeValueType, AttributeField};
 
 /// Specialized iterator over attribute key-value pairs with performance optimizations.
@@ -109,7 +110,7 @@ pub trait AttributeSetHandler {
 }
 
 /// Represents a single attribute value that can be of different types.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum AttributeValue {
     /// String attribute value
     String(String),

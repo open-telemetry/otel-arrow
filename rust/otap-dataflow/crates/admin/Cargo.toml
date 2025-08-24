@@ -1,6 +1,6 @@
 [package]
-name = "otap-df-controller"
-description = "OTAP dataflow engine controller"
+name = "otap-df-admin"
+description = "OTAP dataflow engine admin endpoints"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -12,17 +12,14 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-[features]
-testing = []
-
 [dependencies]
 otap-df-config = { path = "../config" }
-otap-df-engine = { path = "../engine" }
 otap-df-telemetry = { path = "../telemetry" }
-otap-df-admin = { path = "../admin" }
 
 thiserror = { workspace = true }
-miette = { workspace = true }
-flume = { workspace = true }
-core_affinity = "0.8.3"
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde_json = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+axum = { version = "0.8.4" }
+tower = "0.5.2"
+chrono = { version = "0.4", features = ["serde"] }

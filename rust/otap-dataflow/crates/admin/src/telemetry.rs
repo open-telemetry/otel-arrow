@@ -1,88 +1,74 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! HTTP server for exposing telemetry endpoints.
+//! Telemetry endpoints.
+//!
+//! - /telemetry/live-schema - current semantic conventions registry
+//! - /telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
+//! - /telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
-use axum::{
-    extract::{State, Query},
-    http::{StatusCode, header},
-    response::{Json, IntoResponse, Response},
-    routing::get,
-    Router,
-};
-use serde::{Serialize, Deserialize};
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-
-use crate::config::HttpServerConfig;
-use crate::registry::MetricsRegistryHandle;
-use crate::semconv::SemConvRegistry;
-use crate::attributes::AttributeValue;
-use crate::descriptor::Instrument;
+use std::collections::hash_map::Entry;
+use serde::{Deserialize, Serialize};
+use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+use otap_df_telemetry::descriptor::{Instrument, MetricsDescriptor, MetricsField};
+use otap_df_telemetry::registry::{MetricsRegistryHandle, NonZeroMetrics};
+use axum::extract::{Query, State};
+use axum::response::{IntoResponse, Response};
+use axum::http::{header, StatusCode};
+use axum::Json;
+use otap_df_telemetry::semconv::SemConvRegistry;
+use crate::AppState;
 use std::fmt::Write as _;
 
-/// Shared state for the HTTP server.
-#[derive(Clone)]
-struct AppState {
-    metrics_registry: MetricsRegistryHandle,
-}
-
-/// JSON representation of aggregated metrics.
+/// All metric sets.
 #[derive(Serialize)]
-struct MetricsResponse {
+struct MetricsWithMetadata {
     /// Timestamp when the metrics were collected.
     timestamp: String,
     /// List of metric sets with their values.
-    metric_sets: Vec<MetricSetJson>,
+    metric_sets: Vec<MetricSetWithMetadata>,
 }
 
-/// JSON representation of a metric set.
+/// Metric set (aka multivariate metrics).
 #[derive(Serialize)]
-struct MetricSetJson {
+struct MetricSetWithMetadata {
     /// Name of the metric set.
     name: String,
-    /// Description of the metric set.
-    description: String,
+    /// Brief of the metric set.
+    brief: String,
     /// Attributes associated with this metric set.
-    attributes: HashMap<String, Value>,
+    attributes: HashMap<String, AttributeValue>,
     /// Individual metrics within this set.
-    metrics: Vec<MetricJson>,
+    metrics: Vec<MetricDataPointWithMetadata>,
 }
 
-/// JSON representation of an individual metric.
+/// Metric data point with metadata.
 #[derive(Serialize)]
-struct MetricJson {
-    /// Name of the metric.
-    name: String,
-    /// Description of the metric.
-    description: String,
-    /// Unit of measurement.
-    unit: String,
+struct MetricDataPointWithMetadata {
+    /// Descriptor for retrieving metric metadata
+    #[serde(flatten)]
+    metadata: MetricsField,
     /// Current value.
     value: u64,
-    /// Type of instrument (counter, gauge, histogram, etc.).
-    instrument_type: String,
 }
 
 /// Compact JSON representation of aggregated metrics (no metadata).
 #[derive(Serialize)]
-struct CompactMetricsResponse {
+struct Metrics {
     timestamp: String,
-    metric_sets: Vec<CompactMetricSetJson>,
+    metric_sets: Vec<MetricSet>,
 }
 
 #[derive(Serialize)]
-struct CompactMetricSetJson {
+struct MetricSet {
     name: String,
-    attributes: HashMap<String, Value>,
+    attributes: HashMap<String, AttributeValue>,
     metrics: HashMap<String, u64>,
 }
 
 /// Query parameters for /telemetry/metrics
 #[derive(Debug, Default, Deserialize)]
-struct MetricsQuery {
+pub struct MetricsQuery {
     /// When true, reset metrics after reading. Default: true.
     #[serde(default = "default_true")]
     reset: bool,
@@ -93,7 +79,7 @@ struct MetricsQuery {
 
 /// Query parameters for /telemetry/metrics/aggregate
 #[derive(Debug, Default, Deserialize)]
-struct AggregateQuery {
+pub struct AggregateQuery {
     /// When true, reset metrics after reading. Default: true.
     #[serde(default = "default_true")]
     reset: bool,
@@ -105,46 +91,37 @@ struct AggregateQuery {
     format: Option<String>,
 }
 
+/// Internal representation of an aggregated group.
+struct AggregateGroup {
+    /// Metric set name (descriptor name)
+    name: String,
+    /// Descriptor for retrieving metric metadata
+    brief: &'static MetricsDescriptor,
+    /// Selected attributes for this group
+    attributes: HashMap<String, AttributeValue>,
+    /// Aggregated metrics by field name
+    metrics: HashMap<String, u64>,
+}
+
 #[inline]
 fn default_true() -> bool { true }
 
-/// Starts the HTTP server with the given configuration and metrics registry.
-pub async fn start_server(
-    config: HttpServerConfig,
-    metrics_registry: MetricsRegistryHandle,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app_state = AppState { metrics_registry };
-
-    let app = Router::new()
-        .route("/telemetry/schema", get(get_semconv))
-        .route("/telemetry/metrics", get(get_metrics))
-        .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
-        .route("/health", get(health_check))
-        .layer(ServiceBuilder::new())
-        .with_state(app_state);
-
-    let addr: SocketAddr = config.bind_address.parse()?;
-    let listener = TcpListener::bind(&addr).await?;
-
-    println!(
-        "HTTP admin endpoints listening on {}\n  GET /health\n  GET /telemetry/schema\n  GET /telemetry/metrics?reset=true|false&format=json|json_compact|line_protocol|prometheus\n  GET /telemetry/metrics/aggregate?reset=true|false&attrs=attr1,attr2&format=json|json_compact|line_protocol|prometheus",
-        addr
-    );
-
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-/// Handler for the /semconv endpoint - returns semantic convention registry.
-async fn get_semconv(
+/// Handler for the /live-schema endpoint.
+///
+/// This reflects the current live schema of the metrics registry.
+pub async fn get_live_schema(
     State(state): State<AppState>,
 ) -> Result<Json<SemConvRegistry>, StatusCode> {
-    let semconv = state.metrics_registry.generate_semconv_registry();
-    Ok(Json(semconv))
+    Ok(Json(state.metrics_registry.generate_semconv_registry()))
 }
 
-/// Handler for the /metrics endpoint - returns aggregated metrics in JSON or text format.
-async fn get_metrics(
+/// Handler for the `/metrics` endpoint.
+/// Supports multiple output formats and optional reset.
+///
+/// Query parameters:
+/// - `reset` (bool, default true): whether to reset metrics after reading.
+/// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
+pub async fn get_metrics(
     State(state): State<AppState>,
     Query(q): Query<MetricsQuery>,
 ) -> Result<Response, StatusCode> {
@@ -163,24 +140,24 @@ async fn get_metrics(
                 collect_metrics_snapshot(&state.metrics_registry)
             };
 
-            let response = MetricsResponse {
+            let response = MetricsWithMetadata {
                 timestamp,
                 metric_sets,
             };
 
             Ok(Json(response).into_response())
         }
-        "json_compact" | "compact" => {
+        "json_compact" => {
             let metric_sets = if q.reset {
                 collect_compact_snapshot_and_reset(&state.metrics_registry)
             } else {
                 collect_compact_snapshot(&state.metrics_registry)
             };
 
-            let response = CompactMetricsResponse { timestamp, metric_sets };
+            let response = Metrics { timestamp, metric_sets };
             Ok(Json(response).into_response())
         }
-        "line" | "line_protocol" | "lp" => {
+        "line_protocol" => {
             let body = if q.reset {
                 format_line_protocol(&state.metrics_registry, true, Some(now.timestamp_millis()))
             } else {
@@ -190,7 +167,7 @@ async fn get_metrics(
             let _ = resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain; charset=utf-8"));
             Ok(resp)
         }
-        "prometheus" | "prom" => {
+        "prometheus" => {
             let body = if q.reset {
                 format_prometheus_text(&state.metrics_registry, true, Some(now.timestamp_millis()))
             } else {
@@ -207,7 +184,12 @@ async fn get_metrics(
 
 /// Handler for the /telemetry/metrics/aggregate endpoint.
 /// Aggregates metrics by metric set name and optionally by a list of attributes.
-async fn get_metrics_aggregate(
+///
+/// Query parameters:
+/// - `reset` (bool, default true): whether to reset metrics after reading.
+/// - `attrs` (string, optional): comma-separated list of attribute names to group by.
+/// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
+pub async fn get_metrics_aggregate(
     State(state): State<AppState>,
     Query(q): Query<AggregateQuery>,
 ) -> Result<Response, StatusCode> {
@@ -233,27 +215,27 @@ async fn get_metrics_aggregate(
 
     match fmt.as_str() {
         "json" => {
-            let response = MetricsResponse {
+            let response = MetricsWithMetadata {
                 timestamp,
-                metric_sets: groups_to_full_json(&groups),
+                metric_sets: groups_with_metadata(&groups),
             };
             Ok(Json(response).into_response())
         }
-        "json_compact" | "compact" => {
-            let response = CompactMetricsResponse {
+        "json_compact" => {
+            let response = Metrics {
                 timestamp,
-                metric_sets: groups_to_compact_json(&groups),
+                metric_sets: groups_without_metadata(&groups),
             };
             Ok(Json(response).into_response())
         }
-        "line" | "line_protocol" | "lp" => {
-            let body = format_aggregate_line_protocol(&groups, Some(now.timestamp_millis()));
+        "line_protocol" => {
+            let body = agg_line_protocol_text(&groups, Some(now.timestamp_millis()));
             let mut resp = body.into_response();
             let _ = resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain; charset=utf-8"));
             Ok(resp)
         }
-        "prometheus" | "prom" => {
-            let body = format_aggregate_prometheus_text(&groups, Some(now.timestamp_millis()));
+        "prometheus" => {
+            let body = agg_prometheus_text(&groups, Some(now.timestamp_millis()));
             let mut resp = body.into_response();
             let _ = resp.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"));
             Ok(resp)
@@ -262,34 +244,18 @@ async fn get_metrics_aggregate(
     }
 }
 
-// --- Aggregation helpers for groups ---
-
-/// Internal representation of an aggregated group.
-struct AggregateGroup {
-    /// Metric set name (descriptor name)
-    name: String,
-    /// Descriptor for retrieving metric metadata
-    descriptor: &'static crate::descriptor::MetricsDescriptor,
-    /// Selected attributes for this group
-    attributes: HashMap<String, Value>,
-    /// Aggregated metrics by field name
-    metrics: HashMap<String, u64>,
-}
-
 fn aggregate_metric_groups(
     registry: &MetricsRegistryHandle,
     reset: bool,
     group_attrs: &[String],
 ) -> Vec<AggregateGroup> {
-    use std::collections::hash_map::Entry;
-
     // Aggregation map keyed by (set name, sorted list of (attr, Option<val_string>))
     type GroupKey = (String, Vec<(String, Option<String>)>);
-    let mut agg: HashMap<GroupKey, (HashMap<String, Value>, HashMap<String, u64>, &'static crate::descriptor::MetricsDescriptor)> = HashMap::new();
+    let mut agg: HashMap<GroupKey, (HashMap<String, AttributeValue>, HashMap<String, u64>, &'static MetricsDescriptor)> = HashMap::new();
 
-    let mut visit = |descriptor: &'static crate::descriptor::MetricsDescriptor,
-                     attributes: &dyn crate::attributes::AttributeSetHandler,
-                     metrics_iter: crate::registry::NonZeroMetrics<'_>| {
+    let mut visit = |descriptor: &'static MetricsDescriptor,
+                     attributes: &dyn AttributeSetHandler,
+                     metrics_iter: NonZeroMetrics<'_>| {
         // Build key attributes vector
         let mut key_attrs: Vec<(String, Option<String>)> = Vec::new();
         if !group_attrs.is_empty() {
@@ -316,7 +282,7 @@ fn aggregate_metric_groups(
                     }
                     for gk in group_attrs {
                         if let Some(v) = avals.get(gk.as_str()) {
-                            let _ = attrs_map.insert(gk.clone(), attribute_value_to_json(*v));
+                            let _ = attrs_map.insert(gk.clone(), (*v).clone());
                         }
                     }
                 }
@@ -350,7 +316,7 @@ fn aggregate_metric_groups(
     for ((set_name, _), (attrs_map, metrics_map, desc)) in agg.into_iter() {
         groups.push(AggregateGroup {
             name: set_name,
-            descriptor: desc,
+            brief: desc,
             attributes: attrs_map,
             metrics: metrics_map,
         });
@@ -369,26 +335,23 @@ fn aggregate_metric_groups(
     groups
 }
 
-fn groups_to_full_json(groups: &[AggregateGroup]) -> Vec<MetricSetJson> {
+fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata> {
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
         // Build metrics vector using descriptor metadata where available
         let mut metrics = Vec::with_capacity(g.metrics.len());
-        for field in g.descriptor.metrics.iter() {
+        for field in g.brief.metrics.iter() {
             if let Some(val) = g.metrics.get(field.name) {
-                metrics.push(MetricJson {
-                    name: field.name.to_string(),
-                    description: field.brief.to_string(),
-                    unit: field.unit.to_string(),
+                metrics.push(MetricDataPointWithMetadata {
+                    metadata: field.clone(),
                     value: *val,
-                    instrument_type: format!("{:?}", field.instrument),
                 });
             }
         }
         if !metrics.is_empty() {
-            out.push(MetricSetJson {
+            out.push(MetricSetWithMetadata {
                 name: g.name.clone(),
-                description: "".to_string(),
+                brief: "".to_string(),
                 attributes: g.attributes.clone(),
                 metrics,
             });
@@ -397,10 +360,10 @@ fn groups_to_full_json(groups: &[AggregateGroup]) -> Vec<MetricSetJson> {
     out
 }
 
-fn groups_to_compact_json(groups: &[AggregateGroup]) -> Vec<CompactMetricSetJson> {
+fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
-        out.push(CompactMetricSetJson {
+        out.push(MetricSet {
             name: g.name.clone(),
             attributes: g.attributes.clone(),
             metrics: g.metrics.clone(),
@@ -409,7 +372,7 @@ fn groups_to_compact_json(groups: &[AggregateGroup]) -> Vec<CompactMetricSetJson
     out
 }
 
-fn format_aggregate_line_protocol(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
+fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
 
@@ -422,7 +385,7 @@ fn format_aggregate_line_protocol(groups: &[AggregateGroup], timestamp_millis: O
                 &mut tags,
                 ",{}={}",
                 escape_lp_tag_key(k),
-                escape_lp_tag_value(&v.to_string())
+                escape_lp_tag_value(&v.to_string_value())
             );
         }
         let mut fields = String::new();
@@ -439,7 +402,7 @@ fn format_aggregate_line_protocol(groups: &[AggregateGroup], timestamp_millis: O
     out
 }
 
-fn format_aggregate_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
+fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
@@ -451,7 +414,7 @@ fn format_aggregate_prometheus_text(groups: &[AggregateGroup], timestamp_millis:
             let _ = write!(&mut base_labels, "set=\"{}\"", escape_prom_label_value(&g.name));
         }
         // ensure deterministic order of attributes in output
-        let mut attrs: Vec<(&String, &Value)> = g.attributes.iter().collect();
+        let mut attrs: Vec<(&String, &AttributeValue)> = g.attributes.iter().collect();
         attrs.sort_by(|a, b| a.0.cmp(b.0));
         for (k, v) in attrs {
             if !base_labels.is_empty() { base_labels.push(','); }
@@ -459,12 +422,12 @@ fn format_aggregate_prometheus_text(groups: &[AggregateGroup], timestamp_millis:
                 &mut base_labels,
                 "{}=\"{}\"",
                 sanitize_prom_label_key(k),
-                escape_prom_label_value(&v.to_string())
+                escape_prom_label_value(&v.to_string_value())
             );
         }
 
         // Emit metrics for this group
-        for field in g.descriptor.metrics.iter() {
+        for field in g.brief.metrics.iter() {
             if let Some(value) = g.metrics.get(field.name) {
                 let metric_name = sanitize_prom_metric_name(field.name);
                 if seen.insert(metric_name.clone()) {
@@ -475,7 +438,7 @@ fn format_aggregate_prometheus_text(groups: &[AggregateGroup], timestamp_millis:
                         Instrument::Counter => "counter",
                         Instrument::UpDownCounter => "gauge",
                         Instrument::Gauge => "gauge",
-                        Instrument::Histogram => "gauge",
+                        Instrument::Histogram => "histogram",
                     };
                     let _ = writeln!(&mut out, "# TYPE {} {}", metric_name, prom_type);
                 }
@@ -491,30 +454,17 @@ fn format_aggregate_prometheus_text(groups: &[AggregateGroup], timestamp_millis:
     out
 }
 
-// ---- Backward-compatible helpers used by /telemetry/metrics ----
-
-/// Handler for the /health endpoint - simple health check.
-async fn health_check() -> Json<Value> {
-    Json(serde_json::json!({
-        "status": "healthy",
-        "service": "telemetry-server"
-    }))
-}
-
 /// Collects a snapshot of current metrics without resetting them.
-fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetJson> {
+fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
     registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
         let mut metrics = Vec::new();
 
         for (field, value) in metrics_iter {
-            metrics.push(MetricJson {
-                name: field.name.to_string(),
-                description: field.brief.to_string(),
-                unit: field.unit.to_string(),
+            metrics.push(MetricDataPointWithMetadata {
+                metadata: field.clone(),
                 value,
-                instrument_type: format!("{:?}", field.instrument),
             });
         }
 
@@ -522,13 +472,12 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetJs
             // Convert attributes to HashMap using the iterator
             let mut attrs_map = HashMap::new();
             for (key, value) in attributes.iter_attributes() {
-                let json_value = attribute_value_to_json(value);
-                let _ = attrs_map.insert(key.to_string(), json_value);
+                let _ = attrs_map.insert(key.to_string(), value.clone());
             }
 
-            metric_sets.push(MetricSetJson {
-                name: descriptor.name.to_string(),
-                description: "".to_string(), // MetricsDescriptor doesn't have description field
+            metric_sets.push(MetricSetWithMetadata {
+                name: descriptor.name.to_owned(),
+                brief: "".to_string(), // MetricsDescriptor doesn't have description field
                 attributes: attrs_map,
                 metrics,
             });
@@ -539,32 +488,28 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetJs
 }
 
 /// Collects a snapshot of current metrics and resets them afterwards.
-fn collect_metrics_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<MetricSetJson> {
+fn collect_metrics_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
     registry.visit_non_zero_metrics_and_reset(|descriptor, attributes, metrics_iter| {
         let mut metrics = Vec::new();
 
         for (field, value) in metrics_iter {
-            metrics.push(MetricJson {
-                name: field.name.to_string(),
-                description: field.brief.to_string(),
-                unit: field.unit.to_string(),
+            metrics.push(MetricDataPointWithMetadata {
+                metadata: field.clone(),
                 value,
-                instrument_type: format!("{:?}", field.instrument),
             });
         }
 
         if !metrics.is_empty() {
             let mut attrs_map = HashMap::new();
             for (key, value) in attributes.iter_attributes() {
-                let json_value = attribute_value_to_json(value);
-                let _ = attrs_map.insert(key.to_string(), json_value);
+                let _ = attrs_map.insert(key.to_string(), value.clone());
             }
 
-            metric_sets.push(MetricSetJson {
-                name: descriptor.name.to_string(),
-                description: "".to_string(),
+            metric_sets.push(MetricSetWithMetadata {
+                name: descriptor.name.to_owned(),
+                brief: "".to_owned(),
                 attributes: attrs_map,
                 metrics,
             });
@@ -575,7 +520,7 @@ fn collect_metrics_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<M
 }
 
 /// Compact snapshot without resetting.
-fn collect_compact_snapshot(registry: &MetricsRegistryHandle) -> Vec<CompactMetricSetJson> {
+fn collect_compact_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
     registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
@@ -588,11 +533,10 @@ fn collect_compact_snapshot(registry: &MetricsRegistryHandle) -> Vec<CompactMetr
             // include attributes in compact format
             let mut attrs_map = HashMap::new();
             for (key, value) in attributes.iter_attributes() {
-                let json_value = attribute_value_to_json(value);
-                let _ = attrs_map.insert(key.to_string(), json_value);
+                let _ = attrs_map.insert(key.to_string(), value.clone());
             }
 
-            metric_sets.push(CompactMetricSetJson {
+            metric_sets.push(MetricSet {
                 name: descriptor.name.to_string(),
                 attributes: attrs_map,
                 metrics,
@@ -604,7 +548,7 @@ fn collect_compact_snapshot(registry: &MetricsRegistryHandle) -> Vec<CompactMetr
 }
 
 /// Compact snapshot with resetting.
-fn collect_compact_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<CompactMetricSetJson> {
+fn collect_compact_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
     registry.visit_non_zero_metrics_and_reset(|descriptor, attributes, metrics_iter| {
@@ -616,11 +560,10 @@ fn collect_compact_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<C
         if !metrics.is_empty() {
             let mut attrs_map = HashMap::new();
             for (key, value) in attributes.iter_attributes() {
-                let json_value = attribute_value_to_json(value);
-                let _ = attrs_map.insert(key.to_string(), json_value);
+                let _ = attrs_map.insert(key.to_string(), value.clone());
             }
 
-            metric_sets.push(CompactMetricSetJson {
+            metric_sets.push(MetricSet {
                 name: descriptor.name.to_string(),
                 attributes: attrs_map,
                 metrics,
@@ -631,24 +574,6 @@ fn collect_compact_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<C
     metric_sets
 }
 
-/// Converts an AttributeValue to a JSON Value.
-fn attribute_value_to_json(attr_value: &AttributeValue) -> Value {
-    match attr_value {
-        AttributeValue::String(s) => Value::String(s.clone()),
-        AttributeValue::Int(i) => Value::Number((*i).into()),
-        AttributeValue::UInt(u) => Value::Number((*u).into()),
-        AttributeValue::Double(f) => {
-            match serde_json::Number::from_f64(*f) {
-                Some(num) => Value::Number(num),
-                None => Value::Null, // Handle NaN or infinite values
-            }
-        }
-        AttributeValue::Boolean(b) => Value::Bool(*b),
-    }
-}
-
-// ---- Text formatters for /telemetry/metrics ----
-
 fn format_line_protocol(
     registry: &MetricsRegistryHandle,
     reset: bool,
@@ -657,9 +582,9 @@ fn format_line_protocol(
     let mut out = String::new();
     let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
 
-    let mut visit = |descriptor: &'static crate::descriptor::MetricsDescriptor,
-                     attributes: &dyn crate::attributes::AttributeSetHandler,
-                     metrics_iter: crate::registry::NonZeroMetrics<'_>| {
+    let mut visit = |descriptor: &'static MetricsDescriptor,
+                     attributes: &dyn AttributeSetHandler,
+                     metrics_iter: NonZeroMetrics<'_>| {
         // Measurement is the metric set name when available; fallback to "metrics".
         let measurement_name = if descriptor.name.is_empty() { "metrics" } else { descriptor.name };
         let measurement = escape_lp_measurement(measurement_name);
@@ -718,9 +643,9 @@ fn format_prometheus_text(
     let ts_suffix = timestamp_millis.map(|ms| format!(" {}", ms)).unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
 
-    let mut visit = |descriptor: &'static crate::descriptor::MetricsDescriptor,
-                     attributes: &dyn crate::attributes::AttributeSetHandler,
-                     metrics_iter: crate::registry::NonZeroMetrics<'_>| {
+    let mut visit = |descriptor: &'static MetricsDescriptor,
+                     attributes: &dyn AttributeSetHandler,
+                     metrics_iter: NonZeroMetrics<'_>| {
         // Render labels from attributes + set label
         let mut base_labels = String::new();
         if !descriptor.name.is_empty() {
@@ -773,8 +698,6 @@ fn format_prometheus_text(
 
     out
 }
-
-// ---- Helpers: escaping/sanitization ----
 
 fn escape_lp_measurement(s: &str) -> String {
     s.replace(',', "\\,").replace(' ', "\\ ")

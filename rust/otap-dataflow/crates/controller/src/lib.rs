@@ -25,6 +25,7 @@ use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
 use tokio::runtime::Builder;
+use otap_df_config::engine::HttpAdminSettings;
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -59,6 +60,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_system = MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let http_settings = HttpAdminSettings::default();
+
+        let admin_handle = otap_df_admin::start_thread(http_settings, metrics_system.registry())?;
 
         // Start the metrics aggregation thread
         let metrics_aggr_handle = thread::Builder::new()
@@ -154,6 +158,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 }
             }
         }
+
+        admin_handle.join().map_err(|e| error::Error::InternalError {
+            message: format!("Failed to join HTTP admin thread: {e:?}"),
+        })?;
 
         // All pipeline threads have finished, which means all cloned metrics senders are dropped.
         // The metrics channel is now closed, so the aggregator thread will exit.

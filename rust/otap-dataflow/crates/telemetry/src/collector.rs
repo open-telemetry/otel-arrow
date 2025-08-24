@@ -4,7 +4,6 @@
 
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
-use crate::pipeline::MetricsPipeline;
 use crate::registry::MetricsRegistryHandle;
 use crate::reporter::MetricsReporter;
 use tokio::time::{interval, Duration};
@@ -14,7 +13,7 @@ use crate::config::Config;
 ///
 /// In this project, metrics are multivariate, meaning that multiple metrics are reported together
 /// sharing the timestamp and the same set of attributes.
-pub struct MetricsCollector<P: MetricsPipeline> {
+pub struct MetricsCollector {
     /// The metrics registry where metrics are declared and aggregated.
     registry: MetricsRegistryHandle,
 
@@ -25,14 +24,11 @@ pub struct MetricsCollector<P: MetricsPipeline> {
 
     /// The interval at which metrics are flushed and aggregated by the collector.
     flush_interval: Duration,
-
-    /// The metrics pipeline for reporting metrics.
-    pipeline: Option<P>,
 }
 
-impl<P: MetricsPipeline> MetricsCollector<P> {
+impl MetricsCollector {
     /// Creates a new `MetricsCollector` with a pipeline.
-    pub(crate) fn new(config: Config, registry: MetricsRegistryHandle, pipeline: P) -> (Self, MetricsReporter) {
+    pub(crate) fn new(config: Config, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
         let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
 
         (
@@ -40,22 +36,6 @@ impl<P: MetricsPipeline> MetricsCollector<P> {
                 registry,
                 metrics_receiver,
                 flush_interval: config.flush_interval,
-                pipeline: Some(pipeline),
-            },
-            MetricsReporter::new(metrics_sender),
-        )
-    }
-
-    /// Creates a new `MetricsCollector` without a pipeline (metrics aggregation only).
-    pub(crate) fn new_without_pipeline(config: Config, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
-        let (metrics_sender, metrics_receiver) = flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
-
-        (
-            Self {
-                registry,
-                metrics_receiver,
-                flush_interval: config.flush_interval,
-                pipeline: None,
             },
             MetricsReporter::new(metrics_sender),
         )
@@ -64,45 +44,15 @@ impl<P: MetricsPipeline> MetricsCollector<P> {
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
     /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
-    pub async fn run_collection_loop(self) -> Result<Option<P>, Error> {
-        match self.pipeline {
-            Some(pipeline) => {
-                // With pipeline: use timer and select!
-                let mut timer = interval(self.flush_interval);
-                loop {
-                    tokio::select! {
-                        _ = timer.tick() => {
-                            self.registry.visit_non_zero_metrics_and_reset(|measurement, field_iter, attrs| {
-                                // Ignore individual report errors for now; could log.
-                                let _ = pipeline.report_iter(measurement, field_iter, attrs);
-                            });
-                        }
-                        result = self.metrics_receiver.recv_async() => {
-                            match result {
-                                Ok(metrics) => {
-                                    self.registry.accumulate_snapshot(metrics.key, &metrics.metrics);
-                                }
-                                Err(_) => {
-                                    // Channel closed, exit the loop and return the pipeline
-                                    return Ok(Some(pipeline));
-                                }
-                            }
-                        }
-                    }
+    pub async fn run_collection_loop(self) -> Result<(), Error> {
+        loop {
+            match self.metrics_receiver.recv_async().await {
+                Ok(metrics) => {
+                    self.registry.accumulate_snapshot(metrics.key, &metrics.metrics);
                 }
-            }
-            None => {
-                // Without pipeline: simple loop without timer
-                loop {
-                    match self.metrics_receiver.recv_async().await {
-                        Ok(metrics) => {
-                            self.registry.accumulate_snapshot(metrics.key, &metrics.metrics);
-                        }
-                        Err(_) => {
-                            // Channel closed, exit the loop
-                            return Ok(None);
-                        }
-                    }
+                Err(_) => {
+                    // Channel closed, exit the loop
+                    return Ok(());
                 }
             }
         }
@@ -113,225 +63,158 @@ impl<P: MetricsPipeline> MetricsCollector<P> {
 mod tests {
     use super::*;
     use crate::registry::MetricsKey;
-    use crate::attributes::AttributeSetHandler;
-    use crate::descriptor::MetricsDescriptor;
-    use crate::registry::NonZeroMetrics;
-    use std::sync::{Arc, Mutex};
+    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::descriptor::{MetricsDescriptor, MetricsField, AttributesDescriptor, AttributeField, AttributeValueType, Instrument};
+    use crate::metrics::MetricSetHandler;
+    use std::fmt::Debug;
     use std::time::Duration;
 
-    // Mock pipeline for testing that tracks reported metrics
-    #[derive(Debug, Clone)]
-    struct MockPipeline {
-        reports: Arc<Mutex<Vec<ReportCall>>>,
+    // --- Test-only mock metric/attributes definitions (no pipeline required) ---
+
+    #[derive(Debug)]
+    struct MockMetricSet {
+        values: Vec<u64>,
     }
 
-    #[derive(Debug, Clone)]
-    struct ReportCall {
-        descriptor_name: String,
-        metrics_data: Vec<(String, u64)>, // field_name, value
-    }
-
-    impl MockPipeline {
+    impl MockMetricSet {
         fn new() -> Self {
-            Self {
-                reports: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn get_reports(&self) -> Vec<ReportCall> {
-            self.reports.lock().unwrap().clone()
-        }
-
-        fn report_count(&self) -> usize {
-            self.reports.lock().unwrap().len()
-        }
-
-        fn clear_reports(&self) {
-            self.reports.lock().unwrap().clear();
+            Self { values: vec![0, 0] }
         }
     }
 
-    impl MetricsPipeline for MockPipeline {
-        fn report_iter<'a>(
-            &self,
-            desc: &'static MetricsDescriptor,
-            _attrs: &'a dyn AttributeSetHandler,
-            metrics: NonZeroMetrics<'a>,
-        ) -> Result<(), Error> {
-            let mut reports = self.reports.lock().unwrap();
-            let mut metrics_data = Vec::new();
+    impl Default for MockMetricSet {
+        fn default() -> Self { Self::new() }
+    }
 
-            for (field_desc, value) in metrics {
-                metrics_data.push((field_desc.name.to_string(), value));
-            }
+    static MOCK_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test_metrics",
+        metrics: &[
+            MetricsField { name: "counter1", unit: "1", brief: "Test counter 1", instrument: Instrument::Counter },
+            MetricsField { name: "counter2", unit: "1", brief: "Test counter 2", instrument: Instrument::Counter },
+        ],
+    };
 
-            reports.push(ReportCall {
-                descriptor_name: desc.name.to_string(),
-                metrics_data,
-            });
-            Ok(())
+    static MOCK_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "test_attributes",
+        fields: &[AttributeField { key: "test_key", r#type: AttributeValueType::String, brief: "Test attribute" }],
+    };
+
+    impl MetricSetHandler for MockMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor { &MOCK_METRICS_DESCRIPTOR }
+        fn snapshot_values(&self) -> Vec<u64> { self.values.clone() }
+        fn clear_values(&mut self) { self.values.iter_mut().for_each(|v| *v = 0); }
+        fn needs_flush(&self) -> bool { self.values.iter().any(|&v| v != 0) }
+    }
+
+    #[derive(Debug)]
+    struct MockAttributeSet {
+        value: String,
+        attribute_values: Vec<AttributeValue>,
+    }
+
+    impl MockAttributeSet {
+        fn new(value: impl Into<String>) -> Self {
+            let v = value.into();
+            Self { value: v.clone(), attribute_values: vec![AttributeValue::String(v)] }
         }
     }
 
-    // Error pipeline for testing error handling
-    #[derive(Debug, Clone)]
-    struct ErrorPipeline {
-        should_fail: Arc<Mutex<bool>>,
-        call_count: Arc<Mutex<usize>>,
+    impl AttributeSetHandler for MockAttributeSet {
+        fn descriptor(&self) -> &'static AttributesDescriptor { &MOCK_ATTRIBUTES_DESCRIPTOR }
+        fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
+            crate::attributes::AttributeIterator::new(&MOCK_ATTRIBUTES_DESCRIPTOR.fields, &self.attribute_values)
+        }
+        fn attribute_values(&self) -> &[AttributeValue] { &self.attribute_values }
     }
 
-    impl ErrorPipeline {
-        fn new() -> Self {
-            Self {
-                should_fail: Arc::new(Mutex::new(false)),
-                call_count: Arc::new(Mutex::new(0)),
-            }
-        }
-
-        fn set_should_fail(&self, fail: bool) {
-            *self.should_fail.lock().unwrap() = fail;
-        }
-
-        fn get_call_count(&self) -> usize {
-            *self.call_count.lock().unwrap()
-        }
-    }
-
-    impl MetricsPipeline for ErrorPipeline {
-        fn report_iter<'a>(
-            &self,
-            desc: &'static MetricsDescriptor,
-            _attrs: &'a dyn AttributeSetHandler,
-            _metrics: NonZeroMetrics<'a>,
-        ) -> Result<(), Error> {
-            *self.call_count.lock().unwrap() += 1;
-
-            if *self.should_fail.lock().unwrap() {
-                Err(Error::MetricsNotRegistered { descriptor: desc })
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    fn create_test_config(flush_interval_ms: u64) -> Config {
-        Config {
-            reporting_channel_size: 10,
-            flush_interval: Duration::from_millis(flush_interval_ms),
-            http_server: None, // No HTTP server for these tests
-        }
+    fn create_test_config(_flush_interval_ms: u64) -> Config {
+        // Flush interval is irrelevant when no pipeline is configured; keep field for completeness.
+        Config { reporting_channel_size: 10, flush_interval: Duration::from_millis(_flush_interval_ms) }
     }
 
     fn create_test_snapshot(key: MetricsKey, values: Vec<u64>) -> MetricSetSnapshot {
         MetricSetSnapshot { key, metrics: values }
     }
 
-    fn create_test_registry() -> MetricsRegistryHandle {
-        MetricsRegistryHandle::new()
-    }
+    fn create_test_registry() -> MetricsRegistryHandle { MetricsRegistryHandle::new() }
+
+    // --- Tests without any pipeline, asserting on the registry state ---
 
     #[tokio::test]
-    async fn test_collector_returns_pipeline_on_channel_close() {
-        let config = create_test_config(1000);
+    async fn test_collector_without_pipeline_returns_none_on_channel_close() {
+        let config = create_test_config(100);
         let registry = create_test_registry();
-        let mock_pipeline = MockPipeline::new();
-        let initial_report_count = mock_pipeline.report_count();
+        let (collector, _reporter) = MetricsCollector::new(config, registry);
 
-        let (collector, _reporter) = MetricsCollector::new(config, registry, mock_pipeline.clone());
-
-        // Close the channel immediately by dropping the reporter
+        // Close immediately
         drop(_reporter);
-
-        let returned_pipeline = collector.run_collection_loop().await.unwrap();
-
-        // Verify the returned pipeline has the same state as when we started
-        assert!(returned_pipeline.is_some());
-        assert_eq!(returned_pipeline.unwrap().report_count(), initial_report_count);
+        let result = collector.run_collection_loop().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_pipeline_content_validation() {
-        let config = create_test_config(50); // Short interval for quick test
+    async fn test_accumulates_snapshots_into_registry() {
+        let config = create_test_config(10);
         let registry = create_test_registry();
-        let mock_pipeline = MockPipeline::new();
 
-        // Pre-populate registry with test data
-        let test_key = MetricsKey::default();
-        registry.accumulate_snapshot(test_key, &vec![42, 24]);
+        // Register a metric set to get a valid key
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> = registry.register(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(config, registry, mock_pipeline.clone());
+        let (collector, reporter) = MetricsCollector::new(config, registry.clone());
 
-        let collection_task = tokio::spawn(async move {
-            collector.run_collection_loop().await
+        let handle = tokio::spawn(async move { collector.run_collection_loop().await });
+
+        // Send two snapshots that should be accumulated: [10,20] + [5,15] => [15,35]
+        reporter.report_snapshot(create_test_snapshot(key, vec![10, 20])).await.unwrap();
+        reporter.report_snapshot(create_test_snapshot(key, vec![5, 15])).await.unwrap();
+
+        // Give the collector a brief moment to process
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        // Inspect current metrics without resetting
+        let mut collected = Vec::new();
+        registry.visit_current_metrics(|_desc, _attrs, iter| {
+            for (field, value) in iter { collected.push((field.name, value)); }
         });
 
-        // Wait for timer to trigger and flush the metrics
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(collected.len(), 2);
+        // Order follows descriptor order
+        assert_eq!(collected[0].0, "counter1");
+        assert_eq!(collected[0].1, 15);
+        assert_eq!(collected[1].0, "counter2");
+        assert_eq!(collected[1].1, 35);
 
-        // Close the channel
+        // Close the channel and ensure loop ends returning None
         drop(reporter);
-
-        let returned_pipeline = collection_task.await.unwrap().unwrap();
-
-        // Now validate the actual content reported to the pipeline
-        let reports = returned_pipeline.unwrap().get_reports();
-
-        // We should have at least one report from the timer flush
-        if !reports.is_empty() {
-            // Validate that the reports contain actual metric data
-            for report in &reports {
-                assert!(!report.descriptor_name.is_empty());
-                // Each report should have metrics data
-                assert!(!report.metrics_data.is_empty());
-
-                // Validate field names and values are reasonable
-                for (field_name, value) in &report.metrics_data {
-                    assert!(!field_name.is_empty());
-                    assert!(*value > 0); // We populated with non-zero values
-                }
-            }
-        }
+        let res = handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]
-    async fn test_pipeline_receives_accumulated_metrics() {
-        let config = create_test_config(40); // Fast timer
+    async fn test_visit_non_zero_then_reset_via_registry_api() {
+        let config = create_test_config(10);
         let registry = create_test_registry();
-        let mock_pipeline = MockPipeline::new();
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> = registry.register(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(config, registry.clone(), mock_pipeline.clone());
+        let (collector, reporter) = MetricsCollector::new(config, registry.clone());
+        let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
-        let collection_task = tokio::spawn(async move {
-            collector.run_collection_loop().await
+        reporter.report_snapshot(create_test_snapshot(key, vec![7, 0])).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // First visit should see the non-zero and then reset
+        let mut first = Vec::new();
+        registry.visit_non_zero_metrics_and_reset(|_d, _a, iter| {
+            for (f, v) in iter { first.push((f.name, v)); }
         });
+        assert_eq!(first, vec![("counter1", 7)]);
 
-        // Send metrics that will be accumulated
-        let test_key = MetricsKey::default();
-        reporter.report_snapshot(create_test_snapshot(test_key, vec![10, 20])).await.unwrap();
-        reporter.report_snapshot(create_test_snapshot(test_key, vec![5, 15])).await.unwrap();
+        // Second visit should see nothing
+        let mut count = 0;
+        registry.visit_non_zero_metrics_and_reset(|_, _, _| { count += 1; });
+        assert_eq!(count, 0);
 
-        // Wait for metrics to be processed and timer to fire
-        tokio::time::sleep(Duration::from_millis(80)).await;
-
-        let reports_count = mock_pipeline.report_count();
-
-        // Close channel
         drop(reporter);
-        let returned_pipeline = collection_task.await.unwrap().unwrap().unwrap();
-
-        // Verify that the pipeline received reports from the timer
-        let final_reports = returned_pipeline.get_reports();
-        assert_eq!(final_reports.len(), reports_count);
-
-        // If we got reports, verify they contain the accumulated data
-        if !final_reports.is_empty() {
-            for report in &final_reports {
-                // Each report should have data from accumulated metrics
-                for (_field_name, value) in &report.metrics_data {
-                    // Values should reflect accumulation (15 = 10+5, 35 = 20+15)
-                    assert!(*value >= 15); // At least the accumulated minimum
-                }
-            }
-        }
+        let res = handle.await.unwrap().unwrap();
     }
 }

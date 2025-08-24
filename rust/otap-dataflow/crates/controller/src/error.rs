@@ -15,6 +15,10 @@ pub enum Error {
         errors: Vec<otap_df_config::error::Error>,
     },
 
+    /// An error originating from the admin module.
+    #[error("Admin module error: {0}")]
+    AdminError(#[from] otap_df_admin::error::Error),
+    
     /// Pipeline runtime error.
     #[error("Pipeline runtime error: {source}")]
     PipelineRuntimeError {

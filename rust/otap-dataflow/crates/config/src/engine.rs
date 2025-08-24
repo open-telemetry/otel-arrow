@@ -14,16 +14,59 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EngineConfig {
     /// Settings that apply to the entire engine instance.
-    settings: EngineSettings,
+    pub settings: EngineSettings,
 
     /// All pipeline group managed by this engine, keyed by pipeline group ID.
-    pipeline_groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
+    pub pipeline_groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
 }
 
 /// Global settings for the engine.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EngineSettings {
-    // TBD: Add settings fields as needed
+    /// Optional HTTP admin server configuration.
+    pub http_admin: Option<HttpAdminSettings>,
+
+    /// Telemetry settings.
+    pub telemetry: TelemetrySettings
+}
+
+/// Configuration for the telemetry metrics system.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TelemetrySettings {
+    /// The size of the reporting channel.
+    #[serde(default = "default_reporting_channel_size")]
+    pub reporting_channel_size: usize,
+    /// The interval at which metrics are flushed and aggregated by the collector.
+    #[serde(default = "default_reporting_interval")]
+    pub flush_interval: std::time::Duration,
+}
+
+/// Configuration for the HTTP admin endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HttpAdminSettings {
+    /// The address to bind the HTTP server to (e.g., "127.0.0.1:8080").
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+}
+
+impl Default for HttpAdminSettings {
+    fn default() -> Self {
+        Self {
+            bind_address: default_bind_address(),
+        }
+    }
+}
+
+const fn default_reporting_channel_size() -> usize {
+    100
+}
+
+const fn default_reporting_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(1)
+}
+
+fn default_bind_address() -> String {
+    "127.0.0.1:8080".into()
 }
 
 impl EngineConfig {

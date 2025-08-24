@@ -11,8 +11,6 @@ pub struct Config {
     pub reporting_channel_size: usize,
     /// The interval at which metrics are flushed and aggregated by the collector.
     pub flush_interval: std::time::Duration,
-    /// HTTP server configuration for exposing metrics and semconv endpoints.
-    pub http_server: Option<HttpServerConfig>,
 }
 
 /// Configuration for the HTTP server that exposes telemetry endpoints.
@@ -27,9 +25,6 @@ impl Default for Config {
         Self {
             reporting_channel_size: 100,
             flush_interval: std::time::Duration::from_secs(1),
-            http_server: Some(HttpServerConfig {
-                bind_address: "127.0.0.1:8080".to_string(),
-            }),
         }
     }
 }

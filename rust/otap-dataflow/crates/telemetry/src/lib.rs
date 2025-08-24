@@ -22,7 +22,6 @@
 //! * Client SDK generation with Weaver
 
 use crate::config::Config;
-use crate::pipeline::LineProtocolPipeline;
 use crate::registry::MetricsRegistryHandle;
 
 pub mod attributes;
@@ -30,24 +29,19 @@ pub mod collector;
 mod config;
 pub mod descriptor;
 pub mod error;
-pub mod http_exporter;
 pub mod instrument;
 pub mod metrics;
-pub(crate) mod pipeline;
 pub mod registry;
 pub mod reporter;
-mod semconv;
+pub mod semconv;
 
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {
-    /// The configuration for the telemetry system.
-    config: Config,
-
     /// The metrics registry that holds all registered metrics (data + metadata).
     registry: MetricsRegistryHandle,
 
     /// The process collecting metrics from the pipelines and aggregating them into the registry.
-    collector: collector::MetricsCollector<LineProtocolPipeline>,
+    collector: collector::MetricsCollector,
 
     /// The process reporting metrics to an external system.
     reporter: reporter::MetricsReporter,
@@ -57,12 +51,11 @@ impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     pub fn new(config: Config) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
-        let (collector, reporter) = collector::MetricsCollector::new_without_pipeline(
+        let (collector, reporter) = collector::MetricsCollector::new(
             config.clone(),
             metrics_registry.clone(),
         );
         Self {
-            config,
             registry: metrics_registry,
             collector,
             reporter,
@@ -78,36 +71,14 @@ impl MetricsSystem {
     pub fn reporter(&self) -> reporter::MetricsReporter {
         self.reporter.clone()
     }
-
-    /// Starts the HTTP server for exposing telemetry endpoints if configured.
-    /// Returns a join handle for the server task that can be used to gracefully shutdown.
-    pub async fn start_http_server(
-        &self,
-    ) -> Result<
-        Option<tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
-        if let Some(http_config) = &self.config.http_server {
-            let registry = self.registry.clone();
-            let config = http_config.clone();
-            let server_handle =
-                tokio::spawn(async move { http_exporter::start_server(config, registry).await });
-            Ok(Some(server_handle))
-        } else {
-            Ok(None)
-        }
-    }
     
-    /// Starts both the HTTP server (if configured) and the metrics collection loop.
+    /// Starts the metrics collection loop.
     /// This method will run until one of the tasks completes or fails.
     pub async fn run(
         self,
-    ) -> Result<Option<LineProtocolPipeline>, Box<dyn std::error::Error + Send + Sync>> {
-        // Start HTTP server if configured
-        let http_server_handle = self.start_http_server().await?;
-
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Move self into the collection loop task
-        let mut collection_handle = {
+        let collection_handle = {
             let collector = self.collector;
             tokio::spawn(async move {
                 collector
@@ -117,38 +88,10 @@ impl MetricsSystem {
             })
         };
 
-        // Use tokio::select! to wait for either task to complete
-        match http_server_handle {
-            Some(mut server_handle) => {
-                tokio::select! {
-                    // If collection loop completes
-                    collection_result = &mut collection_handle => {
-                        server_handle.abort(); // Stop the HTTP server
-                        match collection_result {
-                            Ok(Ok(pipeline)) => Ok(pipeline),
-                            Ok(Err(e)) => Err(e),
-                            Err(e) => Err(Box::new(e)),
-                        }
-                    }
-                    // If HTTP server completes (which usually means it failed)
-                    server_result = &mut server_handle => {
-                        collection_handle.abort(); // Stop the collection loop
-                        match server_result {
-                            Ok(Ok(())) => Err("HTTP server unexpectedly completed".into()),
-                            Ok(Err(e)) => Err(e),
-                            Err(e) => Err(Box::new(e)),
-                        }
-                    }
-                }
-            }
-            None => {
-                // No HTTP server configured, just run the collection loop
-                match collection_handle.await {
-                    Ok(Ok(pipeline)) => Ok(pipeline),
-                    Ok(Err(e)) => Err(e),
-                    Err(e) => Err(Box::new(e)),
-                }
-            }
+        match collection_handle.await {
+            Ok(Ok(pipeline)) => Ok(pipeline),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(Box::new(e)),
         }
     }
 
@@ -157,7 +100,7 @@ impl MetricsSystem {
     ///
     /// This method runs indefinitely until the metrics channel is closed.
     /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
-    pub async fn run_collection_loop(self) -> Result<Option<LineProtocolPipeline>, error::Error> {
+    pub async fn run_collection_loop(self) -> Result<(), error::Error> {
         self.collector.run_collection_loop().await
     }
 }
