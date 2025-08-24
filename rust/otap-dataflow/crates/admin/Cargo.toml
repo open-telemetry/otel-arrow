@@ -17,7 +17,6 @@ otap-df-config = { path = "../config" }
 otap-df-telemetry = { path = "../telemetry" }
 
 thiserror = { workspace = true }
-serde_json = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
 axum = { version = "0.8.4" }

@@ -19,6 +19,10 @@ pub enum Error {
     #[error("Admin module error: {0}")]
     AdminError(#[from] otap_df_admin::error::Error),
     
+    /// Telemetry system error.
+    #[error("Telemetry error: {0}")]
+    TelemetryError(#[from] otap_df_telemetry::error::Error),
+    
     /// Pipeline runtime error.
     #[error("Pipeline runtime error: {source}")]
     PipelineRuntimeError {

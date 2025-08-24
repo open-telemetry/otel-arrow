@@ -24,11 +24,12 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::thread;
-use tokio::runtime::Builder;
 use otap_df_config::engine::HttpAdminSettings;
 
 /// Error types and helpers for the controller module.
 pub mod error;
+/// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
+pub mod thread_task;
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -62,26 +63,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let http_settings = HttpAdminSettings::default();
 
-        let admin_handle = otap_df_admin::start_thread(http_settings, metrics_system.registry())?;
+        // Start the admin HTTP server
+        let metrics_registry = metrics_system.registry();
+        let admin_server_handle = thread_task::spawn_thread_local_task(
+            "http-admin",
+            move |shutdown_rx| otap_df_admin::run(http_settings, metrics_registry, shutdown_rx),
+        )?;
 
-        // Start the metrics aggregation thread
-        let metrics_aggr_handle = thread::Builder::new()
-            .name("metrics-aggregator".to_owned())
-            .spawn(move || {
-                let rt = Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create runtime");
-                let local_tasks = tokio::task::LocalSet::new();
-
-                let _task_handle = local_tasks.spawn_local(metrics_system.run());
-                rt.block_on(async {
-                    local_tasks.await;
-                });
-            })
-            .map_err(|e| error::Error::InternalError {
-                message: format!("Failed to spawn metrics aggregator thread: {e}"),
-            })?;
+        // Start the metrics aggregation 
+        let metrics_agg_handle = thread_task::spawn_thread_local_task("metrics-aggregator", move |shutdown_rx| metrics_system.run(shutdown_rx))?;
 
         // Get available CPU cores for pinning
         let all_core_ids =
@@ -159,18 +149,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        admin_handle.join().map_err(|e| error::Error::InternalError {
-            message: format!("Failed to join HTTP admin thread: {e:?}"),
-        })?;
-
-        // All pipeline threads have finished, which means all cloned metrics senders are dropped.
-        // The metrics channel is now closed, so the aggregator thread will exit.
-        // Wait for the metrics aggregator thread to finish.
-        if let Err(e) = metrics_aggr_handle.join() {
-            return Err(error::Error::InternalError {
-                message: format!("Failed to join metrics aggregator thread: {e:?}"),
-            });
-        }
+        // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
+        admin_server_handle.shutdown_and_join()?;
+        metrics_agg_handle.shutdown_and_join()?;
 
         Ok(())
     }

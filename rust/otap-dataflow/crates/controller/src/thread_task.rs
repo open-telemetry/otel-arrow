@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Utilities to run a non-Send async task on a dedicated OS thread with a
+//! single-threaded Tokio runtime and LocalSet, plus a shutdown signal.
+
+use std::thread;
+use std::future::Future;
+use tokio::{
+    runtime::Builder as RtBuilder,
+    sync::oneshot,
+    task::LocalSet,
+};
+
+/// Handle to a task running on a dedicated thread.
+///
+/// - `shutdown()` sends the shutdown signal (idempotent; best-effort).
+/// - `shutdown_and_join()` requests shutdown and then waits for completion, returning controller::Error on failure.
+/// - `join_raw()` waits for the thread to finish and returns the raw nested result.
+pub struct ThreadLocalTaskHandle<T, E> {
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    join_handle: Option<thread::JoinHandle<Result<T, E>>>,
+    name: String,
+}
+
+impl<T, E> ThreadLocalTaskHandle<T, E> {
+    /// Request a graceful shutdown by sending the oneshot signal.
+    pub fn shutdown(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Wait for the underlying thread to finish and return the task result (raw nested result).
+    pub fn join_raw(mut self) -> thread::Result<Result<T, E>> {
+        if let Some(handle) = self.join_handle.take() {
+            handle.join()
+        } else {
+            panic!("ThreadLocalTaskHandle already joined");
+        }
+    }
+
+    /// Request shutdown and then join, mapping errors into controller::Error.
+    pub fn shutdown_and_join(self) -> Result<T, crate::error::Error>
+    where
+        E: Into<crate::error::Error>,
+    {
+        self.shutdown_and_join_internal()
+    }
+
+    fn shutdown_and_join_internal(mut self) -> Result<T, crate::error::Error>
+    where
+        E: Into<crate::error::Error>,
+    {
+        self.shutdown();
+        match self.join_handle.take().expect("join handle missing").join() {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e.into()),
+            Err(panic) => Err(crate::error::Error::InternalError {
+                message: format!(
+                    "Failed to join thread '{}': panicked with: {:?}",
+                    self.name, panic
+                ),
+            }),
+        }
+    }
+}
+
+/// Spawn a non-Send async task on a dedicated OS thread running a single-threaded
+/// Tokio runtime with a LocalSet. Returns a handle to signal shutdown and join.
+///
+/// The `task_factory` receives a oneshot receiver that resolves when shutdown is requested
+/// and must return the async task to run. The task's `Output` is surfaced by `shutdown_and_join()`.
+///
+/// Contract:
+/// - The task should observe the shutdown receiver and exit promptly when it resolves.
+/// - `T` and `E` must be `Send + 'static` to cross the thread boundary.
+pub fn spawn_thread_local_task<T, E, Fut, F>(
+    thread_name: impl Into<String>,
+    task_factory: F,
+) -> Result<ThreadLocalTaskHandle<T, E>, crate::error::Error>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    Fut: 'static + Future<Output = Result<T, E>>,
+    F: 'static + Send + FnOnce(oneshot::Receiver<()>) -> Fut,
+{
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let name = thread_name.into();
+    let name_for_thread = name.clone();
+
+    let join_handle = thread::Builder::new()
+        .name(name_for_thread)
+        .spawn(move || {
+            let rt = RtBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create runtime");
+            let local = LocalSet::new();
+
+            // Build the task future using the provided factory, passing the shutdown rx.
+            let fut = task_factory(shutdown_rx);
+            // Run the future to completion on the LocalSet and return its result to the caller.
+            rt.block_on(local.run_until(fut))
+        })
+        .map_err(|e| crate::error::Error::InternalError {
+            message: format!("Failed to spawn thread: {e}"),
+        })?;
+
+    Ok(ThreadLocalTaskHandle {
+        shutdown_tx: Some(shutdown_tx),
+        join_handle: Some(join_handle),
+        name,
+    })
+}

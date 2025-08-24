@@ -10,11 +10,10 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
-use std::thread;
 use std::thread::JoinHandle;
 use tokio::net::TcpListener;
-use tokio::runtime::Builder;
 use tower::ServiceBuilder;
+use tokio::sync::oneshot;
 
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
@@ -26,64 +25,83 @@ struct AppState {
     metrics_registry: MetricsRegistryHandle,
 }
 
-/// Starts the HTTP admin server thread with the given configuration and metrics registry.
-pub fn start_thread(
+/// Run the admin HTTP server until shutdown is requested.
+pub async fn run(
     config: HttpAdminSettings,
     metrics_registry: MetricsRegistryHandle,
-) -> Result<JoinHandle<()>, Error> {
-    let addr = config.bind_address.clone();
+    shutdown_rx: oneshot::Receiver<()>,
+) -> Result<(), Error> {
+    let app_state = AppState { metrics_registry };
 
-    Ok(thread::Builder::new()
-        .name("http-admin".to_owned())
-        .spawn(move || {
-            let rt = Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create runtime");
-            let local_tasks = tokio::task::LocalSet::new();
+    let app = Router::new()
+        .route("/telemetry/live-schema", get(telemetry::get_live_schema))
+        .route("/telemetry/metrics", get(telemetry::get_metrics))
+        .route("/telemetry/metrics/aggregate", get(telemetry::get_metrics_aggregate))
+        .layer(ServiceBuilder::new())
+        .with_state(app_state);
 
-            let _task: tokio::task::JoinHandle<Result<_, Error>> = local_tasks.spawn_local(async move {
-                let app_state = AppState { metrics_registry };
+    // Parse the configured bind address.
+    let addr = config
+        .bind_address
+        .parse::<SocketAddr>()
+        .map_err(|e| Error::InvalidBindAddress {
+            bind_address: config.bind_address.clone(),
+            details: format!("{e}"),
+        })?;
 
-                let app = Router::new()
-                    .route("/telemetry/live-schema", get(telemetry::get_live_schema))
-                    .route("/telemetry/metrics", get(telemetry::get_metrics))
-                    .route("/telemetry/metrics/aggregate", get(telemetry::get_metrics_aggregate))
-                    .layer(ServiceBuilder::new())
-                    .with_state(app_state);
+    // Bind the TCP listener.
+    let listener = TcpListener::bind(&addr)
+        .await
+        .map_err(|e| Error::BindFailed {
+            addr: addr.to_string(),
+            details: format!("{e}"),
+        })?;
 
-                // Parse the configured bind address.
-                let addr = config
-                    .bind_address
-                    .parse::<SocketAddr>()
-                    .map_err(|e| Error::InvalidBindAddress {
-                        bind_address: config.bind_address.clone(),
-                        details: format!("{e}"),
-                    })?;
-
-                // Bind the TCP listener.
-                let listener = TcpListener::bind(&addr)
-                    .await
-                    .map_err(|e| Error::BindFailed {
-                        addr: addr.to_string(),
-                        details: format!("{e}"),
-                    })?;
-
-                // Start serving requests.
-                axum::serve(listener, app)
-                    .await
-                    .map_err(|e| Error::ServerError {
-                        addr: addr.to_string(),
-                        details: format!("{e}"),
-                    })?;
-                Ok(())
-            });
-            rt.block_on(async {
-                local_tasks.await;
-            });
+    // Start serving requests, with graceful shutdown on signal.
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
         })
+        .await
         .map_err(|e| Error::ServerError {
-            addr,
-            details: format!("Failed to spawn HTTP admin thread: {e}"),
-        })?)
+            addr: addr.to_string(),
+            details: format!("{e}"),
+        })
+}
+
+/// Handle to the running HTTP admin server thread.
+///
+/// Allows signaling a graceful shutdown and waiting for the thread to exit.
+pub struct ServerHandle {
+    addr: String,
+    join_handle: Option<JoinHandle<()>>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+}
+
+impl ServerHandle {
+    /// Signal the server to shut down gracefully and wait for the thread to finish.
+    pub fn shutdown(&mut self) -> Result<(), Error> {
+        let addr = self.addr.clone();
+        // Signal shutdown; if receiver is already dropped the server has exited.
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.join_handle.take() {
+            handle.join().map_err(|e| Error::ServerError {
+                addr,
+                details: format!("HTTP admin thread join failed: {e:?}"),
+            })?
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        // Best-effort shutdown signal on drop; ignore if already sent.
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        // Do not join in Drop to avoid blocking unwinding or shutdown paths.
+    }
 }

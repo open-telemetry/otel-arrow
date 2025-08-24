@@ -23,6 +23,8 @@
 
 use crate::config::Config;
 use crate::registry::MetricsRegistryHandle;
+use tokio::sync::oneshot;
+use crate::error::Error;
 
 pub mod attributes;
 pub mod collector;
@@ -72,26 +74,23 @@ impl MetricsSystem {
         self.reporter.clone()
     }
     
-    /// Starts the metrics collection loop.
-    /// This method will run until one of the tasks completes or fails.
+    /// Starts the metrics collection loop and listens for a shutdown signal.
+    /// This method returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
     pub async fn run(
         self,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Move self into the collection loop task
-        let collection_handle = {
-            let collector = self.collector;
-            tokio::spawn(async move {
-                collector
-                    .run_collection_loop()
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-            })
-        };
+        mut shutdown_rx: oneshot::Receiver<()>,
+    ) -> Result<(), Error> {
+        // Run the collector and race it against the shutdown signal.
+        let collector = self.collector;
 
-        match collection_handle.await {
-            Ok(Ok(pipeline)) => Ok(pipeline),
-            Ok(Err(e)) => Err(e),
-            Err(e) => Err(Box::new(e)),
+        tokio::select! {
+            res = collector.run_collection_loop() => {
+                res
+            }
+            _ = &mut shutdown_rx => {
+                // Shutdown requested; cancel the collection loop by dropping its future.
+                Ok(())
+            }
         }
     }
 
@@ -100,7 +99,7 @@ impl MetricsSystem {
     ///
     /// This method runs indefinitely until the metrics channel is closed.
     /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
-    pub async fn run_collection_loop(self) -> Result<(), error::Error> {
+    pub async fn run_collection_loop(self) -> Result<(), Error> {
         self.collector.run_collection_loop().await
     }
 }

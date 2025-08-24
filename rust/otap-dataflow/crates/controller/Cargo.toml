@@ -23,6 +23,5 @@ otap-df-admin = { path = "../admin" }
 
 thiserror = { workspace = true }
 miette = { workspace = true }
-flume = { workspace = true }
 core_affinity = "0.8.3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

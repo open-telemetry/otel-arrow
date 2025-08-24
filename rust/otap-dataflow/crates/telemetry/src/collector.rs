@@ -6,7 +6,6 @@ use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
 use crate::registry::MetricsRegistryHandle;
 use crate::reporter::MetricsReporter;
-use tokio::time::{interval, Duration};
 use crate::config::Config;
 
 /// Metrics collector.
@@ -21,9 +20,6 @@ pub struct MetricsCollector {
     /// The message is a tuple of (MetricsKey, MultivariateMetrics).
     /// The metrics key is the aggregation key for the metrics,
     metrics_receiver: flume::Receiver<MetricSetSnapshot>,
-
-    /// The interval at which metrics are flushed and aggregated by the collector.
-    flush_interval: Duration,
 }
 
 impl MetricsCollector {
@@ -35,7 +31,6 @@ impl MetricsCollector {
             Self {
                 registry,
                 metrics_receiver,
-                flush_interval: config.flush_interval,
             },
             MetricsReporter::new(metrics_sender),
         )
