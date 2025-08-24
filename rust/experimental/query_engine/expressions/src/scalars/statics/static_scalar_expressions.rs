@@ -59,7 +59,7 @@ impl StaticScalarExpression {
             StaticScalarExpression::Regex(_) => None,
             StaticScalarExpression::String(s) => {
                 let value = &s.value;
-                if value.len() < 32 {
+                if value.len() <= 32 {
                     Some(StaticScalarExpression::String(s.clone()))
                 } else {
                     None
