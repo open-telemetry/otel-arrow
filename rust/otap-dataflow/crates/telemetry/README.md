@@ -45,7 +45,6 @@ while still exporting high-fidelity operational data.
 
 ## Roadmap
 
-- HTTP (pull) telemetry endpoint. 
 - OTLP (push) export via Rust OpenTelemetry SDK.
 - Generate OpenTelemetry Semantic Registry from the schema.
 - Generate Telemetry client SDK from custom registry and Weaver.
