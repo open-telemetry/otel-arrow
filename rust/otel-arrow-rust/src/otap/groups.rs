@@ -8,7 +8,8 @@ use std::{
 
 use arrow::{
     array::{
-        ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch, UInt16Array, UInt32Array,
+        Array, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch, UInt16Array,
+        UInt32Array,
     },
     datatypes::{ArrowNativeTypeOp, DataType, Schema, SchemaBuilder, UInt8Type, UInt16Type},
 };
@@ -384,18 +385,18 @@ impl<'rb> IDColumn<'rb> {
 
 /// I describe ID column values for splitting
 enum IDSeqs {
-    RangeU16(Vec<RangeInclusive<u16>>),
-    RangeU32(Vec<RangeInclusive<u32>>),
+    RangeU16(Vec<Option<RangeInclusive<u16>>>),
+    RangeU32(Vec<Option<RangeInclusive<u32>>>),
 }
 
-impl From<Vec<RangeInclusive<u16>>> for IDSeqs {
-    fn from(r: Vec<RangeInclusive<u16>>) -> Self {
+impl From<Vec<Option<RangeInclusive<u16>>>> for IDSeqs {
+    fn from(r: Vec<Option<RangeInclusive<u16>>>) -> Self {
         Self::RangeU16(r)
     }
 }
 
-impl From<Vec<RangeInclusive<u32>>> for IDSeqs {
-    fn from(r: Vec<RangeInclusive<u32>>) -> Self {
+impl From<Vec<Option<RangeInclusive<u32>>>> for IDSeqs {
+    fn from(r: Vec<Option<RangeInclusive<u32>>>) -> Self {
         Self::RangeU32(r)
     }
 }
@@ -403,16 +404,50 @@ impl From<Vec<RangeInclusive<u32>>> for IDSeqs {
 impl IDSeqs {
     fn from_col<'rb>(ids: IDColumn<'rb>, lengths: &[usize]) -> Self {
         match ids {
-            IDColumn::U16(array) => Self::from_generic_array(array.values(), lengths),
-            IDColumn::U32(array) => Self::from_generic_array(array.values(), lengths),
+            IDColumn::U16(array) => Self::from_generic_array(array, lengths),
+            IDColumn::U32(array) => Self::from_generic_array(array, lengths),
         }
     }
 
-    fn from_generic_array<T>(slice: &[T], lengths: &[usize]) -> Self
+    fn from_generic_array<ArrowPrimitive>(
+        array: &PrimitiveArray<ArrowPrimitive>,
+        lengths: &[usize],
+    ) -> Self
     where
-        T: Copy,
-        Self: From<Vec<RangeInclusive<T>>>,
+        ArrowPrimitive: ArrowPrimitiveType,
+        ArrowPrimitive::Native: ArrowNativeTypeOp
+            + From<u16>
+            + Copy
+            + PartialEq
+            + Eq
+            + Add<Output = ArrowPrimitive::Native>,
+        Self: From<Vec<Option<RangeInclusive<ArrowPrimitive::Native>>>>,
     {
+        // Null-handling:
+        // Again, we rely on the fact that we've sorted IDs with nulls coming first.
+
+        let slice = &array.values()[..];
+        let first_valid_index = match array.nulls() {
+            // No nulls!
+            None => Some(0),
+
+            // All nulls...
+            Some(_) if array.null_count() == array.len() => None,
+
+            // Some, but not all nulls!
+            Some(nulls) => {
+                // SAFETY: unwrap is safe here because we've already verified that the entire array
+                // isn't null, which means there has to be at least one valid index which means
+                // .next() will return Some the first time we call it.
+                Some(
+                    nulls
+                        .valid_indices()
+                        .next()
+                        .expect("a non-null must be here"),
+                )
+            }
+        };
+
         let mut ranges = Vec::with_capacity(lengths.len());
         let mut start = 0;
         for length in lengths {
@@ -421,11 +456,15 @@ impl IDSeqs {
             assert!(*length > 0);
 
             let end = start + length;
-            let subslice = &slice[start..end];
+            let ids = match first_valid_index {
+                Some(first_valid_index) if start >= first_valid_index => {
+                    let subslice = &slice[start.max(first_valid_index)..end];
+                    Some(subslice[0]..=subslice[subslice.len() - 1])
+                }
+                _ => None,
+            };
 
-            let ids = subslice[0]..=subslice[subslice.len() - 1];
             ranges.push(ids);
-
             start = end;
         }
 
@@ -438,35 +477,50 @@ impl IDSeqs {
             .iter()
             .map(|input| input.num_rows())
             .collect::<Vec<_>>();
-        let total_length = lengths.iter().sum();
-        let first = IDColumn::extract(
-            inputs.first().expect("there should be at least one input"),
-            column_name,
-        )?;
-        Ok(match first {
+
+        let ids: Result<Vec<_>> = inputs
+            .iter()
+            .map(|rb| IDColumn::extract(rb, column_name))
+            .collect();
+        let ids = ids?;
+        let concatenated_array = match ids.first().expect("there should be at least one input") {
             IDColumn::U16(_) => {
-                let mut ids: Vec<u16> = Vec::with_capacity(total_length);
-                for input in inputs {
-                    if let IDColumn::U16(next_array) = IDColumn::extract(input, column_name)? {
-                        ids.extend(next_array.values());
+                let mut refs = Vec::with_capacity(lengths.len());
+                for id in ids {
+                    if let IDColumn::U16(next_array) = id {
+                        let next_array: &dyn Array = next_array;
+                        refs.push(next_array);
                     } else {
                         panic!();
                     }
                 }
-                Self::from_generic_array(&ids, &lengths)
+                arrow::compute::concat(&refs)
             }
             IDColumn::U32(_) => {
-                let mut ids: Vec<u32> = Vec::with_capacity(total_length);
-                for input in inputs {
-                    if let IDColumn::U32(next_array) = IDColumn::extract(input, column_name)? {
-                        ids.extend(next_array.values());
+                let mut refs = Vec::with_capacity(lengths.len());
+                for id in ids {
+                    if let IDColumn::U32(next_array) = id {
+                        let next_array: &dyn Array = next_array;
+                        refs.push(next_array);
                     } else {
                         panic!();
                     }
                 }
-                Self::from_generic_array(&ids, &lengths)
+                arrow::compute::concat(&refs)
             }
-        })
+        }
+        .context(error::BatchingSnafu)?;
+
+        Ok(
+            match (
+                concatenated_array.as_any().downcast_ref::<UInt16Array>(),
+                concatenated_array.as_any().downcast_ref::<UInt32Array>(),
+            ) {
+                (Some(ids), None) => Self::from_generic_array(ids, &lengths),
+                (None, Some(ids)) => Self::from_generic_array(ids, &lengths),
+                _ => unreachable!(),
+            },
+        )
     }
 
     fn split_child_record_batch(&self, input: &RecordBatch) -> Result<Vec<RecordBatch>> {
@@ -485,7 +539,7 @@ impl IDSeqs {
     }
 
     fn generic_split_child_record_batch<T>(
-        id_ranges: &[RangeInclusive<T::Native>],
+        id_ranges: &[Option<RangeInclusive<T::Native>>],
         parent_ids: &PrimitiveArray<T>,
         input: &RecordBatch,
     ) -> Vec<RecordBatch>
@@ -496,10 +550,12 @@ impl IDSeqs {
         let one = T::Native::from(1u16);
 
         let slice = parent_ids.values();
-        debug_assert!(slice.is_sorted());
+        if parent_ids.null_count() == 0 {
+            debug_assert!(slice.is_sorted());
+        }
 
         let mut result = Vec::with_capacity(id_ranges.len());
-        for range in id_ranges {
+        for range in id_ranges.iter().flatten() {
             // We're using `partition_point` instead of `.binary_search` because it returns a
             // deterministic result in cases where there are multiple results found.
 
@@ -709,7 +765,7 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
     use HowToSort::*;
     let sort_columns = match (how, parent_id_column_index, id_column_index) {
         (SortByParentIdAndId, Some(parent_id), Some(id)) => {
-            // FIXME: use row format for faster sorts right here
+            // FIXME: use row format for faster multicolumn sorts right here
             let parent_id_values = columns[parent_id].clone();
             let id_values = columns[id].clone();
             vec![
@@ -991,7 +1047,7 @@ impl<T> IDRange<T> {
     fn reindex_column<Native, ArrowPrimitive>(
         array: &PrimitiveArray<ArrowPrimitive>,
         next_starting_id: u32,
-    ) -> Result<Option<(Arc<dyn arrow::array::Array>, u32)>>
+    ) -> Result<Option<(Arc<dyn Array>, u32)>>
     where
         Native: Add<Output = Native>
             + Copy
@@ -1243,7 +1299,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 /// A generic helper for `unify`
 fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
     array: DictionaryArray<K>,
-) -> arrow::error::Result<Arc<dyn arrow::array::Array>> {
+) -> arrow::error::Result<Arc<dyn Array>> {
     let (keys, values) = array.into_parts();
     let options = Some(arrow::compute::TakeOptions {
         check_bounds: false,
