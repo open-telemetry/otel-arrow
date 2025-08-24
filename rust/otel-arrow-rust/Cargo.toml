@@ -34,7 +34,7 @@ serde = { version = "1.0", features = ["derive"] }
 snafu = { version = "0.8" }
 prost = "0.13"
 replace_with = "0.1.8"
-tonic = "0.13"
+tonic = "0.14"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
 
 [[bench]]
@@ -60,7 +60,7 @@ tokio-stream = "0.1.17"
 criterion = { version = "0.7" }
 
 [build-dependencies]
-tonic-build = "0.13"
+tonic-build = "0.14"
 prost-build = "0.13"
 otlp-model = { path = "./src/pdata/otlp/model" }
 
