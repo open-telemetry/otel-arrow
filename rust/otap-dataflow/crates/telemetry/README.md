@@ -43,6 +43,16 @@ while still exporting high-fidelity operational data.
 
 ![Architecture Phase 1](assets/Metrics%20Phase%201.svg)
 
+## Macros
+
+The `#[metric_set]` macro generates a strongly typed metric set from a Rust
+struct definition.
+
+The `#[attribute_set]` macro generates a strongly typed attribute set from a
+Rust struct definition.
+
+See the [telemetry-macros crate](../telemetry-macros) for details.
+
 ## Roadmap
 
 - OTLP (push) export via Rust OpenTelemetry SDK.

@@ -33,8 +33,8 @@ flume = { workspace = true }
 
 socket2 = { version = "0.6.0", features = ["all"] }
 
-# New deps for generating a unique per-process identifier
+# Deps for generating a unique per-process identifier
 uuid = { workspace = true, features = ["v7"] }
 once_cell = { workspace = true }
 # Base32 encoding
-data-encoding = "2.5"
+data-encoding = "2.9.0"
