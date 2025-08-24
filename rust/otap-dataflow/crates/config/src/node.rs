@@ -90,10 +90,11 @@ pub enum DispatchStrategy {
 }
 
 /// Node kinds
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     /// A source of signals
+    #[default]
     Receiver,
     /// A processor of signals
     Processor,
@@ -107,15 +108,9 @@ pub enum NodeKind {
     ProcessorChain,
 }
 
-impl Default for NodeKind {
-    fn default() -> Self {
-        NodeKind::Receiver
-    }
-}
-
-impl Into<Cow<'static, str>> for NodeKind {
-    fn into(self) -> Cow<'static, str> {
-        match self {
+impl From<NodeKind> for Cow<'static, str> {
+    fn from(kind: NodeKind) -> Self {
+        match kind {
             NodeKind::Receiver => "receiver".into(),
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),

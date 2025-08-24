@@ -21,6 +21,7 @@ otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
 otap-df-otap = { path="../crates/otap"}
 otap-df-otlp = { path="../crates/otlp"}
+otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
 otel-arrow-rust = { path = "../../otel-arrow-rust"}
 fluke-hpack = "0.3.1"

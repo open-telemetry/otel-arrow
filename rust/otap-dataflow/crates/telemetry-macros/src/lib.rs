@@ -5,7 +5,7 @@
 //! Container attributes:
 //!   - `#[metrics(name = "my.metrics.name")]`
 //!   - `#[attributes(name = "my.attributes.name")]`
-//! Field attributes:
+//!     Field attributes:
 //!   - `#[metric(name = "field.name", unit = "{unit}")]`
 //!   - `#[attribute(key = "field.key")]`
 
@@ -20,7 +20,7 @@ use syn::{
 ///
 /// Container attribute:
 ///   - `#[metrics(name = "my.metrics.name")]`
-/// Field attributes:
+///     Field attributes:
 ///   - `#[metric(name = "field.name", unit = "{unit}")]`
 #[proc_macro_derive(MetricSetHandler, attributes(metrics, metric))]
 pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
@@ -76,7 +76,10 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
     let mut metric_field_instruments: Vec<proc_macro2::TokenStream> = Vec::new();
 
     for field in fields {
-        let ident = field.ident.clone().unwrap();
+        let ident = field
+            .ident
+            .clone()
+            .expect("MetricSetHandler only supports named struct fields");
 
         // Collect doc comments for brief (concatenate all lines)
         let mut brief_lines: Vec<String> = Vec::new();
@@ -210,7 +213,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
 ///
 /// Container attribute:
 ///   - `#[attributes(name = "my.attributes.name")]`
-/// Field attributes:
+///     Field attributes:
 ///   - `#[attribute(key = "field.key")]` (optional, defaults to field name with dots)
 ///   - `#[compose]` for fields that implement AttributeSetHandler
 #[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute, compose))]
@@ -304,7 +307,10 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let mut composed_field_idents = Vec::new();
 
     for field in fields {
-        let ident = field.ident.clone().unwrap();
+        let ident = field
+            .ident
+            .clone()
+            .expect("AttributeSetHandler only supports named struct fields");
 
         // Check if this field is marked with #[compose]
         let is_composed = field
@@ -717,10 +723,7 @@ fn parse_metric_field_attr(attr: &Attribute) -> Option<(Option<String>, String)>
         }
         Ok(())
     });
-    match unit {
-        Some(u) => Some((name, u)),
-        _ => None,
-    }
+    unit.map(|u| (name, u))
 }
 
 fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {

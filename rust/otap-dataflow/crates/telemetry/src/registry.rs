@@ -48,6 +48,7 @@ impl Debug for MetricsEntry {
 
 impl MetricsEntry {
     /// Creates a new metrics entry
+    #[must_use]
     pub fn new(
         metrics_descriptor: &'static MetricsDescriptor,
         attributes_descriptor: &'static crate::descriptor::AttributesDescriptor,
@@ -258,6 +259,7 @@ impl MetricsRegistry {
 
     /// Generates a SemConvRegistry from the current MetricsRegistry.
     /// AttributeFields are deduplicated based on their key.
+    #[must_use]
     pub fn generate_semconv_registry(&self) -> SemConvRegistry {
         let mut unique_attributes = HashSet::new();
         let mut attributes = Vec::new();
@@ -287,8 +289,15 @@ impl MetricsRegistry {
     }
 }
 
+impl Default for MetricsRegistryHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsRegistryHandle {
     /// Creates a new `MetricsRegistryHandle`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             metric_registry: Arc::new(Mutex::new(MetricsRegistry {
@@ -314,8 +323,15 @@ impl MetricsRegistryHandle {
     }
 
     /// Returns the total number of registered metrics sets.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.metric_registry.lock().len()
+    }
+
+    /// Returns true if there are no registered metrics sets.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Visits only metric sets with at least one non-zero value, yields a zero-alloc iterator
@@ -331,6 +347,7 @@ impl MetricsRegistryHandle {
 
     /// Generates a SemConvRegistry from the current MetricsRegistry.
     /// AttributeFields are deduplicated based on their key.
+    #[must_use]
     pub fn generate_semconv_registry(&self) -> SemConvRegistry {
         self.metric_registry.lock().generate_semconv_registry()
     }
@@ -429,7 +446,6 @@ mod tests {
 
     #[derive(Debug)]
     struct MockAttributeSet {
-        value: String,
         // Store the attribute values as owned data that we can return references to
         attribute_values: Vec<AttributeValue>,
     }
@@ -437,10 +453,7 @@ mod tests {
     impl MockAttributeSet {
         fn new(value: String) -> Self {
             let attribute_values = vec![AttributeValue::String(value.clone())];
-            Self {
-                value,
-                attribute_values,
-            }
+            Self { attribute_values }
         }
     }
 
@@ -451,7 +464,7 @@ mod tests {
 
         fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
             crate::attributes::AttributeIterator::new(
-                &MOCK_ATTRIBUTES_DESCRIPTOR.fields,
+                MOCK_ATTRIBUTES_DESCRIPTOR.fields,
                 &self.attribute_values,
             )
         }

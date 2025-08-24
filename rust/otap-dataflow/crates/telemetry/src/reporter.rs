@@ -2,6 +2,7 @@
 
 //! Metrics reporter handle.
 
+use crate::error::Error;
 use crate::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
 
 /// A sharable/clonable metrics reporter sending metrics to a `MetricsCollector`.
@@ -14,20 +15,35 @@ pub struct MetricsReporter {
 }
 
 impl MetricsReporter {
-    pub(crate) fn new(metrics_sender: flume::Sender<MetricSetSnapshot>) -> Self {
+    /// Creates a new `MetricsReporter` with the given metrics sender channel.
+    ///
+    /// This is primarily used for testing purposes or when you need to create
+    /// a reporter independently of the `MetricsSystem`.
+    #[must_use]
+    pub fn new(metrics_sender: flume::Sender<MetricSetSnapshot>) -> Self {
         Self { metrics_sender }
     }
 
     /// Report multivariate metrics and reset the metrics if successful.
-    pub async fn report<M: MetricSetHandler + 'static>(&mut self, metrics: &mut MetricSet<M>) {
+    pub async fn report<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), Error> {
         if !metrics.needs_flush() {
-            return;
+            return Ok(());
         }
-        // ToDo (LQ) Use a try send async to avoid blocking the reporter
-        if let Err(e) = self.metrics_sender.send_async(metrics.snapshot()).await {
-            eprintln!("Failed to send metrics: {:?}", e);
-        } else {
-            metrics.clear_values();
+        match self.metrics_sender.try_send(metrics.snapshot()) {
+            Ok(_) => {
+                // Successfully sent, reset the metrics
+                metrics.clear_values();
+                Ok(())
+            }
+            Err(flume::TrySendError::Full(_)) => {
+                // Channel is full, so we don't block the reporter, we don't reset the metrics
+                // and we will try again later.
+                Ok(())
+            }
+            Err(flume::TrySendError::Disconnected(_)) => Err(Error::MetricsChannelClosed),
         }
     }
 

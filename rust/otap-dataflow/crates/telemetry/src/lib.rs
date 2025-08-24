@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod attributes;
 pub mod collector;
-mod config;
+pub mod config;
 pub mod descriptor;
 pub mod error;
 pub mod instrument;
@@ -51,6 +51,7 @@ pub struct MetricsSystem {
 
 impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
+    #[must_use]
     pub fn new(config: Config) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
         let (collector, reporter) =
@@ -63,11 +64,13 @@ impl MetricsSystem {
     }
 
     /// Returns a shareable/cloneable handle to the metrics registry.
+    #[must_use]
     pub fn registry(&self) -> MetricsRegistryHandle {
         self.registry.clone()
     }
 
     /// Returns a shareable/cloneable handle to the metrics reporter.
+    #[must_use]
     pub fn reporter(&self) -> reporter::MetricsReporter {
         self.reporter.clone()
     }

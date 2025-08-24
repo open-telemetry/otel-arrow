@@ -12,11 +12,11 @@ use std::fmt::Debug;
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
 // Choose UUID v7 for better sortability in telemetry signals
 use data_encoding::BASE32_NOPAD;
-use once_cell::sync::Lazy;
 use std::borrow::Cow;
+use std::sync::LazyLock;
 use uuid::Uuid;
 
-static PROCESS_INSTANCE_ID: Lazy<Cow<'static, str>> = Lazy::new(|| {
+static PROCESS_INSTANCE_ID: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
     let uuid = Uuid::now_v7();
     let encoded = BASE32_NOPAD.encode(uuid.as_bytes());
     Cow::Owned(encoded)
@@ -71,11 +71,11 @@ fn detect_container_id() -> Option<String> {
     None
 }
 
-static HOST_ID: Lazy<Cow<'static, str>> =
-    Lazy::new(|| detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned));
+static HOST_ID: LazyLock<Cow<'static, str>> =
+    LazyLock::new(|| detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
-static CONTAINER_ID: Lazy<Cow<'static, str>> =
-    Lazy::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
+static CONTAINER_ID: LazyLock<Cow<'static, str>> =
+    LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
 /// A lightweight/cloneable controller context.
 #[derive(Clone)]
@@ -113,6 +113,7 @@ impl ControllerContext {
 
     /// Returns a new pipeline context with the given identifiers and the current controller context
     /// as the parent context.
+    #[must_use]
     pub fn pipeline_context_with(
         &self,
         pipeline_group_id: PipelineGroupId,
@@ -151,6 +152,7 @@ impl PipelineContext {
     }
 
     /// Registers a new multivariate metrics instance with the metrics registry.
+    #[must_use]
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
@@ -180,11 +182,13 @@ impl PipelineContext {
     }
 
     /// Returns a metrics registry handle.
+    #[must_use]
     pub fn metrics_registry(&self) -> MetricsRegistryHandle {
         self.controller_context.metrics_registry_handle.clone()
     }
 
     /// Returns a new pipeline context with the given node identifiers.
+    #[must_use]
     pub fn with_node_context(&self, node_id: NodeId, node_kind: NodeKind) -> Self {
         Self {
             controller_context: self.controller_context.clone(),

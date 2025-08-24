@@ -592,12 +592,12 @@ mod tests {
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
     use fluke_hpack::Encoder;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::context::{ControllerContext, PipelineContext};
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-    use otap_df_telemetry::registry::{MetricsRegistry, MetricsRegistryHandle};
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayload, ArrowPayloadType, BatchArrowRecords,
     };

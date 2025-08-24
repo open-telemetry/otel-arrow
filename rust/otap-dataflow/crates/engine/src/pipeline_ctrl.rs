@@ -29,6 +29,7 @@ use tokio::time::Instant;
 /// - All data structures are optimized for single-threaded async use.
 /// - The combination of `timer_map` and `canceled` ensures correctness and avoids spurious timer
 ///   events.
+///
 /// A reusable per-node repeating timer set.
 ///
 /// Manages scheduling, cancellation, and expiration for recurrent timers keyed by NodeId.
@@ -289,7 +290,12 @@ mod tests {
             let _ = control_receivers.insert(node_id, receiver);
         }
 
-        let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders);
+        // Create a dummy MetricsReporter for testing using MetricsSystem
+        let config = otap_df_telemetry::config::Config::default();
+        let metrics_system = otap_df_telemetry::MetricsSystem::new(config);
+        let metrics_reporter = metrics_system.reporter();
+
+        let manager = PipelineCtrlMsgManager::new(pipeline_rx, control_senders, metrics_reporter);
         (manager, pipeline_tx, control_receivers)
     }
 
@@ -600,8 +606,13 @@ mod tests {
         local
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                // Create a dummy MetricsReporter for testing
+                let (metrics_tx, _metrics_rx) = flume::unbounded();
+                let metrics_reporter =
+                    otap_df_telemetry::reporter::MetricsReporter::new(metrics_tx);
                 // Create manager with empty control_senders map (no registered nodes)
-                let manager = PipelineCtrlMsgManager::new(pipeline_rx, HashMap::new());
+                let manager =
+                    PipelineCtrlMsgManager::new(pipeline_rx, HashMap::new(), metrics_reporter);
 
                 let node_id: NodeId = "nonexistent_node".into();
                 let duration = Duration::from_millis(50);

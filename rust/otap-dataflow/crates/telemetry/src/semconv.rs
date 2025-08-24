@@ -22,6 +22,7 @@ pub struct SemConvRegistry {
 
 impl SemConvRegistry {
     /// Creates a new SemConvRegistry with the specified version.
+    #[must_use]
     pub fn new(version: Cow<'static, str>) -> Self {
         Self {
             version,
@@ -31,6 +32,7 @@ impl SemConvRegistry {
     }
 
     /// Returns a YAML representation of the semantic convention registry.
+    #[must_use]
     pub fn to_yaml(&self) -> String {
         serde_yaml::to_string(self).expect("Failed to serialize SemConvRegistry to YAML")
     }

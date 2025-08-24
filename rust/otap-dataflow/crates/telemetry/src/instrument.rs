@@ -70,7 +70,7 @@ impl AddAssign<u64> for Counter<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 + rhs;
+            self.0 += rhs;
         }
     }
 }
@@ -86,7 +86,7 @@ impl Counter<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 + 1;
+            self.0 += 1;
         }
     }
 
@@ -100,7 +100,7 @@ impl Counter<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 + v;
+            self.0 += v;
         }
     }
 }
@@ -110,7 +110,12 @@ impl Counter<u64> {
 
 impl<T> UpDownCounter<T>
 where
-    T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>,
+    T: Copy
+        + Default
+        + std::ops::Add<Output = T>
+        + std::ops::Sub<Output = T>
+        + AddAssign
+        + SubAssign,
 {
     /// Creates a new up-down-counter initialized with the provided value.
     #[inline]
@@ -133,13 +138,13 @@ where
     /// Adds an arbitrary value to the up-down-counter.
     #[inline]
     pub fn add(&mut self, v: T) {
-        self.0 = self.0 + v;
+        self.0 += v;
     }
 
     /// Subs an arbitrary value to the up-down-counter.
     #[inline]
     pub fn sub(&mut self, v: T) {
-        self.0 = self.0 - v;
+        self.0 -= v;
     }
 }
 
@@ -167,7 +172,7 @@ impl AddAssign<u64> for UpDownCounter<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 + rhs;
+            self.0 += rhs;
         }
     }
 }
@@ -182,7 +187,7 @@ impl SubAssign<u64> for UpDownCounter<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 - rhs;
+            self.0 -= rhs;
         }
     }
 }
@@ -198,7 +203,7 @@ impl UpDownCounter<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 + 1;
+            self.0 += 1;
         }
     }
 
@@ -212,7 +217,7 @@ impl UpDownCounter<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 - 1;
+            self.0 -= 1;
         }
     }
 }
@@ -222,7 +227,12 @@ impl UpDownCounter<u64> {
 
 impl<T> Gauge<T>
 where
-    T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>,
+    T: Copy
+        + Default
+        + std::ops::Add<Output = T>
+        + std::ops::Sub<Output = T>
+        + AddAssign
+        + SubAssign,
 {
     /// Creates a new gauge initialized with the provided value.
     #[inline]
@@ -251,13 +261,13 @@ where
     /// Adds an arbitrary value to the gauge.
     #[inline]
     pub fn add(&mut self, v: T) {
-        self.0 = self.0 + v;
+        self.0 += v;
     }
 
     /// Subs an arbitrary value to the gauge.
     #[inline]
     pub fn sub(&mut self, v: T) {
-        self.0 = self.0 - v;
+        self.0 -= v;
     }
 }
 
@@ -283,7 +293,7 @@ impl AddAssign<u64> for Gauge<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 + rhs;
+            self.0 += rhs;
         }
     }
 }
@@ -298,7 +308,7 @@ impl SubAssign<u64> for Gauge<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 - rhs;
+            self.0 -= rhs;
         }
     }
 }
@@ -314,7 +324,7 @@ impl Gauge<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 + 1;
+            self.0 += 1;
         }
     }
 
@@ -328,7 +338,7 @@ impl Gauge<u64> {
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
-            self.0 = self.0 - 1;
+            self.0 -= 1;
         }
     }
 }

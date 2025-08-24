@@ -221,6 +221,7 @@ mod tests {
     use super::*;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
@@ -232,6 +233,7 @@ mod tests {
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
         trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
@@ -354,13 +356,20 @@ mod tests {
             .expect("Server failed to start");
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
                 },
-                metrics: OtlpExporterMetrics::default(),
+                metrics: pipeline_ctx.register_metrics::<OtlpExporterMetrics>(),
             },
             node_config,
             test_runtime.config(),

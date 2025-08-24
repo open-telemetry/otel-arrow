@@ -132,7 +132,7 @@ mod tests {
 
     #[derive(Debug)]
     struct MockAttributeSet {
-        value: String,
+        _value: String,
         attribute_values: Vec<AttributeValue>,
     }
 
@@ -140,7 +140,7 @@ mod tests {
         fn new(value: impl Into<String>) -> Self {
             let v = value.into();
             Self {
-                value: v.clone(),
+                _value: v.clone(),
                 attribute_values: vec![AttributeValue::String(v)],
             }
         }
@@ -152,7 +152,7 @@ mod tests {
         }
         fn iter_attributes<'a>(&'a self) -> crate::attributes::AttributeIterator<'a> {
             crate::attributes::AttributeIterator::new(
-                &MOCK_ATTRIBUTES_DESCRIPTOR.fields,
+                MOCK_ATTRIBUTES_DESCRIPTOR.fields,
                 &self.attribute_values,
             )
         }
@@ -190,7 +190,7 @@ mod tests {
 
         // Close immediately
         drop(_reporter);
-        let result = collector.run_collection_loop().await.unwrap();
+        collector.run_collection_loop().await.unwrap();
     }
 
     #[tokio::test]
@@ -237,7 +237,7 @@ mod tests {
 
         // Close the channel and ensure loop ends returning None
         drop(reporter);
-        let res = handle.await.unwrap().unwrap();
+        handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -274,6 +274,6 @@ mod tests {
         assert_eq!(count, 0);
 
         drop(reporter);
-        let res = handle.await.unwrap().unwrap();
+        handle.await.unwrap().unwrap();
     }
 }

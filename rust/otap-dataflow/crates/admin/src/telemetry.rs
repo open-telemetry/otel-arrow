@@ -67,19 +67,14 @@ struct MetricSet {
 }
 
 /// Output format for telemetry endpoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputFormat {
+    #[default]
     Json,
     JsonCompact,
     LineProtocol,
     Prometheus,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        OutputFormat::Json
-    }
 }
 
 /// Query parameters for /telemetry/metrics
@@ -351,7 +346,7 @@ fn aggregate_metric_groups(
 
     // Convert to vector
     let mut groups: Vec<AggregateGroup> = Vec::with_capacity(agg.len());
-    for ((set_name, _), (attrs_map, metrics_map, desc)) in agg.into_iter() {
+    for ((set_name, _), (attrs_map, metrics_map, desc)) in agg {
         groups.push(AggregateGroup {
             name: set_name,
             brief: desc,
@@ -381,7 +376,7 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
         for field in g.brief.metrics.iter() {
             if let Some(val) = g.metrics.get(field.name) {
                 metrics.push(MetricDataPointWithMetadata {
-                    metadata: field.clone(),
+                    metadata: *field,
                     value: *val,
                 });
             }
@@ -524,7 +519,7 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWi
 
         for (field, value) in metrics_iter {
             metrics.push(MetricDataPointWithMetadata {
-                metadata: field.clone(),
+                metadata: *field,
                 value,
             });
         }
@@ -559,7 +554,7 @@ fn collect_metrics_snapshot_and_reset(
 
         for (field, value) in metrics_iter {
             metrics.push(MetricDataPointWithMetadata {
-                metadata: field.clone(),
+                metadata: *field,
                 value,
             });
         }
@@ -802,10 +797,7 @@ fn escape_lp_field_key(s: &str) -> String {
 fn sanitize_prom_metric_name(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for (i, ch) in s.chars().enumerate() {
-        let ok = match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':' => true,
-            _ => false,
-        };
+        let ok = matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':');
         if ok && !(i == 0 && ch.is_ascii_digit()) {
             out.push(ch);
         } else if ch == '.' || ch == '-' || ch == ' ' {
@@ -827,10 +819,7 @@ fn sanitize_prom_metric_name(s: &str) -> String {
 fn sanitize_prom_label_key(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for (i, ch) in s.chars().enumerate() {
-        let ok = match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':' => true,
-            _ => false,
-        };
+        let ok = matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':');
         if ok && !(i == 0 && ch.is_ascii_digit()) {
             out.push(ch);
         } else if ch == '.' || ch == '-' || ch == ' ' {

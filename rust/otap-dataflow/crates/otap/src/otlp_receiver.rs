@@ -170,6 +170,7 @@ mod tests {
     use std::time::Duration;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use otap_df_otlp::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
@@ -189,6 +190,7 @@ mod tests {
     use otap_df_otlp::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
     use otap_df_otlp::proto::opentelemetry::resource::v1::Resource;
     use otap_df_otlp::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use tokio::time::timeout;
 
@@ -386,13 +388,20 @@ mod tests {
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: Config {
                     listening_addr: addr,
                     compression_method: None,
                 },
-                metrics: OtlpReceiverMetrics::default(),
+                metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
             node_config,
             test_runtime.config(),

@@ -21,6 +21,7 @@ impl<'a> AttributeIterator<'a> {
     /// # Safety
     /// The caller must ensure that `fields.len() == values.len()`.
     #[inline]
+    #[must_use]
     pub fn new(fields: &'static [AttributeField], values: &'a [AttributeValue]) -> Self {
         let len = values.len();
         debug_assert_eq!(
@@ -131,6 +132,7 @@ pub enum AttributeValue {
 
 impl AttributeValue {
     /// Returns the value type of this attribute value.
+    #[must_use]
     pub fn value_type(&self) -> AttributeValueType {
         match self {
             AttributeValue::String(_) => AttributeValueType::String,
@@ -143,6 +145,7 @@ impl AttributeValue {
     }
 
     /// Converts the attribute value to a string representation for serialization.
+    #[must_use]
     pub fn to_string_value(&self) -> String {
         match self {
             AttributeValue::String(s) => s.clone(),
@@ -241,7 +244,7 @@ mod tests {
             brief: "Test attribute 1",
         }];
 
-        let values = [AttributeValue::Double(3.14)];
+        let values = [AttributeValue::Double(std::f64::consts::PI)];
 
         let mut iter = AttributeIterator::new(fields, &values);
         assert_eq!(iter.len(), 1);
@@ -299,7 +302,7 @@ mod tests {
         let values = [
             AttributeValue::String("hello".to_string()),
             AttributeValue::Int(-42),
-            AttributeValue::Double(2.718),
+            AttributeValue::Double(std::f64::consts::E),
             AttributeValue::Boolean(false),
         ];
 
@@ -312,7 +315,7 @@ mod tests {
         assert_eq!(collected[1].0, "int_attr");
         assert_eq!(*collected[1].1, AttributeValue::Int(-42));
         assert_eq!(collected[2].0, "double_attr");
-        assert_eq!(*collected[2].1, AttributeValue::Double(2.718));
+        assert_eq!(*collected[2].1, AttributeValue::Double(std::f64::consts::E));
         assert_eq!(collected[3].0, "bool_attr");
         assert_eq!(*collected[3].1, AttributeValue::Boolean(false));
     }
@@ -353,7 +356,7 @@ mod tests {
             AttributeValueType::Int
         ); // UInt treated as Int
         assert_eq!(
-            AttributeValue::Double(3.14).value_type(),
+            AttributeValue::Double(std::f64::consts::PI).value_type(),
             AttributeValueType::Double
         );
         assert_eq!(
@@ -370,7 +373,10 @@ mod tests {
         );
         assert_eq!(AttributeValue::Int(-42).to_string_value(), "-42");
         assert_eq!(AttributeValue::UInt(42).to_string_value(), "42");
-        assert_eq!(AttributeValue::Double(3.14).to_string_value(), "3.14");
+        assert_eq!(
+            AttributeValue::Double(std::f64::consts::PI).to_string_value(),
+            std::f64::consts::PI.to_string()
+        );
         assert_eq!(AttributeValue::Boolean(true).to_string_value(), "true");
         assert_eq!(AttributeValue::Boolean(false).to_string_value(), "false");
     }
