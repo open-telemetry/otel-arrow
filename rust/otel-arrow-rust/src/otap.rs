@@ -300,6 +300,13 @@ impl OtapBatchStore for Logs {
     }
 }
 
+const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
+    ArrowPayloadType::NumberDataPoints,
+    ArrowPayloadType::SummaryDataPoints,
+    ArrowPayloadType::HistogramDataPoints,
+    ArrowPayloadType::ExpHistogramDataPoints,
+];
+
 /// Fetch the number of items as defined by the batching system
 #[must_use]
 fn batch_length<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
@@ -308,19 +315,11 @@ fn batch_length<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
             .as_ref()
             .map(|batch| batch.num_rows())
             .unwrap_or(0),
-        Metrics::COUNT => {
-            const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
-                ArrowPayloadType::NumberDataPoints,
-                ArrowPayloadType::SummaryDataPoints,
-                ArrowPayloadType::HistogramDataPoints,
-                ArrowPayloadType::ExpHistogramDataPoints,
-            ];
-            DATA_POINTS_TYPES
-                .iter()
-                .flat_map(|dpt| batches[POSITION_LOOKUP[*dpt as usize]].as_ref())
-                .map(|batch| batch.num_rows())
-                .sum()
-        }
+        Metrics::COUNT => DATA_POINTS_TYPES
+            .iter()
+            .flat_map(|dpt| batches[POSITION_LOOKUP[*dpt as usize]].as_ref())
+            .map(|batch| batch.num_rows())
+            .sum(),
         Traces::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Spans as usize]]
             .as_ref()
             .map(|batch| batch.num_rows())
