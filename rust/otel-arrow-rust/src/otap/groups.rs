@@ -2196,6 +2196,148 @@ mod test {
     }
 }
 
+// *************************************************************************************************
+// Here lies some unfinished code for recursively detecting missing null fields for `unify`. I think
+// this approach is now a bad idea and we'd be better served exploiting `RecordBatch::normalize`
+// (which I just discovered!) and then writing our own `denomalize` function. Doing that would
+// probably make dictionary flattening easier too.
+
+// struct SimpleInterner(HashMap<String, u16>);
+// // FIXME: make this faster; there are options:
+// // * use CompactStr since all our strings have UTF-8 lengths <= 24 bytes
+// // * use `string-interner`
+// // * stash the interner in thread local storage
+
+// impl SimpleInterner {
+//     fn new() -> Self {
+//         SimpleInterner(HashMap::new())
+//     }
+
+//     fn get_or_insert(&mut self, string: &str) -> u16 {
+//         // Sigh; we can't use the entry API because it isn't flexible enough to deal with
+//         // `to_owned`....
+//         let next_id = self
+//             .0
+//             .len()
+//             .try_into()
+//             .expect("there are < u16::MAX strings to intern");
+//         match self.0.get(string) {
+//             Some(id) => *id,
+//             None => {
+//                 let _ = self.0.insert(string.to_owned(), next_id);
+//                 next_id
+//             }
+//         }
+//     }
+// }
+
+// // I represent a sequence of column names with each name getting interned in `SimpleInterner`.
+// type Path = SmallVec<[u16; 3]>;
+
+// /// I describe where in the object an offset is:
+// /// * level==0 corresponds to selecting a `RecordBatch` in a slice
+// /// * level==1 corresponds to the offset of a particular field within that `RecordBatch`
+// /// * level==2 corresponds to the offset in a `StructArray` or `ListArray`, etc.
+// type Level = u8;
+
+// /// I describe where a field is given a sequence of `RecordBatch`
+// #[derive(Debug, Clone, Hash, PartialEq)]
+// struct Location(SmallVec<[usize; 4]>);
+
+// impl Location {
+//     fn new(batch_index: usize) -> Self {
+//         Location(smallvec::smallvec![batch_index])
+//     }
+
+//     fn level(&self) -> Level {
+//         self.0.len() as u8
+//     }
+
+//     fn with_child(&self, child_offset: usize) -> Self {
+//         let mut result = self.0.clone();
+//         result.push(child_offset);
+//         Location(result)
+//     }
+
+//     fn last(&self) -> usize {
+//         self.0[self.0.len() - 1]
+//     }
+// }
+
+// /// I consolidate information about a sequence of RecordBatches and their field datatypes and where
+// /// we're missing fields.
+// struct MissingFieldInfo<'batches> {
+//     field_locations: HashMap<Path, (usize, Vec<(&'batches Field, Location)>)>,
+//     interner: SimpleInterner,
+// }
+
+// impl<'batches> MissingFieldInfo<'batches> {
+//     fn find_missing(&self) -> impl Iterator<Item = Location> {
+//         for (path, values) in self.field_locations {
+//             let locations = values.1;
+//         }
+//     }
+
+//     fn new() -> Self {
+//         let field_locations = HashMap::new();
+//         let interner = SimpleInterner::new();
+//         Self {
+//             field_locations,
+//             interner,
+//         }
+//     }
+
+//     fn add(&mut self, batch_index: usize, rb: &'batches RecordBatch) {
+//         let location = Location::new(batch_index);
+//         let path = Path::new();
+//         for (offset, field) in rb.schema_ref().fields.iter().enumerate() {
+//             let child_path = self.add_path(&path, field.name());
+//             self.add_field(location.with_child(offset), child_path, field);
+//         }
+//     }
+
+//     fn add_path(&mut self, path: &Path, component: &str) -> Path {
+//         let mut result = path.clone();
+//         result.push(self.interner.get_or_insert(component));
+//         result
+//     }
+
+//     // This is where the recursion happens! Our recursion is bounded by the structure of the OTAP
+//     // data model; it is quite shallow so there are no worries about overflowing the stack.
+//     fn add_field(&mut self, location: Location, path: Path, field: &'batches Field) {
+//         let (count, locations) = self.field_locations.entry(path.clone()).or_default();
+//         *count += 1;
+//         locations.push((field, location.clone()));
+
+//         match field.data_type() {
+//             // We don't match on Dictionary here because its children will only be primitives and
+//             // won't have their own fields.
+//             DataType::Struct(fields) => {
+//                 for (field_offset, field) in fields.iter().enumerate() {
+//                     let child_path = self.add_path(&path, field.name());
+//                     self.add_field(location.with_child(field_offset), child_path, field);
+//                 }
+//             }
+
+//             DataType::List(element) => {
+//                 // FIXME: using item is only a convention, we should verify that we actually use it
+//                 // everywhere.
+//                 let child_path = self.add_path(&path, "item");
+//                 self.add_field(location.with_child(0), child_path, element);
+//             }
+
+//             DataType::ListView(_)
+//             | DataType::FixedSizeList(_, _)
+//             | DataType::LargeList(_)
+//             | DataType::LargeListView(_)
+//             | DataType::Union(_, _)
+//             | DataType::Map(_, _) => unreachable!(),
+
+//             _ => {}
+//         }
+//     }
+// }
+
 #[cfg(test)]
 mod test {
     use arrow::array::record_batch;
