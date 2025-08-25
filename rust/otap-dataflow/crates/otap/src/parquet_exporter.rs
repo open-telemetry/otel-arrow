@@ -487,7 +487,7 @@ mod test {
             _ = pdata_tx.send(otap_batch.into()).await;
 
             // yield long enough for the exporter to receive the pdata and queue the write
-            sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(100)).await;
 
             // shutdown faster than it could possibly flush
             _ = ctrl_sender
