@@ -59,6 +59,8 @@ rand = "0.9"
 nix = { version = "0.30.0", features = ["process", "signal"] }
 tokio-stream = "0.1.17"
 criterion = { version = "0.7" }
+arrow-schema = "56.0.0"
+pretty_assertions = "1.4.1"
 
 [build-dependencies]
 tonic-build = "0.13"
