@@ -12,9 +12,12 @@ use arrow::{
         UInt16Array, UInt32Array,
     },
     buffer::NullBuffer,
-    datatypes::{ArrowNativeTypeOp, DataType, Field, Schema, SchemaBuilder, UInt8Type, UInt16Type},
+    datatypes::{
+        ArrowNativeTypeOp, DataType, Field, Fields, Schema, SchemaBuilder, UInt8Type, UInt16Type,
+    },
 };
 use itertools::Itertools;
+use smallvec::SmallVec;
 use snafu::ResultExt;
 
 use crate::{
@@ -158,7 +161,19 @@ impl RecordsGroup {
         }
     }
 
-    fn len(&self) -> usize {
+    /// Is the container empty?
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Logs(logs) => logs.is_empty(),
+            Self::Metrics(metrics) => metrics.is_empty(),
+            Self::Traces(traces) => traces.is_empty(),
+        }
+    }
+
+    /// Find the number of OtapArrowRecords we've got.
+    #[must_use]
+    pub fn len(&self) -> usize {
         match self {
             Self::Logs(logs) => logs.len(),
             Self::Metrics(metrics) => metrics.len(),
@@ -773,33 +788,33 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
         nulls_first: true, // We rely on this heavily later on!
     });
     use HowToSort::*;
-    let sort_columns = match (how, parent_id_column_index, id_column_index) {
-        (SortByParentIdAndId, Some(parent_id), Some(id)) => {
-            // FIXME: use row format for faster multicolumn sorts right here
-            let parent_id_values = columns[parent_id].clone();
-            let id_values = columns[id].clone();
-            vec![
-                SortColumn {
-                    values: parent_id_values,
-                    options,
-                },
-                SortColumn {
+    let sort_columns: SmallVec<[SortColumn; 2]> =
+        match (how, parent_id_column_index, id_column_index) {
+            (SortByParentIdAndId, Some(parent_id), Some(id)) => {
+                // FIXME: use row format for faster multicolumn sorts right here
+                let parent_id_values = columns[parent_id].clone();
+                let id_values = columns[id].clone();
+                smallvec::smallvec![
+                    SortColumn {
+                        values: parent_id_values,
+                        options,
+                    },
+                    SortColumn {
+                        values: id_values,
+                        options,
+                    },
+                ]
+            }
+            (_, None, Some(id)) => {
+                let id_values = columns[id].clone();
+                smallvec::smallvec![SortColumn {
                     values: id_values,
                     options,
-                },
-            ]
-        }
-        (_, None, Some(id)) => {
-            let id_values = columns[id].clone();
-            vec![SortColumn {
-                values: id_values,
-                options,
-            }]
-        }
-        _ => unreachable!(),
-    };
+                }]
+            }
+            _ => unreachable!(),
+        };
 
-    // FIXME: we don't need a Vec here...
     let indices = lexsort_to_indices(&sort_columns, None).context(error::BatchingSnafu)?;
     let input_was_already_sorted = indices.values().is_sorted();
     let columns = if input_was_already_sorted {
@@ -1192,10 +1207,6 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
     let mut all_cols: HashSet<usize> = HashSet::new();
 
-    // I need a dummy object to swap into column Vecs while I mutate and replace the column I
-    // actually care about.
-    let mut dummy = arrow::array::new_null_array(&DataType::UInt8, 0);
-
     for row in 0..N {
         schemas.clear(); // We're going to reuse this allocation accross loop iterations
         schemas.extend(select(batches, row).map(|batch| batch.schema()));
@@ -1229,47 +1240,18 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         });
 
         // Let's flatten out dictionary columns
-
-        // FIXME: this is so bad; replace this with a smarter strategy that tries to consolidate
-        // dict columns together preserving the space savings when possible!
-        for (col, dict_field_indices) in cols_to_dict_fields.iter() {
-            if let Some(batch) = batches[*col][row].take() {
-                let (schema, mut columns, _num_rows) = batch.into_parts();
-                let schema = Arc::unwrap_or_clone(schema);
-                let mut builder = SchemaBuilder::from(&schema);
-
-                for field_index in dict_field_indices {
-                    // SAFETY: expect is fine because there's only one reference to the field outstanding.
-                    let field = builder.field(*field_index);
-                    let (key, value) = match field.data_type() {
-                        DataType::Dictionary(key, value) => (*key.clone(), *value.clone()),
-                        _ => unreachable!(),
-                    };
-                    *builder.field_mut(*field_index) =
-                        Arc::new((**field).clone().with_data_type(value.clone()));
-
-                    std::mem::swap(&mut columns[*field_index], &mut dummy);
-                    // Now, our dummy value is stored in `columns` and `dummy` refers to the column we care about.
-                    let mut column = match key {
-                        DataType::UInt8 => flatten_dictionary_array(
-                            DictionaryArray::<UInt8Type>::from(dummy.to_data()),
-                        ),
-                        DataType::UInt16 => flatten_dictionary_array(
-                            DictionaryArray::<UInt16Type>::from(dummy.to_data()),
-                        ),
-                        _ => unreachable!(),
-                    }
-                    .context(error::BatchingSnafu)?;
-
-                    std::mem::swap(&mut columns[*field_index], &mut column);
-                    dummy = column;
-                    assert_eq!(dummy.len(), 0);
+        for batches in batches.iter_mut() {
+            // FIXME: this is so bad; replace this with a smarter strategy that tries to consolidate
+            // dict columns together preserving the space savings when possible!
+            if batches[row]
+                .as_ref()
+                .map(record_batch_has_dictionary)
+                .unwrap_or(false)
+            {
+                if let Some(rb) = batches[row].take() {
+                    let rb = flatten_dictionary_record_batch(rb)?;
+                    let _ = batches[row].replace(rb);
                 }
-
-                let schema = Arc::new(builder.finish());
-                let batch = RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?;
-
-                let _ = batches[*col][row].replace(batch);
             }
         }
 
@@ -1313,16 +1295,285 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
     Ok(())
 }
 
-/// A generic helper for `unify`
+fn record_batch_has_dictionary(rb: &RecordBatch) -> bool {
+    rb.schema()
+        .fields()
+        .iter()
+        .any(|field| field_has_dictionary(field))
+}
+
+fn field_has_dictionary(field: &Field) -> bool {
+    // Although the OTAP schema has both Arrow Struct and List field types, all the List fields are
+    // of primitives except for QuantileValues which does not use dictionary encoding, so we can
+    // ignore List types. But we still have to recurse on Struct types. OTAP doesn't use any of the
+    // other recursive data types like Map.
+    match field.data_type() {
+        DataType::Dictionary(_, _) => true,
+        DataType::Struct(fields) => fields.iter().any(|field| field_has_dictionary(field)),
+        _ => false,
+    }
+}
+
+fn flatten_field_dictionary(field: &Field) -> Field {
+    match field.data_type() {
+        DataType::Dictionary(_key, value) => {
+            let value = *value.clone();
+            field.clone().with_data_type(value)
+        }
+        DataType::Struct(struct_fields) => field.clone().with_data_type(DataType::Struct(
+            struct_fields
+                .iter()
+                .map(|field| flatten_field_dictionary(field))
+                .collect::<Fields>(),
+        )),
+        _ => field.clone(),
+    }
+}
+
+fn flatten_dictionary_column(old_field: &Field, column: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+    match old_field.data_type() {
+        DataType::Dictionary(key, _value) if **key == DataType::UInt8 => {
+            flatten_dictionary_array(DictionaryArray::<UInt8Type>::from(column.to_data()))
+        }
+
+        DataType::Dictionary(key, _value) if **key == DataType::UInt16 => {
+            flatten_dictionary_array(DictionaryArray::<UInt16Type>::from(column.to_data()))
+        }
+
+        DataType::Struct(_struct_fields) => {
+            // This is where we recurse by way of flatten_dictionary_record_batch
+            let (rb, nulls) =
+                NullableRecordBatch::from(StructArray::from(column.to_data())).into_parts();
+            let rb = flatten_dictionary_record_batch(rb)?;
+            let result: Arc<dyn Array> = Arc::new(StructArray::from(
+                NullableRecordBatch::from_parts(rb, nulls),
+            ));
+            Ok(result)
+        }
+        _ => unreachable!(),
+    }
+}
+
+// `RecordBatch` and `StructArray` are very similar and have `From` impls for conversion between
+// them; however, `RecordBatch` can't represent top-level nulls while `StructArray` can, so
+// converting a `StructArray` with top-level nulls into a `RecordBatch` will panic. This structure
+// encodes the extra nullability information so you can avoid having to impl the same code for both.
+struct NullableRecordBatch {
+    rb: RecordBatch,
+    nulls: Option<NullBuffer>,
+}
+
+impl NullableRecordBatch {
+    fn into_parts(self) -> (RecordBatch, Option<NullBuffer>) {
+        (self.rb, self.nulls)
+    }
+
+    fn from_parts(rb: RecordBatch, nulls: Option<NullBuffer>) -> Self {
+        Self { rb, nulls }
+    }
+}
+
+impl From<NullableRecordBatch> for StructArray {
+    fn from(value: NullableRecordBatch) -> Self {
+        let (schema, columns, _len) = value.rb.into_parts();
+        let nulls = value.nulls;
+        let fields = schema.fields.clone(); // FIXME: surely we can avoid this?
+        StructArray::new(fields, columns, nulls)
+    }
+}
+
+impl From<StructArray> for NullableRecordBatch {
+    fn from(array: StructArray) -> Self {
+        let (fields, columns, nulls) = array.into_parts();
+        let schema = Schema::new(fields);
+        let rb = RecordBatch::try_new(Arc::new(schema), columns)
+            .expect("RecordBatch construction from StructArray without nulls should never fail");
+        Self { rb, nulls }
+    }
+}
+
+fn flatten_dictionary_record_batch(rb: RecordBatch) -> Result<RecordBatch> {
+    // I need a dummy object to swap into column Vecs while I mutate and replace the column I
+    // actually care about.
+    let mut dummy = arrow::array::new_null_array(&DataType::UInt8, 0);
+
+    let (schema, mut columns, _num_rows) = rb.into_parts();
+    let schema = Arc::unwrap_or_clone(schema);
+    let mut builder = SchemaBuilder::from(&schema);
+
+    for (field_index, field) in schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_i, field)| field_has_dictionary(field))
+    {
+        // Flatten the field object
+        *builder.field_mut(field_index) = Arc::new(flatten_field_dictionary(field));
+
+        // ...and now flatten the column
+        std::mem::swap(&mut columns[field_index], &mut dummy);
+        // Now, our dummy value is stored in `columns` and `dummy` refers to the column we care about.
+        let mut column = flatten_dictionary_column(field, dummy)?;
+        std::mem::swap(&mut columns[field_index], &mut column);
+        dummy = column;
+        assert_eq!(dummy.len(), 0);
+    }
+
+    let schema = Arc::new(builder.finish());
+    RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)
+}
+
 fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
     array: DictionaryArray<K>,
-) -> arrow::error::Result<Arc<dyn Array>> {
+) -> Result<Arc<dyn Array>> {
     let (keys, values) = array.into_parts();
     let options = Some(arrow::compute::TakeOptions {
         check_bounds: false,
     });
-    arrow::compute::take(&values, &keys, options)
+    arrow::compute::take(&values, &keys, options).context(error::BatchingSnafu)
 }
+
+// *************************************************************************************************
+// Here lies some unfinished code for recursively detecting missing null fields for `unify`. I think
+// this approach is now a bad idea and we'd be better served exploiting `RecordBatch::normalize`
+// (which I just discovered!) and then writing our own `denomalize` function. Doing that would
+// probably make dictionary flattening easier too.
+
+// struct SimpleInterner(HashMap<String, u16>);
+// // FIXME: make this faster; there are options:
+// // * use CompactStr since all our strings have UTF-8 lengths <= 24 bytes
+// // * use `string-interner`
+// // * stash the interner in thread local storage
+
+// impl SimpleInterner {
+//     fn new() -> Self {
+//         SimpleInterner(HashMap::new())
+//     }
+
+//     fn get_or_insert(&mut self, string: &str) -> u16 {
+//         // Sigh; we can't use the entry API because it isn't flexible enough to deal with
+//         // `to_owned`....
+//         let next_id = self
+//             .0
+//             .len()
+//             .try_into()
+//             .expect("there are < u16::MAX strings to intern");
+//         match self.0.get(string) {
+//             Some(id) => *id,
+//             None => {
+//                 let _ = self.0.insert(string.to_owned(), next_id);
+//                 next_id
+//             }
+//         }
+//     }
+// }
+
+// // I represent a sequence of column names with each name getting interned in `SimpleInterner`.
+// type Path = SmallVec<[u16; 3]>;
+
+// /// I describe where in the object an offset is:
+// /// * level==0 corresponds to selecting a `RecordBatch` in a slice
+// /// * level==1 corresponds to the offset of a particular field within that `RecordBatch`
+// /// * level==2 corresponds to the offset in a `StructArray` or `ListArray`, etc.
+// type Level = u8;
+
+// /// I describe where a field is given a sequence of `RecordBatch`
+// #[derive(Debug, Clone, Hash, PartialEq)]
+// struct Location(SmallVec<[usize; 4]>);
+
+// impl Location {
+//     fn new(batch_index: usize) -> Self {
+//         Location(smallvec::smallvec![batch_index])
+//     }
+
+//     fn level(&self) -> Level {
+//         self.0.len() as u8
+//     }
+
+//     fn with_child(&self, child_offset: usize) -> Self {
+//         let mut result = self.0.clone();
+//         result.push(child_offset);
+//         Location(result)
+//     }
+
+//     fn last(&self) -> usize {
+//         self.0[self.0.len() - 1]
+//     }
+// }
+
+// /// I consolidate information about a sequence of RecordBatches and their field datatypes and where
+// /// we're missing fields.
+// struct MissingFieldInfo<'batches> {
+//     field_locations: HashMap<Path, (usize, Vec<(&'batches Field, Location)>)>,
+//     interner: SimpleInterner,
+// }
+
+// impl<'batches> MissingFieldInfo<'batches> {
+//     fn find_missing(&self) -> impl Iterator<Item = Location> {
+//         for (path, values) in self.field_locations {
+//             let locations = values.1;
+//         }
+//     }
+
+//     fn new() -> Self {
+//         let field_locations = HashMap::new();
+//         let interner = SimpleInterner::new();
+//         Self {
+//             field_locations,
+//             interner,
+//         }
+//     }
+
+//     fn add(&mut self, batch_index: usize, rb: &'batches RecordBatch) {
+//         let location = Location::new(batch_index);
+//         let path = Path::new();
+//         for (offset, field) in rb.schema_ref().fields.iter().enumerate() {
+//             let child_path = self.add_path(&path, field.name());
+//             self.add_field(location.with_child(offset), child_path, field);
+//         }
+//     }
+
+//     fn add_path(&mut self, path: &Path, component: &str) -> Path {
+//         let mut result = path.clone();
+//         result.push(self.interner.get_or_insert(component));
+//         result
+//     }
+
+//     // This is where the recursion happens! Our recursion is bounded by the structure of the OTAP
+//     // data model; it is quite shallow so there are no worries about overflowing the stack.
+//     fn add_field(&mut self, location: Location, path: Path, field: &'batches Field) {
+//         let (count, locations) = self.field_locations.entry(path.clone()).or_default();
+//         *count += 1;
+//         locations.push((field, location.clone()));
+
+//         match field.data_type() {
+//             // We don't match on Dictionary here because its children will only be primitives and
+//             // won't have their own fields.
+//             DataType::Struct(fields) => {
+//                 for (field_offset, field) in fields.iter().enumerate() {
+//                     let child_path = self.add_path(&path, field.name());
+//                     self.add_field(location.with_child(field_offset), child_path, field);
+//                 }
+//             }
+
+//             DataType::List(element) => {
+//                 // FIXME: using item is only a convention, we should verify that we actually use it
+//                 // everywhere.
+//                 let child_path = self.add_path(&path, "item");
+//                 self.add_field(location.with_child(0), child_path, element);
+//             }
+
+//             DataType::ListView(_)
+//             | DataType::FixedSizeList(_, _)
+//             | DataType::LargeList(_)
+//             | DataType::LargeListView(_)
+//             | DataType::Union(_, _)
+//             | DataType::Map(_, _) => unreachable!(),
+
+//             _ => {}
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod test {

@@ -37,6 +37,7 @@ replace_with = "0.1.8"
 tonic = "0.13"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
 itertools = "0.14.0"
+smallvec = { version = "1.15.1", features = ["union"] }
 
 [[bench]]
 name = "attribute_transform"
