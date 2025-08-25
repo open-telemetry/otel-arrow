@@ -2195,3 +2195,219 @@ mod test {
         todo!("assert results")
     }
 }
+
+#[cfg(test)]
+mod test {
+    use arrow::array::record_batch;
+    use arrow::array::{
+        ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray, StructArray,
+        TimestampNanosecondArray, UInt8Array, UInt16Array,
+    };
+    use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type};
+    use arrow_schema;
+
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn test_unify_null_filling() {
+        let a = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("b", Float64, [Some(4.0), Some(5.0), Some(6.0)])
+        );
+        let b = record_batch!(("id", Int32, [4, 5, 6]));
+
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(a.unwrap())], [Some(b.unwrap())]];
+
+        unify(&mut batches).unwrap();
+        assert_eq!(
+            batches[0][0],
+            Some(
+                record_batch!(
+                    ("id", Int32, [1, 2, 3]),
+                    ("b", Float64, [Some(4.0), Some(5.0), Some(6.0)])
+                )
+                .unwrap()
+            )
+        );
+        assert_eq!(
+            batches[1][0],
+            Some(
+                record_batch!(("id", Int32, [4, 5, 6]), ("b", Float64, [None, None, None]))
+                    .unwrap()
+            )
+        )
+    }
+
+    #[test]
+    fn test_unify_flatten_dicts() {
+        use arrow::array::{Int32Array, UInt8Array};
+
+        let a = record_batch!(("id", Int32, [1, 2, 3]));
+        let b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "id",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                true,
+            )])),
+            vec![Arc::new(DictionaryArray::<UInt8Type>::new(
+                UInt8Array::from_iter_values(vec![0, 0, 1, 1]),
+                Arc::new(Int32Array::from_iter_values(vec![2, 3])),
+            ))],
+        );
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(a.unwrap())], [Some(b.unwrap())]];
+
+        unify(&mut batches).unwrap();
+        assert_eq!(
+            batches[0][0],
+            Some(record_batch!(("id", Int32, [1, 2, 3])).unwrap())
+        );
+        assert_eq!(
+            batches[1][0],
+            Some(record_batch!(("id", Int32, [2, 2, 3, 3])).unwrap())
+        )
+    }
+
+    fn make_logs() -> OtapArrowRecords {
+        let rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(
+                        vec![
+                            Field::new(consts::ID, DataType::UInt16, true),
+                            Field::new(
+                                "schema_url",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "scope",
+                    DataType::Struct(
+                        vec![
+                            Field::new("id", DataType::UInt16, true),
+                            Field::new(
+                                "name",
+                                DataType::Dictionary(
+                                    Box::new(DataType::UInt8),
+                                    Box::new(DataType::Utf8),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "observed_time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "severity_number",
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                    true,
+                ),
+            ])),
+            vec![
+                // id
+                Arc::new(UInt16Array::from_iter(vec![Some(0), None, Some(1)])),
+                // resource
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // resource.id
+                        Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "schema_url",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // resource.schema_url
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0, 0, 0]),
+                            Arc::new(StringArray::from_iter_values(vec![
+                                "https://schema.opentelemetry.io/resource_schema",
+                            ])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("id", DataType::UInt16, true)),
+                        // scope.id
+                        Arc::new(UInt16Array::from(vec![0, 1, 2])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new(
+                            "name",
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::Utf8),
+                            ),
+                            true,
+                        )),
+                        // scope.name
+                        Arc::new(DictionaryArray::<UInt8Type>::new(
+                            UInt8Array::from(vec![0, 1, 0]),
+                            Arc::new(StringArray::from(vec!["scope", "scope2"])),
+                        )) as ArrayRef,
+                    ),
+                ])),
+                // timestamps
+                Arc::new(TimestampNanosecondArray::from(vec![0, 0, 0])),
+                // observed_time_unix_nano
+                Arc::new(TimestampNanosecondArray::from(vec![0i64, 0, 0])) as ArrayRef,
+                // severity_number
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 1, 0]),
+                    Arc::new(Int32Array::from(vec![5, 9, 5])),
+                )) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let rb = sort_record_batch(rb, HowToSort::SortByParentIdAndId).unwrap();
+        let mut batches: [Option<RecordBatch>; Logs::COUNT] = [const { None }; Logs::COUNT];
+        batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]] = Some(rb);
+        OtapArrowRecords::Logs(Logs { batches })
+    }
+
+    #[test]
+    fn test_simple_split() {
+        let [logs, _, _] = RecordsGroup::split_by_type(vec![make_logs()]);
+        let original_logs = logs.clone();
+        let split = logs.split(NonZeroU64::new(2).unwrap()).unwrap();
+        assert_eq!(split.len(), 2);
+        let [a, b] = split.into_otap_arrow_records().try_into().unwrap();
+        assert_eq!(a.batch_length(), 2);
+        assert_eq!(b.batch_length(), 1);
+
+        let [logs, _, _] = RecordsGroup::split_by_type(vec![a, b]);
+        let logs2 = logs.clone();
+        let merged = logs.concatenate(Some(NonZeroU64::new(4).unwrap())).unwrap();
+        let merged2 = logs2.concatenate(None).unwrap();
+        assert_eq!(merged, merged2);
+        assert_eq!(merged, original_logs);
+    }
+}
