@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_visit_non_zero_then_reset_via_registry_api() {
+    async fn test_visit_then_reset_via_registry_api() {
         let config = create_test_config(10);
         let registry = create_test_registry();
         let metric_set: crate::metrics::MetricSet<MockMetricSet> =
@@ -260,16 +260,16 @@ mod tests {
 
         // First visit should see the non-zero and then reset
         let mut first = Vec::new();
-        registry.visit_non_zero_metrics_and_reset(|_d, _a, iter| {
+        registry.visit_metrics_and_reset(|_d, _a, iter| {
             for (f, v) in iter {
                 first.push((f.name, v));
             }
         });
-        assert_eq!(first, vec![("counter1", 7)]);
+        assert_eq!(first, vec![("counter1", 7), ("counter2", 0)]);
 
         // Second visit should see nothing
         let mut count = 0;
-        registry.visit_non_zero_metrics_and_reset(|_, _, _| {
+        registry.visit_metrics_and_reset(|_, _, _| {
             count += 1;
         });
         assert_eq!(count, 0);

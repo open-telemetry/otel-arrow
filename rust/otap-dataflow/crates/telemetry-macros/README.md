@@ -141,10 +141,10 @@ implementation of the `snapshot_values` and `clear_values`.
 - In a node or component that has a `PipelineContext`, register your metric set
   to get a `MetricSet<T>` handle.
 - Use the instrument methods to record values. Common methods:
-    - Counter: `inc()`, `add(u64)`
-    - UpDownCounter: `inc()`, `dec()`, `add(u64)`, `sub(u64)`
-    - Gauge: `set(u64)`, `inc()`, `dec()`, `add(u64)`, `sub(u64)`
-- The engine’s telemetry cycle will snapshot and clear values as needed.
+  - Counter: `inc()`, `add(u64)`
+  - UpDownCounter: `inc()`, `dec()`, `add(u64)`, `sub(u64)`
+  - Gauge: `set(u64)`, `inc()`, `dec()`, `add(u64)`, `sub(u64)`
+- The engine's telemetry cycle will snapshot and clear values as needed.
 
 Example usage in a node:
 

@@ -14,7 +14,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricsDescriptor, MetricsField};
-use otap_df_telemetry::registry::{MetricsRegistryHandle, NonZeroMetrics};
+use otap_df_telemetry::registry::{MetricsIterator, MetricsRegistryHandle};
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
@@ -289,7 +289,7 @@ fn aggregate_metric_groups(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
-                     metrics_iter: NonZeroMetrics<'_>| {
+                     metrics_iter: MetricsIterator<'_>| {
         // Build key attributes vector
         let mut key_attrs: Vec<(String, Option<String>)> = Vec::new();
         if !group_attrs.is_empty() {
@@ -340,7 +340,7 @@ fn aggregate_metric_groups(
     };
 
     if reset {
-        registry.visit_non_zero_metrics_and_reset(|d, a, m| visit(d, a, m));
+        registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
@@ -550,7 +550,7 @@ fn collect_metrics_snapshot_and_reset(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_non_zero_metrics_and_reset(|descriptor, attributes, metrics_iter| {
+    registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
         let mut metrics = Vec::new();
 
         for (field, value) in metrics_iter {
@@ -610,7 +610,7 @@ fn collect_compact_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSet> 
 fn collect_compact_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_non_zero_metrics_and_reset(|descriptor, attributes, metrics_iter| {
+    registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
         let mut metrics = HashMap::new();
         for (field, value) in metrics_iter {
             let _ = metrics.insert(field.name.to_string(), value);
@@ -645,7 +645,7 @@ fn format_line_protocol(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
-                     metrics_iter: NonZeroMetrics<'_>| {
+                     metrics_iter: MetricsIterator<'_>| {
         // Measurement is the metric set name when available; fallback to "metrics".
         let measurement_name = if descriptor.name.is_empty() {
             "metrics"
@@ -688,7 +688,7 @@ fn format_line_protocol(
     };
 
     if reset {
-        registry.visit_non_zero_metrics_and_reset(|d, a, m| visit(d, a, m));
+        registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
@@ -709,7 +709,7 @@ fn format_prometheus_text(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
-                     metrics_iter: NonZeroMetrics<'_>| {
+                     metrics_iter: MetricsIterator<'_>| {
         // Render labels from attributes + set label
         let mut base_labels = String::new();
         if !descriptor.name.is_empty() {
@@ -766,7 +766,7 @@ fn format_prometheus_text(
     };
 
     if reset {
-        registry.visit_non_zero_metrics_and_reset(|d, a, m| visit(d, a, m));
+        registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }

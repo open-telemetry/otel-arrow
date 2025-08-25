@@ -65,15 +65,15 @@ impl MetricsEntry {
     }
 }
 
-/// Lightweight iterator over non-zero metrics (no heap allocs).
-pub struct NonZeroMetrics<'a> {
+/// Lightweight iterator over metrics (no heap allocs).
+pub struct MetricsIterator<'a> {
     fields: &'static [MetricsField],
     values: &'a [u64],
     idx: usize,
     len: usize,
 }
 
-impl<'a> NonZeroMetrics<'a> {
+impl<'a> MetricsIterator<'a> {
     #[inline]
     fn new(fields: &'static [MetricsField], values: &'a [u64]) -> Self {
         let len = values.len();
@@ -91,61 +91,53 @@ impl<'a> NonZeroMetrics<'a> {
     }
 }
 
-impl<'a> Iterator for NonZeroMetrics<'a> {
+impl<'a> Iterator for MetricsIterator<'a> {
     type Item = (&'static MetricsField, u64);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        // SAFETY invariants (upheld by construction and the registry):
-        // - self.idx < self.len is the loop guard; we read index `i` captured before increment.
-        // - fields.len() == values.len() (asserted in debug in new()) => indexing `fields[i]` is valid.
-        // - `values` is an immutable slice for the lifetime of the iterator; no concurrent mutation.
-        while self.idx < self.values.len() {
-            let i = self.idx;
-            self.idx += 1;
-
-            // Use unchecked indexing when the feature is enabled, otherwise use safe indexing
-            let v = {
-                #[cfg(feature = "unchecked-index")]
-                {
-                    // SAFETY: We know `i` is valid because:
-                    // 1. `i` was captured from `self.idx` before incrementing
-                    // 2. Loop condition ensures `self.idx < self.values.len()` when we enter
-                    // 3. `values` slice is immutable for the iterator's lifetime
-                    unsafe { *self.values.get_unchecked(i) }
-                }
-                #[cfg(not(feature = "unchecked-index"))]
-                {
-                    self.values[i]
-                }
-            };
-
-            if v != 0 {
-                let field = {
-                    #[cfg(feature = "unchecked-index")]
-                    {
-                        // SAFETY: Same invariants as above apply to fields array
-                        // fields.len() == values.len() is asserted in new()
-                        unsafe { self.fields.get_unchecked(i) }
-                    }
-                    #[cfg(not(feature = "unchecked-index"))]
-                    {
-                        &self.fields[i]
-                    }
-                };
-                return Some((field, v));
-            }
+        // Single bound check: emit every metric (including zeros).
+        if self.idx >= self.len {
+            return None;
         }
-        None
+        let i = self.idx;
+        self.idx = i + 1;
+
+        // SAFETY: `i < self.len` and `self.len == self.fields.len() == self.values.len()` by construction.
+        let v = {
+            #[cfg(feature = "unchecked-index")]
+            unsafe {
+                *self.values.get_unchecked(i)
+            }
+            #[cfg(not(feature = "unchecked-index"))]
+            {
+                self.values[i]
+            }
+        };
+
+        let field = {
+            #[cfg(feature = "unchecked-index")]
+            unsafe {
+                self.fields.get_unchecked(i)
+            }
+            #[cfg(not(feature = "unchecked-index"))]
+            {
+                &self.fields[i]
+            }
+        };
+
+        Some((field, v))
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        // Upper bound: remaining elements
-        // Lower bound: unknown number of non-zeros.
-        (0, Some(self.len.saturating_sub(self.idx)))
+        // Exact remaining length now that we yield all elements.
+        let rem = self.len.saturating_sub(self.idx);
+        (rem, Some(rem))
     }
 }
+
+impl<'a> ExactSizeIterator for MetricsIterator<'a> {}
 
 // This iterator is "fused": once `next()` returns `None`, it will always return `None`.
 // Rationale:
@@ -156,7 +148,7 @@ impl<'a> Iterator for NonZeroMetrics<'a> {
 //   and callers do not need to wrap with `iter.fuse()`.
 
 // Note: This marker trait does not change behavior. It only encodes the guarantee.
-impl<'a> core::iter::FusedIterator for NonZeroMetrics<'a> {}
+impl<'a> core::iter::FusedIterator for MetricsIterator<'a> {}
 
 /// A sendable and cloneable handle on a metrics registry.
 ///
@@ -237,12 +229,12 @@ impl MetricsRegistry {
         self.metrics.len()
     }
 
-    /// Visits only metric sets with at least one non-zero value, yields a zero-alloc iterator
+    /// Visits only metric sets, yields a zero-alloc iterator
     /// of (MetricsField, value), then resets the values to zero.
-    pub(crate) fn visit_non_zero_metrics_and_reset<F>(&mut self, mut f: F)
+    pub(crate) fn visit_metrics_and_reset<F>(&mut self, mut f: F)
     where
         for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, NonZeroMetrics<'a>),
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
@@ -250,7 +242,7 @@ impl MetricsRegistry {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
-                f(desc, attrs, NonZeroMetrics::new(desc.metrics, values));
+                f(desc, attrs, MetricsIterator::new(desc.metrics, values));
 
                 // Zero after reporting.
                 values.iter_mut().for_each(|v| *v = 0);
@@ -335,15 +327,15 @@ impl MetricsRegistryHandle {
         self.len() == 0
     }
 
-    /// Visits only metric sets with at least one non-zero value, yields a zero-alloc iterator
+    /// Visits metric sets, yields a zero-alloc iterator
     /// of (MetricsField, value), then resets the values to zero.
-    pub fn visit_non_zero_metrics_and_reset<F>(&self, f: F)
+    pub fn visit_metrics_and_reset<F>(&self, f: F)
     where
         for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, NonZeroMetrics<'a>),
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         let mut reg = self.metric_registry.lock();
-        reg.visit_non_zero_metrics_and_reset(f);
+        reg.visit_metrics_and_reset(f);
     }
 
     /// Generates a SemConvRegistry from the current MetricsRegistry.
@@ -353,12 +345,12 @@ impl MetricsRegistryHandle {
         self.metric_registry.lock().generate_semconv_registry()
     }
 
-    /// Visits current metric sets with non-zero values without resetting them.
+    /// Visits current metric sets without resetting them.
     /// This is useful for read-only access to metrics for HTTP endpoints.
     pub fn visit_current_metrics<F>(&self, mut f: F)
     where
         for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, NonZeroMetrics<'a>),
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         let reg = self.metric_registry.lock();
         for entry in reg.metrics.values() {
@@ -367,7 +359,7 @@ impl MetricsRegistryHandle {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
-                f(desc, attrs, NonZeroMetrics::new(desc.metrics, values));
+                f(desc, attrs, MetricsIterator::new(desc.metrics, values));
             }
         }
     }
@@ -517,7 +509,7 @@ mod tests {
 
         // Values should be accumulated
         let mut accumulated_values = Vec::new();
-        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, iter| {
+        handle.visit_metrics_and_reset(|_desc, _attrs, iter| {
             for (_field, value) in iter {
                 accumulated_values.push(value);
             }
@@ -550,7 +542,7 @@ mod tests {
         handle.accumulate_snapshot(metrics_key, &[10, 10]);
 
         let mut accumulated_values = Vec::new();
-        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, iter| {
+        handle.visit_metrics_and_reset(|_desc, _attrs, iter| {
             for (_field, value) in iter {
                 accumulated_values.push(value);
             }
@@ -576,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_non_zero_metrics_and_reset() {
+    fn test_visit_metrics_and_reset() {
         let handle = MetricsRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
 
@@ -589,7 +581,7 @@ mod tests {
         let mut visit_count = 0;
         let mut collected_values = Vec::new();
 
-        handle.visit_non_zero_metrics_and_reset(|desc, _attrs, iter| {
+        handle.visit_metrics_and_reset(|desc, _attrs, iter| {
             visit_count += 1;
             assert_eq!(desc.name, "test_metrics");
 
@@ -599,13 +591,13 @@ mod tests {
         });
 
         assert_eq!(visit_count, 1);
-        assert_eq!(collected_values, vec![("counter1", 100)]);
+        assert_eq!(collected_values, vec![("counter1", 100), ("counter2", 0)]);
 
         // After reset, should not visit again
         visit_count = 0;
         collected_values.clear();
 
-        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, _iter| {
+        handle.visit_metrics_and_reset(|_desc, _attrs, _iter| {
             visit_count += 1;
         });
 
@@ -613,22 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_no_non_zero_metrics() {
-        let handle = MetricsRegistryHandle::new();
-        let attrs = MockAttributeSet::new("test_value".to_string());
-
-        let _metric_set: MetricSet<MockMetricSet> = handle.register(attrs);
-
-        let mut visit_count = 0;
-        handle.visit_non_zero_metrics_and_reset(|_desc, _attrs, _iter| {
-            visit_count += 1;
-        });
-
-        assert_eq!(visit_count, 0);
-    }
-
-    #[test]
-    fn test_non_zero_metrics_iterator() {
+    fn test_metrics_iterator() {
         let fields = &[
             MetricsField {
                 name: "metric1",
@@ -645,18 +622,21 @@ mod tests {
         ];
 
         let values = [0, 5, 0, 10, 0];
-        let mut iter = NonZeroMetrics::new(fields, &values[..2]);
+        let mut iter = MetricsIterator::new(fields, &values[..2]);
 
-        // Should only return non-zero values
         let item1 = iter.next().unwrap();
-        assert_eq!(item1.0.name, "metric2");
-        assert_eq!(item1.1, 5);
+        assert_eq!(item1.0.name, "metric1");
+        assert_eq!(item1.1, 0);
+
+        let item2 = iter.next().unwrap();
+        assert_eq!(item2.0.name, "metric2");
+        assert_eq!(item2.1, 5);
 
         assert!(iter.next().is_none());
     }
 
     #[test]
-    fn test_non_zero_metrics_iterator_size_hint() {
+    fn test_metrics_iterator_size_hint() {
         let fields = &[MetricsField {
             name: "metric1",
             unit: "1",
@@ -665,15 +645,15 @@ mod tests {
         }];
 
         let values = [10];
-        let iter = NonZeroMetrics::new(fields, &values);
+        let iter = MetricsIterator::new(fields, &values);
 
         let (lower, upper) = iter.size_hint();
-        assert_eq!(lower, 0);
+        assert_eq!(lower, 1);
         assert_eq!(upper, Some(1));
     }
 
     #[test]
-    fn test_non_zero_metrics_iterator_fused() {
+    fn test_metrics_iterator_fused() {
         let fields = &[MetricsField {
             name: "metric1",
             unit: "1",
@@ -682,7 +662,7 @@ mod tests {
         }];
 
         let values = [10];
-        let mut iter = NonZeroMetrics::new(fields, &values);
+        let mut iter = MetricsIterator::new(fields, &values);
 
         // Consume the iterator
         let _first = iter.next();
