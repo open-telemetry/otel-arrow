@@ -247,7 +247,8 @@ aggregate_assignment_expression = {
 }
 
 group_by_expression = {
-    identifier_literal ~ ("=" ~ scalar_expression)?
+    identifier_literal ~ "=" ~ scalar_expression
+    | accessor_expression
 }
 
 summarize_expression = {
