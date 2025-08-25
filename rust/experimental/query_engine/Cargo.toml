@@ -20,7 +20,7 @@ publish = false
 rust-version = "1.86.0"
 
 [workspace.dependencies]
-arrow = "55"
+arrow = "56"
 bytes = "1.10.1"
 caseless = "0.2.2"
 chrono = "0.4.41"
