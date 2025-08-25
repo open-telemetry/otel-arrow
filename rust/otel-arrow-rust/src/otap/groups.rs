@@ -1198,8 +1198,6 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
     // `RecordBatch`es together? At least investigate the performance cost of calling
     // RecordBatch::into_parts/try_new repeatedly.
 
-    let mut cols_to_dict_fields: HashMap<usize, Vec<usize>> = HashMap::new();
-
     // `field_name_to_col_indices` maps column name to vector of col-indices
     let mut field_name_to_col_indices: HashMap<String, HashSet<usize>> = HashMap::new();
     // FIXME: replace sets with a real bitset type, ideally one that stores small sets inline
@@ -1215,20 +1213,11 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         }
         let len = batches.len();
 
-        cols_to_dict_fields.clear();
         field_name_to_col_indices.clear();
         all_cols.clear();
 
         for (col, schema) in schemas.iter().enumerate() {
-            for (field_index, field) in schema.fields.iter().enumerate() {
-                if matches!(field.data_type(), DataType::Dictionary(_, _)) {
-                    // FIXME: we're assuming that field indices correspond to column indices...is
-                    // that true?
-                    cols_to_dict_fields
-                        .entry(col)
-                        .or_default()
-                        .push(field_index);
-                }
+            for field in schema.fields.iter() {
                 let _ = field_name_to_col_indices
                     .entry(field.name().clone())
                     .or_default()
