@@ -923,29 +923,37 @@ impl SliceScalarExpression {
         &mut self,
         scope: &PipelineResolutionScope,
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
-        let query_location = &self.query_location;
-
         let range_start_inclusive = match &mut self.range_start_inclusive {
-            Some(s) => match s.try_resolve_static(scope)? {
-                Some(v) => {
-                    Self::validate_resolved_range_value(query_location, "start", v.to_value())?
+            Some(s) => {
+                let location = s.get_query_location().clone();
+
+                match s.try_resolve_static(scope)? {
+                    Some(v) => {
+                        Self::validate_resolved_range_value(&location, "start", v.to_value())?
+                    }
+                    None => return Ok(None),
                 }
-                None => return Ok(None),
-            },
+            }
             None => 0,
         };
 
         let range_end_exclusive = match &mut self.range_end_exclusive {
-            Some(s) => match s.try_resolve_static(scope)? {
-                Some(v) => Some(Self::validate_resolved_range_value(
-                    query_location,
-                    "end",
-                    v.to_value(),
-                )?),
-                None => return Ok(None),
-            },
+            Some(s) => {
+                let location = s.get_query_location().clone();
+
+                match s.try_resolve_static(scope)? {
+                    Some(v) => Some(Self::validate_resolved_range_value(
+                        &location,
+                        "end",
+                        v.to_value(),
+                    )?),
+                    None => return Ok(None),
+                }
+            }
             None => None,
         };
+
+        let query_location = &self.query_location;
 
         match self.source.try_resolve_static(scope)? {
             Some(s) => match s.to_value() {

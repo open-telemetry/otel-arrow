@@ -84,19 +84,17 @@ impl ParseJsonScalarExpression {
         &mut self,
         scope: &PipelineResolutionScope,
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
-        let query_location = &self.query_location;
+        let query_location = self.inner_expression.get_query_location().clone();
 
         match &mut self.inner_expression.try_resolve_static(scope)? {
             Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
                 if let Value::String(s) = v.to_value() {
-                    StaticScalarExpression::from_json(self.query_location.clone(), s.get_value())?
+                    StaticScalarExpression::from_json(query_location, s.get_value())?
                 } else {
+                    let t = v.get_value_type();
                     return Err(ExpressionError::ParseError(
-                        query_location.clone(),
-                        format!(
-                            "Input of '{:?}' type could not be pased as JSON",
-                            v.get_value_type()
-                        ),
+                        query_location,
+                        format!("Input of '{:?}' type could not be pased as JSON", t),
                     ));
                 },
             ))),

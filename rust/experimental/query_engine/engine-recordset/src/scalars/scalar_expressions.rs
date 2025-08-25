@@ -319,7 +319,7 @@ where
 
             let range_start_inclusive = match s.get_range_start_inclusive() {
                 Some(start) => SliceScalarExpression::validate_resolved_range_value(
-                    s.get_query_location(),
+                    start.get_query_location(),
                     "start",
                     execute_scalar_expression(execution_context, start)?.to_value(),
                 )?,
@@ -327,7 +327,7 @@ where
             };
             let range_end_exclusive = match s.get_range_end_exclusive() {
                 Some(end) => Some(SliceScalarExpression::validate_resolved_range_value(
-                    s.get_query_location(),
+                    end.get_query_location(),
                     "end",
                     execute_scalar_expression(execution_context, end)?.to_value(),
                 )?),

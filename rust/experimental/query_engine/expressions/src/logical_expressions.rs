@@ -495,7 +495,7 @@ impl ContainsLogicalExpression {
 
                 Ok(Some(ResolvedStaticScalarExpression::Value(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                        self.query_location.clone(),
+                        query_location.clone(),
                         r,
                     )),
                 )))
@@ -558,7 +558,7 @@ impl MatchesLogicalExpression {
 
                 Ok(Some(ResolvedStaticScalarExpression::Value(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
-                        self.query_location.clone(),
+                        query_location.clone(),
                         r,
                     )),
                 )))
