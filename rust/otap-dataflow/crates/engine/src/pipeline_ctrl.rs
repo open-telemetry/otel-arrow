@@ -103,9 +103,6 @@ impl PipelineCtrlMsgManager {
                         if when > now {
                             tokio::time::sleep_until(when).await;
                         }
-                    } else {
-                        // No timers scheduled, wait indefinitely.
-                        futures::future::pending::<()>().await;
                     }
                 }, if next_expiry.is_some() => {
                     if let Some(Reverse((when, node_id))) = self.timers.pop() {
@@ -120,7 +117,7 @@ impl PipelineCtrlMsgManager {
                                 }
 
                                 // Schedule next recurrence
-                                let next_when = Instant::now() + timer_state.duration;
+                                let next_when = when + timer_state.duration;
                                 self.timers.push(Reverse((next_when, node_id)));
                                 timer_state.scheduled_time = next_when;
                             } else if timer_state.is_canceled {
