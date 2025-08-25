@@ -349,7 +349,7 @@ class LoadGenerator:
                 for message in syslog_batch:
                     print(f"Sending syslog message {message} via UDP")
                     sock.sendto(message, (syslog_server, syslog_port))
-                
+
                 self.increment_metric("sent", args["batch_size"])
                 self.increment_metric("bytes_sent", batch_total_size)
             except Exception as e:
@@ -407,11 +407,11 @@ class LoadGenerator:
 
         if load_type == "syslog":
             syslog_transport = os.getenv("SYSLOG_TRANSPORT", "tcp").lower()
-            
+
             if syslog_transport not in ["tcp", "udp"]:
                 print(f"Invalid SYSLOG_TRANSPORT '{syslog_transport}', using 'tcp'")
                 syslog_transport = "tcp"
-            
+
             if syslog_transport == "udp":
                 worker_func = self.syslog_udp_worker_thread
             else:
