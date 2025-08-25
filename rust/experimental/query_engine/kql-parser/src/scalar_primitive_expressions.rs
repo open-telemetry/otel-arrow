@@ -249,7 +249,7 @@ pub(crate) fn parse_real_expression(
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
 pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
     allow_root_scalar: bool,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&accessor_expression_rule);
@@ -557,7 +557,7 @@ pub(crate) fn parse_accessor_expression(
     }
 }
 
-fn get_value_type(state: &ParserState, value_accessor: &ValueAccessor) -> Option<ValueType> {
+fn get_value_type(state: &dyn ParserScope, value_accessor: &ValueAccessor) -> Option<ValueType> {
     let selectors = value_accessor.get_selectors();
     let mut value_type = None;
     if selectors.is_empty() {
@@ -1307,7 +1307,7 @@ mod tests {
 
     #[test]
     fn test_parse_accessor_expression_implicit_source_and_default_map() {
-        let run_test = |query: &str, expected: &Vec<ScalarExpression>| {
+        let run_test = |query: &str, expected: &[ScalarExpression]| {
             let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
 
             let expression = parse_accessor_expression(

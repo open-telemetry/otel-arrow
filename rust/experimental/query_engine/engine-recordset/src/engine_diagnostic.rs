@@ -56,7 +56,7 @@ pub struct RecordSetEngineDiagnostic<'a> {
 }
 
 impl<'a> RecordSetEngineDiagnostic<'a> {
-    pub fn new(
+    pub(crate) fn new(
         diagnostic_level: RecordSetEngineDiagnosticLevel,
         expression: &'a dyn Expression,
         message: String,

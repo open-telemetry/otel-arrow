@@ -36,7 +36,7 @@ impl ValueAccessor {
         !self.selectors.is_empty()
     }
 
-    pub fn get_selectors(&self) -> &Vec<ScalarExpression> {
+    pub fn get_selectors(&self) -> &[ScalarExpression] {
         &self.selectors
     }
 

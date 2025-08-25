@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_negate_expression(
     negate_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&negate_expression_rule);
     let mut inner = negate_expression_rule.into_inner();
@@ -26,7 +26,7 @@ pub(crate) fn parse_negate_expression(
 
 pub(crate) fn parse_bin_expression(
     bin_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&bin_expression_rule);
 
@@ -42,7 +42,7 @@ pub(crate) fn parse_bin_expression(
 
 pub(crate) fn parse_arithmetic_expression(
     arithmetic_expr_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&arithmetic_expr_rule);
     let mut inner_rules = arithmetic_expr_rule.into_inner();
@@ -78,7 +78,7 @@ pub(crate) fn parse_arithmetic_expression(
 
 fn parse_arithmetic_factor(
     factor_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&factor_rule);
     let mut inner_rules = factor_rule.into_inner();
