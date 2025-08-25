@@ -35,7 +35,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
 use otap_df_channel::mpsc;
-use otap_df_engine::retry_processor::{RetryConfig, RetryProcessor};
 use otap_df_engine::{
     control::NodeControlMsg,
     local::message::LocalSender,
@@ -43,8 +42,10 @@ use otap_df_engine::{
     message::Message,
     testing::test_node,
 };
-use otap_df_otlp::grpc::OTLPData;
-use otap_df_otlp::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otap_df_otap::grpc::OtapArrowBytes;
+use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::retry_processor::{RetryConfig, RetryProcessor};
+use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use std::collections::HashMap;
 use std::hint::black_box;
 
@@ -58,9 +59,9 @@ const HASHMAP_SIZES: &[usize] = &[10, 50, 100];
 fn create_processor_with_pending(
     pending_count: usize,
 ) -> (
-    RetryProcessor<OTLPData>,
-    EffectHandler<OTLPData>,
-    mpsc::Receiver<OTLPData>,
+    RetryProcessor,
+    EffectHandler<OtapPdata>,
+    mpsc::Receiver<OtapPdata>,
 ) {
     let config = RetryConfig {
         max_retries: 3,
@@ -81,10 +82,12 @@ fn create_processor_with_pending(
     (processor, effect_handler, receiver)
 }
 
-/// Creates test OTLP logs data for benchmarking
-fn create_otlp_logs_data() -> OTLPData {
-    let logs_request = ExportLogsServiceRequest::default();
-    OTLPData::Logs(logs_request)
+fn create_test_data(id: i64) -> OtapPdata {
+    OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowLogs(BatchArrowRecords {
+        batch_id: id,
+        arrow_payloads: vec![],
+        headers: vec![],
+    }))
 }
 
 /// Benchmark 1: Individual message operations
@@ -100,7 +103,7 @@ fn bench_individual_operations(c: &mut Criterion) {
     let _ = group.bench_function("process_pdata", |b| {
         b.to_async(&rt).iter(|| async {
             let (mut processor, mut effect_handler, _receiver) = create_processor_with_pending(0);
-            let otlp_data = create_otlp_logs_data();
+            let otlp_data = create_test_data(1);
 
             processor
                 .process(Message::PData(otlp_data), &mut effect_handler)
@@ -116,7 +119,7 @@ fn bench_individual_operations(c: &mut Criterion) {
             let (mut processor, mut effect_handler, _receiver) = create_processor_with_pending(0);
 
             // First add a message to have something to ACK
-            let otlp_data = create_otlp_logs_data();
+            let otlp_data = create_test_data(2);
             processor
                 .process(Message::PData(otlp_data), &mut effect_handler)
                 .await
@@ -140,7 +143,7 @@ fn bench_individual_operations(c: &mut Criterion) {
             let (mut processor, mut effect_handler, _receiver) = create_processor_with_pending(0);
 
             // First add a message to have something to NACK
-            let otlp_data = create_otlp_logs_data();
+            let otlp_data = create_test_data(3);
             processor
                 .process(Message::PData(otlp_data), &mut effect_handler)
                 .await
@@ -184,7 +187,7 @@ fn bench_timer_tick_scaling(c: &mut Criterion) {
 
                     // Pre-populate with pending messages
                     for i in 0..hashmap_size {
-                        let otlp_data = create_otlp_logs_data();
+                        let otlp_data = create_test_data(4);
                         processor
                             .process(Message::PData(otlp_data), &mut effect_handler)
                             .await

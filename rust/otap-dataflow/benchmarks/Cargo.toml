@@ -12,6 +12,7 @@ rust-version.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 mimalloc = "0.1.47"
+otap-df-otap = { path="../crates/otap"}
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -19,7 +20,6 @@ mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
-otap-df-otap = { path="../crates/otap"}
 otap-df-otlp = { path="../crates/otlp"}
 otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
 otap-df-syslog-cef = { path="../crates/syslog_cef_receiver"}
