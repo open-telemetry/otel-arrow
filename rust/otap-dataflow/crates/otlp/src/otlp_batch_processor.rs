@@ -26,7 +26,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use validator::Validate;
 
 const _OTLP_BATCH_PROCESSOR_URN: &str = "urn:otel:otlp:batch::processor";
 
@@ -337,9 +336,9 @@ pub struct BatchConfig {
 impl Default for BatchConfig {
     fn default() -> Self {
         Self {
-            sizer: BatchSizer::Items,
-            send_batch_size: 512,
-            timeout: Duration::from_secs(5),
+            sizer: DEFAULT_BATCH_SIZER,
+            send_batch_size: DEFAULT_SEND_BATCH_SIZE,
+            timeout: Duration::from_millis(DEFAULT_TIMEOUT_MILLIS),
         }
     }
 }
@@ -444,7 +443,7 @@ impl GenericBatcher {
     ) -> Result<(), Error<OTLPData>> {
         let now = Instant::now();
         let timeout = self.config.timeout;
-        if timeout != Duration::from_secs(0) {
+        if timeout != TIMEOUT_DISABLED {
             if self.traces_pending.is_some()
                 && now.duration_since(self.last_update_traces) >= timeout
             {
@@ -677,34 +676,58 @@ impl Processor<OTLPData> for GenericBatcher {
 
 // ===== Processor factory and config validation =====
 
+// Default values and sentinel constants
+const DEFAULT_SEND_BATCH_SIZE: usize = 512;
+const DEFAULT_TIMEOUT_MILLIS: u64 = 5_000;
+const DEFAULT_BATCH_SIZER: BatchSizer = BatchSizer::Items;
+const TIMEOUT_DISABLED: Duration = Duration::from_secs(0);
+
+// Validation thresholds
+const MIN_SEND_BATCH_SIZE: usize = 1;
+const MIN_TIMEOUT_MILLIS: u64 = 1;
+
 fn default_timeout_millis() -> u64 {
-    5_000
+    DEFAULT_TIMEOUT_MILLIS
 }
 fn default_send_batch_size() -> usize {
-    512
+    DEFAULT_SEND_BATCH_SIZE
 }
 fn default_sizer() -> BatchSizer {
-    BatchSizer::Items
+    DEFAULT_BATCH_SIZER
 }
 
-#[derive(Debug, Clone, Deserialize, Validate)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UserConfig {
+struct Config {
     #[serde(default = "default_sizer")]
     pub sizer: BatchSizer,
 
     #[serde(default = "default_send_batch_size")]
-    #[validate(range(min = 1))]
     pub send_batch_size: usize,
 
     /// Timeout for flushing partial batches, in milliseconds.
     #[serde(default = "default_timeout_millis")]
-    #[validate(range(min = 1))]
     pub timeout_millis: u64,
 }
 
-impl From<&UserConfig> for BatchConfig {
-    fn from(cfg: &UserConfig) -> Self {
+impl Config {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.send_batch_size < MIN_SEND_BATCH_SIZE {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "send_batch_size must be >= 1".to_string(),
+            });
+        }
+        if self.timeout_millis < MIN_TIMEOUT_MILLIS {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "timeout_millis must be >= 1".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl From<&Config> for BatchConfig {
+    fn from(cfg: &Config) -> Self {
         BatchConfig {
             sizer: cfg.sizer,
             send_batch_size: cfg.send_batch_size,
@@ -712,22 +735,18 @@ impl From<&UserConfig> for BatchConfig {
         }
     }
 }
-
 /// Factory function to create the OTLP batch processor from user config.
 pub fn create_otlp_batch_processor(
     node: NodeId,
     config: &Value,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OTLPData>, ConfigError> {
-    let cfg: UserConfig =
+    let cfg: Config =
         serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
         })?;
-    if let Err(e) = cfg.validate() {
-        return Err(ConfigError::InvalidUserConfig {
-            error: e.to_string(),
-        });
-    }
+
+    cfg.validate()?;
 
     let user_cfg = Arc::new(NodeUserConfig::new_processor_config(
         _OTLP_BATCH_PROCESSOR_URN,

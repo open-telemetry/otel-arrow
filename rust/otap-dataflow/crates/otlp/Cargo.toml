@@ -40,7 +40,6 @@ linkme = "0.3.33"
 rand = "0.9.1"
 rand_distr = "0.5.1"
 # Validation
-validator = { version = "0.18", features = ["derive"] }
 # Workspace dependencies
 thiserror.workspace = true
 serde_json.workspace = true
