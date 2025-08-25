@@ -219,14 +219,13 @@ pub async fn get_metrics_aggregate(
     let timestamp = now.to_rfc3339();
 
     // Parse attribute list (comma-separated), trim whitespace, drop empties
-    let group_attrs: Vec<String> = q
+    let group_attrs: Vec<_> = q
         .attrs
         .as_deref()
         .unwrap_or("")
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
         .collect();
 
     // Aggregate groups with or without reset
@@ -274,7 +273,7 @@ pub async fn get_metrics_aggregate(
 fn aggregate_metric_groups(
     registry: &MetricsRegistryHandle,
     reset: bool,
-    group_attrs: &[String],
+    group_attrs: &[&str],
 ) -> Vec<AggregateGroup> {
     // Aggregation map keyed by (set name, sorted list of (attr, Option<val_string>))
     type GroupKey = (String, Vec<(String, Option<String>)>);
@@ -298,8 +297,8 @@ fn aggregate_metric_groups(
                 let _ = amap.insert(k, v.to_string_value());
             }
             for gk in group_attrs {
-                let val_opt = amap.get(gk.as_str()).cloned();
-                key_attrs.push((gk.clone(), val_opt));
+                let val_opt = amap.get(gk).cloned();
+                key_attrs.push((gk.to_string(), val_opt));
             }
         }
         key_attrs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -315,8 +314,8 @@ fn aggregate_metric_groups(
                         let _ = avals.insert(k, val);
                     }
                     for gk in group_attrs {
-                        if let Some(v) = avals.get(gk.as_str()) {
-                            let _ = attrs_map.insert(gk.clone(), (*v).clone());
+                        if let Some(v) = avals.get(gk) {
+                            let _ = attrs_map.insert(gk.to_string(), (*v).clone());
                         }
                     }
                 }

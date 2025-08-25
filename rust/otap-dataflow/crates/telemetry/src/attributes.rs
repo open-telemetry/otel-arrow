@@ -57,7 +57,9 @@ impl<'a> Iterator for AttributeIterator<'a> {
                     // 2. Loop condition ensures `self.idx < self.len` when we enter
                     // 3. fields.len() == values.len() is asserted in new()
                     #[allow(unsafe_code)]
-                    unsafe { self.fields.get_unchecked(i) }
+                    unsafe {
+                        self.fields.get_unchecked(i)
+                    }
                 }
                 #[cfg(not(feature = "unchecked-index"))]
                 {
@@ -70,7 +72,9 @@ impl<'a> Iterator for AttributeIterator<'a> {
                 {
                     // SAFETY: Same invariants as above apply to values array
                     #[allow(unsafe_code)]
-                    unsafe { self.values.get_unchecked(i) }
+                    unsafe {
+                        self.values.get_unchecked(i)
+                    }
                 }
                 #[cfg(not(feature = "unchecked-index"))]
                 {
