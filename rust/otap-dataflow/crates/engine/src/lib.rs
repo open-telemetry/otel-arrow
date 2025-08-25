@@ -33,7 +33,6 @@ pub mod exporter;
 pub mod message;
 pub mod processor;
 pub mod receiver;
-pub mod retry_processor;
 
 mod attributes;
 pub mod config;
