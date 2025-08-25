@@ -25,6 +25,9 @@ pub enum ScalarExpression {
     /// Returns the first non-null scalar expression in a list.
     Coalesce(CoalesceScalarExpression),
 
+    /// Contains scalar functions for performing collection operations.
+    Collection(CollectionScalarExpression),
+
     /// Returns one of two inner scalar expressions based on a logical condition.
     Conditional(ConditionalScalarExpression),
 
@@ -37,9 +40,6 @@ pub enum ScalarExpression {
     /// Returns the number of characters in an inner string value, the number of
     /// items in an inner array/map values, or null for invalid input.
     Length(LengthScalarExpression),
-
-    /// Returns a list of inner scalar expressions as an array value.
-    List(ListScalarExpression),
 
     /// Boolean value returned by the inner logical expression.
     Logical(Box<LogicalExpression>),
@@ -83,7 +83,7 @@ impl ScalarExpression {
             ScalarExpression::Variable(_) => Ok(None),
             ScalarExpression::Static(s) => Ok(Some(s.get_value_type())),
             ScalarExpression::Constant(c) => Ok(Some(c.get_value_type())),
-            ScalarExpression::List(_) => Ok(Some(ValueType::Array)),
+            ScalarExpression::Collection(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(scope),
@@ -120,7 +120,7 @@ impl ScalarExpression {
                 None => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
             },
             ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(scope))),
-            ScalarExpression::List(l) => l.try_resolve_static(scope),
+            ScalarExpression::Collection(c) => c.try_resolve_static(scope),
             ScalarExpression::Logical(l) => match l.try_resolve_static(scope)? {
                 Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
@@ -152,7 +152,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Variable(v) => v.get_query_location(),
             ScalarExpression::Static(s) => s.get_query_location(),
             ScalarExpression::Constant(c) => c.get_query_location(),
-            ScalarExpression::List(l) => l.get_query_location(),
+            ScalarExpression::Collection(c) => c.get_query_location(),
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Coalesce(c) => c.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
@@ -173,7 +173,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Attached(_) => "ScalarExpression(Attached)",
             ScalarExpression::Variable(_) => "ScalarExpression(Variable)",
             ScalarExpression::Static(s) => s.get_name(),
-            ScalarExpression::List(_) => "ScalarExpression(List)",
+            ScalarExpression::Collection(_) => "ScalarExpression(Collection)",
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
@@ -814,61 +814,6 @@ impl Expression for LengthScalarExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ListScalarExpression {
-    query_location: QueryLocation,
-    value_expressions: Vec<ScalarExpression>,
-}
-
-impl ListScalarExpression {
-    pub fn new(
-        query_location: QueryLocation,
-        value_expressions: Vec<ScalarExpression>,
-    ) -> ListScalarExpression {
-        Self {
-            query_location,
-            value_expressions,
-        }
-    }
-
-    pub fn get_value_expressions(&self) -> &[ScalarExpression] {
-        &self.value_expressions
-    }
-
-    pub(crate) fn try_resolve_static(
-        &mut self,
-        scope: &PipelineResolutionScope,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
-        let mut values = Vec::new();
-
-        for v in &mut self.value_expressions {
-            match v.try_resolve_static(scope)?.and_then(|v| v.try_fold()) {
-                Some(v) => {
-                    values.push(v);
-                }
-                None => return Ok(None),
-            }
-        }
-
-        Ok(Some(ResolvedStaticScalarExpression::Computed(
-            StaticScalarExpression::Array(ArrayScalarExpression::new(
-                self.query_location.clone(),
-                values,
-            )),
-        )))
-    }
-}
-
-impl Expression for ListScalarExpression {
-    fn get_query_location(&self) -> &QueryLocation {
-        &self.query_location
-    }
-
-    fn get_name(&self) -> &'static str {
-        "ListScalarExpression"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct SliceScalarExpression {
     query_location: QueryLocation,
     source: Box<ScalarExpression>,
@@ -1139,11 +1084,6 @@ mod tests {
                 BooleanScalarExpression::new(QueryLocation::new_fake(), true),
             )),
             Some(ValueType::Boolean),
-        );
-
-        run_test_success(
-            ScalarExpression::List(ListScalarExpression::new(QueryLocation::new_fake(), vec![])),
-            Some(ValueType::Array),
         );
 
         run_test_success(
@@ -1474,33 +1414,6 @@ mod tests {
             Some(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(QueryLocation::new_fake(), true),
             )),
-        );
-
-        run_test_success(
-            ScalarExpression::List(ListScalarExpression::new(
-                QueryLocation::new_fake(),
-                vec![
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
-                    )),
-                ],
-            )),
-            Some(StaticScalarExpression::Array(ArrayScalarExpression::new(
-                QueryLocation::new_fake(),
-                vec![
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        1,
-                    )),
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        2,
-                    )),
-                ],
-            ))),
         );
 
         run_test_success(
