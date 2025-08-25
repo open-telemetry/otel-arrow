@@ -7,6 +7,7 @@
 
 use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::time::Duration;
 
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
@@ -50,6 +51,15 @@ pub enum NodeControlMsg {
         // For future usage
     },
 
+    /// Dedicated signal to ask a node to collect/flush its local telemetry metrics.
+    ///
+    /// This separates metrics collection from the generic TimerTick to allow
+    /// fine-grained scheduling of telemetry without conflating it with other periodic tasks.
+    CollectTelemetry {
+        /// Metrics reporter used to collect telemetry metrics.
+        metrics_reporter: MetricsReporter,
+    },
+
     /// Requests a graceful shutdown, requiring the node to finish processing messages and
     /// release resources by the specified deadline.
     ///
@@ -76,6 +86,20 @@ pub enum PipelineControlMsg {
     /// Requests cancellation of a periodic timer for the specified node.
     CancelTimer {
         /// Identifier of the node for which the timer is being canceled.
+        node_id: usize,
+    },
+
+    /// Requests the pipeline engine to start a periodic telemetry collection timer
+    /// for the specified node.
+    StartTelemetryTimer {
+        /// Identifier of the node for which the timer is being started.
+        node_id: usize,
+        /// Duration of the telemetry timer interval.
+        duration: Duration,
+    },
+    /// Requests cancellation of the periodic telemetry collection timer for the specified node.
+    CancelTelemetryTimer {
+        /// Identifier of the node for which the telemetry timer is being canceled.
         node_id: usize,
     },
     /// Requests shutdown of the node request manager.

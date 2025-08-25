@@ -18,7 +18,11 @@ testing = []
 [dependencies]
 otap-df-config = { path = "../config" }
 otap-df-engine = { path = "../engine" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-admin = { path = "../admin" }
 
 thiserror = { workspace = true }
 miette = { workspace = true }
 core_affinity = "0.8.3"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio-util = { workspace = true }

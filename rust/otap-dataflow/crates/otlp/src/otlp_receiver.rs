@@ -25,6 +25,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::node::NodeId;
@@ -63,9 +64,12 @@ pub struct OTLPReceiver {
 #[distributed_slice(OTLP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::shared(
-            OTLPReceiver::from_config(&node_config.config)?,
+            OTLPReceiver::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             receiver_config,
@@ -84,7 +88,10 @@ impl OTLPReceiver {
     }
 
     /// Creates a new OTLPReceiver from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),

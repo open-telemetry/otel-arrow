@@ -7,6 +7,7 @@ use clap::Parser;
 use mimalloc_rust::*;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::pipeline_group::Quota;
+use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
@@ -35,10 +36,15 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    // For now, we predefine pipeline group and pipeline IDs.
+    // That will be replaced with a more dynamic approach in the future.
+    let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
+    let pipeline_id: PipelineId = "default_pipeline".into();
+
     // Load pipeline configuration from file
     let pipeline_cfg = PipelineConfig::from_file(
-        "default_pipeline_group".into(),
-        "default_pipeline".into(),
+        pipeline_group_id.clone(),
+        pipeline_id.clone(),
         &args.pipeline,
     )?;
 
@@ -50,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting pipeline with {} cores", args.num_cores);
 
-    let result = controller.run_forever(pipeline_cfg, quota);
+    let result = controller.run_forever(pipeline_group_id, pipeline_id, pipeline_cfg, quota);
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");

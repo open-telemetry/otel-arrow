@@ -21,6 +21,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -57,9 +58,12 @@ pub struct OTLPExporter {
 #[distributed_slice(OTLP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            OTLPExporter::from_config(&node_config.config)?,
+            OTLPExporter::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             exporter_config,
@@ -80,7 +84,10 @@ impl OTLPExporter {
 
     /// Creates a new OTLPExporter from a configuration object
     #[allow(clippy::result_large_err)]
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
