@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Telemetry system used to instrument the OTAP engine. This system currently focuses on metrics

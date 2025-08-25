@@ -16,16 +16,16 @@ Below is a quick guide for defining and using a metric set.
 - Annotate your struct with `#[metric_set(name = "<metrics.group.name>")]`.
 - For each metric field, choose one of the supported instruments and add
   `#[metric(unit = "{unit}")]`.
-    - Supported instruments: `Counter<u64>` (`UpDownCounter<u64>`, `Gauge<u64>`
-      soon).
-    - Units follow a simple string convention (e.g., `{msg}`, `{record}`,
-      `{span}`).
+  - Supported instruments: `Counter<u64>` (`UpDownCounter<u64>`, `Gauge<u64>`
+    soon).
+  - Units follow a simple string convention (e.g., `{msg}`, `{record}`,
+    `{span}`).
 - Optional: Document each field with a Rust doc comment; it becomes the metric
   "brief" in the descriptor.
 - Optional: Override a field metric name with
   `#[metric(name = "custom.name", unit = "{unit}")]`.
-    - If `name` is omitted, the field identifier is converted by replacing `_`
-      with `.`.
+  - If `name` is omitted, the field identifier is converted by replacing `_`
+    with `.`.
 
 Example (from the OTAP Perf Exporter):
 
@@ -171,7 +171,7 @@ impl MyNode {
 
 Collecting on control messages (periodic telemetry):
 
-```
+```text
 Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
     // Report and clear current metrics snapshot
     let _ = metrics_reporter.report(&mut self.metrics).await;

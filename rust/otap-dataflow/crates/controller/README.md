@@ -8,11 +8,11 @@ Each engine is started on a dedicated CPU core (via thread pinning).
 
 ## Roadmap
 
-- [ ] Basic controller that can start/stop engines (stop is not implemented yet) 
+- [ ] Basic controller that can start/stop engines (stop is not implemented yet)
 - [X] Support for metrics collection and aggregation
 - [ ] HTTP admin interface to
-  - [X] view telemetry
-  - [ ] manager pipelines
+    - [X] view telemetry
+    - [ ] manager pipelines
 - [ ] NUMA awareness and support for pinning engines to specific NUMA nodes
 - [ ] Support for multiple pipeline groups
 - [ ] Support for dynamic reconfiguration of pipelines
