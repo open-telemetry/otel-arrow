@@ -106,6 +106,7 @@ impl<'a> Iterator for MetricsIterator<'a> {
         // SAFETY: `i < self.len` and `self.len == self.fields.len() == self.values.len()` by construction.
         let v = {
             #[cfg(feature = "unchecked-index")]
+            #[allow(unsafe_code)]
             unsafe {
                 *self.values.get_unchecked(i)
             }
@@ -117,6 +118,7 @@ impl<'a> Iterator for MetricsIterator<'a> {
 
         let field = {
             #[cfg(feature = "unchecked-index")]
+            #[allow(unsafe_code)]
             unsafe {
                 self.fields.get_unchecked(i)
             }
