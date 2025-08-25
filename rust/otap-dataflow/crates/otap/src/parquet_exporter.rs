@@ -524,6 +524,7 @@ mod test {
                 target_rows_per_file: None,
                 flush_age_check_interval: Some(age_check_interval),
                 flush_when_older_than: Some(Duration::from_millis(200)),
+                ..Default::default()
             }),
         });
 
@@ -599,11 +600,15 @@ mod test {
 
             // wait a little bit, then ensure we haven't flushed anything
             _ = sleep(Duration::from_millis(200)).await;
-            let num_tables = tokio::fs::read_dir(format!("{base_dir}"))
+            let any_table = tokio::fs::read_dir(format!("{base_dir}"))
                 .await
-                .iter()
-                .count();
-            assert_eq!(num_tables, 0);
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap();
+                // .iter()
+                // .count();
+            assert!(any_table.is_none());
 
             // by now we've waited longer than the old age threshold, so if we send the timer tick
             // now, the files should flush
@@ -616,7 +621,7 @@ mod test {
             // of this test by waiting to get the Ack here instead of just waiting some arbitrary
             // amount of time for the files to be flushed
             // https://github.com/open-telemetry/otel-arrow/issues/504
-            _ = sleep(Duration::from_micros(500)).await;
+            _ = sleep(Duration::from_millis(500)).await;
 
             for payload_type in &[
                 ArrowPayloadType::Logs,
