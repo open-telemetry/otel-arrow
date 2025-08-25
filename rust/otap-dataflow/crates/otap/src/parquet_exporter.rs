@@ -23,6 +23,7 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::time::Duration;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
@@ -108,16 +109,24 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
         let writer_options = self.config.writer_options.unwrap_or_default();
 
+        // if threshold set to flush old messages, get the timer interval. If timer interval isn't
+        // configured, we use a default period of 5s
+        let flush_age_check_interval = writer_options.flush_when_older_than.is_some().then(|| {
+            writer_options
+                .flush_age_check_interval
+                .unwrap_or(Duration::from_secs(5))
+        });
+
         // start timer-tick to periodically flush batches older than threshold
-        // TODO cancel timer
-        let timer_cancel = match writer_options.flush_age_check_interval {
-            Some(flush_age_check_interval) => Some(
-                effect_handler
-                    .start_periodic_timer(flush_age_check_interval)
-                    .await?,
-            ),
-            None => None,
-        };
+        if let Some(flush_age_check_interval) = flush_age_check_interval {
+            // ignoring timer cancel for now..
+            // TODO when we have the ability to inject dynamic config we may need to cancel and
+            // recreate the interval timer
+            // https://github.com/open-telemetry/otel-arrow/issues/500
+            let _timer_cancel = effect_handler
+                .start_periodic_timer(flush_age_check_interval)
+                .await?;
+        }
 
         let mut writer = writer::WriterManager::new(object_store, writer_options);
         let mut batch_id = 0;
@@ -524,7 +533,6 @@ mod test {
                 target_rows_per_file: None,
                 flush_age_check_interval: Some(age_check_interval),
                 flush_when_older_than: Some(Duration::from_millis(200)),
-                ..Default::default()
             }),
         });
 
@@ -591,29 +599,27 @@ mod test {
                     ..Default::default()
                 }),
             );
-            _ = pdata_tx.send(otap_batch.into()).await;
+            pdata_tx.send(otap_batch.into()).await.unwrap();
 
             // wait some time but not as long as the old age threshold, then send a timer tick
             _ = sleep(Duration::from_millis(50)).await;
-            // TODO surface error
-            _ = ctrl_tx.send(NodeControlMsg::TimerTick {}).await;
+            ctrl_tx.send(NodeControlMsg::TimerTick {}).await.unwrap();
 
             // wait a little bit, then ensure we haven't flushed anything
             _ = sleep(Duration::from_millis(200)).await;
-            let any_table = tokio::fs::read_dir(format!("{base_dir}"))
+            let any_table = tokio::fs::read_dir(base_dir.to_string())
                 .await
                 .unwrap()
                 .next_entry()
                 .await
                 .unwrap();
-                // .iter()
-                // .count();
+            // .iter()
+            // .count();
             assert!(any_table.is_none());
 
             // by now we've waited longer than the old age threshold, so if we send the timer tick
             // now, the files should flush
-            // TODO surface error
-            _ = ctrl_tx.send(NodeControlMsg::TimerTick {}).await;
+            ctrl_tx.send(NodeControlMsg::TimerTick {}).await.unwrap();
 
             // wait a little bit for flush to happen
             //
@@ -632,13 +638,13 @@ mod test {
                 assert_parquet_file_has_rows(base_dir, *payload_type, num_rows).await
             }
 
-            // TODO surface error?
-            _ = ctrl_tx
+            ctrl_tx
                 .send(NodeControlMsg::Shutdown {
                     deadline: Duration::from_nanos(10),
                     reason: "shutting down".into(),
                 })
-                .await;
+                .await
+                .unwrap();
 
             Ok(())
         }
@@ -656,8 +662,9 @@ mod test {
             )
         });
 
-        _ = test_run_result.unwrap();
-        _ = exporter_result.unwrap();
+        // these shouldn't be Err, so unwrap to check
+        test_run_result.unwrap();
+        exporter_result.unwrap();
     }
 
     #[test]

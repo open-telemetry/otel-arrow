@@ -16,7 +16,6 @@ pub struct Config {
     pub partitioning_strategies: Option<Vec<PartitioningStrategy>>,
 
     /// Options for the writer
-    // TODO fix the default for this?
     pub writer_options: Option<WriterOptions>,
 }
 
@@ -39,8 +38,8 @@ pub struct WriterOptions {
     /// the data become visible earlier. Note, setting this to too small of an interval could
     /// result in the creation of many small files, which can negatively impact read performance.
     ///
-    /// Note that files may actually be buffered for slightly longer than this value. See how this
-    /// configuration value works in concert with [`Self::flush_age_check_interval`] and
+    /// Note that files may actually be buffered for slightly longer than this value. For more
+    /// details see [`Self::flush_age_check_interval`]
     #[serde(with = "humantime_serde")]
     pub flush_when_older_than: Option<Duration>,
 
@@ -53,22 +52,8 @@ pub struct WriterOptions {
     /// interval can cause extra overhead in the pipeline.
     ///
     /// Default = "5s" (5 seconds)
-    // TODO need to set the default here somehow -- we don't want to let users configure this as null?
     #[serde(with = "humantime_serde")]
     pub flush_age_check_interval: Option<Duration>,
-
-    /// If a parent writer is older than the configured `flush_when_older_than` threshold, but 
-    /// it contains rows for a batch with child rows in a writer whose age is less than the 
-    /// threshold, setting this to true will cause the writer to automatically flush the child 
-    /// writers when the parent is flushed. Otherwise, the parent writer will not be flushed until
-    /// the child batch is also flushed.
-    /// 
-    /// Setting this to `true` can cause the parent batches to flush earlier, but risks resulting 
-    /// in undersized child batches (which can negatively impact read performance).
-    /// 
-    /// Default = false
-    // TODO need to set the default
-    pub force_flush_children_on_parent_timeout: bool
 }
 
 impl Default for WriterOptions {
@@ -76,7 +61,6 @@ impl Default for WriterOptions {
         Self {
             flush_when_older_than: None,
             flush_age_check_interval: None,
-            force_flush_children_on_parent_timeout: false,
             target_rows_per_file: Some(100_000_000),
         }
     }
@@ -104,7 +88,9 @@ mod test {
                 }
             ],
             \"writer_options\": {
-                \"target_rows_per_file\": 1000000000
+                \"target_rows_per_file\": 1000000000,
+                \"flush_when_older_than\": \"5m\",
+                \"flush_age_check_interval\": \"5s\"
             }
         }";
 
@@ -115,19 +101,12 @@ mod test {
                 "_part_id".to_string(),
             ])]),
             writer_options: Some(WriterOptions {
-                flush_age_check_interval: None,
-                flush_when_older_than: None,
+                flush_age_check_interval: Some(Duration::from_secs(5)),
+                flush_when_older_than: Some(Duration::from_secs(300)),
                 target_rows_per_file: Some(1000000000),
-                // TODO fix this default
-                force_flush_children_on_parent_timeout: false,
             }),
         };
         assert_eq!(config, expected)
-    }
-
-    #[test]
-    fn test_max_flush_interval_config() {
-        todo!()
     }
 
     #[test]

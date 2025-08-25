@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeSet, HashMap};
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -149,11 +149,11 @@ impl WriterManager {
         };
 
         file_writer.schedule_write(record_batch);
-        
 
         // track that we have written some unflushed data for this batch_id and payload_type
         if file_writer.batch_ids.insert(batch_id) {
-            self.unflushed_batches_state.incr_unflushed_write(batch_id, payload_type);
+            self.unflushed_batches_state
+                .incr_unflushed_write(batch_id, payload_type);
         }
     }
 
@@ -206,10 +206,10 @@ impl WriterManager {
 
         loop {
             for file_writer in self.pending_file_flushes.drain(..) {
-                if self
-                    .unflushed_batches_state
-                    .has_unflushed_child(file_writer.batch_ids.iter().cloned(), file_writer.payload_type)
-                {
+                if self.unflushed_batches_state.has_unflushed_child(
+                    file_writer.batch_ids.iter().cloned(),
+                    file_writer.payload_type,
+                ) {
                     requeue.push(file_writer);
                 } else {
                     flushable.push(file_writer);
@@ -222,11 +222,12 @@ impl WriterManager {
             }
 
             for file_writer in &flushable {
-                self.unflushed_batches_state
-                    .decr_unflushed_write(file_writer.batch_ids.iter().cloned(), file_writer.payload_type);
+                self.unflushed_batches_state.decr_unflushed_write(
+                    file_writer.batch_ids.iter().cloned(),
+                    file_writer.payload_type,
+                );
             }
 
-            println!("here!");
             _ = flushable
                 .drain(..)
                 .map(|fw| fw.writer.close())
@@ -250,14 +251,9 @@ impl WriterManager {
     /// If this [`WriterManager`] was configured with `[WriterOptions::flush_when_older_than`],
     /// then this method wil flush any current writers with rows older than this threshold.
     pub async fn flush_aged_beyond_threshold(&mut self) -> Result<(), ParquetError> {
-        println!("ATTEMPTING TO FLOSH ON AGE THRESHOLD");
-
         // schedule flushes -- this will put every writer whose age is older than the threshold
         // into the pending queue
         self.schedule_flushes();
-
-        println!("self pending queue len = {:?}", self.pending_file_flushes.len());
-
         self.attempt_flush_scheduled().await
     }
 }
@@ -307,10 +303,7 @@ struct FileWriter {
 }
 
 impl FileWriter {
-    fn new(
-        payload_type: ArrowPayloadType,
-        writer: AsyncArrowWriter<ParquetObjectWriter>,
-    ) -> Self {
+    fn new(payload_type: ArrowPayloadType, writer: AsyncArrowWriter<ParquetObjectWriter>) -> Self {
         Self {
             created_at: Instant::now(),
             batch_ids: BTreeSet::new(),
@@ -361,9 +354,9 @@ impl UnflushedBatchState {
         *count += 1;
     }
 
-    fn decr_unflushed_write<T>(&mut self, batch_ids: T, payload_type: ArrowPayloadType) 
+    fn decr_unflushed_write<T>(&mut self, batch_ids: T, payload_type: ArrowPayloadType)
     where
-        T: Iterator<Item = i64>
+        T: Iterator<Item = i64>,
     {
         for batch_id in batch_ids {
             // Remove the unflushed write for the given batch_id and payload_type
@@ -379,16 +372,16 @@ impl UnflushedBatchState {
         }
     }
 
-    fn has_unflushed_child<T>(&self, batch_ids: T, payload_type: ArrowPayloadType) -> bool 
+    fn has_unflushed_child<T>(&self, batch_ids: T, payload_type: ArrowPayloadType) -> bool
     where
-        T: Iterator<Item = i64>
+        T: Iterator<Item = i64>,
     {
         for batch_id in batch_ids {
             let has_unflushed = child_payload_types(payload_type)
                 .iter()
                 .any(|child_payload_type| self.has_unflushed_write(batch_id, *child_payload_type));
             if has_unflushed {
-                return true
+                return true;
             }
         }
 
@@ -812,9 +805,12 @@ mod test {
         }
     }
 
-    // TODO better test name?
     #[tokio::test]
-    async fn test_doesnt_autoflush_parent_batch_if_children_not_flushed_reverse() {
+    async fn test_doesnt_autoflush_parent_batch_if_children_not_flushed_written_reverse_write_order()
+     {
+        // This is similar to the test above, but the child records are written after
+        // the writer for the parent is already created.
+
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path();
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
@@ -826,7 +822,7 @@ mod test {
             },
         );
 
-        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+        let batch0 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
             SimpleDataGenOptions {
                 id_offset: 0,
                 num_rows: 1,
@@ -837,7 +833,7 @@ mod test {
             },
         ));
 
-        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
             SimpleDataGenOptions {
                 id_offset: 1,
                 with_main_record_attrs: true,
@@ -846,17 +842,17 @@ mod test {
                 ..Default::default()
             },
         ));
-        println!("here 1");
-        writer.write(&[WriteBatch::new(0, &batch1, None)]).await.unwrap();
-        println!("here 2");
-        writer.write(&[WriteBatch::new(1, &batch2, None)]).await.unwrap();
-        println!("here 3");
+        writer
+            .write(&[WriteBatch::new(0, &batch0, None)])
+            .await
+            .unwrap();
+        writer
+            .write(&[WriteBatch::new(1, &batch1, None)])
+            .await
+            .unwrap();
 
-        /*
-        // at this point resource & scope attributes should have flushed, but the
-        // log attributes won't have (because there's only one buffered log record).
-        // Also the logs won't have flushed, because there's one batch whose child
-        // (log_attrs) hasn't flushed
+        // At this point, the log writer has enough rows to flush but there are rows in this file
+        // that are associated with log attributes, whose writer doesn't have enough rows to flush
 
         for payload_type in [ArrowPayloadType::Logs, ArrowPayloadType::LogAttrs] {
             let table_name = payload_type.as_str_name().to_lowercase();
@@ -867,10 +863,22 @@ mod test {
             assert!(!table_exists);
         }
 
-        for payload_type in [
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-        ] {
+        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
+                id_offset: 1,
+                with_main_record_attrs: true,
+                with_scope_attrs: false,
+                with_resource_attrs: false,
+                ..Default::default()
+            },
+        ));
+        writer
+            .write(&[WriteBatch::new(2, &batch2, None)])
+            .await
+            .unwrap();
+
+        // now enough rows are in the attrs record batch that it can be written
+        for payload_type in [ArrowPayloadType::Logs, ArrowPayloadType::LogAttrs] {
             let table_name = payload_type.as_str_name().to_lowercase();
             let mut files = Vec::new();
             let mut read_dir_stream =
@@ -881,17 +889,22 @@ mod test {
                 files.push(entry.path().to_string_lossy().to_string())
             }
 
-            // we should have written one file
-            assert_eq!(files.len(), 1);
-
             // read the file and ensure it's the equivalent data from the original batch
-            let original_batch1 = batch1.get(payload_type).unwrap();
-            let original_batch2 = batch2.get(payload_type).unwrap();
-            let expected_batch = concat_batches(
-                original_batch1.schema_ref(),
-                vec![original_batch1, original_batch2],
-            )
-            .unwrap();
+            let mut batches = vec![];
+            if let Some(original) = batch0.get(payload_type) {
+                batches.push(original);
+            }
+            if let Some(original) = batch1.get(payload_type) {
+                batches.push(original);
+            }
+
+            // the attributes from the last batch will be written to the first file
+            if payload_type == ArrowPayloadType::LogAttrs {
+                batches.push(batch2.get(payload_type).unwrap());
+            }
+
+            // let original_batch2 = batch1.get(payload_type).unwrap();
+            let expected_batch = concat_batches(batches[0].schema_ref(), batches).unwrap();
             let file = File::open(files[0].clone()).await.unwrap();
             let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
             let mut reader = builder.build().unwrap();
@@ -900,7 +913,6 @@ mod test {
 
             // assert there's no extra data there
             assert!(reader.next().await.is_none())
-            */
-        
+        }
     }
 }
