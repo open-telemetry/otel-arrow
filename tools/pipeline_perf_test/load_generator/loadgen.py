@@ -32,6 +32,7 @@ Environment Variables:
 - OTLP_ENDPOINT: Target OTLP gRPC endpoint (default: localhost:4317).
 - SYSLOG_SERVER: Target syslog server hostname/IP (default: localhost).
 - SYSLOG_PORT: Target syslog server port (default: 514).
+- SYSLOG_TRANSPORT: Transport protocol for syslog: 'tcp' or 'udp' (default: tcp).
 """
 
 import argparse
@@ -222,9 +223,9 @@ class LoadGenerator:
                     self.increment_metric("late_batches")
                 next_send_time += batch_interval
 
-    def syslog_worker_thread(self, thread_id: int, args: dict) -> None:
+    def syslog_tcp_worker_thread(self, thread_id: int, args: dict) -> None:
         """
-        Worker thread that sends syslog messages to a syslog server.
+        Worker thread that sends syslog messages to a syslog server via TCP.
         """
         syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
         syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
@@ -303,6 +304,72 @@ class LoadGenerator:
 
         sock.close()
 
+    def syslog_udp_worker_thread(self, thread_id: int, args: dict) -> None:
+        """
+        Worker thread that sends syslog messages to a syslog server via UDP.
+        """
+        syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
+        syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
+
+        print(f"Thread {thread_id}: Using UDP transport to syslog server {syslog_server}:{syslog_port}")
+
+        # Create UDP socket for syslog
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        batch_size = args["batch_size"]
+        thread_count = args["threads"]
+        target_rate = args.get("target_rate")
+
+        if target_rate:
+            thread_rate = target_rate / thread_count
+            batch_interval = batch_size / thread_rate
+            print(
+                f"Thread {thread_id} started with rate limit: {thread_rate} "
+                f"logs/sec (interval: {batch_interval:.4f}s)"
+            )
+        else:
+            batch_interval = None
+            print(f"Thread {thread_id} started with no rate limit")
+
+        # Pre-generate syslog messages batch
+        syslog_batch = []
+        for _ in range(batch_size):
+            syslog_message = self.create_syslog_message(
+                body_size=args["body_size"],
+            )
+            syslog_batch.append(syslog_message)
+
+        batch_total_size = sum(len(msg) for msg in syslog_batch)
+
+        next_send_time = time.perf_counter()
+        while not self.stop_event.is_set():
+            try:
+                # UDP: Send individual messages instead of single batch of
+                # messages.
+                for message in syslog_batch:
+                    print(f"Sending syslog message {message} via UDP")
+                    sock.sendto(message, (syslog_server, syslog_port))
+                
+                self.increment_metric("sent", args["batch_size"])
+                self.increment_metric("bytes_sent", batch_total_size)
+            except Exception as e:
+                print(f"Thread {thread_id}: Failed to send syslog batch via UDP: {e}")
+                self.increment_metric("failed", args["batch_size"])
+
+            # Rate limiting logic
+            if batch_interval:
+                now = time.perf_counter()
+                sleep_time = next_send_time - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif now - next_send_time > batch_interval:
+                    # More than 1 interval behind
+                    self.increment_metric("late_batches")
+                next_send_time += batch_interval
+
+        sock.close()
+        print(f"Thread {thread_id}: Syslog UDP worker exiting")
+
     def create_syslog_message(
         self,
         body_size: int = 25,
@@ -339,7 +406,16 @@ class LoadGenerator:
         load_type = args_dict.get("load_type", "otlp").lower()
 
         if load_type == "syslog":
-            worker_func = self.syslog_worker_thread
+            syslog_transport = os.getenv("SYSLOG_TRANSPORT", "tcp").lower()
+            
+            if syslog_transport not in ["tcp", "udp"]:
+                print(f"Invalid SYSLOG_TRANSPORT '{syslog_transport}', using 'tcp'")
+                syslog_transport = "tcp"
+            
+            if syslog_transport == "udp":
+                worker_func = self.syslog_udp_worker_thread
+            else:
+                worker_func = self.syslog_tcp_worker_thread
         else:
             worker_func = self.worker_thread
 
