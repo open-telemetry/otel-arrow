@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
-use otap_df_config::{NodeId, pipeline::PipelineConfig};
+use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 
 use std::collections::HashMap;
@@ -136,11 +136,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         rt.block_on(async {
             local_tasks
                 .run_until(async {
+                    let mut task_results = Vec::new();
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
-                            Ok(Ok(())) => {
-                                // Task completed successfully, continue
+                            Ok(Ok(res)) => {
+                                // Task completed successfully, collect its result
+                                task_results.push(res);
                             }
                             Ok(Err(e)) => {
                                 // A task returned an error
@@ -156,7 +158,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                             }
                         }
                     }
-                    Ok(())
+                    Ok(task_results)
                 })
                 .await
         })

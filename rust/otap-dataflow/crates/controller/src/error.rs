@@ -58,10 +58,16 @@ pub enum Error {
     },
 
     /// Thread panic error with numeric thread identifier.
-    #[error("Thread {thread_id} panicked: {panic_message}")]
+    #[error(
+        "Thread {thread_name}(thread_id: {thread_id}, core_id: {core_id}) panicked: {panic_message}"
+    )]
     ThreadPanic {
+        /// The thread name that panicked.
+        thread_name: String,
         /// The thread ID that panicked.
         thread_id: usize,
+        /// The core ID where the thread was running.
+        core_id: usize,
         /// Panic message.
         panic_message: String,
     },

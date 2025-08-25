@@ -15,6 +15,8 @@ use crate::{
     runtime_pipeline::{PipeNode, RuntimePipeline},
     shared::message::{SharedReceiver, SharedSender},
 };
+use context::PipelineContext;
+pub use linkme::distributed_slice;
 use otap_df_config::{
     PortName,
     node::{DispatchStrategy, NodeUserConfig},
@@ -44,13 +46,6 @@ pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
-
-use crate::local::message::{LocalReceiver, LocalSender};
-use crate::message::Receiver;
-use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
-use crate::shared::message::{SharedReceiver, SharedSender};
-use context::PipelineContext;
-pub use linkme::distributed_slice;
 
 /// Trait for factory types that expose a name.
 ///
@@ -481,7 +476,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         }
 
         receivers.push(
-            create(node_id, node_config, &runtime_config)
+            create(pipeline_ctx, node_id, node_config, &runtime_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         Ok(())
@@ -515,8 +510,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::ProcessorAlreadyExists { processor: node_id });
         }
         processors.push(
-            create(node_id, &node_config.config, &processor_config)
-                .map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(
+                pipeline_ctx,
+                node_id,
+                &node_config.config,
+                &processor_config,
+            )
+            .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
 
         Ok(())
@@ -551,7 +551,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::ExporterAlreadyExists { exporter: node_id });
         }
         exporters.push(
-            create(node_id, node_config, &exporter_config)
+            create(pipeline_ctx, node_id, node_config, &exporter_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         Ok(())

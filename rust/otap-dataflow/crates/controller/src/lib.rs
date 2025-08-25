@@ -128,14 +128,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     source: e,
                 })?;
 
-            threads.push((core_id.id, handle));
+            threads.push((thread_name, thread_id, core_id.id, handle));
         }
 
         // Drop the original metrics sender so only pipeline threads hold references
         drop(metrics_reporter);
 
         // Wait for all pipeline threads to finish
-        for (core_id, handle) in threads {
+        for (thread_name, thread_id, core_id, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
                     // Thread completed successfully
@@ -146,6 +146,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 Err(e) => {
                     // Thread join failed, handle the error
                     return Err(error::Error::ThreadPanic {
+                        thread_name,
+                        thread_id,
                         core_id,
                         panic_message: format!("{e:?}"),
                     });

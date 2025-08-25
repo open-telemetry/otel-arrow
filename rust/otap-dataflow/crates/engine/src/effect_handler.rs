@@ -184,7 +184,7 @@ impl EffectHandlerCore {
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::StartTelemetryTimer {
-                node_id: self.node_id.clone(),
+                node_id: self.node_id.index,
                 duration,
             })
             .await
@@ -225,7 +225,7 @@ impl TelemetryTimerCancelHandle {
     pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg>> {
         self.pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::CancelTelemetryTimer {
-                node_id: self.node_id,
+                node_id: self.node_id.index,
             })
             .await
     }

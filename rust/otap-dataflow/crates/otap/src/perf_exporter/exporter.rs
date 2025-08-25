@@ -602,13 +602,8 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::test_node;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
-    use otap_df_engine::testing::{
-        exporter::{TestContext, TestRuntime},
-        test_node,
-    };
     use std::collections::HashMap;
     use std::fs::File;
     use std::future::Future;

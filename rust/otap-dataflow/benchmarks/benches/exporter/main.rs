@@ -464,7 +464,7 @@ fn bench_exporter(c: &mut Criterion) {
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
                     let mut exporter = ExporterWrapper::local(
-                        PerfExporter::new(pipeline_ctx,config, None),
+                        PerfExporter::new(pipeline_ctx, config, None),
                         test_node("exporter"),
                         node_config,
                         &exporter_config,

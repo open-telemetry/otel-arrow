@@ -121,7 +121,10 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |_pipeline: PipelineContext, node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+    create: |_pipeline: PipelineContext,
+             node: NodeId,
+             config: &Value,
+             proc_cfg: &ProcessorConfig| {
         create_signal_type_router(node, config, proc_cfg)
     },
 };

@@ -7,8 +7,6 @@
 
 use crate::message::Sender;
 use crate::shared::message::{SharedReceiver, SharedSender};
-use otap_df_channel::error::SendError;
-use otap_df_config::NodeId;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::time::Duration;
 
