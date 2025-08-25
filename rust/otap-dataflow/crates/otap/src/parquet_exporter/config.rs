@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::time::Duration;
+
 use serde::Deserialize;
 
 /// Configuration of parquet exporter
@@ -14,24 +16,53 @@ pub struct Config {
     pub partitioning_strategies: Option<Vec<PartitioningStrategy>>,
 
     /// Options for the writer
+    // TODO fix the default for this?
     pub writer_options: Option<WriterOptions>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct WriterOptions {
     /// Target number of rows in one parquet file. The writer will flush automatically any files
-    /// that attain greater than this number of rows. If this is None, the writer won't flush
-    /// automatically and some external component will need to periodically and/or eventually call
-    /// the `WriterManager.flush_all` method.
+    /// that attain greater than this number of rows. If this is `None``, the writer won't flush
+    /// automatically when a given file size is reached (in this case, it is best to set
+    /// [`Self::flush_when_older_than`]).
     ///
     /// This is currently approximate. The writer does not currently split batches across multiple
     /// files if the cutoff for the target rows happens to be in the middle of a batch.
+    ///
+    /// Default = 100 million rows.
     pub target_rows_per_file: Option<usize>,
+
+    /// If this is set, the exporter will flush files whose first batch is older than this
+    /// interval. This can be used to configure the writer to flush the file before the target rows
+    /// per file has been reached, which can be useful in the case that there is a desire to have
+    /// the data become visible earlier. Note, setting this to too small of an interval could
+    /// result in the creation of many small files, which can negatively impact read performance.
+    ///
+    /// Note that files may be buffered for slightly longer than this value. See how this
+    /// configuration value works in concert with [`Self::flush_age_check_interval`].
+    #[serde(with = "humantime_serde")]
+    pub flush_when_older_than: Option<Duration>,
+
+    /// Period at which the age of unflushed files are checked to determine if they should be
+    /// flushed. Files whose age is older than [`Self::flush_when_older_than`] will be flushed on
+    /// this interval (if that value is `None`, this config value is ignored).
+    ///
+    /// Note: setting this to a smaller value may cause unflushed files to be to be buffered for
+    /// less time beyond the age at which they should be flushed. However, using an extremely short
+    /// interval can cause extra overhead in the pipeline.
+    ///
+    /// Default = "5s" (5 seconds)
+    // TODO need to set the default here somehow -- we don't want to let users configure this as null?
+    #[serde(with = "humantime_serde")]
+    pub flush_age_check_interval: Option<Duration>,
 }
 
 impl Default for WriterOptions {
     fn default() -> Self {
         Self {
+            flush_when_older_than: None,
+            flush_age_check_interval: None,
             target_rows_per_file: Some(100_000_000),
         }
     }
@@ -70,10 +101,17 @@ mod test {
                 "_part_id".to_string(),
             ])]),
             writer_options: Some(WriterOptions {
+                flush_age_check_interval: None,
+                flush_when_older_than: None,
                 target_rows_per_file: Some(1000000000),
             }),
         };
         assert_eq!(config, expected)
+    }
+
+    #[test]
+    fn test_max_flush_interval_config() {
+        todo!()
     }
 
     #[test]

@@ -66,10 +66,10 @@ pub struct WriterManager {
 }
 
 impl WriterManager {
-    pub fn new(object_store: Arc<dyn ObjectStore>, options: Option<WriterOptions>) -> Self {
+    pub fn new(object_store: Arc<dyn ObjectStore>, options: WriterOptions) -> Self {
         Self {
             object_store,
-            options: options.unwrap_or_default(),
+            options,
             curr_writer_for_prefix: HashMap::new(),
             unflushed_batches_state: UnflushedBatchState::new(),
             pending_file_flushes: Vec::new(),
@@ -246,6 +246,12 @@ impl WriterManager {
         }
         self.attempt_flush_scheduled().await
     }
+
+    /// If this [`WriterManager`] was configured with `[WriterOptions::flush_when_older_than`],
+    /// then this method wil flush any current writers with rows older than this threshold.
+    pub async fn flush_aged_beyond_threshold(&mut self) -> Result<(), ParquetError> {
+        todo!()
+    }
 }
 
 /// generates a filename of the form: `part-<millis since epoch>-<random-uuid>.parquet`
@@ -399,7 +405,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path();
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-        let mut writer = WriterManager::new(object_store, None);
+        let mut writer = WriterManager::new(object_store, WriterOptions::default());
 
         // write some batch:
         let otap_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
@@ -460,7 +466,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path();
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-        let mut writer = WriterManager::new(object_store, None);
+        let mut writer = WriterManager::new(object_store, WriterOptions::default());
 
         let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
             SimpleDataGenOptions {
@@ -529,7 +535,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path();
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-        let mut writer = WriterManager::new(object_store, None);
+        let mut writer = WriterManager::new(object_store, WriterOptions::default());
 
         let partition1_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
             SimpleDataGenOptions {
@@ -632,9 +638,10 @@ mod test {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
         let mut writer = WriterManager::new(
             object_store,
-            Some(WriterOptions {
+            WriterOptions {
                 target_rows_per_file: Some(2),
-            }),
+                ..Default::default()
+            },
         );
 
         let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
@@ -704,9 +711,10 @@ mod test {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
         let mut writer = WriterManager::new(
             object_store,
-            Some(WriterOptions {
+            WriterOptions {
                 target_rows_per_file: Some(2),
-            }),
+                ..Default::default()
+            },
         );
 
         let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(

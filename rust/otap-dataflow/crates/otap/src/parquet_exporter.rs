@@ -106,17 +106,37 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 error: format!("error initializing object store {e}"),
             })?;
 
-        let mut writer =
-            writer::WriterManager::new(object_store, self.config.writer_options.clone());
+        let writer_options = self.config.writer_options.unwrap_or_default();
+
+        // start timer-tick to periodically flush batches older than threshold
+        // TODO cancel timer
+        let timer_cancel = match writer_options.flush_age_check_interval {
+            Some(flush_age_check_interval) => Some(
+                effect_handler
+                    .start_periodic_timer(flush_age_check_interval)
+                    .await?,
+            ),
+            None => None,
+        };
+
+        let mut writer = writer::WriterManager::new(object_store, writer_options);
         let mut batch_id = 0;
         let mut id_generator = PartitionSequenceIdGenerator::new();
 
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::TimerTick { .. }) => {
-                    // TODO periodically we should tell the writer to flush any data
-                    // that has been buffered in memory longer than some time threshold
-                    // https://github.com/open-telemetry/otel-arrow/issues/497
+                    let flush_aged_result = writer.flush_aged_beyond_threshold().await;
+                    if let Err(e) = flush_aged_result {
+                        // TODO - this is not the error handling we want long term.  eventually we
+                        // should have the concept of retryable & non-retryable errors and use Nack
+                        //  message + a Retry processor to handle this gracefully
+                        // https://github.com/open-telemetry/otel-arrow/issues/504
+                        return Err(Error::ExporterError {
+                            exporter: effect_handler.exporter_id(),
+                            error: format!("Parquet write failed: {e}"),
+                        });
+                    }
                 }
                 Message::Control(NodeControlMsg::Config { .. }) => {
                     // TODO when we have the ability to inject dynamic config into the
@@ -200,6 +220,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 #[cfg(test)]
 mod test {
     use crate::grpc::OtapArrowBytes;
+    use crate::parquet_exporter::config::WriterOptions;
 
     use super::*;
 
@@ -210,7 +231,10 @@ mod test {
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel};
+    use otap_df_engine::control::{
+        Controllable, PipelineControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_channel,
+    };
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::message::{Receiver, Sender};
@@ -485,6 +509,150 @@ mod test {
                 format!("received unexpected error: {e:?}. Expected IoError caused by timeout")
             ),
         }
+    }
+
+    #[test]
+    fn test_can_flush_on_interval() {
+        let age_check_interval = Duration::from_secs(30);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: Some(WriterOptions {
+                target_rows_per_file: None,
+                flush_age_check_interval: Some(age_check_interval),
+                flush_when_older_than: Some(Duration::from_millis(200)),
+            }),
+        });
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let node_id = test_node(test_runtime.config().name.clone());
+        let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+            exporter,
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let (rt, _) = setup_test_runtime();
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) =
+            create_not_send_channel::<OtapPdata>(test_runtime.config().control_channel.capacity);
+        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+        ) -> Result<(), Error<OtapPdata>> {
+            exporter.start(pipeline_ctrl_msg_tx).await
+        }
+
+        async fn run_test(
+            base_dir: &str,
+            expected_age_check_interval: Duration,
+            pdata_tx: Sender<OtapPdata>,
+            ctrl_tx: Sender<NodeControlMsg>,
+            mut ctrl_rx: PipelineCtrlMsgReceiver,
+        ) -> Result<(), Error<OtapPdata>> {
+            // try to receive the first timer start message
+            let msg = tokio::select! {
+                _ = Delay::new(Duration::from_secs(10)) => return Err(Error::InternalError {
+                    message: "Timed out waiting for timer start signal".into(),
+                }),
+                msg = ctrl_rx.recv() => msg?
+            };
+            if let PipelineControlMsg::StartTimer {
+                node_id: _,
+                duration,
+            } = msg
+            {
+                assert_eq!(duration, expected_age_check_interval);
+            } else {
+                return Err(Error::InternalError {
+                    message: "wrong pipeline control message received. Expected StartTimer".into(),
+                });
+            }
+
+            // have the parquet writer queue a batch to be written
+            let num_rows = 5;
+            let otap_batch = OtapArrowBytes::ArrowLogs(
+                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                    num_rows,
+                    ..Default::default()
+                }),
+            );
+            _ = pdata_tx.send(otap_batch.into()).await;
+
+            // wait some time but not as long as the old age threshold, then send a timer tick
+            _ = sleep(Duration::from_millis(50)).await;
+            // TODO surface error
+            _ = ctrl_tx.send(NodeControlMsg::TimerTick {}).await;
+
+            // wait a little bit, then ensure we haven't flushed anything
+            _ = sleep(Duration::from_millis(200)).await;
+            let num_tables = tokio::fs::read_dir(format!("{base_dir}"))
+                .await
+                .iter()
+                .count();
+            assert_eq!(num_tables, 0);
+
+            // by now we've waited longer than the old age threshold, so if we send the timer tick
+            // now, the files should flush
+            // TODO surface error
+            _ = ctrl_tx.send(NodeControlMsg::TimerTick {}).await;
+
+            // wait a little bit for flush to happen
+            //
+            // TODO -- once we have Ack/Nack implemented, we can reduce the potential flakiness
+            // of this test by waiting to get the Ack here instead of just waiting some arbitrary
+            // amount of time for the files to be flushed
+            // https://github.com/open-telemetry/otel-arrow/issues/504
+            _ = sleep(Duration::from_micros(500)).await;
+
+            for payload_type in &[
+                ArrowPayloadType::Logs,
+                ArrowPayloadType::LogAttrs,
+                ArrowPayloadType::ScopeAttrs,
+                ArrowPayloadType::ResourceAttrs,
+            ] {
+                assert_parquet_file_has_rows(base_dir, *payload_type, num_rows).await
+            }
+
+            // TODO surface error?
+            _ = ctrl_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Duration::from_nanos(10),
+                    reason: "shutting down".into(),
+                })
+                .await;
+
+            Ok(())
+        }
+
+        let (exporter_result, test_run_result) = rt.block_on(async move {
+            tokio::join!(
+                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                run_test(
+                    base_dir.as_str(),
+                    age_check_interval,
+                    pdata_tx,
+                    control_sender,
+                    pipeline_ctrl_msg_rx
+                )
+            )
+        });
+
+        _ = test_run_result.unwrap();
+        _ = exporter_result.unwrap();
     }
 
     #[test]
