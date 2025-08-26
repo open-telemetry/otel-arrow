@@ -80,7 +80,7 @@ impl PipelineExpression {
 
 impl Default for PipelineExpression {
     fn default() -> Self {
-        PipelineExpression::new(" ")
+        PipelineExpression::new("")
     }
 }
 
