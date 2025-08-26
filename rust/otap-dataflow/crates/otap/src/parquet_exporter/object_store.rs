@@ -30,7 +30,7 @@ mod test {
     use futures::stream::BoxStream;
     use object_store::path::Path;
     use object_store::{
-        GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, PutMultipartOpts,
+        GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, PutMultipartOptions,
         PutOptions, PutPayload, PutResult, Result,
     };
     use tokio::time::sleep;
@@ -111,7 +111,7 @@ mod test {
         async fn put_multipart_opts(
             &self,
             location: &Path,
-            opts: PutMultipartOpts,
+            opts: PutMultipartOptions,
         ) -> Result<Box<dyn MultipartUpload>> {
             self.inner.put_multipart_opts(location, opts).await
         }
