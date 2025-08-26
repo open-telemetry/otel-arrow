@@ -17,7 +17,7 @@ components:
         environment:
           - OTLP_ENDPOINT=otel-collector:4317
           - SYSLOG_SERVER=otel-collector
-          - SYSLOG_PORT=515
+          - SYSLOG_PORT=514
           - SYSLOG_TRANSPORT=udp
         ports:
           - "5001:5001"

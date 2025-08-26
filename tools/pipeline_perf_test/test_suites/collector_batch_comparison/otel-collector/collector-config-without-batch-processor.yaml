@@ -3,14 +3,10 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
-  syslog/tcp:
-    protocol: rfc3164
-    tcp:
-      listen_address: "0.0.0.0:514"
   syslog/udp:
     protocol: rfc3164
     udp:
-      listen_address: "0.0.0.0:515"
+      listen_address: "0.0.0.0:514"
 
 exporters:
   debug:
