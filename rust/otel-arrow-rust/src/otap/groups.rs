@@ -1441,8 +1441,6 @@ fn try_unify_struct_columns(
                     );
                     rb_fields[rb_field_index] = new_field;
                     rb_columns[rb_field_index] = Arc::new(new_rb_column);
-                } else {
-                    todo!("return an error here cause we got the wrong data type ..");
                 }
             }
 
@@ -1469,17 +1467,15 @@ fn try_unify_struct_columns(
         }
     }
 
-    // Safety: TODO comment on why this is safe
     Ok(
+        // Safety: here we should have an array of fields that match the types in the columns
+        // and all the columns are same length, so it's safe to expect here
         RecordBatch::try_new(Arc::new(Schema::new(rb_fields)), rb_columns)
             .expect("could not new record batch with unified struct columns"),
     )
 }
 
 fn try_unify_struct_fields(
-    // column_len: usize,
-    // current_fields: &mut Vec<Arc<Field>>,
-    // current_columns: &mut Vec<ArrayRef>,
     current_array: &StructArray,
     desired_fields: &BTreeMap<String, Field>,
 ) -> Result<StructArray> {
