@@ -75,9 +75,12 @@ pub(crate) fn parse_query(
                                         match scalar.try_resolve_static(
                                             &state.get_pipeline().get_resolution_scope(),
                                         ) {
-                                            Ok(Some(ResolvedStaticScalarExpression::Value(s))) => {
-                                                state.push_constant(name, s)
-                                            }
+                                            Ok(Some(ResolvedStaticScalarExpression::Computed(
+                                                s,
+                                            ))) => state.push_constant(name, s),
+                                            Ok(Some(
+                                                ResolvedStaticScalarExpression::FoldedConstant(s),
+                                            )) => state.push_constant(name, s.clone()),
                                             Ok(None)
                                             | Ok(Some(
                                                 ResolvedStaticScalarExpression::Reference(_),

@@ -103,17 +103,26 @@ impl ScalarExpression {
         scope: &PipelineResolutionScope<'a>,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
         match self {
-            ScalarExpression::Source(_) => Ok(None),
-            ScalarExpression::Attached(_) => Ok(None),
-            ScalarExpression::Variable(_) => Ok(None),
+            ScalarExpression::Source(s) => {
+                s.accessor.try_fold(scope)?;
+                Ok(None)
+            }
+            ScalarExpression::Attached(a) => {
+                a.accessor.try_fold(scope)?;
+                Ok(None)
+            }
+            ScalarExpression::Variable(v) => {
+                v.accessor.try_fold(scope)?;
+                Ok(None)
+            }
             ScalarExpression::Static(s) => match s.try_fold() {
-                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(v))),
+                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(v))),
                 None => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
             },
             ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(scope))),
             ScalarExpression::List(l) => l.try_resolve_static(scope),
             ScalarExpression::Logical(l) => match l.try_resolve_static(scope)? {
-                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Value(
+                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         l.get_query_location().clone(),
                         v,
@@ -370,13 +379,13 @@ impl ConstantScalarExpression {
                             constant_id,
                             v.clone(),
                         ));
-                        ResolvedStaticScalarExpression::Value(v)
+                        ResolvedStaticScalarExpression::FoldedConstant(value)
                     }
                     None => ResolvedStaticScalarExpression::Reference(value),
                 }
             }
             ConstantScalarExpression::Copy(c) => {
-                ResolvedStaticScalarExpression::Value(c.value.clone())
+                ResolvedStaticScalarExpression::FoldedConstant(&c.value)
             }
         }
     }
@@ -530,7 +539,7 @@ impl CoalesceScalarExpression {
             }
         }
 
-        Ok(Some(ResolvedStaticScalarExpression::Value(
+        Ok(Some(ResolvedStaticScalarExpression::Computed(
             StaticScalarExpression::Null(NullScalarExpression::new(self.query_location.clone())),
         )))
     }
@@ -768,7 +777,7 @@ impl LengthScalarExpression {
         scope: &PipelineResolutionScope,
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         if let Some(v) = self.inner_expression.try_resolve_static(scope)? {
-            Ok(Some(ResolvedStaticScalarExpression::Value(
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
                 match v.to_value() {
                     Value::String(s) => {
                         StaticScalarExpression::Integer(IntegerScalarExpression::new(
@@ -832,21 +841,15 @@ impl ListScalarExpression {
         let mut values = Vec::new();
 
         for v in &mut self.value_expressions {
-            match v.try_resolve_static(scope)? {
-                Some(ResolvedStaticScalarExpression::Reference(_)) => {
-                    // Note: Don't copy referenced statics because if they were
-                    // foldable they would already have switched to values. For
-                    // example the reference could be to a large constant array.
-                    return Ok(None);
-                }
-                Some(ResolvedStaticScalarExpression::Value(v)) => {
+            match v.try_resolve_static(scope)?.and_then(|v| v.try_fold()) {
+                Some(v) => {
                     values.push(v);
                 }
                 None => return Ok(None),
             }
         }
 
-        Ok(Some(ResolvedStaticScalarExpression::Value(
+        Ok(Some(ResolvedStaticScalarExpression::Computed(
             StaticScalarExpression::Array(ArrayScalarExpression::new(
                 self.query_location.clone(),
                 values,
@@ -988,7 +991,7 @@ impl SliceScalarExpression {
                     if range_end_exclusive - range_start_inclusive > 32 {
                         Ok(None)
                     } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::String(StringScalarExpression::new(
                                 self.query_location.clone(),
                                 &Self::slice_string(
@@ -1000,7 +1003,7 @@ impl SliceScalarExpression {
                         )))
                     }
                 }
-                _ => Ok(Some(ResolvedStaticScalarExpression::Value(
+                _ => Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Null(NullScalarExpression::new(
                         self.query_location.clone(),
                     )),

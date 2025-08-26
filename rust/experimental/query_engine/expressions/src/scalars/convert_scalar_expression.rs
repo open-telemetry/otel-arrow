@@ -93,14 +93,14 @@ impl ConvertScalarExpression {
             ConvertScalarExpression::Boolean(c) => {
                 if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(b) = v.to_value().convert_to_bool() {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                                 c.query_location.clone(),
                                 b,
                             )),
                         )))
                     } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Null(NullScalarExpression::new(
                                 c.query_location.clone(),
                             )),
@@ -113,14 +113,14 @@ impl ConvertScalarExpression {
             ConvertScalarExpression::DateTime(c) => {
                 if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(d) = v.to_value().convert_to_datetime() {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                                 c.query_location.clone(),
                                 d,
                             )),
                         )))
                     } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Null(NullScalarExpression::new(
                                 c.query_location.clone(),
                             )),
@@ -133,14 +133,14 @@ impl ConvertScalarExpression {
             ConvertScalarExpression::Double(c) => {
                 if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(d) = v.to_value().convert_to_double() {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Double(DoubleScalarExpression::new(
                                 c.query_location.clone(),
                                 d,
                             )),
                         )))
                     } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Null(NullScalarExpression::new(
                                 c.query_location.clone(),
                             )),
@@ -153,14 +153,14 @@ impl ConvertScalarExpression {
             ConvertScalarExpression::Integer(c) => {
                 if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     if let Some(i) = v.to_value().convert_to_integer() {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Integer(IntegerScalarExpression::new(
                                 c.query_location.clone(),
                                 i,
                             )),
                         )))
                     } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Null(NullScalarExpression::new(
                                 c.query_location.clone(),
                             )),
@@ -174,7 +174,7 @@ impl ConvertScalarExpression {
                 if let Some(v) = c.inner_expression.try_resolve_static(scope)? {
                     let v = v.to_value();
                     if let Value::Null = v {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::String(StringScalarExpression::new(
                                 c.query_location.clone(),
                                 "",
@@ -187,7 +187,7 @@ impl ConvertScalarExpression {
                             value = Some(StringScalarExpression::new(c.query_location.clone(), s));
                         });
 
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::String(
                                 value.expect("Inner value did not return a string"),
                             ),
@@ -200,14 +200,14 @@ impl ConvertScalarExpression {
             ConvertScalarExpression::TimeSpan(t) => {
                 if let Some(v) = t.inner_expression.try_resolve_static(scope)? {
                     if let Some(ts) = v.to_value().convert_to_timespan() {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::TimeSpan(TimeSpanScalarExpression::new(
                                 t.query_location.clone(),
                                 ts,
                             )),
                         )))
                     } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::Null(NullScalarExpression::new(
                                 t.query_location.clone(),
                             )),

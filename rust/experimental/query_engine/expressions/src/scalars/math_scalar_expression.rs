@@ -237,7 +237,7 @@ impl MathScalarExpression {
                     v,
                 )))
             } else {
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Null(NullScalarExpression::new(
                         unary_expression.query_location.clone(),
                     )),
@@ -271,7 +271,7 @@ impl MathScalarExpression {
                         v,
                     )))
                 } else {
-                    Ok(Some(ResolvedStaticScalarExpression::Value(
+                    Ok(Some(ResolvedStaticScalarExpression::Computed(
                         StaticScalarExpression::Null(NullScalarExpression::new(
                             binary_expression.query_location.clone(),
                         )),
@@ -288,22 +288,22 @@ impl MathScalarExpression {
     ) -> ResolvedStaticScalarExpression<'a> {
         match value {
             NumericValue::Integer(i) => {
-                ResolvedStaticScalarExpression::Value(StaticScalarExpression::Integer(
+                ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(query_location.clone(), i),
                 ))
             }
             NumericValue::DateTime(d) => {
-                ResolvedStaticScalarExpression::Value(StaticScalarExpression::DateTime(
+                ResolvedStaticScalarExpression::Computed(StaticScalarExpression::DateTime(
                     DateTimeScalarExpression::new(query_location.clone(), d),
                 ))
             }
             NumericValue::Double(d) => {
-                ResolvedStaticScalarExpression::Value(StaticScalarExpression::Double(
+                ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Double(
                     DoubleScalarExpression::new(query_location.clone(), d),
                 ))
             }
             NumericValue::TimeSpan(t) => {
-                ResolvedStaticScalarExpression::Value(StaticScalarExpression::TimeSpan(
+                ResolvedStaticScalarExpression::Computed(StaticScalarExpression::TimeSpan(
                     TimeSpanScalarExpression::new(query_location.clone(), t),
                 ))
             }

@@ -169,7 +169,7 @@ impl ChainLogicalExpression {
                 }
             }
 
-            Ok(Some(ResolvedStaticScalarExpression::Value(
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
                 StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                     self.query_location.clone(),
                     result,
@@ -248,7 +248,7 @@ impl EqualToLogicalExpression {
                     self.case_insensitive,
                 )?;
 
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         self.query_location.clone(),
                         b,
@@ -309,7 +309,7 @@ impl GreaterThanLogicalExpression {
             (Some(l), Some(r)) => {
                 let r = Value::compare_values(&self.query_location, &l.to_value(), &r.to_value())?;
 
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         self.query_location.clone(),
                         r > 0,
@@ -370,7 +370,7 @@ impl GreaterThanOrEqualToLogicalExpression {
             (Some(l), Some(r)) => {
                 let r = Value::compare_values(&self.query_location, &l.to_value(), &r.to_value())?;
 
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         self.query_location.clone(),
                         r >= 0,
@@ -418,7 +418,7 @@ impl NotLogicalExpression {
         scope: &PipelineResolutionScope,
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         if let Some(v) = self.inner_expression.try_resolve_static(scope)? {
-            Ok(Some(ResolvedStaticScalarExpression::Value(
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
                 StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                     self.query_location.clone(),
                     !v,
@@ -493,7 +493,7 @@ impl ContainsLogicalExpression {
                     self.case_insensitive,
                 )?;
 
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         query_location.clone(),
                         r,
@@ -556,7 +556,7 @@ impl MatchesLogicalExpression {
             (Some(h), Some(n)) => {
                 let r = Value::matches(query_location, &h.to_value(), &n.to_value())?;
 
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         query_location.clone(),
                         r,

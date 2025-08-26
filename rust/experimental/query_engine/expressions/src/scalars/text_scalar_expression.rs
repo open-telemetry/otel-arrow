@@ -129,14 +129,14 @@ impl ReplaceTextScalarExpression {
                 &replacement_value,
                 self.case_insensitive,
             ) {
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::String(StringScalarExpression::new(
                         self.query_location.clone(),
                         &result,
                     )),
                 )))
             } else {
-                Ok(Some(ResolvedStaticScalarExpression::Value(
+                Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Null(NullScalarExpression::new(
                         self.query_location.clone(),
                     )),
