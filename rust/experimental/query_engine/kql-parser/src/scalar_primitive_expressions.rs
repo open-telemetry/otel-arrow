@@ -337,9 +337,10 @@ pub(crate) fn parse_accessor_expression(
                 true
             }
             Rule::scalar_expression => {
-                let scalar = parse_scalar_expression(pair, state)?;
+                let mut scalar = parse_scalar_expression(pair, state)?;
 
-                let value_type_result = scalar.try_resolve_value_type(state.get_pipeline());
+                let value_type_result =
+                    scalar.try_resolve_value_type(&state.get_pipeline().get_resolution_scope());
                 if let Err(e) = value_type_result {
                     return Err(ParserError::from(&e));
                 }
@@ -1663,22 +1664,26 @@ mod tests {
                     ConditionalScalarExpression::new(
                         QueryLocation::new_fake(),
                         LogicalExpression::Scalar(ScalarExpression::Constant(
-                            ConstantScalarExpression::Reference(
-                                ReferenceConstantScalarExpression::new(
+                            ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                2,
+                                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    ValueType::Boolean,
-                                    2,
-                                ),
-                            ),
+                                    false,
+                                )),
+                            )),
                         )),
                         ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                         )),
-                        ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                            ReferenceConstantScalarExpression::new(
+                        ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                            CopyConstantScalarExpression::new(
                                 QueryLocation::new_fake(),
-                                ValueType::String,
                                 3,
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "hello world",
+                                )),
                             ),
                         )),
                     ),

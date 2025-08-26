@@ -318,7 +318,16 @@ pub(crate) fn parse_summarize_expression(
                             .insert(group_by_first_rule.as_str().trim().into(), scalar);
                     }
                     Rule::accessor_expression => {
-                        let accessor = parse_accessor_expression(group_by_first_rule, state, true)?;
+                        let mut accessor =
+                            parse_accessor_expression(group_by_first_rule, state, true)?;
+
+                        // Note: The call here into try_resolve_static is to
+                        // make sure all eligible selectors on the accessor are
+                        // folded into static values.
+                        accessor
+                            .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+                            .map_err(|e| ParserError::from(&e))?;
+
                         match &accessor {
                             ScalarExpression::Source(s) => {
                                 group_by_expressions.insert(
@@ -397,6 +406,23 @@ pub(crate) fn parse_summarize_expression(
         value_accessor: &ValueAccessor,
         scope: &dyn ParserScope,
     ) -> Result<Box<str>, ParserError> {
+        fn try_read_string(
+            scalar: &ScalarExpression,
+            value: &StaticScalarExpression,
+        ) -> Result<Box<str>, ParserError> {
+            match value.to_value() {
+                Value::String(s) => {
+                    Ok(s.get_value().into())
+                }
+                _ => {
+                    Err(ParserError::SyntaxError(
+                        scalar.get_query_location().clone(),
+                        "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
+                    ))
+                }
+            }
+        }
+
         let selectors = value_accessor.get_selectors();
         if selectors.is_empty() {
             Err(ParserError::SyntaxError(
@@ -405,21 +431,9 @@ pub(crate) fn parse_summarize_expression(
             ))
         } else {
             let last = selectors.last().unwrap();
-            match last.try_resolve_static(scope.get_pipeline()).map_err(|e| ParserError::from(&e))? {
-                Some(v) => {
-                    match v.to_value() {
-                        Value::String(s) => {
-                            Ok(s.get_value().into())
-                        }
-                        _ => {
-                            Err(ParserError::SyntaxError(
-                                last.get_query_location().clone(),
-                                "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
-                            ))
-                        }
-                    }
-                }
-                _ => {
+            match scope.scalar_as_static(last) {
+                Some(v) => try_read_string(last, v),
+                None => {
                     Err(ParserError::SyntaxError(
                         last.get_query_location().clone(),
                         "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
@@ -2513,11 +2527,14 @@ mod tests {
                                     "Attributes",
                                 ),
                             )),
-                            ScalarExpression::Constant(ConstantScalarExpression::Reference(
-                                ReferenceConstantScalarExpression::new(
+                            ScalarExpression::Constant(ConstantScalarExpression::Copy(
+                                CopyConstantScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    ValueType::String,
                                     0,
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "const_str",
+                                    )),
                                 ),
                             )),
                         ]),
