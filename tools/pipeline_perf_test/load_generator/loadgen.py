@@ -32,7 +32,7 @@ Environment Variables:
 - OTLP_ENDPOINT: Target OTLP gRPC endpoint (default: localhost:4317).
 - SYSLOG_SERVER: Target syslog server hostname/IP (default: localhost).
 - SYSLOG_PORT: Target syslog server port (default: 514).
-- SYSLOG_TRANSPORT: Transport protocol for syslog: 'tcp' or 'udp' (default: tcp).
+- SYSLOG_TRANSPORT: Transport protocol for syslog: 'tcp' or 'udp' (default: udp).
 """
 
 import argparse
@@ -347,7 +347,6 @@ class LoadGenerator:
                 # UDP: Send individual messages instead of single batch of
                 # messages.
                 for message in syslog_batch:
-                    print(f"Sending syslog message {message} via UDP")
                     sock.sendto(message, (syslog_server, syslog_port))
 
                 self.increment_metric("sent", args["batch_size"])
@@ -406,11 +405,11 @@ class LoadGenerator:
         load_type = args_dict.get("load_type", "otlp").lower()
 
         if load_type == "syslog":
-            syslog_transport = os.getenv("SYSLOG_TRANSPORT", "tcp").lower()
+            syslog_transport = os.getenv("SYSLOG_TRANSPORT", "udp").lower()
 
             if syslog_transport not in ["tcp", "udp"]:
-                print(f"Invalid SYSLOG_TRANSPORT '{syslog_transport}', using 'tcp'")
-                syslog_transport = "tcp"
+                print(f"Invalid SYSLOG_TRANSPORT '{syslog_transport}', using 'udp'")
+                syslog_transport = "udp"
 
             if syslog_transport == "udp":
                 worker_func = self.syslog_udp_worker_thread
