@@ -22,7 +22,7 @@ pub struct Config {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct WriterOptions {
     /// Target number of rows in one parquet file. The writer will flush automatically any files
-    /// that attain greater than this number of rows. If this is `None``, the writer won't flush
+    /// that attain greater than this number of rows. If this is `None`, the writer won't flush
     /// automatically when a given file size is reached (in this case, it is best to set
     /// [`Self::flush_when_older_than`]).
     ///
