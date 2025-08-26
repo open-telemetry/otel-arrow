@@ -65,6 +65,7 @@ linkme = "0.3.33"
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
+url = "2.5.7"
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 

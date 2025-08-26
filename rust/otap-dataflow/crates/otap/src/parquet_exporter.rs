@@ -500,10 +500,10 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
-                target_rows_per_file: Some(5000),
+                target_rows_per_file: Some(50),
                 ..Default::default()
             }),
         });
@@ -532,7 +532,8 @@ mod test {
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
         ) -> Result<(), Error<OtapPdata>> {
-            exporter.start(pipeline_ctrl_msg_tx).await
+            exporter.start(pipeline_ctrl_msg_tx).await.unwrap();
+            Ok(())
         }
 
         async fn send_messages(
@@ -550,7 +551,7 @@ mod test {
             let otap_batch: OtapPdata = OtapArrowBytes::ArrowLogs(
                 fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                     // a pretty big batch
-                    num_rows: 4998,
+                    num_rows: 48,
                     ..Default::default()
                 }),
             )
@@ -598,10 +599,11 @@ mod test {
             // shutdown faster than it could possibly flush
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_nanos(1),
+                    deadline: Duration::from_millis(1),
                     reason: "shutting down".into(),
                 })
                 .await;
+        
         }
 
         // let the exporter's message handling loop and the message sending run concurrently
