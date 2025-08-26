@@ -306,7 +306,7 @@ fn test_summarize_with_pipeline() {
         ),
     );
 
-    let query = "let BatchTime = now(); source | summarize Count = count() by Body | where Count > 1 | extend processed_time = now(), batch_time = BatchTime";
+    let query = "let BatchTime = now(); source | summarize Count = count() by Body | where Count > 1 | extend ProcessedTime = now(), BatchTime = BatchTime";
 
     let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
 
@@ -343,8 +343,8 @@ fn test_summarize_with_pipeline() {
         );
 
         match (
-            map.get("processed_time").map(|v| v.to_value()),
-            map.get("batch_time").map(|v| v.to_value()),
+            map.get("ProcessedTime").map(|v| v.to_value()),
+            map.get("BatchTime").map(|v| v.to_value()),
         ) {
             (Some(Value::DateTime(p)), Some(Value::DateTime(b))) => {
                 assert!(p.get_value() >= b.get_value());
