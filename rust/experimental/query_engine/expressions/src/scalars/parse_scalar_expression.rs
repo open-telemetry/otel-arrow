@@ -86,7 +86,7 @@ impl ParseJsonScalarExpression {
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         let query_location = self.inner_expression.get_query_location().clone();
 
-        match &mut self.inner_expression.try_resolve_static(scope)? {
+        match self.inner_expression.try_resolve_static(scope)? {
             Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(
                 if let Value::String(s) = v.to_value() {
                     StaticScalarExpression::from_json(query_location, s.get_value())?
