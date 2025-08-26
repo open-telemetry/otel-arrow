@@ -240,6 +240,7 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 mod test {
     use crate::grpc::OtapArrowBytes;
     use crate::parquet_exporter::config::WriterOptions;
+    use crate::pdata::OtlpProtoBytes;
 
     use super::*;
 
@@ -247,6 +248,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use arrow::compute::concat_batches;
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
@@ -264,7 +266,11 @@ mod test {
         test_node,
     };
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
+    use prost::Message;
     use tokio::fs::File;
     use tokio::time::sleep;
 
@@ -501,7 +507,10 @@ mod test {
         let exporter = ParquetExporter::new(config::Config {
             base_uri: base_dir.clone(),
             partitioning_strategies: None,
-            writer_options: None,
+            writer_options: Some(WriterOptions {
+                target_rows_per_file: Some(5000),
+                ..Default::default()
+            }),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -514,8 +523,7 @@ mod test {
         let exporter_config = ExporterConfig::new("test_parquet_exporter");
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
-        let (pdata_tx, pdata_rx) =
-            create_not_send_channel::<OtapPdata>(exporter_config.control_channel.capacity);
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
 
@@ -533,26 +541,69 @@ mod test {
         }
 
         async fn send_messages(
+            base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_sender: Sender<NodeControlMsg>,
         ) -> () {
-            // have the parquet writer queue a batch to be written
-            let otap_batch = OtapArrowBytes::ArrowLogs(
+            // have the parquet writer queue a batch to be written. Since it's a bit difficult to
+            // know for certain when the batches will actually be queued because we have no direct
+            // way to investigate it, we can inspect it indirectly. Below, we'll write just enough
+            // data to cause the log attributes table to flush, but not the logs, resource attrs or
+            // scope attrs. Since we know the log attrs table has been written, we can guess the
+            // writer has buffered files ..
+
+            let otap_batch: OtapPdata = OtapArrowBytes::ArrowLogs(
                 fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                     // a pretty big batch
-                    num_rows: 5000,
+                    num_rows: 4998,
                     ..Default::default()
                 }),
-            );
-            _ = pdata_tx.send(otap_batch.into()).await;
+            )
+            .into();
+            pdata_tx.send(otap_batch.into()).await.unwrap();
 
-            // yield long enough for the exporter to receive the pdata and queue the write
-            sleep(Duration::from_millis(100)).await;
+            let otap_batch2: OtapPdata = OtapArrowBytes::ArrowLogs(
+                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                    // a pretty big batch
+                    num_rows: 1,
+                    ..Default::default()
+                }),
+            )
+            .into();
+            let mut otap_batch2 = OtapArrowRecords::try_from(otap_batch2).unwrap();
+
+            let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
+            otap_batch2.set(
+                ArrowPayloadType::LogAttrs,
+                concat_batches(log_attrs.schema_ref(), vec![&log_attrs.clone(), log_attrs])
+                    .unwrap(),
+            );
+
+            pdata_tx.send(otap_batch2.into()).await.unwrap();
+
+            // wait for the log_attrs table to exist
+            try_wait_table_exists(base_dir, ArrowPayloadType::LogAttrs, Duration::from_secs(5))
+                .await
+                .unwrap();
+
+            // double check that the other tables have not been written (this is a sanity check)
+            for payload_type in &[
+                ArrowPayloadType::Logs,
+                ArrowPayloadType::ResourceAttrs,
+                ArrowPayloadType::ScopeAttrs,
+            ] {
+                let table_name = payload_type.as_str_name().to_lowercase();
+                assert!(
+                    tokio::fs::read_dir(format!("{base_dir}/{table_name}"))
+                        .await
+                        .is_err()
+                );
+            }
 
             // shutdown faster than it could possibly flush
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_nanos(10),
+                    deadline: Duration::from_nanos(1),
                     reason: "shutting down".into(),
                 })
                 .await;
@@ -562,7 +613,7 @@ mod test {
         let (exporter_result, _) = rt.block_on(async move {
             tokio::join!(
                 start_exporter(exporter, pipeline_ctrl_msg_tx),
-                send_messages(pdata_tx, control_sender)
+                send_messages(base_dir.as_str(), pdata_tx, control_sender)
             )
         });
 
