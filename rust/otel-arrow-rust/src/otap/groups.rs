@@ -3,6 +3,8 @@
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
     iter::{once, repeat, repeat_n},
     num::NonZeroU64,
     ops::{Add, Range, RangeFrom, RangeInclusive},
@@ -11,8 +13,8 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch, StructArray,
-        UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch,
+        StructArray, UInt16Array, UInt32Array,
     },
     buffer::NullBuffer,
     datatypes::{
@@ -1191,66 +1193,90 @@ impl<T> IDRange<T> {
 // * Optional columns will be missing entirely; if they're missing from only some batches, we
 //   need to add all null columns from the batches where they're not present.
 
+/// Modifies the record batches so that they all have the same set of columns.
+///
+/// # Arguments
+/// * `batches` - this is a 2D array where each element in the outer array contains an inner array
+///   and each element in the inner array contains the record batch for a given payload type
 fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     // FIXME: we need to handle StructFields; consider schema flattening?
 
     let mut schemas = Vec::with_capacity(batches.len());
 
-    use std::collections::{HashMap, HashSet};
     // FIXME: perhaps this whole function should coalesce operations against the same
     // `RecordBatch`es together? At least investigate the performance cost of calling
     // RecordBatch::into_parts/try_new repeatedly.
 
     // `field_name_to_col_indices` maps column name to vector of col-indices
-    let mut field_name_to_col_indices: HashMap<String, HashSet<usize>> = HashMap::new();
+    let mut field_name_to_batch_indices: HashMap<String, HashSet<usize>> = HashMap::new();
     // FIXME: replace sets with a real bitset type, ideally one that stores small sets inline
     // without allocations.
 
-    let mut all_cols: HashSet<usize> = HashSet::new();
+    // map of struct columns where, keyed by the struct field name, and the values are a map of
+    // field name -> field definition for the columns in the struct array.
+    // TODO - we could avoid some heap allocations if this took an Arc<Field> ...
+    let mut struct_fields: HashMap<String, HashMap<String, Field>> = HashMap::new();
 
-    for row in 0..N {
-        schemas.clear(); // We're going to reuse this allocation accross loop iterations
-        schemas.extend(select(batches, row).map(|batch| batch.schema()));
+    let mut all_batch_indices: HashSet<usize> = HashSet::new();
+
+    for payload_type_index in 0..N {
+        schemas.clear(); // We're going to reuse this allocation across loop iterations
+        schemas.extend(select(batches, payload_type_index).map(|batch| batch.schema()));
         if schemas.is_empty() {
             return Ok(());
         }
         let len = batches.len();
 
-        field_name_to_col_indices.clear();
-        all_cols.clear();
+        field_name_to_batch_indices.clear();
+        all_batch_indices.clear();
 
-        for (col, schema) in schemas.iter().enumerate() {
+        for (batch_index, schema) in schemas.iter().enumerate() {
             for field in schema.fields.iter() {
-                let _ = field_name_to_col_indices
+                // TODO, I think we want to skip here if it's a struct ...
+
+                let _ = field_name_to_batch_indices
                     .entry(field.name().clone())
                     .or_default()
-                    .insert(col);
+                    .insert(batch_index);
             }
         }
-        (0..len).for_each(|col| {
-            let _ = all_cols.insert(col);
+        (0..len).for_each(|batch_index| {
+            let _ = all_batch_indices.insert(batch_index);
         });
 
-        // Let's flatten out dictionary columns
         for batches in batches.iter_mut() {
+            // try to get the fields that should be in each struct column
+            if let Some(rb) = &batches[payload_type_index] {
+                try_record_struct_fields(rb, &mut struct_fields)?;
+            }
+
+            // Let's flatten out dictionary columns
             // FIXME: this is so bad; replace this with a smarter strategy that tries to consolidate
             // dict columns together preserving the space savings when possible!
-            if batches[row]
+            if batches[payload_type_index]
                 .as_ref()
                 .map(record_batch_has_dictionary)
                 .unwrap_or(false)
             {
-                if let Some(rb) = batches[row].take() {
+                if let Some(rb) = batches[payload_type_index].take() {
                     let rb = flatten_dictionary_record_batch(rb)?;
-                    let _ = batches[row].replace(rb);
+                    let _ = batches[payload_type_index].replace(rb);
                 }
+            }
+        }
+
+        // unify all the struct columns
+        for batches in batches.iter_mut() {
+            if let Some(rb) = batches[payload_type_index].take() {
+                let rb = try_unify_struct_columns(&rb, &mut struct_fields)?;
+                let _ = batches[payload_type_index].replace(rb);
             }
         }
 
         // Let's find missing optional columns; note that this must happen after we deal with the
         // dict columns since we rely on the assumption that all fields with the same name will have
         // the same type.
-        for (missing_field_name, present_cols) in field_name_to_col_indices
+        for (missing_field_name, present_batch_indices) in field_name_to_batch_indices
             .iter()
             .filter(|(_, cols)| cols.len() != len)
         {
@@ -1258,7 +1284,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             // one arbitrarily; we know there has to be at least one because if there were none, we
             // wouldn't have a mismatch to begin with.
             let field = Arc::new(
-                schemas[*present_cols
+                schemas[*present_batch_indices
                     .iter()
                     .next()
                     .expect("there should be at least one schema")]
@@ -1267,8 +1293,9 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                 .clone(),
             );
             assert!(field.is_nullable());
-            for missing_col in all_cols.difference(present_cols).copied() {
-                if let Some(batch) = batches[missing_col][row].take() {
+            for missing_batch_index in all_batch_indices.difference(present_batch_indices).copied()
+            {
+                if let Some(batch) = batches[missing_batch_index][payload_type_index].take() {
                     let (schema, mut columns, num_rows) = batch.into_parts();
                     let schema = Arc::unwrap_or_clone(schema);
                     let mut builder = SchemaBuilder::from(&schema);
@@ -1279,7 +1306,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                     let batch =
                         RecordBatch::try_new(schema, columns).context(error::BatchingSnafu)?;
 
-                    let _ = batches[missing_col][row].replace(batch);
+                    let _ = batches[missing_batch_index][payload_type_index].replace(batch);
                 }
             }
         }
@@ -1344,6 +1371,131 @@ fn flatten_dictionary_column(old_field: &Field, column: Arc<dyn Array>) -> Resul
         }
         _ => unreachable!(),
     }
+}
+
+fn try_record_struct_fields(
+    record_batch: &RecordBatch,
+    all_struct_fields: &mut HashMap<String, HashMap<String, Field>>,
+) -> Result<()> {
+    for field in record_batch.schema_ref().fields() {
+        if let DataType::Struct(struct_fields) = field.data_type() {
+            if !all_struct_fields.contains_key(field.name()) {
+                _ = all_struct_fields.insert(
+                    field.name().clone(),
+                    HashMap::with_capacity(struct_fields.len()),
+                );
+            }
+
+            // this is the fields contained within the "field" struct array column on any record
+            // batch for which we're unifying the schemas
+            let all_this_struct_fields = all_struct_fields
+                .get_mut(field.name())
+                .expect("struct fields should be initialized for this field name");
+
+            for struct_field in struct_fields {
+                if let Some(current_field) = all_this_struct_fields.get(struct_field.name()) {
+                    if struct_field.as_ref() != current_field {
+                        todo!("TODO need resolve common struct field type")
+                    }
+                } else {
+                    _ = all_this_struct_fields
+                        .insert(struct_field.name().clone(), struct_field.as_ref().clone());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn try_unify_struct_columns(
+    record_batch: &RecordBatch,
+    all_struct_fields_defs: &HashMap<String, HashMap<String, Field>>,
+) -> Result<RecordBatch> {
+    let schema = record_batch.schema_ref();
+    let mut fields = schema.fields.to_vec();
+    let mut columns = record_batch.columns().to_vec();
+
+    for (field_name, desired_fields) in all_struct_fields_defs {
+        match schema.index_of(field_name) {
+            Ok(field_index) => {
+                let field = schema.field(field_index);
+
+                if let DataType::Struct(curr_struct_fields) = field.data_type() {
+                    // safety: we've just checked the column's data type
+                    let column = columns[field_index]
+                        .as_any()
+                        .downcast_ref::<StructArray>()
+                        .expect("expect can downcast to struct");
+
+                    // TODO - we could maybe refactor this down the line to clone lazily if the
+                    // struct column already has all the desired fields
+                    let mut struct_columns = column.columns().to_vec();
+                    let mut struct_fields = curr_struct_fields.to_vec();
+                    try_unify_struct_fields(
+                        column.len(),
+                        &mut struct_fields,
+                        &mut struct_columns,
+                        desired_fields,
+                    )?;
+
+                    let new_struct_fields = Fields::from(struct_fields);
+                    let new_field = Arc::new(
+                        field
+                            .clone()
+                            .with_data_type(DataType::Struct(new_struct_fields.clone())),
+                    );
+                    let new_column = Arc::new(StructArray::new(
+                        new_struct_fields.clone(),
+                        struct_columns,
+                        column.nulls().cloned(),
+                    ));
+                    fields[field_index] = new_field;
+                    columns[field_index] = new_column;
+                } else {
+                    todo!("return an error here cause we got the wrong data type ..");
+                }
+            }
+            Err(_) => {
+                // here the struct field doesn't exist at all, and we need to create a fully new one
+                todo!("create new fully empty struct and add it to columns")
+            }
+        }
+    }
+
+    // Safety: TODO comment on why this is safe
+    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .expect("could not new record batch with unified struct columns"))
+}
+
+fn try_unify_struct_fields(
+    column_len: usize,
+    current_fields: &mut Vec<Arc<Field>>,
+    current_columns: &mut Vec<ArrayRef>,
+    desired_fields: &HashMap<String, Field>,
+) -> Result<()> {
+    for (field_name, field_def) in desired_fields {
+        match current_fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| field.name() == field_name)
+        {
+            Some((field_index, current_field)) => {
+                if current_field.data_type() != field_def.data_type() {
+                    todo!("here we need to marshall the current field into the desired type")
+                }
+            }
+            None => {
+                // create an all null array with the desired type
+                let new_struct_column =
+                    arrow::array::new_null_array(field_def.data_type(), column_len);
+                current_fields.push(Arc::new(field_def.clone()));
+                current_columns.push(Arc::new(new_struct_column));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // `RecordBatch` and `StructArray` are very similar and have `From` impls for conversion between
@@ -1425,148 +1577,6 @@ fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
     arrow::compute::take(&values, &keys, options).context(error::BatchingSnafu)
 }
 
-// *************************************************************************************************
-// Here lies some unfinished code for recursively detecting missing null fields for `unify`. I think
-// this approach is now a bad idea and we'd be better served exploiting `RecordBatch::normalize`
-// (which I just discovered!) and then writing our own `denomalize` function. Doing that would
-// probably make dictionary flattening easier too.
-
-// struct SimpleInterner(HashMap<String, u16>);
-// // FIXME: make this faster; there are options:
-// // * use CompactStr since all our strings have UTF-8 lengths <= 24 bytes
-// // * use `string-interner`
-// // * stash the interner in thread local storage
-
-// impl SimpleInterner {
-//     fn new() -> Self {
-//         SimpleInterner(HashMap::new())
-//     }
-
-//     fn get_or_insert(&mut self, string: &str) -> u16 {
-//         // Sigh; we can't use the entry API because it isn't flexible enough to deal with
-//         // `to_owned`....
-//         let next_id = self
-//             .0
-//             .len()
-//             .try_into()
-//             .expect("there are < u16::MAX strings to intern");
-//         match self.0.get(string) {
-//             Some(id) => *id,
-//             None => {
-//                 let _ = self.0.insert(string.to_owned(), next_id);
-//                 next_id
-//             }
-//         }
-//     }
-// }
-
-// // I represent a sequence of column names with each name getting interned in `SimpleInterner`.
-// type Path = SmallVec<[u16; 3]>;
-
-// /// I describe where in the object an offset is:
-// /// * level==0 corresponds to selecting a `RecordBatch` in a slice
-// /// * level==1 corresponds to the offset of a particular field within that `RecordBatch`
-// /// * level==2 corresponds to the offset in a `StructArray` or `ListArray`, etc.
-// type Level = u8;
-
-// /// I describe where a field is given a sequence of `RecordBatch`
-// #[derive(Debug, Clone, Hash, PartialEq)]
-// struct Location(SmallVec<[usize; 4]>);
-
-// impl Location {
-//     fn new(batch_index: usize) -> Self {
-//         Location(smallvec::smallvec![batch_index])
-//     }
-
-//     fn level(&self) -> Level {
-//         self.0.len() as u8
-//     }
-
-//     fn with_child(&self, child_offset: usize) -> Self {
-//         let mut result = self.0.clone();
-//         result.push(child_offset);
-//         Location(result)
-//     }
-
-//     fn last(&self) -> usize {
-//         self.0[self.0.len() - 1]
-//     }
-// }
-
-// /// I consolidate information about a sequence of RecordBatches and their field datatypes and where
-// /// we're missing fields.
-// struct MissingFieldInfo<'batches> {
-//     field_locations: HashMap<Path, (usize, Vec<(&'batches Field, Location)>)>,
-//     interner: SimpleInterner,
-// }
-
-// impl<'batches> MissingFieldInfo<'batches> {
-//     fn find_missing(&self) -> impl Iterator<Item = Location> {
-//         for (path, values) in self.field_locations {
-//             let locations = values.1;
-//         }
-//     }
-
-//     fn new() -> Self {
-//         let field_locations = HashMap::new();
-//         let interner = SimpleInterner::new();
-//         Self {
-//             field_locations,
-//             interner,
-//         }
-//     }
-
-//     fn add(&mut self, batch_index: usize, rb: &'batches RecordBatch) {
-//         let location = Location::new(batch_index);
-//         let path = Path::new();
-//         for (offset, field) in rb.schema_ref().fields.iter().enumerate() {
-//             let child_path = self.add_path(&path, field.name());
-//             self.add_field(location.with_child(offset), child_path, field);
-//         }
-//     }
-
-//     fn add_path(&mut self, path: &Path, component: &str) -> Path {
-//         let mut result = path.clone();
-//         result.push(self.interner.get_or_insert(component));
-//         result
-//     }
-
-//     // This is where the recursion happens! Our recursion is bounded by the structure of the OTAP
-//     // data model; it is quite shallow so there are no worries about overflowing the stack.
-//     fn add_field(&mut self, location: Location, path: Path, field: &'batches Field) {
-//         let (count, locations) = self.field_locations.entry(path.clone()).or_default();
-//         *count += 1;
-//         locations.push((field, location.clone()));
-
-//         match field.data_type() {
-//             // We don't match on Dictionary here because its children will only be primitives and
-//             // won't have their own fields.
-//             DataType::Struct(fields) => {
-//                 for (field_offset, field) in fields.iter().enumerate() {
-//                     let child_path = self.add_path(&path, field.name());
-//                     self.add_field(location.with_child(field_offset), child_path, field);
-//                 }
-//             }
-
-//             DataType::List(element) => {
-//                 // FIXME: using item is only a convention, we should verify that we actually use it
-//                 // everywhere.
-//                 let child_path = self.add_path(&path, "item");
-//                 self.add_field(location.with_child(0), child_path, element);
-//             }
-
-//             DataType::ListView(_)
-//             | DataType::FixedSizeList(_, _)
-//             | DataType::LargeList(_)
-//             | DataType::LargeListView(_)
-//             | DataType::Union(_, _)
-//             | DataType::Map(_, _) => unreachable!(),
-
-//             _ => {}
-//         }
-//     }
-// }
-
 #[cfg(test)]
 mod test {
     use arrow::array::record_batch;
@@ -1609,6 +1619,46 @@ mod test {
                     .unwrap()
             )
         )
+    }
+
+    #[test]
+    fn test_unify_structs() {
+        let field_1 = Field::new("f1", DataType::UInt8, true);
+        let field_2 = Field::new("f2", DataType::UInt8, true);
+
+        let rb_a = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "s1",
+                DataType::Struct(vec![field_1.clone()].into()),
+                true,
+            )])),
+            vec![Arc::new(StructArray::new(
+                vec![field_1.clone()].into(),
+                vec![Arc::new(UInt8Array::from_iter_values(vec![1, 2, 3]))],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "s1",
+                DataType::Struct(vec![field_2.clone()].into()),
+                true,
+            )])),
+            vec![Arc::new(StructArray::new(
+                vec![field_2.clone()].into(),
+                vec![Arc::new(UInt8Array::from_iter_values(vec![1, 2, 3]))],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(rb_a)], [Some(rb_b)]];
+        unify(&mut batches).unwrap();
+
+        println!("a {:?}", batches[0][0]);
+        println!("b {:?}", batches[1][0]);
     }
 
     #[test]
