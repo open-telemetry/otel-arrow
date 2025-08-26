@@ -2,13 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-
-#[cfg(test)]
-use url::Url;
 
 pub(crate) fn from_uri(uri: &str) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
     // TODO eventually we should support choosing the correct object_store implementation
@@ -18,7 +14,7 @@ pub(crate) fn from_uri(uri: &str) -> Result<Arc<dyn ObjectStore>, object_store::
     #[cfg(test)]
     {
         if uri.starts_with("testdelayed://") {
-            return test::delayed_test_object_store(uri)
+            return test::delayed_test_object_store(uri);
         }
     }
 
@@ -29,19 +25,24 @@ pub(crate) fn from_uri(uri: &str) -> Result<Arc<dyn ObjectStore>, object_store::
 #[cfg(test)]
 mod test {
     use std::fmt::Display;
+    use std::time::Duration;
+
+    use futures::stream::BoxStream;
+    use object_store::path::Path;
+    use object_store::{
+        GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, PutMultipartOpts,
+        PutOptions, PutPayload, PutResult, Result,
+    };
+    use tokio::time::sleep;
+    use url::Url;
 
     use super::*;
-    
-    use futures::stream::BoxStream;
-    use object_store::{GetOptions, MultipartUpload, ListResult, ObjectMeta, 
-        PutOptions, PutResult, GetResult,
-        PutMultipartOpts, PutPayload, Result};
-    use object_store::path::Path;
-    use tokio::time::sleep;
 
     /// Creates an instance of object store that will have it's writes delayed by some amount.
     /// The amount to delay should be in the querystring parameters of the uri
-    pub(super) fn delayed_test_object_store(uri: &str) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+    pub(super) fn delayed_test_object_store(
+        uri: &str,
+    ) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
         let url = Url::parse(uri).map_err(|e| object_store::Error::Generic {
             store: "test_delayed",
             source: Box::new(e),
@@ -54,10 +55,10 @@ mod test {
             .find(|(k, _)| k == "delay")
             .map(|(_, v)| {
                 let s = v.as_ref();
-                humantime_serde::re::humantime::parse_duration(s).unwrap_or(Duration::from_millis(0))
+                humantime_serde::re::humantime::parse_duration(s)
+                    .unwrap_or(Duration::from_millis(0))
             })
             .unwrap_or(Duration::from_millis(0));
-
 
         let fs_store = LocalFileSystem::new_with_prefix(path)?;
         Ok(Arc::new(DelayedObjectStore::new(fs_store, delay)))
@@ -73,7 +74,10 @@ mod test {
 
     impl<S> DelayedObjectStore<S> {
         pub fn new(inner: S, delay: Duration) -> Self {
-            Self { inner: Arc::new(inner), delay }
+            Self {
+                inner: Arc::new(inner),
+                delay,
+            }
         }
     }
 
@@ -89,7 +93,6 @@ mod test {
         }
     }
 
-
     #[async_trait::async_trait]
     impl<S> ObjectStore for DelayedObjectStore<S>
     where
@@ -100,7 +103,7 @@ mod test {
             location: &Path,
             payload: PutPayload,
             opts: PutOptions,
-        ) -> Result<PutResult>{
+        ) -> Result<PutResult> {
             sleep(self.delay).await;
             self.inner.put_opts(location, payload, opts).await
         }
@@ -109,15 +112,11 @@ mod test {
             &self,
             location: &Path,
             opts: PutMultipartOpts,
-        ) -> Result<Box<dyn MultipartUpload>>{
+        ) -> Result<Box<dyn MultipartUpload>> {
             self.inner.put_multipart_opts(location, opts).await
         }
 
-        async fn get_opts(
-            &self,
-            location: &Path,
-            opts: GetOptions,
-        ) -> Result<GetResult> {
+        async fn get_opts(&self, location: &Path, opts: GetOptions) -> Result<GetResult> {
             self.inner.get_opts(location, opts).await
         }
 
@@ -142,4 +141,3 @@ mod test {
         }
     }
 }
-

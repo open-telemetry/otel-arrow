@@ -532,8 +532,7 @@ mod test {
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
         ) -> Result<(), Error<OtapPdata>> {
-            exporter.start(pipeline_ctrl_msg_tx).await.unwrap();
-            Ok(())
+            exporter.start(pipeline_ctrl_msg_tx).await
         }
 
         async fn send_messages(
@@ -603,7 +602,6 @@ mod test {
                     reason: "shutting down".into(),
                 })
                 .await;
-        
         }
 
         // let the exporter's message handling loop and the message sending run concurrently
