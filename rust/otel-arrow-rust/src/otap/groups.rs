@@ -3,8 +3,7 @@
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    hash::Hash,
+    collections::{BTreeMap, HashMap, HashSet},
     iter::{once, repeat, repeat_n},
     num::NonZeroU64,
     ops::{Add, Range, RangeFrom, RangeInclusive},
@@ -13,8 +12,8 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch,
-        StructArray, UInt16Array, UInt32Array,
+        Array, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch, StructArray,
+        UInt16Array, UInt32Array,
     },
     buffer::NullBuffer,
     datatypes::{
@@ -1273,7 +1272,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         // unify all the struct columns
         for batches in batches.iter_mut() {
             if let Some(rb) = batches[payload_type_index].take() {
-                let rb = try_unify_struct_columns(&rb, &mut struct_fields)?;
+                let rb = try_unify_struct_columns(&rb, &struct_fields)?;
                 let _ = batches[payload_type_index].replace(rb);
             }
         }
@@ -1398,13 +1397,18 @@ fn try_record_struct_fields(
                 .expect("struct fields should be initialized for this field name");
 
             for struct_field in struct_fields {
-                if let Some(current_field) = all_this_struct_fields.get(struct_field.name()) {
-                    if struct_field.as_ref() != current_field {
-                        todo!("TODO need resolve common struct field type")
-                    }
-                } else {
-                    _ = all_this_struct_fields
-                        .insert(struct_field.name().clone(), struct_field.as_ref().clone());
+                if all_this_struct_fields.get(struct_field.name()).is_none() {
+                    let desired_field = match struct_field.data_type() {
+                        // for dictionaries, the type we want (for now) is actually the native
+                        // array type.
+                        // TODO - when we add the optimization to not flatten the dictionaries
+                        // we should probably just keep the original type here?
+                        DataType::Dictionary(_, val) => {
+                            struct_field.as_ref().clone().with_data_type(*val.clone())
+                        }
+                        _ => struct_field.as_ref().clone(),
+                    };
+                    _ = all_this_struct_fields.insert(struct_field.name().clone(), desired_field);
                 }
             }
         }
@@ -1426,13 +1430,13 @@ fn try_unify_struct_columns(
             Ok(rb_field_index) => {
                 let field = schema.field(rb_field_index);
 
-                if let DataType::Struct(curr_struct_fields) = field.data_type() {
+                if let DataType::Struct(_) = field.data_type() {
                     // safety: we've just checked the column's data type
                     let rb_column = rb_columns[rb_field_index]
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expect can downcast to struct");
-                    let new_rb_column = try_unify_struct_fields(&rb_column, desired_struct_fields)?;
+                    let new_rb_column = try_unify_struct_fields(rb_column, desired_struct_fields)?;
 
                     let new_field = Arc::new(
                         field
@@ -1485,11 +1489,16 @@ fn try_unify_struct_fields(
     for (field_name, field_def) in desired_fields {
         match curr_fields.find(field_name) {
             Some((field_index, current_field)) => {
-                if current_field.data_type() != field_def.data_type() {
-                    todo!("here we need to marshall the current field into the desired type")
-                } else {
-                    new_columns.push(current_array.column(field_index).clone());
-                }
+                let current_column = current_array.column(field_index).clone();
+                // TODO - flattening the dictionaries here is not what we want to do long-term
+                let new_column = match current_field.data_type() {
+                    DataType::Dictionary(_, _) => {
+                        flatten_dictionary_column(current_field, current_column)?
+                    }
+                    _ => current_column,
+                };
+
+                new_columns.push(new_column);
             }
 
             None => {
@@ -1633,6 +1642,35 @@ mod test {
     }
 
     #[test]
+    fn test_unify_flatten_dicts() {
+        use arrow::array::{Int32Array, UInt8Array};
+
+        let a = record_batch!(("id", Int32, [1, 2, 3]));
+        let b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "id",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
+                true,
+            )])),
+            vec![Arc::new(DictionaryArray::<UInt8Type>::new(
+                UInt8Array::from_iter_values(vec![0, 0, 1, 1]),
+                Arc::new(Int32Array::from_iter_values(vec![2, 3])),
+            ))],
+        );
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(a.unwrap())], [Some(b.unwrap())]];
+
+        unify(&mut batches).unwrap();
+        assert_eq!(
+            batches[0][0],
+            Some(record_batch!(("id", Int32, [1, 2, 3])).unwrap())
+        );
+        assert_eq!(
+            batches[1][0],
+            Some(record_batch!(("id", Int32, [2, 2, 3, 3])).unwrap())
+        )
+    }
+
+    #[test]
     fn test_unify_structs_adds_missing_fields() {
         let field_1 = Field::new("f1", DataType::UInt8, true);
         let field_2 = Field::new("f2", DataType::UInt8, true);
@@ -1765,32 +1803,71 @@ mod test {
     }
 
     #[test]
-    fn test_unify_flatten_dicts() {
-        use arrow::array::{Int32Array, UInt8Array};
+    fn test_unify_struct_flattens_dicts() {
+        let struct_field = Field::new(
+            "f1",
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            true,
+        );
 
-        let a = record_batch!(("id", Int32, [1, 2, 3]));
-        let b = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "id",
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
-                true,
-            )])),
-            vec![Arc::new(DictionaryArray::<UInt8Type>::new(
-                UInt8Array::from_iter_values(vec![0, 0, 1, 1]),
-                Arc::new(Int32Array::from_iter_values(vec![2, 3])),
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s1",
+            DataType::Struct(vec![struct_field.clone()].into()),
+            false,
+        )]));
+
+        let rb_a = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StructArray::new(
+                vec![struct_field.clone()].into(),
+                vec![Arc::new(DictionaryArray::<UInt8Type>::from_iter(vec![
+                    Some("a"),
+                    Some("b"),
+                ]))],
+                None,
             ))],
-        );
-        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(a.unwrap())], [Some(b.unwrap())]];
-
-        unify(&mut batches).unwrap();
-        assert_eq!(
-            batches[0][0],
-            Some(record_batch!(("id", Int32, [1, 2, 3])).unwrap())
-        );
-        assert_eq!(
-            batches[1][0],
-            Some(record_batch!(("id", Int32, [2, 2, 3, 3])).unwrap())
         )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(2)),
+        )
+        .unwrap();
+
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(rb_a.clone())], [Some(rb_b)]];
+        unify(&mut batches).unwrap();
+
+        let expected_struct_fields = Fields::from(vec![Field::new("f1", DataType::Utf8, true)]);
+        let expected_schema = Arc::new(Schema::new(vec![Field::new(
+            "s1",
+            DataType::Struct(expected_struct_fields.clone()),
+            false,
+        )]));
+
+        let expected_rb_a = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![Arc::new(StructArray::new(
+                expected_struct_fields.clone(),
+                vec![Arc::new(StringArray::from_iter_values(vec!["a", "b"]))],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let expected_rb_b = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![Arc::new(StructArray::new(
+                expected_struct_fields.clone(),
+                vec![Arc::new(StringArray::from_iter(vec![None::<String>, None]))],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &expected_rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
     }
 
     fn make_logs() -> OtapArrowRecords {
