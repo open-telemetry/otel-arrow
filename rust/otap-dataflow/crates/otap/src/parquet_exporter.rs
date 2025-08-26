@@ -294,6 +294,56 @@ mod test {
         }
     }
 
+    async fn wait_table_exists(base_dir: &str, payload_type: ArrowPayloadType) {
+        let table_name = payload_type.as_str_name().to_lowercase();
+        loop {
+            _ = sleep(Duration::from_millis(100)).await;
+
+            // ensure the table exists
+            let mut dir = match tokio::fs::read_dir(format!("{base_dir}/{table_name}")).await {
+                Ok(dir) => dir,
+                Err(_) => continue,
+            };
+
+            // ensure a parquet file exists
+            let table_dir_entry = match dir.next_entry().await.unwrap() {
+                Some(table_dir) => table_dir,
+                None => continue,
+            };
+
+            // open the file and ensure a batch is written in it
+            let file = match File::open(table_dir_entry.path()).await {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            let reader_builder = match ParquetRecordBatchStreamBuilder::new(file).await {
+                Ok(rb) => rb,
+                Err(_) => continue,
+            };
+            let mut reader = match reader_builder.build() {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            match reader.next().await {
+                Some(_) => break,
+                None => continue,
+            }
+        }
+    }
+
+    async fn try_wait_table_exists(
+        base_dir: &str,
+        payload_type: ArrowPayloadType,
+        max_wait: Duration,
+    ) -> Result<(), Error<OtapPdata>> {
+        tokio::select! {
+            _ = Delay::new(max_wait) => Err(Error::InternalError {
+                message: "timed out waiting for table to exist".into()
+            }),
+            _ = wait_table_exists(base_dir, payload_type) => Ok(())
+        }
+    }
+
     async fn assert_parquet_file_has_rows(
         base_dir: &str,
         payload_type: ArrowPayloadType,
@@ -619,21 +669,11 @@ mod test {
                 .next_entry()
                 .await
                 .unwrap();
-            // .iter()
-            // .count();
             assert!(any_table.is_none());
 
             // by now we've waited longer than the old age threshold, so if we send the timer tick
             // now, the files should flush
             ctrl_tx.send(NodeControlMsg::TimerTick {}).await.unwrap();
-
-            // wait a little bit for flush to happen
-            //
-            // TODO -- once we have Ack/Nack implemented, we can reduce the potential flakiness
-            // of this test by waiting to get the Ack here instead of just waiting some arbitrary
-            // amount of time for the files to be flushed
-            // https://github.com/open-telemetry/otel-arrow/issues/504
-            _ = sleep(Duration::from_millis(500)).await;
 
             for payload_type in &[
                 ArrowPayloadType::Logs,
@@ -641,12 +681,15 @@ mod test {
                 ArrowPayloadType::ScopeAttrs,
                 ArrowPayloadType::ResourceAttrs,
             ] {
+                try_wait_table_exists(base_dir, *payload_type, Duration::from_secs(5))
+                    .await
+                    .unwrap();
                 assert_parquet_file_has_rows(base_dir, *payload_type, num_rows).await
             }
 
             ctrl_tx
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_nanos(10),
+                    deadline: Duration::from_millis(10),
                     reason: "shutting down".into(),
                 })
                 .await
