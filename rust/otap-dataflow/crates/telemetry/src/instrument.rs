@@ -21,7 +21,7 @@ pub struct Counter<T>(T);
 #[derive(Default, Clone, Copy)]
 pub struct UpDownCounter<T>(T);
 
-/// A value that can arbitrarily go up and down, used for temperature or current memory usage.
+/// A measurement value that aggregates using the average (e.g., temperature, physical dimensions, quotients).
 #[repr(transparent)]
 #[derive(Default, Clone, Copy)]
 pub struct Gauge<T>(T);
