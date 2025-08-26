@@ -1427,31 +1427,12 @@ fn try_unify_struct_columns(
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expect can downcast to struct");
+                    let new_column = try_unify_struct_fields(&column, desired_fields)?;
 
-                    // TODO - we could maybe refactor this down the line to clone lazily if the
-                    // struct column already has all the desired fields
-                    let mut struct_columns = column.columns().to_vec();
-                    let mut struct_fields = curr_struct_fields.to_vec();
-                    try_unify_struct_fields(
-                        column.len(),
-                        &mut struct_fields,
-                        &mut struct_columns,
-                        desired_fields,
-                    )?;
-
-                    let new_struct_fields = Fields::from(struct_fields);
-                    let new_field = Arc::new(
-                        field
-                            .clone()
-                            .with_data_type(DataType::Struct(new_struct_fields.clone())),
-                    );
-                    let new_column = Arc::new(StructArray::new(
-                        new_struct_fields.clone(),
-                        struct_columns,
-                        column.nulls().cloned(),
-                    ));
+                    let new_field =
+                        Arc::new(field.clone().with_data_type(new_column.data_type().clone()));
                     fields[field_index] = new_field;
-                    columns[field_index] = new_column;
+                    columns[field_index] = Arc::new(new_column);
                 } else {
                     todo!("return an error here cause we got the wrong data type ..");
                 }
@@ -1469,33 +1450,40 @@ fn try_unify_struct_columns(
 }
 
 fn try_unify_struct_fields(
-    column_len: usize,
-    current_fields: &mut Vec<Arc<Field>>,
-    current_columns: &mut Vec<ArrayRef>,
+    // column_len: usize,
+    // current_fields: &mut Vec<Arc<Field>>,
+    // current_columns: &mut Vec<ArrayRef>,
+    current_array: &StructArray,
     desired_fields: &HashMap<String, Field>,
-) -> Result<()> {
+) -> Result<StructArray> {
+    let mut new_columns = Vec::with_capacity(desired_fields.len());
+    let array_len = current_array.len();
+    let curr_fields = current_array.fields();
     for (field_name, field_def) in desired_fields {
-        match current_fields
-            .iter()
-            .enumerate()
-            .find(|(_, field)| field.name() == field_name)
-        {
+        match curr_fields.find(field_name) {
             Some((field_index, current_field)) => {
                 if current_field.data_type() != field_def.data_type() {
                     todo!("here we need to marshall the current field into the desired type")
+                } else {
+                    new_columns.push(current_array.column(field_index).clone());
                 }
             }
+
             None => {
                 // create an all null array with the desired type
                 let new_struct_column =
-                    arrow::array::new_null_array(field_def.data_type(), column_len);
-                current_fields.push(Arc::new(field_def.clone()));
-                current_columns.push(Arc::new(new_struct_column));
+                    arrow::array::new_null_array(field_def.data_type(), array_len);
+                new_columns.push(new_struct_column);
             }
         }
     }
 
-    Ok(())
+    let new_fields = Fields::from(desired_fields.values().cloned().collect::<Vec<_>>());
+    Ok(StructArray::new(
+        new_fields,
+        new_columns,
+        current_array.nulls().cloned(),
+    ))
 }
 
 // `RecordBatch` and `StructArray` are very similar and have `From` impls for conversion between
@@ -1648,7 +1636,7 @@ mod test {
             )])),
             vec![Arc::new(StructArray::new(
                 vec![field_2.clone()].into(),
-                vec![Arc::new(UInt8Array::from_iter_values(vec![1, 2, 3]))],
+                vec![Arc::new(UInt8Array::from_iter_values(vec![4, 5, 6]))],
                 None,
             ))],
         )
@@ -1657,8 +1645,41 @@ mod test {
         let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(rb_a)], [Some(rb_b)]];
         unify(&mut batches).unwrap();
 
-        println!("a {:?}", batches[0][0]);
-        println!("b {:?}", batches[1][0]);
+        let expected_fields = Fields::from(vec![field_1, field_2]);
+        let expected_schema = Arc::new(Schema::new(vec![Field::new(
+            "s1",
+            DataType::Struct(expected_fields.clone()),
+            true,
+        )]));
+
+        let expected_rb_a = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![Arc::new(StructArray::new(
+                expected_fields.clone(),
+                vec![
+                    Arc::new(UInt8Array::from_iter_values(vec![1, 2, 3])),
+                    Arc::new(UInt8Array::from_iter(vec![None, None, None])),
+                ],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let expected_rb_b = RecordBatch::try_new(
+            expected_schema.clone(),
+            vec![Arc::new(StructArray::new(
+                expected_fields.clone(),
+                vec![
+                    Arc::new(UInt8Array::from_iter(vec![None, None, None])),
+                    Arc::new(UInt8Array::from_iter_values(vec![4, 5, 6])),
+                ],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &expected_rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
     }
 
     #[test]
