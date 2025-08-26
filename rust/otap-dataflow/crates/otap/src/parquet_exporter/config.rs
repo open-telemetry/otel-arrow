@@ -42,25 +42,12 @@ pub struct WriterOptions {
     /// details see [`Self::flush_age_check_interval`]
     #[serde(with = "humantime_serde")]
     pub flush_when_older_than: Option<Duration>,
-
-    /// Period at which the age of unflushed files are checked to determine if they should be
-    /// flushed. Files whose age is older than [`Self::flush_when_older_than`] will be flushed on
-    /// this interval (if that value is `None`, this config value is ignored).
-    ///
-    /// Note: setting this to a smaller value may cause unflushed files to be to be buffered for
-    /// less time beyond the age at which they should be flushed. However, using an extremely short
-    /// interval can cause extra overhead in the pipeline.
-    ///
-    /// Default = "5s" (5 seconds)
-    #[serde(with = "humantime_serde")]
-    pub flush_age_check_interval: Option<Duration>,
 }
 
 impl Default for WriterOptions {
     fn default() -> Self {
         Self {
             flush_when_older_than: None,
-            flush_age_check_interval: None,
             target_rows_per_file: Some(100_000_000),
         }
     }
@@ -89,8 +76,7 @@ mod test {
             ],
             \"writer_options\": {
                 \"target_rows_per_file\": 1000000000,
-                \"flush_when_older_than\": \"5m\",
-                \"flush_age_check_interval\": \"5s\"
+                \"flush_when_older_than\": \"5m\"
             }
         }";
 
@@ -101,7 +87,6 @@ mod test {
                 "_part_id".to_string(),
             ])]),
             writer_options: Some(WriterOptions {
-                flush_age_check_interval: Some(Duration::from_secs(5)),
                 flush_when_older_than: Some(Duration::from_secs(300)),
                 target_rows_per_file: Some(1000000000),
             }),

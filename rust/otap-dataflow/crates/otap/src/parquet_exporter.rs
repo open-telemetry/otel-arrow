@@ -111,11 +111,9 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
         // if threshold set to flush old messages, get the timer interval. If timer interval isn't
         // configured, we use a default period of 5s
-        let flush_age_check_interval = writer_options.flush_when_older_than.is_some().then(|| {
-            writer_options
-                .flush_age_check_interval
-                .unwrap_or(Duration::from_secs(5))
-        });
+        let flush_age_check_interval = writer_options
+            .flush_when_older_than
+            .map(calculate_flush_timeout_check_period);
 
         // start timer-tick to periodically flush batches older than threshold
         if let Some(flush_age_check_interval) = flush_age_check_interval {
@@ -224,6 +222,18 @@ impl Exporter<OtapPdata> for ParquetExporter {
             }
         }
     }
+}
+
+/// This calculates the period at which we instruct the [`WriterManager`] to flush any writers
+/// older than the threshold.
+fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Duration {
+    // try to choose a period that is relatively close the the configured threshold.
+    // this avoids the check happening long after the file writer is beyond the threshold.
+    let period = configured_threshold / 60;
+
+    // we make the minimum period at which we'll check that a flush should happen 1 second.
+    // this avoids a too short check interval causing a lot of overhead.
+    period.max(Duration::from_secs(1))
 }
 
 #[cfg(test)]
@@ -522,8 +532,6 @@ mod test {
 
     #[test]
     fn test_can_flush_on_interval() {
-        let age_check_interval = Duration::from_secs(30);
-
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
@@ -531,7 +539,6 @@ mod test {
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
                 target_rows_per_file: None,
-                flush_age_check_interval: Some(age_check_interval),
                 flush_when_older_than: Some(Duration::from_millis(200)),
             }),
         });
@@ -567,7 +574,6 @@ mod test {
 
         async fn run_test(
             base_dir: &str,
-            expected_age_check_interval: Duration,
             pdata_tx: Sender<OtapPdata>,
             ctrl_tx: Sender<NodeControlMsg>,
             mut ctrl_rx: PipelineCtrlMsgReceiver,
@@ -584,7 +590,7 @@ mod test {
                 duration,
             } = msg
             {
-                assert_eq!(duration, expected_age_check_interval);
+                assert_eq!(duration, Duration::from_secs(1));
             } else {
                 return Err(Error::InternalError {
                     message: "wrong pipeline control message received. Expected StartTimer".into(),
@@ -654,7 +660,6 @@ mod test {
                 start_exporter(exporter, pipeline_ctrl_msg_tx),
                 run_test(
                     base_dir.as_str(),
-                    age_check_interval,
                     pdata_tx,
                     control_sender,
                     pipeline_ctrl_msg_rx
