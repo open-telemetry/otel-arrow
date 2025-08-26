@@ -5,12 +5,14 @@ use crate::arrays::{
     NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor, get_required_array,
 };
 use crate::error;
-use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+use crate::proto::opentelemetry::common::v1::{InstrumentationScope, AnyValue, any_value::Value};
 use crate::schema::consts;
 use arrow::array::{Array, RecordBatch, StructArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Fields};
 use snafu::OptionExt;
 use std::sync::LazyLock;
+use std::fmt;
+use std::fmt::Write;
 
 pub(in crate::otlp) struct ResourceArrays<'a> {
     pub id: &'a UInt16Array,
@@ -118,5 +120,54 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
                 .primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?,
             id: struct_col_accessor.primitive_column_op(consts::ID)?,
         })
+    }
+}
+
+
+impl fmt::Display for AnyValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(value) = &self.value {
+            match value {
+                Value::StringValue(string) => {
+                    write!(f, "{string}")?;
+                }
+                Value::BoolValue(bool) => {
+                    write!(f, "{bool}")?;
+                }
+                Value::IntValue(int) => {
+                    write!(f, "{int}")?;
+                }
+                Value::DoubleValue(double) => {
+                    write!(f, "{double}")?;
+                }
+                Value::ArrayValue(array) => {
+                    let values = &array.values;
+                    write!(f, "{values:?}")?;
+                }
+                Value::KvlistValue(kvlist) => {
+                    let mut kv_string = String::new();
+                    for kv in kvlist.values.iter() {
+                        if let Some(value) = &kv.value {
+                            _ = write!(
+                                &mut kv_string,
+                                "{key}={value} ",
+                                key = kv.key,
+                                value = value
+                            );
+                        }
+                    }
+                    write!(f, "{kv_string}")?;
+                }
+                Value::BytesValue(bytes) => {
+                    if let Ok(byte_string) = String::from_utf8(bytes.to_vec()) {
+                        write!(f, "{byte_string}")?;
+                    }
+                    write!(f, "")?;
+                }
+            }
+        } else {
+            write!(f, "")?;
+        }
+        Ok(())
     }
 }

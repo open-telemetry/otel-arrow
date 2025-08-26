@@ -34,9 +34,13 @@ pub mod parquet_exporter;
 pub mod perf_exporter;
 
 pub mod fake_data_generator;
+
+pub mod debug_processor;
+
 /// testing utilities
 #[cfg(test)]
 mod mock;
+pub mod noop_exporter;
 
 #[cfg(test)]
 mod fixtures;
