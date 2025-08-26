@@ -111,8 +111,7 @@ pub trait AttributeSetHandler {
     /// Returns the static descriptor describing this attribute set.
     fn descriptor(&self) -> &'static AttributesDescriptor;
 
-    /// Returns a slice of attribute values for this set.
-    /// This method should return the actual values stored in the implementing struct.
+    /// Returns a reference to attribute value slice for this set.
     fn attribute_values(&self) -> &[AttributeValue];
 
     /// Returns an iterator over key-value pairs of all attributes in this set.
