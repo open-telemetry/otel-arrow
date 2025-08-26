@@ -44,6 +44,7 @@ arrow-ipc = { version = "56.1", features=["zstd"] }
 ciborium = "0.2.2"
 futures-timer = "3.0"
 http = "1.3"
+humantime-serde = "1.1.1"
 object_store = "0.12"
 otel-arrow-rust = { path = "../otel-arrow-rust"}
 parquet = { version = "56.1", default-features = false, features = ["arrow", "async", "object_store"]}

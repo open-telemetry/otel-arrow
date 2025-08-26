@@ -23,6 +23,7 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::time::Duration;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
@@ -106,17 +107,43 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 error: format!("error initializing object store {e}"),
             })?;
 
-        let mut writer =
-            writer::WriterManager::new(object_store, self.config.writer_options.clone());
+        let writer_options = self.config.writer_options.unwrap_or_default();
+
+        // if threshold set to flush old messages, get the timer interval. If timer interval isn't
+        // configured, we use a default period of 5s
+        let flush_age_check_interval = writer_options
+            .flush_when_older_than
+            .map(calculate_flush_timeout_check_period);
+
+        // start timer-tick to periodically flush batches older than threshold
+        if let Some(flush_age_check_interval) = flush_age_check_interval {
+            // ignoring timer cancel for now..
+            // TODO when we have the ability to inject dynamic config we may need to cancel and
+            // recreate the interval timer
+            // https://github.com/open-telemetry/otel-arrow/issues/500
+            let _timer_cancel = effect_handler
+                .start_periodic_timer(flush_age_check_interval)
+                .await?;
+        }
+
+        let mut writer = writer::WriterManager::new(object_store, writer_options);
         let mut batch_id = 0;
         let mut id_generator = PartitionSequenceIdGenerator::new();
 
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::TimerTick { .. }) => {
-                    // TODO periodically we should tell the writer to flush any data
-                    // that has been buffered in memory longer than some time threshold
-                    // https://github.com/open-telemetry/otel-arrow/issues/497
+                    let flush_aged_result = writer.flush_aged_beyond_threshold().await;
+                    if let Err(e) = flush_aged_result {
+                        // TODO - this is not the error handling we want long term.  eventually we
+                        // should have the concept of retryable & non-retryable errors and use Nack
+                        //  message + a Retry processor to handle this gracefully
+                        // https://github.com/open-telemetry/otel-arrow/issues/504
+                        return Err(Error::ExporterError {
+                            exporter: effect_handler.exporter_id(),
+                            error: format!("Parquet write failed: {e}"),
+                        });
+                    }
                 }
                 Message::Control(NodeControlMsg::Config { .. }) => {
                     // TODO when we have the ability to inject dynamic config into the
@@ -197,9 +224,22 @@ impl Exporter<OtapPdata> for ParquetExporter {
     }
 }
 
+/// This calculates the period at which we instruct the [`WriterManager`] to flush any writers
+/// older than the threshold.
+fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Duration {
+    // try to choose a period that is relatively close the the configured threshold.
+    // this avoids the check happening long after the file writer is beyond the threshold.
+    let period = configured_threshold / 60;
+
+    // we make the minimum period at which we'll check that a flush should happen 1 second.
+    // this avoids a too short check interval causing a lot of overhead.
+    period.max(Duration::from_secs(1))
+}
+
 #[cfg(test)]
 mod test {
     use crate::grpc::OtapArrowBytes;
+    use crate::parquet_exporter::config::WriterOptions;
 
     use super::*;
 
@@ -208,11 +248,15 @@ mod test {
     use std::time::Duration;
 
     use arrow::array::{DictionaryArray, RecordBatch, StringArray};
+    use arrow::compute::concat_batches;
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel};
+    use otap_df_engine::control::{
+        Controllable, PipelineControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_channel,
+    };
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::message::{Receiver, Sender};
@@ -356,6 +400,56 @@ mod test {
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 278).await;
                 })
             });
+    }
+  
+    async fn wait_table_exists(base_dir: &str, payload_type: ArrowPayloadType) {
+        let table_name = payload_type.as_str_name().to_lowercase();
+        loop {
+            _ = sleep(Duration::from_millis(100)).await;
+
+            // ensure the table exists
+            let mut dir = match tokio::fs::read_dir(format!("{base_dir}/{table_name}")).await {
+                Ok(dir) => dir,
+                Err(_) => continue,
+            };
+
+            // ensure a parquet file exists
+            let table_dir_entry = match dir.next_entry().await.unwrap() {
+                Some(table_dir) => table_dir,
+                None => continue,
+            };
+
+            // open the file and ensure a batch is written in it
+            let file = match File::open(table_dir_entry.path()).await {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            let reader_builder = match ParquetRecordBatchStreamBuilder::new(file).await {
+                Ok(rb) => rb,
+                Err(_) => continue,
+            };
+            let mut reader = match reader_builder.build() {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            match reader.next().await {
+                Some(_) => break,
+                None => continue,
+            }
+        }
+    }
+
+    async fn try_wait_table_exists(
+        base_dir: &str,
+        payload_type: ArrowPayloadType,
+        max_wait: Duration,
+    ) -> Result<(), Error<OtapPdata>> {
+        tokio::select! {
+            _ = Delay::new(max_wait) => Err(Error::InternalError {
+                message: "timed out waiting for table to exist".into()
+            }),
+            _ = wait_table_exists(base_dir, payload_type) => Ok(())
+        }
     }
 
     async fn assert_parquet_file_has_rows(
@@ -515,7 +609,10 @@ mod test {
         let exporter = ParquetExporter::new(config::Config {
             base_uri: base_dir.clone(),
             partitioning_strategies: None,
-            writer_options: None,
+            writer_options: Some(WriterOptions {
+                target_rows_per_file: Some(5000),
+                ..Default::default()
+            }),
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -528,8 +625,7 @@ mod test {
         let exporter_config = ExporterConfig::new("test_parquet_exporter");
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
-        let (pdata_tx, pdata_rx) =
-            create_not_send_channel::<OtapPdata>(exporter_config.control_channel.capacity);
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
 
@@ -547,26 +643,69 @@ mod test {
         }
 
         async fn send_messages(
+            base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_sender: Sender<NodeControlMsg>,
         ) -> () {
-            // have the parquet writer queue a batch to be written
-            let otap_batch = OtapArrowBytes::ArrowLogs(
+            // have the parquet writer queue a batch to be written. Since it's a bit difficult to
+            // know for certain when the batches will actually be queued because we have no direct
+            // way to investigate it, we can inspect it indirectly. Below, we'll write just enough
+            // data to cause the log attributes table to flush, but not the logs, resource attrs or
+            // scope attrs. Since we know the log attrs table has been written, we can guess the
+            // writer has buffered files ..
+
+            let otap_batch: OtapPdata = OtapArrowBytes::ArrowLogs(
                 fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                     // a pretty big batch
-                    num_rows: 5000,
+                    num_rows: 4998,
                     ..Default::default()
                 }),
-            );
-            _ = pdata_tx.send(otap_batch.into()).await;
+            )
+            .into();
+            pdata_tx.send(otap_batch).await.unwrap();
 
-            // yield long enough for the exporter to receive the pdata and queue the write
-            sleep(Duration::from_millis(50)).await;
+            let otap_batch2: OtapPdata = OtapArrowBytes::ArrowLogs(
+                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                    num_rows: 1,
+                    ..Default::default()
+                }),
+            )
+            .into();
+            let mut otap_batch2 = OtapArrowRecords::try_from(otap_batch2).unwrap();
+            let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
+            // adding extra attributes should just put us over the limit where this table will be
+            // flushed on write
+            otap_batch2.set(
+                ArrowPayloadType::LogAttrs,
+                concat_batches(log_attrs.schema_ref(), vec![&log_attrs.clone(), log_attrs])
+                    .unwrap(),
+            );
+
+            pdata_tx.send(otap_batch2.into()).await.unwrap();
+
+            // wait for the log_attrs table to exist
+            try_wait_table_exists(base_dir, ArrowPayloadType::LogAttrs, Duration::from_secs(5))
+                .await
+                .unwrap();
+
+            // double check that the other tables have not been written (this is a sanity check)
+            for payload_type in &[
+                ArrowPayloadType::Logs,
+                ArrowPayloadType::ResourceAttrs,
+                ArrowPayloadType::ScopeAttrs,
+            ] {
+                let table_name = payload_type.as_str_name().to_lowercase();
+                assert!(
+                    tokio::fs::read_dir(format!("{base_dir}/{table_name}"))
+                        .await
+                        .is_err()
+                );
+            }
 
             // shutdown faster than it could possibly flush
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_nanos(10),
+                    deadline: Duration::from_nanos(1),
                     reason: "shutting down".into(),
                 })
                 .await;
@@ -576,7 +715,7 @@ mod test {
         let (exporter_result, _) = rt.block_on(async move {
             tokio::join!(
                 start_exporter(exporter, pipeline_ctrl_msg_tx),
-                send_messages(pdata_tx, control_sender)
+                send_messages(base_dir.as_str(), pdata_tx, control_sender)
             )
         });
 
@@ -592,6 +731,141 @@ mod test {
                 format!("received unexpected error: {e:?}. Expected IoError caused by timeout")
             ),
         }
+    }
+
+    #[test]
+    fn test_can_flush_on_interval() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: Some(WriterOptions {
+                target_rows_per_file: None,
+                flush_when_older_than: Some(Duration::from_millis(200)),
+            }),
+        });
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let node_id = test_node(test_runtime.config().name.clone());
+        let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+            exporter,
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let (rt, _) = setup_test_runtime();
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) =
+            create_not_send_channel::<OtapPdata>(test_runtime.config().control_channel.capacity);
+        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+        ) -> Result<(), Error<OtapPdata>> {
+            exporter.start(pipeline_ctrl_msg_tx).await
+        }
+
+        async fn run_test(
+            base_dir: &str,
+            pdata_tx: Sender<OtapPdata>,
+            ctrl_tx: Sender<NodeControlMsg>,
+            mut ctrl_rx: PipelineCtrlMsgReceiver,
+        ) -> Result<(), Error<OtapPdata>> {
+            // try to receive the first timer start message
+            let msg = tokio::select! {
+                _ = Delay::new(Duration::from_secs(10)) => return Err(Error::InternalError {
+                    message: "Timed out waiting for timer start signal".into(),
+                }),
+                msg = ctrl_rx.recv() => msg?
+            };
+            if let PipelineControlMsg::StartTimer {
+                node_id: _,
+                duration,
+            } = msg
+            {
+                assert_eq!(duration, Duration::from_secs(1));
+            } else {
+                return Err(Error::InternalError {
+                    message: "wrong pipeline control message received. Expected StartTimer".into(),
+                });
+            }
+
+            // have the parquet writer queue a batch to be written
+            let num_rows = 5;
+            let otap_batch = OtapArrowBytes::ArrowLogs(
+                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                    num_rows,
+                    ..Default::default()
+                }),
+            );
+            pdata_tx.send(otap_batch.into()).await.unwrap();
+
+            // wait some time but not as long as the old age threshold, then send a timer tick
+            _ = sleep(Duration::from_millis(50)).await;
+            ctrl_tx.send(NodeControlMsg::TimerTick {}).await.unwrap();
+
+            // wait a little bit, then ensure we haven't flushed anything
+            _ = sleep(Duration::from_millis(200)).await;
+            let any_table = tokio::fs::read_dir(base_dir.to_string())
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap();
+            assert!(any_table.is_none());
+
+            // by now we've waited longer than the old age threshold, so if we send the timer tick
+            // now, the files should flush
+            ctrl_tx.send(NodeControlMsg::TimerTick {}).await.unwrap();
+
+            for payload_type in &[
+                ArrowPayloadType::Logs,
+                ArrowPayloadType::LogAttrs,
+                ArrowPayloadType::ScopeAttrs,
+                ArrowPayloadType::ResourceAttrs,
+            ] {
+                try_wait_table_exists(base_dir, *payload_type, Duration::from_secs(5))
+                    .await
+                    .unwrap();
+                assert_parquet_file_has_rows(base_dir, *payload_type, num_rows).await
+            }
+
+            ctrl_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Duration::from_millis(10),
+                    reason: "shutting down".into(),
+                })
+                .await
+                .unwrap();
+
+            Ok(())
+        }
+
+        let (exporter_result, test_run_result) = rt.block_on(async move {
+            tokio::join!(
+                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                run_test(
+                    base_dir.as_str(),
+                    pdata_tx,
+                    control_sender,
+                    pipeline_ctrl_msg_rx
+                )
+            )
+        });
+
+        // these shouldn't be Err, so unwrap to check
+        test_run_result.unwrap();
+        exporter_result.unwrap();
     }
 
     #[test]

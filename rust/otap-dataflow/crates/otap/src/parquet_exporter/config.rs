@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::time::Duration;
+
 use serde::Deserialize;
 
 /// Configuration of parquet exporter
@@ -20,18 +22,32 @@ pub struct Config {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct WriterOptions {
     /// Target number of rows in one parquet file. The writer will flush automatically any files
-    /// that attain greater than this number of rows. If this is None, the writer won't flush
-    /// automatically and some external component will need to periodically and/or eventually call
-    /// the `WriterManager.flush_all` method.
+    /// that attain greater than this number of rows. If this is `None`, the writer won't flush
+    /// automatically when a given file size is reached (in this case, it is best to set
+    /// [`Self::flush_when_older_than`]).
     ///
     /// This is currently approximate. The writer does not currently split batches across multiple
     /// files if the cutoff for the target rows happens to be in the middle of a batch.
+    ///
+    /// Default = 100 million rows.
     pub target_rows_per_file: Option<usize>,
+
+    /// If this is set, the exporter will flush files whose first batch is older than this
+    /// interval. This can be used to configure the writer to flush the file before the target rows
+    /// per file has been reached, which can be useful in the case that there is a desire to have
+    /// the data become visible earlier. Note, setting this to too small of an interval could
+    /// result in the creation of many small files, which can negatively impact read performance.
+    ///
+    /// Note that files may actually be buffered for slightly longer than this value. For more
+    /// details see [`Self::flush_age_check_interval`]
+    #[serde(with = "humantime_serde")]
+    pub flush_when_older_than: Option<Duration>,
 }
 
 impl Default for WriterOptions {
     fn default() -> Self {
         Self {
+            flush_when_older_than: None,
             target_rows_per_file: Some(100_000_000),
         }
     }
@@ -59,7 +75,8 @@ mod test {
                 }
             ],
             \"writer_options\": {
-                \"target_rows_per_file\": 1000000000
+                \"target_rows_per_file\": 1000000000,
+                \"flush_when_older_than\": \"5m\"
             }
         }";
 
@@ -70,6 +87,7 @@ mod test {
                 "_part_id".to_string(),
             ])]),
             writer_options: Some(WriterOptions {
+                flush_when_older_than: Some(Duration::from_secs(300)),
                 target_rows_per_file: Some(1000000000),
             }),
         };
