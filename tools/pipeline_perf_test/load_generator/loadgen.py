@@ -25,13 +25,13 @@ Usage:
 Examples:
   Standalone OTLP load generation:
     python load_generator/loadgen.py --load-type otlp --duration 30 --threads 4 --batch-size 1000
-    
+
   Standalone syslog UDP load generation:
     SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=515 python load_generator/loadgen.py --load-type syslog --duration 2
-    
+
   Standalone syslog TCP load generation:
     SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 SYSLOG_TRANSPORT=tcp python load_generator/loadgen.py --load-type syslog --duration 2
-    
+
   Server mode for API control:
     python load_generator/loadgen.py --serve
     # Then control via HTTP:
@@ -374,7 +374,7 @@ class LoadGenerator:
             sent_count = 0
             failed_count = 0
             bytes_sent_count = 0
-            
+
             # UDP: Send individual messages instead of single batch of messages
             for message in syslog_batch:
                 try:
@@ -386,7 +386,7 @@ class LoadGenerator:
                     # Only print first few errors to avoid spam
                     if failed_count <= 3:
                         print(f"Thread {thread_id}: Failed to send syslog message via UDP: {e}")
-            
+
             # Update metrics once per batch with actual counts
             if sent_count > 0 or failed_count > 0:
                 updates = {}
