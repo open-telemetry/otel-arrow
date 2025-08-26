@@ -16,7 +16,7 @@ use std::ops::{AddAssign, SubAssign};
 #[derive(Default, Clone, Copy)]
 pub struct Counter<T>(T);
 
-/// A value that can go up and down, used for sizes or amount of items in a queue.
+/// A countable value that can go up and down that aggregates using the sum (e.g., items in a queue, bytes of memory).
 #[repr(transparent)]
 #[derive(Default, Clone, Copy)]
 pub struct UpDownCounter<T>(T);
