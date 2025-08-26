@@ -401,7 +401,7 @@ mod test {
                 })
             });
     }
-  
+
     async fn wait_table_exists(base_dir: &str, payload_type: ArrowPayloadType) {
         let table_name = payload_type.as_str_name().to_lowercase();
         loop {
