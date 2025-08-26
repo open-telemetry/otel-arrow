@@ -22,6 +22,23 @@ Usage:
 - As a server: start with --serve flag and control load generation via HTTP
     endpoints (/start, /stop, /metrics).
 
+Examples:
+  Standalone OTLP load generation:
+    python load_generator/loadgen.py --load-type otlp --duration 30 --threads 4 --batch-size 1000
+    
+  Standalone syslog UDP load generation:
+    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=515 python load_generator/loadgen.py --load-type syslog --duration 2
+    
+  Standalone syslog TCP load generation:
+    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 SYSLOG_TRANSPORT=tcp python load_generator/loadgen.py --load-type syslog --duration 2
+    
+  Server mode for API control:
+    python load_generator/loadgen.py --serve
+    # Then control via HTTP:
+    # curl -X POST http://localhost:5001/start -H "Content-Type: application/json" -d '{"load_type": "syslog", "batch_size": 1000, "threads": 2}'
+    # curl -X POST http://localhost:5001/stop
+    # curl http://localhost:5001/metrics
+
 Endpoints:
 - POST /start: Start load generation with specified parameters in JSON.
 - POST /stop: Stop the load generation.
@@ -322,6 +339,9 @@ class LoadGenerator:
 
         # Create UDP socket for syslog
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # TODO: We need to find the right values
+        # sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024*1024)
+        sock.setblocking(False)
 
         batch_size = args["batch_size"]
         thread_count = args["threads"]
@@ -536,6 +556,7 @@ def is_port_in_use(port, host="0.0.0.0"):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(1)
         return s.connect_ex((host, port)) == 0
+
 
 def main():
     def get_default_value(field_name: str):
