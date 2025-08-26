@@ -286,36 +286,48 @@ fn aggregate_metric_groups(
         ),
     > = HashMap::new();
 
+    // Build a filter set once (if grouping is requested)
+    let group_filter: Option<HashSet<&str>> = if group_attrs.is_empty() {
+        None
+    } else {
+        Some(group_attrs.iter().copied().collect())
+    };
+
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
                      metrics_iter: MetricsIterator<'_>| {
-        // Build key attributes vector
-        let mut key_attrs: Vec<(String, Option<String>)> = Vec::new();
-        if !group_attrs.is_empty() {
-            let mut amap: HashMap<&str, String> = HashMap::new();
+        // Single-pass collection of only the grouped attributes
+        let mut selected: HashMap<&str, (String, AttributeValue)> = HashMap::new();
+        if let Some(filter) = &group_filter {
             for (k, v) in attributes.iter_attributes() {
-                let _ = amap.insert(k, v.to_string_value());
-            }
-            for gk in group_attrs {
-                let val_opt = amap.get(gk).cloned();
-                key_attrs.push((gk.to_string(), val_opt));
+                if filter.contains(k) {
+                    let _ = selected.insert(k, (v.to_string_value(), v.clone()));
+                }
             }
         }
-        key_attrs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Build key attributes vector (name + optional string value)
+        let mut key_attrs: Vec<(String, Option<String>)> = Vec::new();
+        if !group_attrs.is_empty() {
+            key_attrs.reserve(group_attrs.len());
+            for gk in group_attrs {
+                let val_opt = selected.get(gk).map(|(s, _)| s.clone());
+                key_attrs.push(((*gk).to_string(), val_opt));
+            }
+            key_attrs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        }
 
         // Prepare group entry
         let attrs_and_metrics = match agg.entry((descriptor.name.to_string(), key_attrs)) {
             Entry::Occupied(o) => o.into_mut(),
             Entry::Vacant(v) => {
+                // Build attributes map for this group using the already-selected values
                 let mut attrs_map = HashMap::new();
                 if !group_attrs.is_empty() {
-                    let mut avals: HashMap<&str, &AttributeValue> = HashMap::new();
-                    for (k, val) in attributes.iter_attributes() {
-                        let _ = avals.insert(k, val);
-                    }
+                    attrs_map.reserve(selected.len());
                     for gk in group_attrs {
-                        if let Some(v) = avals.get(gk) {
-                            let _ = attrs_map.insert(gk.to_string(), (*v).clone());
+                        if let Some((_, attr_val)) = selected.get(gk) {
+                            let _ = attrs_map.insert((*gk).to_string(), attr_val.clone());
                         }
                     }
                 }
@@ -355,8 +367,8 @@ fn aggregate_metric_groups(
         });
     }
 
-    // Stable sort by set name then number of metrics
-    groups.sort_by(|a, b| {
+    // Unstable sort by set name, then number of metrics
+    groups.sort_unstable_by(|a, b| {
         let ord = a.name.cmp(&b.name);
         if ord == std::cmp::Ordering::Equal {
             a.metrics.len().cmp(&b.metrics.len())
@@ -863,4 +875,306 @@ fn escape_prom_label_value(s: &str) -> String {
 fn escape_prom_help(s: &str) -> String {
     // Similar escaping to label value per Prometheus recommendations
     escape_prom_label_value(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_telemetry::descriptor::{Instrument, MetricsField};
+
+    static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test_metrics",
+        metrics: &[
+            MetricsField {
+                name: "requests_total",
+                unit: "1",
+                instrument: Instrument::Counter,
+                brief: "Total number of requests",
+            },
+            MetricsField {
+                name: "errors_total",
+                unit: "1",
+                instrument: Instrument::Counter,
+                brief: "Total number of errors",
+            },
+        ],
+    };
+
+    static TEST_METRICS_DESCRIPTOR_2: MetricsDescriptor = MetricsDescriptor {
+        name: "database_metrics",
+        metrics: &[MetricsField {
+            name: "connections_active",
+            unit: "1",
+            instrument: Instrument::Gauge,
+            brief: "Active database connections",
+        }],
+    };
+
+    #[test]
+    fn test_aggregate_metric_groups_sorting_logic() {
+        // Test the sorting logic with mock AggregateGroup structs
+        let mut groups = vec![
+            AggregateGroup {
+                name: "zebra_metrics".to_string(),
+                brief: &TEST_METRICS_DESCRIPTOR,
+                attributes: HashMap::new(),
+                metrics: {
+                    let mut m = HashMap::new();
+                    let _ = m.insert("metric1".to_string(), 10);
+                    m
+                },
+            },
+            AggregateGroup {
+                name: "alpha_metrics".to_string(),
+                brief: &TEST_METRICS_DESCRIPTOR_2,
+                attributes: HashMap::new(),
+                metrics: {
+                    let mut m = HashMap::new();
+                    let _ = m.insert("metric1".to_string(), 5);
+                    let _ = m.insert("metric2".to_string(), 15);
+                    m
+                },
+            },
+            AggregateGroup {
+                name: "alpha_metrics".to_string(),
+                brief: &TEST_METRICS_DESCRIPTOR,
+                attributes: HashMap::new(),
+                metrics: {
+                    let mut m = HashMap::new();
+                    let _ = m.insert("metric1".to_string(), 8);
+                    m
+                },
+            },
+        ];
+
+        // Apply the same sorting logic as in the function
+        groups.sort_by(|a, b| {
+            let ord = a.name.cmp(&b.name);
+            if ord == std::cmp::Ordering::Equal {
+                a.metrics.len().cmp(&b.metrics.len())
+            } else {
+                ord
+            }
+        });
+
+        // Verify sorting: first by name alphabetically, then by number of metrics
+        assert_eq!(groups[0].name, "alpha_metrics");
+        assert_eq!(groups[0].metrics.len(), 1); // smaller metrics count first
+
+        assert_eq!(groups[1].name, "alpha_metrics");
+        assert_eq!(groups[1].metrics.len(), 2); // larger metrics count second
+
+        assert_eq!(groups[2].name, "zebra_metrics");
+        assert_eq!(groups[2].metrics.len(), 1);
+    }
+
+    #[test]
+    fn test_aggregate_metric_groups_group_by_attribute() {
+        use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+        use otap_df_telemetry::descriptor::{
+            AttributeField, AttributeValueType, AttributesDescriptor,
+        };
+        use otap_df_telemetry::metrics::MetricSetHandler;
+
+        // Mock Attributes: [env, region]
+        static MOCK_ATTR_DESC: AttributesDescriptor = AttributesDescriptor {
+            name: "test_attrs",
+            fields: &[
+                AttributeField {
+                    key: "env",
+                    r#type: AttributeValueType::String,
+                    brief: "Environment",
+                },
+                AttributeField {
+                    key: "region",
+                    r#type: AttributeValueType::String,
+                    brief: "Region",
+                },
+            ],
+        };
+
+        #[derive(Debug)]
+        struct MockAttrSet {
+            values: Vec<AttributeValue>,
+        }
+        impl MockAttrSet {
+            fn new(env: &str, region: &str) -> Self {
+                Self {
+                    values: vec![
+                        AttributeValue::String(env.to_string()),
+                        AttributeValue::String(region.to_string()),
+                    ],
+                }
+            }
+        }
+        impl AttributeSetHandler for MockAttrSet {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &MOCK_ATTR_DESC
+            }
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+        }
+
+        // Three metric set implementations sharing the same descriptor but different default values
+        #[derive(Debug, Default)]
+        struct MetricSetA;
+        #[derive(Debug, Default)]
+        struct MetricSetB;
+        #[derive(Debug, Default)]
+        struct MetricSetC;
+        #[derive(Debug, Default)]
+        struct MetricSetD;
+
+        impl MetricSetHandler for MetricSetA {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &TEST_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<u64> {
+                vec![10, 1]
+            } // requests_total=10, errors_total=1
+            fn clear_values(&mut self) {}
+            fn needs_flush(&self) -> bool {
+                true
+            }
+        }
+        impl MetricSetHandler for MetricSetB {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &TEST_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<u64> {
+                vec![5, 0]
+            } // requests_total=5, errors_total=0
+            fn clear_values(&mut self) {}
+            fn needs_flush(&self) -> bool {
+                true
+            }
+        }
+        impl MetricSetHandler for MetricSetC {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &TEST_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<u64> {
+                vec![5, 4]
+            } // requests_total=5, errors_total=4
+            fn clear_values(&mut self) {}
+            fn needs_flush(&self) -> bool {
+                true
+            }
+        }
+        impl MetricSetHandler for MetricSetD {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &TEST_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<u64> {
+                vec![2, 2]
+            } // requests_total=2, errors_total=2
+            fn clear_values(&mut self) {}
+            fn needs_flush(&self) -> bool {
+                true
+            }
+        }
+
+        // Build registry with two entries for the same metric set but different attributes
+        let reg = MetricsRegistryHandle::new();
+        let _m1: otap_df_telemetry::metrics::MetricSet<MetricSetA> =
+            reg.register(MockAttrSet::new("prod", "us"));
+        let _m2: otap_df_telemetry::metrics::MetricSet<MetricSetB> =
+            reg.register(MockAttrSet::new("dev", "eu"));
+        let _m3: otap_df_telemetry::metrics::MetricSet<MetricSetC> =
+            reg.register(MockAttrSet::new("prod", "us"));
+        let _m4: otap_df_telemetry::metrics::MetricSet<MetricSetD> =
+            reg.register(MockAttrSet::new("dev", "us"));
+
+        // Group by the "env" attribute and do not reset
+        let groups = aggregate_metric_groups(&reg, false, &["env"]);
+
+        // Expect two groups for the same descriptor name, keyed by env values
+        assert_eq!(groups.len(), 2);
+        assert!(
+            groups
+                .iter()
+                .all(|g| g.name == TEST_METRICS_DESCRIPTOR.name)
+        );
+
+        // Find groups by env
+        let mut prod_found = false;
+        let mut dev_found = false;
+        for g in groups {
+            let env = g.attributes.get("env").and_then(|v| match v {
+                AttributeValue::String(s) => Some(s.as_str()),
+                _ => None,
+            });
+            match env {
+                Some("prod") => {
+                    prod_found = true;
+                    assert_eq!(g.metrics.get("requests_total"), Some(&(10 + 5)));
+                    assert_eq!(g.metrics.get("errors_total"), Some(&(1 + 4)));
+                    // Only grouped attribute should be present (env), not region
+                    assert!(g.attributes.contains_key("env"));
+                    assert!(!g.attributes.contains_key("region"));
+                }
+                Some("dev") => {
+                    dev_found = true;
+                    assert_eq!(g.metrics.get("requests_total"), Some(&(5 + 2)));
+                    assert_eq!(g.metrics.get("errors_total"), Some(&(2)));
+                    assert!(g.attributes.contains_key("env"));
+                    assert!(!g.attributes.contains_key("region"));
+                }
+                _ => panic!("unexpected env attribute in group"),
+            }
+        }
+        assert!(prod_found && dev_found);
+
+        // Group by the "env" and region attributes and do not reset
+        let groups = aggregate_metric_groups(&reg, false, &["env", "region"]);
+
+        // Expect three groups for the same descriptor name, keyed by env, region values
+        assert_eq!(groups.len(), 3);
+        assert!(
+            groups
+                .iter()
+                .all(|g| g.name == TEST_METRICS_DESCRIPTOR.name)
+        );
+
+        // Find groups by env
+        let mut prod_us_found = false;
+        let mut dev_us_found = false;
+        let mut dev_eu_found = false;
+        for g in groups {
+            let env = g.attributes.get("env").and_then(|v| match v {
+                AttributeValue::String(s) => Some(s.as_str()),
+                _ => None,
+            });
+            let region = g.attributes.get("region").and_then(|v| match v {
+                AttributeValue::String(s) => Some(s.as_str()),
+                _ => None,
+            });
+            match (env, region) {
+                (Some("prod"), Some("us")) => {
+                    prod_us_found = true;
+                    assert_eq!(g.metrics.get("requests_total"), Some(&(10 + 5)));
+                    assert_eq!(g.metrics.get("errors_total"), Some(&(1 + 4)));
+                    assert!(g.attributes.contains_key("env"));
+                    assert!(g.attributes.contains_key("region"));
+                }
+                (Some("dev"), Some("eu")) => {
+                    dev_eu_found = true;
+                    assert_eq!(g.metrics.get("requests_total"), Some(&(5)));
+                    assert_eq!(g.metrics.get("errors_total"), Some(&(0)));
+                    assert!(g.attributes.contains_key("env"));
+                    assert!(g.attributes.contains_key("region"));
+                }
+                (Some("dev"), Some("us")) => {
+                    dev_us_found = true;
+                    assert_eq!(g.metrics.get("requests_total"), Some(&(2)));
+                    assert_eq!(g.metrics.get("errors_total"), Some(&(2)));
+                    assert!(g.attributes.contains_key("env"));
+                    assert!(g.attributes.contains_key("region"));
+                }
+                _ => panic!("unexpected env, region attributes in group"),
+            }
+        }
+        assert!(prod_us_found && dev_us_found && dev_eu_found);
+    }
 }
