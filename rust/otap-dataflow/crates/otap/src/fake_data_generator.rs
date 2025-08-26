@@ -1,10 +1,9 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! A fake data generator receiver.
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
-
-use std::time::Duration;
 
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use crate::{OTAP_RECEIVER_FACTORIES, pdata};
@@ -14,16 +13,18 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::receiver as local;
+use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
-use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, SignalType};
+use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal};
 use otap_df_otlp::fake_signal_receiver::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
 use prost::{EncodeError, Message};
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::time::sleep;
+use tokio::time::{Duration, Instant, sleep};
+use weaver_forge::registry::ResolvedRegistry;
 
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
@@ -42,9 +43,10 @@ pub struct FakeGeneratorReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_FAKE_DATA_GENERATOR_URN,
-    create: |node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
             FakeGeneratorReceiver::from_config(&node_config.config)?,
+            node,
             node_config,
             receiver_config,
         ))
@@ -78,7 +80,23 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error<OtapPdata>> {
         //start event loop
+        let traffic_config = self.config.get_traffic_config();
+        let registry = self
+            .config
+            .get_registry()
+            .map_err(|err| Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                error: err,
+            })?;
+
+        let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
+        let max_signal_count = traffic_config.get_max_signal_count();
+        let signals_per_second = traffic_config.get_signal_rate();
+        let max_batch_size = traffic_config.get_max_batch_size();
+        let mut signal_count: u64 = 0;
+        let one_second_duration = Duration::from_secs(1);
         loop {
+            let wait_till = Instant::now() + one_second_duration;
             tokio::select! {
                 biased; //prioritize ctrl_msg over all other blocks
                 // Process internal event
@@ -96,10 +114,29 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         }
                     }
                 }
-                // run scenario based on provided configuration
-                _ = run_scenario(&self.config, effect_handler.clone()) => {
-                    // do nothing
+                // generate and send signal based on provided configuration
+                signal_status = generate_signal(effect_handler.clone(), max_signal_count, &mut signal_count, max_batch_size, metric_count, trace_count, log_count, &registry), if max_signal_count.is_none_or(|max| max > signal_count) => {
+                    // if signals per second is set then we should rate limit
+                    match signal_status {
+                        Ok(_) => {
+                            if signals_per_second.is_some() {
+                                // check if need to sleep
+                                let remaining_time = wait_till - Instant::now();
+                                if remaining_time.as_secs_f64() > 0.0 {
+                                    sleep(remaining_time).await;
+                                }
+                                // ToDo: Handle negative time, not able to keep up with specified rate limit
+                            }
+                        }
+                        Err(e) => {
+                            return Err(Error::ReceiverError {
+                                receiver: effect_handler.receiver_id(),
+                                error: e.to_string()
+                            });
+                        }
+                    }
                 }
+
 
             }
         }
@@ -108,44 +145,208 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     }
 }
 
-/// Run the configured scenario steps
-async fn run_scenario(
-    config: &Config,
+/// generate and send signals
+async fn generate_signal(
     effect_handler: local::EffectHandler<OtapPdata>,
+    max_signal_count: Option<u64>,
+    signal_count: &mut u64,
+    max_batch_size: usize,
+    metric_count: usize,
+    trace_count: usize,
+    log_count: usize,
+    registry: &ResolvedRegistry,
 ) -> Result<(), Error<OtapPdata>> {
-    // loop through each step
-    let steps = config.get_steps();
-    let registry = config.get_registry();
-    for step in steps {
-        // create batches if specified
-        let batches = step.get_batches_to_generate() as usize;
-        for _ in 0..batches {
-            let signal = match step.get_signal_type() {
-                SignalType::Metrics(load) => OTLPSignal::Metrics(fake_otlp_metrics(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-                SignalType::Logs(load) => OTLPSignal::Logs(fake_otlp_logs(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-                SignalType::Traces(load) => OTLPSignal::Traces(fake_otlp_traces(
-                    load.resource_count(),
-                    load.scope_count(),
-                    registry,
-                )),
-            };
-            _ = effect_handler.send_message(signal.try_into()?).await;
-            // if there is a delay set between batches sleep for that amount before created the next signal in the batch
-            sleep(Duration::from_millis(step.get_delay_between_batches_ms())).await;
+    // nothing to send
+    if max_batch_size == 0 {
+        return Ok(());
+    }
+
+    let metric_count_split = metric_count / max_batch_size;
+    let metric_count_remainder = metric_count % max_batch_size;
+    let trace_count_split = trace_count / max_batch_size;
+    let trace_count_remainder = trace_count % max_batch_size;
+    let log_count_split = log_count / max_batch_size;
+    let log_count_remainder = log_count % max_batch_size;
+
+    if let Some(max_count) = max_signal_count {
+        // don't generate signals if we reached max signal
+        let mut current_count = *signal_count;
+        if current_count >= max_count {
+            return Ok(());
+        }
+        // update the counts here to allow us to reach the max_signal_count
+
+        for _ in 0..metric_count_split {
+            if max_count >= current_count + max_batch_size as u64 {
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+                current_count += max_batch_size as u64;
+            } else {
+                // generate last remaining signals
+                let remaining_count: usize =
+                    (max_count - current_count)
+                        .try_into()
+                        .map_err(|_| Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            error: "failed to convert u64 to usize".to_string(),
+                        })?;
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Metrics(fake_otlp_metrics(remaining_count, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+
+                // no more signals we have reached the max
+                *signal_count = max_count;
+                return Ok(());
+            }
+        }
+        if metric_count_remainder > 0 && max_count >= current_count + metric_count_remainder as u64
+        {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                        .try_into()?,
+                )
+                .await?;
+            current_count += metric_count_remainder as u64;
+        }
+
+        // generate and send traces
+        for _ in 0..trace_count_split {
+            if max_count >= current_count + max_batch_size as u64 {
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+                current_count += max_batch_size as u64;
+            } else {
+                let remaining_count: usize =
+                    (max_count - current_count)
+                        .try_into()
+                        .map_err(|_| Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            error: "failed to convert u64 to usize".to_string(),
+                        })?;
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Traces(fake_otlp_traces(remaining_count, registry))
+                            .try_into()?,
+                    )
+                    .await?;
+                // no more signals we have reached the max
+                *signal_count = max_count;
+                return Ok(());
+            }
+        }
+        if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                        .try_into()?,
+                )
+                .await?;
+            current_count += trace_count_remainder as u64;
+        }
+
+        // generate and send logs
+        for _ in 0..log_count_split {
+            if max_count >= current_count + max_batch_size as u64 {
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                    )
+                    .await?;
+                current_count += max_batch_size as u64;
+            } else {
+                let remaining_count: usize =
+                    (max_count - current_count)
+                        .try_into()
+                        .map_err(|_| Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            error: "failed to convert u64 to usize".to_string(),
+                        })?;
+                effect_handler
+                    .send_message(
+                        OTLPSignal::Logs(fake_otlp_logs(remaining_count, registry)).try_into()?,
+                    )
+                    .await?;
+                // no more signals we have reached the max
+                *signal_count = max_count;
+                return Ok(());
+            }
+        }
+        if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                )
+                .await?;
+            current_count += log_count_remainder as u64;
+        }
+
+        *signal_count = current_count;
+    } else {
+        // generate and send metric
+        for _ in 0..metric_count_split {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry)).try_into()?,
+                )
+                .await?;
+        }
+        if metric_count_remainder > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                        .try_into()?,
+                )
+                .await?;
+        }
+
+        // generate and send traces
+        for _ in 0..trace_count_split {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry)).try_into()?,
+                )
+                .await?;
+        }
+        if trace_count_remainder > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                        .try_into()?,
+                )
+                .await?;
+        }
+
+        // generate and send logs
+        for _ in 0..log_count_split {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                )
+                .await?;
+        }
+        if log_count_remainder > 0 {
+            effect_handler
+                .send_message(
+                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                )
+                .await?;
         }
     }
 
     Ok(())
 }
-
 impl TryFrom<OTLPSignal> for OtapPdata {
     type Error = Error<OtapPdata>;
 
@@ -179,23 +380,30 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
-    use otap_df_otlp::fake_signal_receiver::config::{
-        Config, Load, OTLPSignal, ScenarioStep, SignalType,
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
     };
+    use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, TrafficConfig};
     use otel_arrow_rust::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::MetricsData;
     use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
     use otel_arrow_rust::proto::opentelemetry::trace::v1::TracesData;
     use std::future::Future;
     use std::pin::Pin;
-    use tokio::time::{Duration, sleep, timeout};
+    use tokio::time::{Duration, sleep};
+
+    use std::collections::HashSet;
+    use weaver_common::vdir::VirtualDirectoryPath;
     use weaver_forge::registry::ResolvedRegistry;
 
     const RESOURCE_COUNT: usize = 1;
     const SCOPE_COUNT: usize = 1;
-    const BATCH_COUNT: u64 = 1;
-    const DELAY: u64 = 0;
+    const MESSAGE_COUNT: usize = 1;
+    const RUN_TILL_SHUTDOWN: u64 = 999;
+    const MESSAGE_PER_SECOND: usize = 3;
+    const MAX_SIGNALS: u64 = 3;
+    const MAX_BATCH: usize = 30;
 
     impl From<OtapPdata> for OTLPSignal {
         fn from(value: OtapPdata) -> Self {
@@ -214,525 +422,6 @@ mod tests {
             }
         }
     }
-    const RESOLVED_REGISTRY_JSON: &str = r#"
-    {
-  "registry_url": "",
-  "groups": [
-    {
-      "id": "metric.system.network.dropped",
-      "type": "metric",
-      "brief": "Count of packets that are dropped or discarded even though there was no error.",
-      "note": "Measured as:\n\n- Linux: the `drop` column in `/proc/dev/net` ([source](https://web.archive.org/web/20180321091318/http://www.onlamp.com/pub/a/linux/2000/11/16/LinuxAdmin.html))\n- Windows: [`InDiscards`/`OutDiscards`](https://docs.microsoft.com/windows/win32/api/netioapi/ns-netioapi-mib_if_row2)\n  from [`GetIfEntry2`](https://docs.microsoft.com/windows/win32/api/netioapi/nf-netioapi-getifentry2)\n",
-      "stability": "development",
-      "attributes": [
-        {
-          "name": "network.io.direction",
-          "type": {
-            "members": [
-              {
-                "id": "transmit",
-                "value": "transmit",
-                "brief": null,
-                "note": null,
-                "stability": "development",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "receive",
-                "value": "receive",
-                "brief": null,
-                "note": null,
-                "stability": "development",
-                "deprecated": null,
-                "annotations": null
-              }
-            ]
-          },
-          "brief": "The network IO operation direction.",
-          "examples": [
-            "transmit"
-          ],
-          "requirement_level": "recommended",
-          "stability": "development"
-        },
-        {
-          "name": "network.interface.name",
-          "type": "string",
-          "brief": "The network interface name.",
-          "examples": [
-            "lo",
-            "eth0"
-          ],
-          "requirement_level": "recommended",
-          "stability": "development"
-        }
-      ],
-      "span_kind": null,
-      "events": [],
-      "metric_name": "system.network.dropped",
-      "instrument": "counter",
-      "unit": "{packet}",
-      "name": null,
-      "lineage": {
-        "provenance": {
-          "registry_id": "main",
-          "path": "https://github.com/open-telemetry/semantic-conventions.git[model]/system/metrics.yaml"
-        },
-        "attributes": {
-          "network.interface.name": {
-            "source_group": "registry.network",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "requirement_level",
-              "stability"
-            ]
-          },
-          "network.io.direction": {
-            "source_group": "registry.network",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "requirement_level",
-              "stability"
-            ]
-          }
-        }
-      },
-      "entity_associations": [
-        "host"
-      ],
-      "annotations": {
-        "code_generation": {
-          "metric_value_type": "int"
-        }
-      }
-    },
-    {
-      "id": "span.rpc.client",
-      "type": "span",
-      "brief": "This span represents an outgoing Remote Procedure Call (RPC).",
-      "note": "Remote procedure calls can only be represented with these semantic conventions\nwhen the names of the called service and method are known and available.\n\n**Span name:** refer to the [Span Name](#span-name) section.\n\n**Span kind** MUST be `CLIENT`.\n",
-      "stability": "development",
-      "attributes": [
-        {
-          "name": "rpc.method",
-          "type": "string",
-          "brief": "The name of the (logical) method being called, must be equal to the $method part in the span name.",
-          "examples": "exampleMethod",
-          "requirement_level": "recommended",
-          "note": "This is the logical name of the method from the RPC interface perspective, which can be different from the name of any implementing method/function. The `code.function.name` attribute may be used to store the latter (e.g., method actually executing the call on the server side, RPC client stub method on the client side).\n",
-          "stability": "development"
-        },
-        {
-          "name": "rpc.service",
-          "type": "string",
-          "brief": "The full (logical) name of the service being called, including its package name, if applicable.",
-          "examples": "myservice.EchoService",
-          "requirement_level": "recommended",
-          "note": "This is the logical name of the service from the RPC interface perspective, which can be different from the name of any implementing class. The `code.namespace` attribute may be used to store the latter (despite the attribute name, it may include a class name; e.g., class with method actually executing the call on the server side, RPC client stub class on the client side).\n",
-          "stability": "development"
-        },
-        {
-          "name": "rpc.system",
-          "type": {
-            "members": [
-              {
-                "id": "grpc",
-                "value": "grpc",
-                "brief": "gRPC",
-                "note": null,
-                "stability": "development",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "java_rmi",
-                "value": "java_rmi",
-                "brief": "Java RMI",
-                "note": null,
-                "stability": "development",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "dotnet_wcf",
-                "value": "dotnet_wcf",
-                "brief": ".NET WCF",
-                "note": null,
-                "stability": "development",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "apache_dubbo",
-                "value": "apache_dubbo",
-                "brief": "Apache Dubbo",
-                "note": null,
-                "stability": "development",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "connect_rpc",
-                "value": "connect_rpc",
-                "brief": "Connect RPC",
-                "note": null,
-                "stability": "development",
-                "deprecated": null,
-                "annotations": null
-              }
-            ]
-          },
-          "brief": "A string identifying the remoting system. See below for a list of well-known identifiers.",
-          "requirement_level": "required",
-          "stability": "development"
-        },
-        {
-          "name": "network.peer.address",
-          "type": "string",
-          "brief": "Peer address of the network connection - IP address or Unix domain socket name.",
-          "examples": [
-            "10.1.2.80",
-            "/tmp/my.sock"
-          ],
-          "requirement_level": "recommended",
-          "stability": "stable"
-        },
-        {
-          "name": "network.transport",
-          "type": {
-            "members": [
-              {
-                "id": "tcp",
-                "value": "tcp",
-                "brief": "TCP",
-                "note": null,
-                "stability": "stable",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "udp",
-                "value": "udp",
-                "brief": "UDP",
-                "note": null,
-                "stability": "stable",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "pipe",
-                "value": "pipe",
-                "brief": "Named or anonymous pipe.",
-                "note": null,
-                "stability": "stable",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "unix",
-                "value": "unix",
-                "brief": "Unix domain socket",
-                "note": null,
-                "stability": "stable",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "quic",
-                "value": "quic",
-                "brief": "QUIC",
-                "note": null,
-                "stability": "stable",
-                "deprecated": null,
-                "annotations": null
-              }
-            ]
-          },
-          "brief": "[OSI transport layer](https://wikipedia.org/wiki/Transport_layer) or [inter-process communication method](https://wikipedia.org/wiki/Inter-process_communication).\n",
-          "examples": [
-            "tcp",
-            "udp"
-          ],
-          "requirement_level": "recommended",
-          "note": "The value SHOULD be normalized to lowercase.\n\nConsider always setting the transport when setting a port number, since\na port number is ambiguous without knowing the transport. For example\ndifferent processes could be listening on TCP port 12345 and UDP port 12345.\n",
-          "stability": "stable"
-        },
-        {
-          "name": "network.type",
-          "type": {
-            "members": [
-              {
-                "id": "ipv4",
-                "value": "ipv4",
-                "brief": "IPv4",
-                "note": null,
-                "stability": "stable",
-                "deprecated": null,
-                "annotations": null
-              },
-              {
-                "id": "ipv6",
-                "value": "ipv6",
-                "brief": "IPv6",
-                "note": null,
-                "stability": "stable",
-                "deprecated": null,
-                "annotations": null
-              }
-            ]
-          },
-          "brief": "[OSI network layer](https://wikipedia.org/wiki/Network_layer) or non-OSI equivalent.",
-          "examples": [
-            "ipv4",
-            "ipv6"
-          ],
-          "requirement_level": "recommended",
-          "note": "The value SHOULD be normalized to lowercase.",
-          "stability": "stable"
-        },
-        {
-          "name": "network.peer.port",
-          "type": "int",
-          "brief": "Peer port number of the network connection.",
-          "examples": [
-            65123
-          ],
-          "requirement_level": {
-            "recommended": "If `network.peer.address` is set."
-          },
-          "stability": "stable"
-        },
-        {
-          "name": "server.address",
-          "type": "string",
-          "brief": "RPC server [host name](https://grpc.github.io/grpc/core/md_doc_naming.html).\n",
-          "examples": [
-            "example.com",
-            "10.1.2.80",
-            "/tmp/my.sock"
-          ],
-          "requirement_level": "required",
-          "note": "May contain server IP address, DNS name, or local socket name. When host component is an IP address, instrumentations SHOULD NOT do a reverse proxy lookup to obtain DNS name and SHOULD set `server.address` to the IP address provided in the host component.\n",
-          "stability": "stable"
-        },
-        {
-          "name": "server.port",
-          "type": "int",
-          "brief": "Server port number.",
-          "examples": [
-            80,
-            8080,
-            443
-          ],
-          "requirement_level": {
-            "conditionally_required": "if the port is supported by the network transport used for communication."
-          },
-          "note": "When observed from the client side, and when communicating through an intermediary, `server.port` SHOULD represent the server port behind any intermediaries, for example proxies, if it's available.\n",
-          "stability": "stable"
-        }
-      ],
-      "span_kind": "client",
-      "events": [
-        "rpc.message"
-      ],
-      "metric_name": null,
-      "instrument": null,
-      "unit": null,
-      "name": null,
-      "lineage": {
-        "provenance": {
-          "registry_id": "main",
-          "path": "https://github.com/open-telemetry/semantic-conventions.git[model]/rpc/spans.yaml"
-        },
-        "attributes": {
-          "network.peer.address": {
-            "source_group": "registry.network",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          },
-          "network.peer.port": {
-            "source_group": "registry.network",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          },
-          "network.transport": {
-            "source_group": "registry.network",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          },
-          "network.type": {
-            "source_group": "registry.network",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          },
-          "rpc.method": {
-            "source_group": "registry.rpc",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          },
-          "rpc.service": {
-            "source_group": "registry.rpc",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          },
-          "rpc.system": {
-            "source_group": "registry.rpc",
-            "inherited_fields": [
-              "brief",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          },
-          "server.address": {
-            "source_group": "registry.server",
-            "inherited_fields": [
-              "examples",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "brief",
-              "note",
-              "requirement_level"
-            ]
-          },
-          "server.port": {
-            "source_group": "registry.server",
-            "inherited_fields": [
-              "brief",
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "requirement_level"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "id": "event.session.end",
-      "type": "event",
-      "brief": "Indicates that a session has ended.\n",
-      "note": "For instrumentation that tracks user behavior during user sessions, a `session.end` event SHOULD be emitted every time a session ends. When a session ends and continues as a new session, this event SHOULD be emitted prior to the `session.start` event.\n",
-      "stability": "development",
-      "attributes": [
-        {
-          "name": "session.id",
-          "type": "string",
-          "brief": "The ID of the session being ended.",
-          "examples": "00112233-4455-6677-8899-aabbccddeeff",
-          "requirement_level": "required",
-          "stability": "development"
-        }
-      ],
-      "span_kind": null,
-      "events": [],
-      "metric_name": null,
-      "instrument": null,
-      "unit": null,
-      "name": "session.end",
-      "lineage": {
-        "provenance": {
-          "registry_id": "main",
-          "path": "https://github.com/open-telemetry/semantic-conventions.git[model]/session/events.yaml"
-        },
-        "attributes": {
-          "session.id": {
-            "source_group": "registry.session",
-            "inherited_fields": [
-              "examples",
-              "note",
-              "stability"
-            ],
-            "locally_overridden_fields": [
-              "brief",
-              "requirement_level"
-            ]
-          }
-        }
-      }
-    }
-  ]
-}
-"#;
-
-    // metric signal based on registry we should check matches
-    const METRIC_NAME: &str = "system.network.dropped";
-    const METRIC_DESC: &str =
-        "Count of packets that are dropped or discarded even though there was no error.";
-    const METRIC_DATAPOINT_ATTR: [&str; 2] = ["network.io.direction", "network.interface.name"];
-    const METRIC_UNIT: &str = "{packet}";
-
-    // span signal based on registry we should check matches
-    const SPAN_NAME: &str = "span.rpc.client";
-    const SPAN_ATTR: [&str; 9] = [
-        "rpc.method",
-        "rpc.service",
-        "rpc.system",
-        "network.peer.address",
-        "network.transport",
-        "network.type",
-        "network.peer.port",
-        "server.address",
-        "server.port",
-    ];
-
-    const SPAN_EVENTS: [&str; 1] = ["rpc.message"];
-
-    // log signal based on registry we should check matches
-    const LOG_NAME: &str = "session.end";
-    const LOG_ATTR: [&str; 1] = ["session.id"];
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario() -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -740,7 +429,7 @@ mod tests {
             Box::pin(async move {
                 // no scenario to run here as scenario is already defined in the configuration
                 // wait for the scenario to finish running
-                sleep(Duration::from_millis(1000)).await;
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
                     .await
@@ -750,56 +439,77 @@ mod tests {
     }
 
     /// Validation closure that checks the received message and counters (!Send context).
-    fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    fn validation_procedure(
+        resolved_registry: ResolvedRegistry,
+    ) -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
                 // check that messages have been sent through the effect_handler
+                while let Ok(received_signal) = ctx.recv().await {
+                    match received_signal.into() {
+                        OTLPSignal::Metrics(metric) => {
+                            // loop and check count
+                            let resource_count = metric.resource_metrics.len();
+                            assert!(resource_count == RESOURCE_COUNT);
+                            for resource in metric.resource_metrics.iter() {
+                                let scope_count = resource.scope_metrics.len();
+                                assert!(scope_count == SCOPE_COUNT);
+                                for scope in resource.scope_metrics.iter() {
+                                    let metric_count = scope.metrics.len();
+                                    assert!(metric_count == MESSAGE_COUNT);
+                                    for metric in scope.metrics.iter() {
+                                        let metric_definition = resolved_registry
+                                            .groups
+                                            .iter()
+                                            .find(|group| {
+                                                group.metric_name == Some(metric.name.clone())
+                                            })
+                                            .expect("metric not found in registry");
+                                        assert_eq!(metric.description, metric_definition.brief);
+                                        assert_eq!(
+                                            Some(metric.unit.clone()),
+                                            metric_definition.unit
+                                        );
 
-                // read from the effect handler
-                let metric_received: OTLPSignal = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
-                    .into();
-                let trace_received: OTLPSignal = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
-                    .into();
-                let log_received: OTLPSignal = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received")
-                    .into();
+                                        let keys_metric_definition: HashSet<&str> =
+                                            metric_definition
+                                                .attributes
+                                                .iter()
+                                                .map(|attribute| attribute.name.as_str())
+                                                .collect();
 
-                // Assert that the message received is what the test client sent.
-                match metric_received {
-                    OTLPSignal::Metrics(metric) => {
-                        // loop and check count
-                        let mut metric_seen = false;
-                        let resource_count = metric.resource_metrics.len();
-                        assert!(resource_count == RESOURCE_COUNT);
-                        for resource in metric.resource_metrics.iter() {
-                            let scope_count = resource.scope_metrics.len();
-                            assert!(scope_count == SCOPE_COUNT);
-                            for scope in resource.scope_metrics.iter() {
-                                for metric in scope.metrics.iter() {
-                                    // check for metric and see if the signal fields match what is defined in the registry
-                                    if metric.name == METRIC_NAME {
-                                        metric_seen = true;
-                                        assert!(metric.description.as_str() == METRIC_DESC);
-                                        assert!(metric.unit.as_str() == METRIC_UNIT);
                                         match metric.data.as_ref().expect("metric has no data") {
                                             Data::Sum(sum) => {
-                                                assert!(sum.is_monotonic);
                                                 for datapoints in sum.data_points.iter() {
-                                                    let keys: Vec<&str> = datapoints
+                                                    let keys: HashSet<&str> = datapoints
                                                         .attributes
                                                         .iter()
                                                         .map(|attribute| attribute.key.as_str())
                                                         .collect();
-                                                    assert!(keys == METRIC_DATAPOINT_ATTR.to_vec());
+
+                                                    assert_eq!(keys, keys_metric_definition);
+                                                }
+                                            }
+                                            Data::Gauge(gauge) => {
+                                                for datapoints in gauge.data_points.iter() {
+                                                    let keys: HashSet<&str> = datapoints
+                                                        .attributes
+                                                        .iter()
+                                                        .map(|attribute| attribute.key.as_str())
+                                                        .collect();
+
+                                                    assert_eq!(keys, keys_metric_definition);
+                                                }
+                                            }
+                                            Data::Histogram(histogram) => {
+                                                for datapoints in histogram.data_points.iter() {
+                                                    let keys: HashSet<&str> = datapoints
+                                                        .attributes
+                                                        .iter()
+                                                        .map(|attribute| attribute.key.as_str())
+                                                        .collect();
+
+                                                    assert_eq!(keys, keys_metric_definition);
                                                 }
                                             }
                                             _ => unreachable!(),
@@ -808,71 +518,85 @@ mod tests {
                                 }
                             }
                         }
-                        assert!(metric_seen);
-                    }
-                    _ => unreachable!("Signal should have been a Metric type"),
-                }
-
-                match trace_received {
-                    OTLPSignal::Traces(span) => {
-                        let mut span_seen = false;
-                        let resource_count = span.resource_spans.len();
-                        assert!(resource_count == RESOURCE_COUNT);
-                        for resource in span.resource_spans.iter() {
-                            let scope_count = resource.scope_spans.len();
-                            assert!(scope_count == SCOPE_COUNT);
-                            for scope in resource.scope_spans.iter() {
-                                for span in scope.spans.iter() {
-                                    // check for span and see if the signal fields match what is defined in the registry
-                                    if span.name == SPAN_NAME {
-                                        span_seen = true;
-                                        let keys: Vec<&str> = span
+                        OTLPSignal::Traces(span) => {
+                            let resource_count = span.resource_spans.len();
+                            assert!(resource_count == RESOURCE_COUNT);
+                            for resource in span.resource_spans.iter() {
+                                let scope_count = resource.scope_spans.len();
+                                assert!(scope_count == SCOPE_COUNT);
+                                for scope in resource.scope_spans.iter() {
+                                    let span_count = scope.spans.len();
+                                    assert!(span_count == MESSAGE_COUNT);
+                                    for span in scope.spans.iter() {
+                                        let span_definition = resolved_registry
+                                            .groups
+                                            .iter()
+                                            .find(|group| group.id == span.name)
+                                            .expect("span not found in registry");
+                                        let keys: HashSet<&str> = span
                                             .attributes
                                             .iter()
                                             .map(|attribute| attribute.key.as_str())
                                             .collect();
-                                        assert!(keys == SPAN_ATTR.to_vec());
-                                        let events: Vec<&str> = span
+                                        let keys_span_definition: HashSet<&str> = span_definition
+                                            .attributes
+                                            .iter()
+                                            .map(|attribute| attribute.name.as_str())
+                                            .collect();
+
+                                        assert_eq!(keys, keys_span_definition);
+
+                                        let events: HashSet<&str> = span
                                             .events
                                             .iter()
                                             .map(|event| event.name.as_str())
                                             .collect();
-                                        assert!(events == SPAN_EVENTS.to_vec())
+
+                                        let events_span_definition: HashSet<&str> = span_definition
+                                            .events
+                                            .iter()
+                                            .map(|event_name| event_name.as_str())
+                                            .collect();
+                                        assert_eq!(events, events_span_definition);
                                     }
                                 }
                             }
                         }
-                        assert!(span_seen);
-                    }
-                    _ => unreachable!("Signal should have been a Span type"),
-                }
-
-                match log_received {
-                    OTLPSignal::Logs(log) => {
-                        let mut log_seen = false;
-                        let resource_count = log.resource_logs.len();
-                        assert!(resource_count == RESOURCE_COUNT);
-                        for resource in log.resource_logs.iter() {
-                            let scope_count = resource.scope_logs.len();
-                            assert!(scope_count == SCOPE_COUNT);
-                            for scope in resource.scope_logs.iter() {
-                                for log_record in scope.log_records.iter() {
-                                    // check for log and see if the signal fields match what is defined in the registry
-                                    if log_record.event_name == LOG_NAME {
-                                        log_seen = true;
-                                        let keys: Vec<&str> = log_record
+                        OTLPSignal::Logs(log) => {
+                            let resource_count = log.resource_logs.len();
+                            assert!(resource_count == RESOURCE_COUNT);
+                            for resource in log.resource_logs.iter() {
+                                let scope_count = resource.scope_logs.len();
+                                assert!(scope_count == SCOPE_COUNT);
+                                for scope in resource.scope_logs.iter() {
+                                    let log_record_count = scope.log_records.len();
+                                    assert!(log_record_count == MESSAGE_COUNT);
+                                    for log_record in scope.log_records.iter() {
+                                        let log_record_definition = resolved_registry
+                                            .groups
+                                            .iter()
+                                            .find(|group| {
+                                                group.name == Some(log_record.event_name.clone())
+                                            })
+                                            .expect("metric not found in registry");
+                                        let keys: HashSet<&str> = log_record
                                             .attributes
                                             .iter()
                                             .map(|attribute| attribute.key.as_str())
                                             .collect();
-                                        assert!(keys == LOG_ATTR.to_vec());
+                                        let keys_log_record_definition: HashSet<&str> =
+                                            log_record_definition
+                                                .attributes
+                                                .iter()
+                                                .map(|attribute| attribute.name.as_str())
+                                                .collect();
+
+                                        assert_eq!(keys, keys_log_record_definition);
                                     }
                                 }
                             }
                         }
-                        assert!(log_seen);
                     }
-                    _ => unreachable!("Signal should have been a Log type"),
                 }
             })
         }
@@ -882,36 +606,24 @@ mod tests {
     fn test_fake_signal_receiver() {
         let test_runtime = TestRuntime::new();
 
-        let registry: ResolvedRegistry = serde_json::from_str(RESOLVED_REGISTRY_JSON).unwrap();
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
 
-        let mut steps = vec![];
+        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
+        let config = Config::new(traffic_config, registry_path);
+        let registry = config.get_registry().expect("failed to get registry");
 
-        let load = Load::new(RESOURCE_COUNT, SCOPE_COUNT);
-
-        steps.push(ScenarioStep::new(
-            SignalType::Metrics(load.clone()),
-            BATCH_COUNT,
-            DELAY,
-        ));
-
-        steps.push(ScenarioStep::new(
-            SignalType::Traces(load.clone()),
-            BATCH_COUNT,
-            DELAY,
-        ));
-        steps.push(ScenarioStep::new(
-            SignalType::Logs(load.clone()),
-            BATCH_COUNT,
-            DELAY,
-        ));
-        let config = Config::new(steps, registry);
-
+        // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
         // create our receiver
         let receiver = ReceiverWrapper::local(
             FakeGeneratorReceiver::new(config),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -920,6 +632,154 @@ mod tests {
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario())
-            .run_validation(validation_procedure());
+            .run_validation(validation_procedure(registry));
+    }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure_message_rate()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                let mut received_messages = 0;
+
+                while let Ok(received_signal) = ctx.recv().await {
+                    match received_signal.into() {
+                        OTLPSignal::Metrics(metric) => {
+                            // loop and check count
+                            for resource in metric.resource_metrics.iter() {
+                                for scope in resource.scope_metrics.iter() {
+                                    received_messages += scope.metrics.len();
+                                    assert!(scope.metrics.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                        OTLPSignal::Traces(span) => {
+                            for resource in span.resource_spans.iter() {
+                                for scope in resource.scope_spans.iter() {
+                                    received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                        OTLPSignal::Logs(log) => {
+                            for resource in log.resource_logs.iter() {
+                                for scope in resource.scope_logs.iter() {
+                                    received_messages += scope.log_records.len();
+                                    assert!(scope.log_records.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Allow 1 to 2x (observed)
+                assert!(received_messages >= MESSAGE_PER_SECOND);
+                assert!(received_messages <= 2 * MESSAGE_PER_SECOND);
+            })
+        }
+    }
+
+    #[test]
+    fn test_fake_signal_receiver_message_rate_only() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 0, 0);
+        let config = Config::new(traffic_config, registry_path);
+
+        // create our receiver
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        // create our receiver
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(config),
+            test_node("fake_receiver"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // run the test
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario())
+            .run_validation(validation_procedure_message_rate());
+    }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure_max_signal()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                let mut received_messages = 0;
+
+                while let Ok(received_signal) = ctx.recv().await {
+                    match received_signal.into() {
+                        OTLPSignal::Metrics(metric) => {
+                            // loop and check count
+                            for resource in metric.resource_metrics.iter() {
+                                for scope in resource.scope_metrics.iter() {
+                                    received_messages += scope.metrics.len();
+                                    assert!(scope.metrics.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                        OTLPSignal::Traces(span) => {
+                            for resource in span.resource_spans.iter() {
+                                for scope in resource.scope_spans.iter() {
+                                    received_messages += scope.spans.len();
+                                    assert!(scope.spans.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                        OTLPSignal::Logs(log) => {
+                            for resource in log.resource_logs.iter() {
+                                for scope in resource.scope_logs.iter() {
+                                    received_messages += scope.log_records.len();
+                                    assert!(scope.log_records.len() <= MAX_BATCH);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                assert!(received_messages as u64 == MAX_SIGNALS);
+            })
+        }
+    }
+    #[test]
+    fn test_fake_signal_receiver_max_signal_count_only() {
+        let test_runtime = TestRuntime::new();
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(None, Some(MAX_SIGNALS), MAX_BATCH, 1, 0, 0);
+        let config = Config::new(traffic_config, registry_path);
+
+        // create our receiver
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        // create our receiver
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(config),
+            test_node("fake_receiver"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // run the test
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario())
+            .run_validation(validation_procedure_max_signal());
     }
 }

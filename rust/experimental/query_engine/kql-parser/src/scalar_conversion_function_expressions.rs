@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
@@ -6,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_tostring_expression(
     tostring_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tostring_rule);
     let mut inner = tostring_rule.into_inner();
@@ -23,7 +26,7 @@ pub(crate) fn parse_tostring_expression(
 
 pub(crate) fn parse_toint_expression(
     toint_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&toint_rule);
     let mut inner = toint_rule.into_inner();
@@ -40,7 +43,7 @@ pub(crate) fn parse_toint_expression(
 
 pub(crate) fn parse_tobool_expression(
     tobool_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tobool_rule);
     let mut inner = tobool_rule.into_inner();
@@ -55,7 +58,7 @@ pub(crate) fn parse_tobool_expression(
 
 pub(crate) fn parse_tofloat_expression(
     tofloat_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tofloat_rule);
     let mut inner = tofloat_rule.into_inner();
@@ -70,7 +73,7 @@ pub(crate) fn parse_tofloat_expression(
 
 pub(crate) fn parse_tolong_expression(
     tolong_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&tolong_rule);
     let mut inner = tolong_rule.into_inner();
@@ -85,7 +88,7 @@ pub(crate) fn parse_tolong_expression(
 
 pub(crate) fn parse_toreal_expression(
     toreal_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&toreal_rule);
     let mut inner = toreal_rule.into_inner();
@@ -100,7 +103,7 @@ pub(crate) fn parse_toreal_expression(
 
 pub(crate) fn parse_todouble_expression(
     todouble_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&todouble_rule);
     let mut inner = todouble_rule.into_inner();
@@ -111,6 +114,42 @@ pub(crate) fn parse_todouble_expression(
     Ok(ScalarExpression::Convert(ConvertScalarExpression::Double(
         ConversionScalarExpression::new(query_location, inner_expr),
     )))
+}
+
+pub(crate) fn parse_todatetime_expression(
+    todatetime_rule: Pair<Rule>,
+    state: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&todatetime_rule);
+    let mut inner = todatetime_rule.into_inner();
+
+    let scalar_expr_rule = inner.next().unwrap();
+
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    Ok(ScalarExpression::Convert(
+        ConvertScalarExpression::DateTime(ConversionScalarExpression::new(
+            query_location,
+            inner_expr,
+        )),
+    ))
+}
+
+pub(crate) fn parse_totimespan_expression(
+    totimespan_rule: Pair<Rule>,
+    state: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&totimespan_rule);
+    let mut inner = totimespan_rule.into_inner();
+
+    let scalar_expr_rule = inner.next().unwrap();
+
+    let inner_expr = parse_scalar_expression(scalar_expr_rule, state)?;
+    Ok(ScalarExpression::Convert(
+        ConvertScalarExpression::TimeSpan(ConversionScalarExpression::new(
+            query_location,
+            inner_expr,
+        )),
+    ))
 }
 
 #[cfg(test)]
@@ -606,6 +645,74 @@ mod tests {
                     println!("Parser correctly created Double conversion AST for {description}");
                 }
                 _ => panic!("Expected ConvertScalarExpression::Double for: {description}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_todatetime_expression() {
+        let test_cases = vec![
+            (
+                "todatetime(0)",
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            (
+                "todatetime('1/1/1970')",
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "1/1/1970"),
+                )),
+            ),
+        ];
+
+        for (input, value) in test_cases {
+            let state = ParserState::new(input);
+            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+                .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
+
+            let result = parse_scalar_expression(parsed.next().unwrap(), &state)
+                .unwrap_or_else(|_| panic!("Failed to parse expression: {input}"));
+
+            match result {
+                ScalarExpression::Convert(ConvertScalarExpression::DateTime(c)) => {
+                    assert_eq!(&value, c.get_inner_expression());
+                }
+                _ => panic!("Expected ConvertScalarExpression::DateTime"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_totimespan_expression() {
+        let test_cases = vec![
+            (
+                "totimespan(0)",
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            (
+                "totimespan('1.10:48:30.001')",
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "1.10:48:30.001"),
+                )),
+            ),
+        ];
+
+        for (input, value) in test_cases {
+            let state = ParserState::new(input);
+            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+                .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
+
+            let result = parse_scalar_expression(parsed.next().unwrap(), &state)
+                .unwrap_or_else(|_| panic!("Failed to parse expression: {input}"));
+
+            match result {
+                ScalarExpression::Convert(ConvertScalarExpression::TimeSpan(c)) => {
+                    assert_eq!(&value, c.get_inner_expression());
+                }
+                _ => panic!("Expected ConvertScalarExpression::TimeSpan"),
             }
         }
     }

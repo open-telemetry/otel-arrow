@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 
 use data_engine_expressions::*;
@@ -15,6 +18,7 @@ pub enum OwnedValue {
     Null,
     Regex(RegexValueStorage),
     String(StringValueStorage),
+    TimeSpan(TimeSpanValueStorage),
 }
 
 impl OwnedValue {
@@ -85,6 +89,7 @@ impl AsStaticValue for OwnedValue {
             OwnedValue::Null => StaticValue::Null,
             OwnedValue::Regex(r) => StaticValue::Regex(r),
             OwnedValue::String(s) => StaticValue::String(s),
+            OwnedValue::TimeSpan(t) => StaticValue::TimeSpan(t),
         }
     }
 }
@@ -121,6 +126,7 @@ impl From<Value<'_>> for OwnedValue {
             Value::Null => OwnedValue::Null,
             Value::Regex(r) => OwnedValue::Regex(RegexValueStorage::new(r.get_value().clone())),
             Value::String(s) => OwnedValue::String(StringValueStorage::new(s.get_value().into())),
+            Value::TimeSpan(t) => OwnedValue::TimeSpan(TimeSpanValueStorage::new(t.get_value())),
         }
     }
 }

@@ -1,14 +1,5 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //todo: support schema transformation if we need to implement the encoding part.
 
@@ -165,22 +156,26 @@ pub fn is_parent_id_plain_encoded(record_batch: &RecordBatch) -> bool {
 
 /// Additional helper methods for Arrow Field
 pub trait FieldExt {
-    /// Sets the encoding column metadata key to "plain".
+    /// Sets the encoding field metadata to the value passed as `encoding`
     ///
     /// This can be used as an indicator for various utilities that need to process the record
     /// batch of how the column is encoded. Commonly, this is used for ID columns that may or
     /// may not use some alternate encoding (like delta encoding)
+    fn with_encoding(self, encoding: &str) -> Self;
+
+    /// Sets the encoding column metadata key to "plain".
     fn with_plain_encoding(self) -> Self;
 }
 
 impl FieldExt for Field {
-    fn with_plain_encoding(mut self) -> Self {
+    fn with_encoding(mut self, encoding: &str) -> Self {
         let current_metadata = self.metadata_mut();
-        _ = current_metadata.insert(
-            consts::metadata::COLUMN_ENCODING.into(),
-            consts::metadata::encodings::PLAIN.into(),
-        );
+        _ = current_metadata.insert(consts::metadata::COLUMN_ENCODING.into(), encoding.into());
 
         self
+    }
+
+    fn with_plain_encoding(self) -> Self {
+        self.with_encoding(consts::metadata::encodings::PLAIN)
     }
 }

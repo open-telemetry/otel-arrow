@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTAP exporter node
@@ -20,6 +21,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
@@ -53,9 +55,10 @@ pub struct OTAPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             OTAPExporter::from_config(&node_config.config)?,
+            node,
             node_config,
             exporter_config,
         ))
@@ -221,8 +224,10 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::TestContext;
-    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use otap_df_otlp::compression::CompressionMethod;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
@@ -379,6 +384,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             OTAPExporter::new(grpc_endpoint, None),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -404,7 +410,7 @@ mod tests {
         match exporter.config.compression_method {
             Some(ref method) => match method {
                 CompressionMethod::Gzip => {} // success
-                other => panic!("Expected Gzip, got {:?}", other),
+                other => panic!("Expected Gzip, got {other:?}"),
             },
             None => panic!("Expected Some compression method"),
         }
@@ -420,7 +426,7 @@ mod tests {
 
         assert!(result.is_err());
         if let Err(err) = result {
-            let err_msg = format!("{}", err);
+            let err_msg = format!("{err}");
             assert!(err_msg.contains("missing field `grpc_endpoint`"));
         }
     }

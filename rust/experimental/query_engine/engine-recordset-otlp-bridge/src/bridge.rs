@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::sync::{LazyLock, RwLock};
 
 use data_engine_expressions::*;
@@ -121,7 +124,9 @@ pub fn process_export_logs_service_request_using_pipeline(
         RecordSetEngineOptions::new().with_diagnostic_level(log_level),
     );
 
-    let mut batch = engine.begin_batch(pipeline);
+    let mut batch = engine
+        .begin_batch(pipeline)
+        .map_err(|e| BridgeError::PipelineInitializationError(e.to_string()))?;
 
     let dropped_records = batch.push_records(&mut export_logs_service_request);
 
@@ -162,7 +167,7 @@ pub fn process_export_logs_service_request_using_pipeline(
 
     let mut included_records = None;
 
-    let has_summaries = !final_results.summaries.is_empty();
+    let has_summaries = !final_results.summaries.included_summaries.is_empty();
     let has_included_records = !final_results.included_records.is_empty();
     if has_summaries || has_included_records {
         if has_included_records {
@@ -175,53 +180,86 @@ pub fn process_export_logs_service_request_using_pipeline(
         if has_summaries {
             let mut log_records = Vec::new();
 
-            for summary in final_results.summaries {
-                let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
-                    summary.aggregation_values.len() + summary.group_by_values.len(),
-                );
+            for summary in final_results.summaries.included_summaries {
+                let diagnostics = summary.to_string();
 
-                for (key, value) in summary.group_by_values {
-                    attributes.push((key, value.into()));
-                }
+                if let Some(map) = summary.map {
+                    let mut attributes: Vec<(Box<str>, AnyValue)> =
+                        Vec::with_capacity(map.len() + 1);
 
-                for (key, value) in summary.aggregation_values {
-                    match value {
-                        SummaryAggregation::Average { count, sum } => {
-                            let avg = sum.to_double() / count as f64;
+                    attributes.extend(
+                        map.take_values()
+                            .drain()
+                            .map(|(key, value)| (key, value.into())),
+                    );
 
-                            attributes.push((
-                                key,
-                                AnyValue::Native(OtlpAnyValue::DoubleValue(
-                                    DoubleValueStorage::new(avg),
-                                )),
-                            ));
-                        }
-                        SummaryAggregation::Count(v) => {
-                            attributes.push((
-                                key,
-                                AnyValue::Native(OtlpAnyValue::IntValue(IntegerValueStorage::new(
-                                    v as i64,
-                                ))),
-                            ));
-                        }
-                        SummaryAggregation::Maximum(v) | SummaryAggregation::Minimum(v) => {
-                            attributes.push((key, v.into()));
-                        }
-                        SummaryAggregation::Sum(v) => {
-                            let v = match v {
-                                SummaryValue::Double(d) => AnyValue::Native(
-                                    OtlpAnyValue::DoubleValue(DoubleValueStorage::new(d)),
-                                ),
-                                SummaryValue::Integer(i) => AnyValue::Native(
-                                    OtlpAnyValue::IntValue(IntegerValueStorage::new(i)),
-                                ),
-                            };
-                            attributes.push((key, v));
+                    if !diagnostics.is_empty() {
+                        attributes.push((
+                            "query_engine.output".into(),
+                            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                                diagnostics,
+                            ))),
+                        ));
+                    }
+
+                    log_records.push(LogRecord::new().with_attributes(attributes));
+                } else {
+                    let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
+                        summary.aggregation_values.len() + summary.group_by_values.len() + 1,
+                    );
+
+                    for (key, value) in summary.group_by_values {
+                        attributes.push((key, value.into()));
+                    }
+
+                    for (key, value) in summary.aggregation_values {
+                        match value {
+                            SummaryAggregation::Average { count, sum } => {
+                                let avg = sum.to_double() / count as f64;
+
+                                attributes.push((
+                                    key,
+                                    AnyValue::Native(OtlpAnyValue::DoubleValue(
+                                        DoubleValueStorage::new(avg),
+                                    )),
+                                ));
+                            }
+                            SummaryAggregation::Count(v) => {
+                                attributes.push((
+                                    key,
+                                    AnyValue::Native(OtlpAnyValue::IntValue(
+                                        IntegerValueStorage::new(v as i64),
+                                    )),
+                                ));
+                            }
+                            SummaryAggregation::Maximum(v) | SummaryAggregation::Minimum(v) => {
+                                attributes.push((key, v.into()));
+                            }
+                            SummaryAggregation::Sum(v) => {
+                                let v = match v {
+                                    SummaryValue::Double(d) => AnyValue::Native(
+                                        OtlpAnyValue::DoubleValue(DoubleValueStorage::new(d)),
+                                    ),
+                                    SummaryValue::Integer(i) => AnyValue::Native(
+                                        OtlpAnyValue::IntValue(IntegerValueStorage::new(i)),
+                                    ),
+                                };
+                                attributes.push((key, v));
+                            }
                         }
                     }
-                }
 
-                log_records.push(LogRecord::new().with_attributes(attributes));
+                    if !diagnostics.is_empty() {
+                        attributes.push((
+                            "query_engine.output".into(),
+                            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                                diagnostics,
+                            ))),
+                        ));
+                    }
+
+                    log_records.push(LogRecord::new().with_attributes(attributes));
+                }
             }
 
             let summary_otlp = ResourceLogs::new().with_scope_logs(

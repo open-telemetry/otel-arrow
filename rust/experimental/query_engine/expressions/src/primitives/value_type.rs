@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueType {
     Array,
@@ -9,4 +12,5 @@ pub enum ValueType {
     Null,
     Regex,
     String,
+    TimeSpan,
 }

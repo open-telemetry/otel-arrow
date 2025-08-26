@@ -1,12 +1,16 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use core::str;
 
-pub(crate) mod cef;
-pub(crate) mod parsed_message;
-pub(crate) mod rfc3164;
-pub(crate) mod rfc5424;
+/// Parser for Common Event Format (CEF) messages
+pub mod cef;
+/// Parser for the unified representation of parsed syslog messages
+pub mod parsed_message;
+/// Parser for syslog messages in RFC3164 format
+pub mod rfc3164;
+/// Parser for syslog messages in RFC5424 format
+pub mod rfc5424;
 
 use crate::parser::cef::parse_cef;
 use crate::parser::parsed_message::ParsedSyslogMessage;
@@ -22,7 +26,7 @@ pub(super) struct Priority {
 
 /// Error types that can occur during parsing
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum ParseError {
+pub enum ParseError {
     /// Error parsing priority value
     /// RFC5424 and RFC3164 messages are expected to start with "<Priority>"
     InvalidPriority,

@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the Perf exporter node
@@ -22,12 +23,12 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::node::NodeId;
 use otap_df_engine::{ExporterFactory, distributed_slice};
 use otel_arrow_rust::Consumer;
 use otel_arrow_rust::otap::{OtapArrowRecords, from_record_messages};
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use serde_json::Value;
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{
@@ -41,11 +42,11 @@ use tokio::time::{Duration, Instant};
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 struct OutputWriter {
     writer: Box<dyn AsyncWrite + Unpin>,
-    exporter_id: Cow<'static, str>,
+    exporter_id: NodeId,
 }
 
 impl OutputWriter {
-    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: Cow<'static, str>) -> Self {
+    fn new(writer: Box<dyn AsyncWrite + Unpin>, exporter_id: NodeId) -> Self {
         Self {
             writer,
             exporter_id,
@@ -80,9 +81,10 @@ pub struct PerfExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_PERF_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             PerfExporter::from_config(&node_config.config)?,
+            node,
             node_config,
             exporter_config,
         ))
@@ -648,8 +650,7 @@ async fn display_report_pipeline(
         .await?;
     writer
         .write(&format!(
-            "\t- average pipeline latency          : {:.2} s\n",
-            average_pipeline_latency,
+            "\t- average pipeline latency          : {average_pipeline_latency:.2} s\n"
         ))
         .await?;
 
@@ -705,8 +706,10 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::TestContext;
-    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use std::collections::HashMap;
     use std::fs::File;
     use std::future::Future;
@@ -889,6 +892,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             PerfExporter::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );

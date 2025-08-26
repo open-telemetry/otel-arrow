@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
@@ -6,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_comparison_expression(
     comparison_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<LogicalExpression, ParserError> {
     let query_location = to_query_location(&comparison_expression_rule);
 
@@ -187,7 +190,7 @@ pub(crate) fn parse_comparison_expression(
 
 pub(crate) fn parse_logical_expression(
     logical_expression_rule: Pair<Rule>,
-    state: &ParserState,
+    state: &dyn ParserScope,
 ) -> Result<LogicalExpression, ParserError> {
     let query_location = to_query_location(&logical_expression_rule);
 

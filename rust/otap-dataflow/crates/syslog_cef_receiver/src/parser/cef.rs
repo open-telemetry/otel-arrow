@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: Apache-2.0
 // Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 /// CEF message structure
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CefMessage<'a> {
+pub struct CefMessage<'a> {
     pub(super) version: u8,
     pub(super) device_vendor: &'a [u8],
     pub(super) device_product: &'a [u8],
@@ -23,7 +23,7 @@ impl CefMessage<'_> {
 }
 
 /// Parse a CEF message
-pub(super) fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
+pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
     if !input.starts_with(b"CEF:") {
         return Err(super::ParseError::InvalidCef);
     }

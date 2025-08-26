@@ -20,6 +20,7 @@ ciborium.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 http.workspace = true
+log.workspace = true
 object_store.workspace = true
 otel-arrow-rust.workspace = true
 otap-df-engine = { path = "../engine" }
@@ -55,6 +56,7 @@ tokio = { workspace = true }
 linkme = { workspace = true }
 uuid.workspace = true
 weaver_forge.workspace = true
+weaver_common.workspace = true
 
 [dev-dependencies]
 portpicker = "0.1.1"

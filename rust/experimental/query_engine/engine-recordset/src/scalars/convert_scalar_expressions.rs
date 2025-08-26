@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use data_engine_expressions::*;
 
 use crate::{execution_context::*, scalars::execute_scalar_expression, *};
@@ -115,6 +118,28 @@ where
                 ResolvedValue::Computed(OwnedValue::String(
                     string_value.expect("Inner value did not return a string"),
                 ))
+            }
+        }
+        ConvertScalarExpression::TimeSpan(c) => {
+            let inner_value =
+                execute_scalar_expression(execution_context, c.get_inner_expression())?;
+
+            let value = inner_value.to_value();
+
+            if let Some(t) = value.convert_to_timespan() {
+                ResolvedValue::Computed(OwnedValue::TimeSpan(TimeSpanValueStorage::new(t)))
+            } else {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    convert_scalar_expression,
+                    || {
+                        format!(
+                            "Input of '{:?}' type could not be converted into a TimeSpan",
+                            value.get_value_type()
+                        )
+                    },
+                );
+                ResolvedValue::Computed(OwnedValue::Null)
             }
         }
     };

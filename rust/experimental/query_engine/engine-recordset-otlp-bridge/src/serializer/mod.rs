@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 pub(crate) mod otlp_reader;
 pub(crate) mod otlp_writer;
 pub(crate) mod protobuf_reader;

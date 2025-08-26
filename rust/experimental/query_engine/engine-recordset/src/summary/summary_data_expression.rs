@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 
 use crate::{execution_context::*, scalars::*, *};
@@ -141,7 +144,7 @@ mod tests {
     fn test_execute_summary_data_expression_group_by() {
         fn run_test(
             summary_data_expression: SummaryDataExpression,
-            assert: impl FnOnce(&Vec<RecordSetEngineSummary>),
+            assert: impl FnOnce(&[RecordSetEngineSummary]),
         ) {
             let record1 = TestRecord::new().with_key_value(
                 "key1".into(),
@@ -165,7 +168,7 @@ mod tests {
 
             let engine = RecordSetEngine::new();
 
-            let mut batch = engine.begin_batch(&pipeline);
+            let mut batch = engine.begin_batch(&pipeline).unwrap();
 
             batch.push_records(&mut TestRecordSet::new(vec![
                 record1.clone(),
@@ -175,7 +178,7 @@ mod tests {
 
             let results = batch.flush();
 
-            let mut summaries = results.summaries;
+            let mut summaries = results.summaries.included_summaries;
 
             summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
 
@@ -361,7 +364,7 @@ mod tests {
     fn test_execute_summary_data_expression_aggregation() {
         fn run_test(
             summary_data_expression: SummaryDataExpression,
-            assert: impl FnOnce(&Vec<RecordSetEngineSummary>),
+            assert: impl FnOnce(&[RecordSetEngineSummary]),
         ) {
             let record1 = TestRecord::new().with_key_value(
                 "key1".into(),
@@ -380,13 +383,13 @@ mod tests {
 
             let engine = RecordSetEngine::new();
 
-            let mut batch = engine.begin_batch(&pipeline);
+            let mut batch = engine.begin_batch(&pipeline).unwrap();
 
             batch.push_records(&mut TestRecordSet::new(vec![record1, record2]));
 
             let results = batch.flush();
 
-            let mut summaries = results.summaries;
+            let mut summaries = results.summaries.included_summaries;
 
             summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
 

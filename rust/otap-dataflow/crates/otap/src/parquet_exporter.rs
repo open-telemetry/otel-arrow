@@ -39,6 +39,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::node::NodeId;
 use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
@@ -63,9 +64,10 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
             ParquetExporter::from_config(&node_config.config)?,
+            node,
             node_config,
             exporter_config,
         ))
@@ -208,11 +210,20 @@ mod test {
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel};
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
+    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+    use otap_df_engine::message::{Receiver, Sender};
+    use otap_df_engine::node::NodeWithPDataReceiver;
+    use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime};
+    use otap_df_engine::testing::{
+        exporter::{TestContext, TestRuntime},
+        test_node,
+    };
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
+    use tokio::time::sleep;
 
     use crate::fixtures;
 
@@ -279,6 +290,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -362,6 +374,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -398,29 +411,80 @@ mod test {
             writer_options: None,
         });
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
-        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+        let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
-        let num_rows = 1000;
 
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(logs_scenario(num_rows, Duration::from_nanos(1)))
-            .run_validation(move |_ctx, exporter_result| {
-                Box::pin(async move {
-                    // assert the exporter result is as expected
-                    match exporter_result {
-                        Ok(_) => panic!("expected exporter result to be error, received: Ok(())"),
-                        Err(Error::IoError { node, error }) => {
-                            assert_eq!(&node, "test_exporter");
-                            assert_eq!(error.kind(), ErrorKind::TimedOut);
-                        },
-                        Err(e) => panic!("{}", format!("received unexpected error: {e:?}. Expected IoError caused by timeout"))
-                    }
+        let exporter_config = ExporterConfig::new("test_parquet_exporter");
+        let (rt, _) = setup_test_runtime();
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) =
+            create_not_send_channel::<OtapPdata>(exporter_config.control_channel.capacity);
+        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+
+        let (pipeline_ctrl_msg_tx, _) = pipeline_ctrl_msg_channel(10);
+
+        exporter
+            .set_pdata_receiver(test_node(exporter_config.name.clone()), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
+        ) -> Result<(), Error<OtapPdata>> {
+            exporter.start(pipeline_ctrl_msg_tx).await
+        }
+
+        async fn send_messages(
+            pdata_tx: Sender<OtapPdata>,
+            ctrl_sender: Sender<NodeControlMsg>,
+        ) -> () {
+            // have the parquet writer queue a batch to be written
+            let otap_batch = OtapArrowBytes::ArrowLogs(
+                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+                    // a pretty big batch
+                    num_rows: 5000,
+                    ..Default::default()
+                }),
+            );
+            _ = pdata_tx.send(otap_batch.into()).await;
+
+            // yield long enough for the exporter to receive the pdata and queue the write
+            sleep(Duration::from_millis(50)).await;
+
+            // shutdown faster than it could possibly flush
+            _ = ctrl_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Duration::from_nanos(10),
+                    reason: "shutting down".into(),
                 })
-            });
+                .await;
+        }
+
+        // let the exporter's message handling loop and the message sending run concurrently
+        let (exporter_result, _) = rt.block_on(async move {
+            tokio::join!(
+                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                send_messages(pdata_tx, control_sender)
+            )
+        });
+
+        // expect that we timed out before we could flush messages when the shutdown message was received
+        match exporter_result {
+            Ok(_) => panic!("expected exporter result to be error, received: Ok(())"),
+            Err(Error::IoError { node, error }) => {
+                assert_eq!(node.name, "test_exporter");
+                assert_eq!(error.kind(), ErrorKind::TimedOut);
+            }
+            Err(e) => panic!(
+                "{}",
+                format!("received unexpected error: {e:?}. Expected IoError caused by timeout")
+            ),
+        }
     }
 
     #[test]
@@ -436,6 +500,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
@@ -496,6 +561,7 @@ mod test {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
+            test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
         );
