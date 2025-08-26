@@ -4,14 +4,11 @@
 //! This module contains various types and methods for interacting with and manipulating
 //! OTAP data / record batches
 
-use arrow::{
-    array::RecordBatch,
-    datatypes::{UInt16Type, UInt32Type},
-};
+use arrow::array::RecordBatch;
 
-use transform::{
-    transport_optimize::remove_transport_optimized_encodings,
+use transform::transport_optimize::{
     RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_transport_optimized_encodings, remap_parent_ids,
+    remove_transport_optimized_encodings,
 };
 
 use crate::{
@@ -110,8 +107,9 @@ impl OtapArrowRecords {
             Self::Logs(_) => OtapArrowRecordTag::Logs,
             Self::Metrics(_) => OtapArrowRecordTag::Metrics,
             Self::Traces(_) => OtapArrowRecordTag::Traces,
-      }
-      
+        }
+    }
+
     /// Apply transport optimized encoding to the underlying record batches. Generally this would
     /// be called before serializing the data into Arrow IPC for transport via gRPC.
     ///

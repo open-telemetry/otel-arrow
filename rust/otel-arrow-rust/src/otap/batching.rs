@@ -2,8 +2,8 @@
 //!
 //!
 
-use std::num::NonZeroU64;
 use super::{OtapArrowRecords, error::Result, groups::RecordsGroup};
+use std::num::NonZeroU64;
 
 /// merge and combine batches to the appropriate size
 pub fn make_output_batches(
