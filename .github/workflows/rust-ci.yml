@@ -41,7 +41,7 @@ jobs:
         with:
           toolchain: stable
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@ad95d4e02e061d4390c4b66ef5ed56c7fee3d2ce # v2.58.17
+        uses: taiki-e/install-action@f63c33fd96cc1e69a29bafd06541cf28588b43a4 # v2.58.21
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
@@ -50,7 +50,7 @@ jobs:
         run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24 # v5.4.3
+        uses: codecov/codecov-action@fdcc8476540edceab3de004e990f80d881c6cc00 # v5.5.0
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
