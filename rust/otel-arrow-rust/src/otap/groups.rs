@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
     iter::{once, repeat, repeat_n},
