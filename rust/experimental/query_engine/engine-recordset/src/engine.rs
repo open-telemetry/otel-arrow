@@ -448,10 +448,18 @@ fn format_diagnostics(
         lines.push((line, Vec::new()));
     }
 
+    if lines.is_empty() {
+        lines.push(("", Vec::new()));
+    }
+
     for log in diagnostics {
         let location = log.get_expression().get_query_location();
         let (line, _) = location.get_line_and_column_numbers();
-        lines[line - 1].1.push(log);
+        if let Some(l) = lines.get_mut(line - 1) {
+            l.1.push(log);
+        } else {
+            lines[0].1.push(log);
+        }
     }
 
     let mut line_number = 1;
@@ -602,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_engine_with_initialization() {
-        let mut pipeline_builder = PipelineExpressionBuilder::new(" ");
+        let mut pipeline_builder = PipelineExpressionBuilder::new("");
 
         pipeline_builder.push_global_variable(
             "gvar1",
@@ -635,7 +643,10 @@ mod tests {
 
         let pipeline = pipeline_builder.build().unwrap();
 
-        let engine = RecordSetEngine::new();
+        let engine = RecordSetEngine::new_with_options(
+            RecordSetEngineOptions::new()
+                .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+        );
 
         let mut batch = engine.begin_batch(&pipeline).unwrap();
 
@@ -644,6 +655,8 @@ mod tests {
         batch.push_records(&mut records);
 
         let results = batch.flush();
+
+        print!("{results}");
 
         let record = results.included_records.first().unwrap().get_record();
 
@@ -690,7 +703,7 @@ mod tests {
             HashMap::from([]),
         );
 
-        let pipeline = PipelineExpressionBuilder::new(" ")
+        let pipeline = PipelineExpressionBuilder::new("")
             .with_expressions(vec![DataExpression::Summary(summary_expression)])
             .build()
             .unwrap();
@@ -784,7 +797,7 @@ mod tests {
             ))),
         ]);
 
-        let pipeline = PipelineExpressionBuilder::new(" ")
+        let pipeline = PipelineExpressionBuilder::new("")
             .with_expressions(vec![DataExpression::Summary(summary_expression)])
             .build()
             .unwrap();

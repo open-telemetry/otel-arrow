@@ -29,7 +29,7 @@ where
                     return Err(ExpressionError::ParseError(
                         p.get_query_location().clone(),
                         format!(
-                            "Input of '{:?}' type could not be pased as JSON",
+                            "Input of '{:?}' type could not be parsed as JSON",
                             value.get_value_type()
                         ),
                     ));
