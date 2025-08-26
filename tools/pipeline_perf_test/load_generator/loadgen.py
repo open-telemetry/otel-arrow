@@ -151,6 +151,13 @@ class LoadGenerator:
         with self.lock:
             self.metrics[key] += amount
 
+    def update_metrics(self, **updates) -> None:
+        """Update multiple metrics in a single lock acquisition."""
+        with self.lock:
+            for key, amount in updates.items():
+                if key in self.metrics:
+                    self.metrics[key] += amount
+
     def worker_thread(self, thread_id: int, args: dict) -> None:
         """
         Worker thread that sends batches of log records to an OTLP endpoint.
@@ -273,8 +280,8 @@ class LoadGenerator:
         while not self.stop_event.is_set():
             try:
                 sock.sendall(batch_buffer)
-                self.increment_metric("sent", args["batch_size"])
-                self.increment_metric("bytes_sent", batch_total_size)
+                # Update both metrics with a single lock acquisition
+                self.update_metrics(sent=args["batch_size"], bytes_sent=batch_total_size)
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send syslog batch: {e}")
                 self.increment_metric("failed", args["batch_size"])
@@ -343,17 +350,32 @@ class LoadGenerator:
 
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
-            try:
-                # UDP: Send individual messages instead of single batch of
-                # messages.
-                for message in syslog_batch:
+            # Track success/failure counts locally for this batch
+            sent_count = 0
+            failed_count = 0
+            bytes_sent_count = 0
+            
+            # UDP: Send individual messages instead of single batch of messages
+            for message in syslog_batch:
+                try:
                     sock.sendto(message, (syslog_server, syslog_port))
-
-                self.increment_metric("sent", args["batch_size"])
-                self.increment_metric("bytes_sent", batch_total_size)
-            except Exception as e:
-                print(f"Thread {thread_id}: Failed to send syslog batch via UDP: {e}")
-                self.increment_metric("failed", args["batch_size"])
+                    sent_count += 1
+                    bytes_sent_count += len(message)
+                except Exception as e:
+                    failed_count += 1
+                    # Only print first few errors to avoid spam
+                    if failed_count <= 3:
+                        print(f"Thread {thread_id}: Failed to send syslog message via UDP: {e}")
+            
+            # Update metrics once per batch with actual counts
+            if sent_count > 0 or failed_count > 0:
+                updates = {}
+                if sent_count > 0:
+                    updates["sent"] = sent_count
+                    updates["bytes_sent"] = bytes_sent_count
+                if failed_count > 0:
+                    updates["failed"] = failed_count
+                self.update_metrics(**updates)
 
             # Rate limiting logic
             if batch_interval:
