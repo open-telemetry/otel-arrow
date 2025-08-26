@@ -9,6 +9,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+- Standardize to shorthand license header.
+  [#954](https://github.com/open-telemetry/otel-arrow/pull/954)
+- Fix logs handling of missing optional trace_id and span_id columns.
+  [#973](https://github.com/open-telemetry/otel-arrow/pull/973)
+- Upgrade to v0.133.0 / v1.37.0 of collector dependencies.
+  [#890](https://github.com/open-telemetry/otel-arrow/pull/890),
+  [#1010](https://github.com/open-telemetry/otel-arrow/pull/1010)
+
 ## [0.41.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.41.0) - 2025-08-06
 
 - Add proper automation in `prepare-release` workflow for
