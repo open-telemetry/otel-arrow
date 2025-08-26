@@ -405,13 +405,15 @@ pub(crate) fn parse_accessor_expression(
         Ok(ScalarExpression::Source(
             SourceScalarExpression::new_with_value_type(query_location, value_accessor, value_type),
         ))
-    } else if state.is_attached_data_defined(root_accessor_identity.get_value()) {
+    } else if allow_root_scalar
+        && state.is_attached_data_defined(root_accessor_identity.get_value())
+    {
         Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
             query_location,
             root_accessor_identity,
             value_accessor,
         )))
-    } else if state.is_variable_defined(root_accessor_identity.get_value()) {
+    } else if allow_root_scalar && state.is_variable_defined(root_accessor_identity.get_value()) {
         Ok(ScalarExpression::Variable(VariableScalarExpression::new(
             query_location,
             root_accessor_identity,

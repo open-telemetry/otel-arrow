@@ -14,7 +14,7 @@ use crate::{
     logical_expressions::parse_logical_expression,
     scalar_expression::parse_scalar_expression,
     scalar_primitive_expressions::{parse_accessor_expression, parse_string_literal},
-    shared_expressions::parse_assignment_expression,
+    shared_expressions::parse_source_assignment_expression,
 };
 
 pub(crate) fn parse_extend_expression(
@@ -28,29 +28,14 @@ pub(crate) fn parse_extend_expression(
     for rule in extend_rules {
         match rule.as_rule() {
             Rule::assignment_expression => {
-                let assignment_expression = parse_assignment_expression(rule, state)?;
+                let (query_location, source, destination) =
+                    parse_source_assignment_expression(rule, state)?;
 
-                if let TransformExpression::Set(s) = &assignment_expression {
-                    match s.get_destination() {
-                        MutableValueExpression::Source(_) => {}
-                        MutableValueExpression::Variable(v) => {
-                            let location = v.get_query_location();
-
-                            return Err(ParserError::SyntaxError(
-                                location.clone(),
-                                format!(
-                                    "'{}' destination accessor must refer to source to be used in an extend expression",
-                                    state.get_query_slice(location).trim()
-                                ),
-                            ));
-                        }
-                    }
-                    set_expressions.push(assignment_expression);
-                } else {
-                    panic!(
-                        "Unexpected transformation in extend_expression: {assignment_expression:?}"
-                    )
-                }
+                set_expressions.push(TransformExpression::Set(SetTransformExpression::new(
+                    query_location,
+                    source,
+                    MutableValueExpression::Source(destination),
+                )));
             }
             _ => panic!("Unexpected rule in extend_expression: {rule}"),
         }
@@ -76,36 +61,21 @@ pub(crate) fn parse_project_expression(
 
         match rule.as_rule() {
             Rule::assignment_expression => {
-                let assignment_expression = parse_assignment_expression(rule, state)?;
+                let (query_location, source, destination) =
+                    parse_source_assignment_expression(rule, state)?;
 
-                if let TransformExpression::Set(s) = &assignment_expression {
-                    match s.get_destination() {
-                        MutableValueExpression::Source(s) => {
-                            process_map_selection_source_scalar_expression(
-                                "project",
-                                state,
-                                s,
-                                &mut reduction,
-                            )?;
-                        }
-                        MutableValueExpression::Variable(v) => {
-                            let location = v.get_query_location();
+                process_map_selection_source_scalar_expression(
+                    "project",
+                    state,
+                    &destination,
+                    &mut reduction,
+                )?;
 
-                            return Err(ParserError::SyntaxError(
-                                location.clone(),
-                                format!(
-                                    "'{}' destination accessor must refer to source to be used in a project expression",
-                                    state.get_query_slice(location).trim()
-                                ),
-                            ));
-                        }
-                    }
-                    expressions.push(assignment_expression);
-                } else {
-                    panic!(
-                        "Unexpected transformation in project_expression: {assignment_expression:?}"
-                    )
-                }
+                expressions.push(TransformExpression::Set(SetTransformExpression::new(
+                    query_location,
+                    source,
+                    MutableValueExpression::Source(destination),
+                )));
             }
             Rule::accessor_expression => {
                 let accessor_expression = parse_accessor_expression(rule, state, true)?;
@@ -337,42 +307,61 @@ pub(crate) fn parse_summarize_expression(
             Rule::group_by_expression => {
                 let mut group_by = summarize_rule.into_inner();
 
-                let identifier_rule = group_by.next().unwrap();
-                let identifier = identifier_rule.as_str();
+                let group_by_first_rule = group_by.next().unwrap();
+                let group_by_first_rule_location = to_query_location(&group_by_first_rule);
 
-                let scalar = if let Some(scalar_rule) = group_by.next() {
-                    parse_scalar_expression(scalar_rule, state)?
-                } else {
-                    ScalarExpression::Source(SourceScalarExpression::new(
-                        to_query_location(&identifier_rule),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                to_query_location(&identifier_rule),
-                                identifier,
-                            )),
-                        )]),
-                    ))
-                };
+                match group_by_first_rule.as_rule() {
+                    Rule::identifier_literal => {
+                        let scalar = parse_scalar_expression(group_by.next().unwrap(), state)?;
 
-                group_by_expressions.insert(identifier.into(), scalar);
+                        group_by_expressions
+                            .insert(group_by_first_rule.as_str().trim().into(), scalar);
+                    }
+                    Rule::accessor_expression => {
+                        let accessor = parse_accessor_expression(group_by_first_rule, state, true)?;
+                        match &accessor {
+                            ScalarExpression::Source(s) => {
+                                group_by_expressions.insert(
+                                    parse_group_by_accessor(
+                                        &group_by_first_rule_location,
+                                        s.get_value_accessor(),
+                                        state,
+                                    )?,
+                                    accessor,
+                                );
+                            }
+                            ScalarExpression::Attached(a) => {
+                                group_by_expressions.insert(
+                                    parse_group_by_accessor(
+                                        &group_by_first_rule_location,
+                                        a.get_value_accessor(),
+                                        state,
+                                    )?,
+                                    accessor,
+                                );
+                            }
+                            ScalarExpression::Variable(v) => {
+                                group_by_expressions.insert(
+                                    parse_group_by_accessor(
+                                        &group_by_first_rule_location,
+                                        v.get_value_accessor(),
+                                        state,
+                                    )?,
+                                    accessor,
+                                );
+                            }
+                            _ => {
+                                return Err(ParserError::SyntaxError(
+                                    group_by_first_rule_location,
+                                    "Could not determine the source and/or name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
+                                ));
+                            }
+                        }
+                    }
+                    _ => panic!("Unexpected rule in group_by_expression: {group_by_first_rule}"),
+                }
             }
             _ => {
-                /*
-                todo: Fix bugs with extend and then enable this
-
-                let mut schema = ParserMapSchema::new();
-
-                for (name, _) in &group_by_expressions {
-                    schema = schema.with_key_definition(name, ParserMapKeySchema::Any);
-                }
-
-                for (name, _) in &aggregation_expressions {
-                    schema = schema.with_key_definition(name, ParserMapKeySchema::Any);
-                }
-
-                let scope = state.create_scope(ParserOptions::new().with_source_map_schema(schema));
-                */
-
                 let scope = state.create_scope(ParserOptions::new());
 
                 for e in parse_tabular_expression_rule(summarize_rule, &scope)? {
@@ -383,10 +372,10 @@ pub(crate) fn parse_summarize_expression(
     }
 
     if group_by_expressions.is_empty() && aggregation_expressions.is_empty() {
-        Err(ParserError::SyntaxError(
+        return Err(ParserError::SyntaxError(
             query_location,
             "Invalid summarize operator: missing both aggregates and group-by expressions".into(),
-        ))
+        ));
     } else {
         let mut summary = SummaryDataExpression::new(
             query_location,
@@ -400,7 +389,44 @@ pub(crate) fn parse_summarize_expression(
             }
         }
 
-        Ok(DataExpression::Summary(summary))
+        return Ok(DataExpression::Summary(summary));
+    }
+
+    fn parse_group_by_accessor(
+        query_location: &QueryLocation,
+        value_accessor: &ValueAccessor,
+        scope: &dyn ParserScope,
+    ) -> Result<Box<str>, ParserError> {
+        let selectors = value_accessor.get_selectors();
+        if selectors.is_empty() {
+            Err(ParserError::SyntaxError(
+                query_location.clone(),
+                "Cannot refer to a root map directly in a group-by expression".into(),
+            ))
+        } else {
+            let last = selectors.last().unwrap();
+            match last.try_resolve_static(scope.get_pipeline()).map_err(|e| ParserError::from(&e))? {
+                Some(v) => {
+                    match v.to_value() {
+                        Value::String(s) => {
+                            Ok(s.get_value().into())
+                        }
+                        _ => {
+                            Err(ParserError::SyntaxError(
+                                last.get_query_location().clone(),
+                                "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
+                            ))
+                        }
+                    }
+                }
+                _ => {
+                    Err(ParserError::SyntaxError(
+                        last.get_query_location().clone(),
+                        "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).".into(),
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -891,25 +917,6 @@ mod tests {
             assert_eq!(expected, expression);
         };
 
-        let run_test_failure = |input: &str, expected: &str| {
-            let mut state = ParserState::new_with_options(
-                input,
-                ParserOptions::new().with_attached_data_names(&["resource"]),
-            );
-
-            state.push_variable_name("variable");
-
-            let mut result = KqlPestParser::parse(Rule::extend_expression, input).unwrap();
-
-            let error = parse_extend_expression(result.next().unwrap(), &state).unwrap_err();
-
-            if let ParserError::SyntaxError(_, msg) = error {
-                assert_eq!(expected, msg);
-            } else {
-                panic!("Expected SyntaxError");
-            }
-        };
-
         run_test_success(
             "extend new_attribute1 = 1",
             vec![TransformExpression::Set(SetTransformExpression::new(
@@ -1028,9 +1035,29 @@ mod tests {
             ))],
         );
 
-        run_test_failure(
-            "extend variable.key = 1",
-            "'variable.key' destination accessor must refer to source to be used in an extend expression",
+        // Note: variable on the left of assignment in extend context should set
+        // Attributes['variable'] and not write to Variables['variable'].
+        run_test_success(
+            "extend variable = variable",
+            vec![TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ImmutableValueExpression::Scalar(ScalarExpression::Variable(
+                    VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                        ValueAccessor::new(),
+                    ),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "variable",
+                        )),
+                    )]),
+                )),
+            ))],
         );
     }
 
@@ -1213,6 +1240,55 @@ mod tests {
                         )),
                         vec![ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                        ))],
+                    ),
+                )),
+            ],
+        );
+
+        // Note: variable on the left of assignment in project context should set
+        // Attributes['variable'] and not write to Variables['variable'].
+        run_test_success(
+            "project variable = variable",
+            vec![
+                TransformExpression::Set(SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ImmutableValueExpression::Scalar(ScalarExpression::Variable(
+                        VariableScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                            ValueAccessor::new(),
+                        ),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
+                            )),
+                        ]),
+                    )),
+                )),
+                TransformExpression::RemoveMapKeys(RemoveMapKeysTransformExpression::Retain(
+                    MapKeyListExpression::new(
+                        QueryLocation::new_fake(),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
+                        )),
+                        vec![ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "variable"),
                         ))],
                     ),
                 )),
@@ -1455,8 +1531,8 @@ mod tests {
         );
 
         run_test_failure(
-            "project variable = 1",
-            "'variable' destination accessor must refer to source to be used in a project expression",
+            "project variable",
+            "To be valid in a project expression 'variable' should be an assignment expression or an accessor expression which refers to the source",
         );
 
         run_test_failure(
@@ -2197,7 +2273,26 @@ mod tests {
     #[test]
     pub fn test_parse_summarize_expression() {
         let run_test_success = |input: &str, expected: SummaryDataExpression| {
-            let state = ParserState::new(input);
+            let mut state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("a", ParserMapKeySchema::Any)
+                            .with_key_definition("c", ParserMapKeySchema::Any)
+                            .with_key_definition("Attributes", ParserMapKeySchema::Map)
+                            .set_default_map_key("Attributes"),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            state.push_constant(
+                "const",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "const_str",
+                )),
+            );
 
             let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
 
@@ -2207,7 +2302,26 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected: &str| {
-            let state = ParserState::new(input);
+            let mut state = ParserState::new_with_options(
+                input,
+                ParserOptions::new()
+                    .with_source_map_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("a", ParserMapKeySchema::Any)
+                            .with_key_definition("c", ParserMapKeySchema::Any)
+                            .with_key_definition("Attributes", ParserMapKeySchema::Map)
+                            .set_default_map_key("Attributes"),
+                    )
+                    .with_attached_data_names(&["resource"]),
+            );
+
+            state.push_constant(
+                "const",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "const_str",
+                )),
+            );
 
             let mut result = KqlPestParser::parse(Rule::summarize_expression, input).unwrap();
 
@@ -2359,9 +2473,140 @@ mod tests {
             )]),
         );
 
+        run_test_success(
+            "summarize by Level",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "Level".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "Level"),
+                            )),
+                        ]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize by Attributes[const]",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "const_str".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Constant(ConstantScalarExpression::Reference(
+                                ReferenceConstantScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueType::String,
+                                    0,
+                                ),
+                            )),
+                        ]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize by Attributes['something']['else']",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "else".into(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "something"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "else"),
+                            )),
+                        ]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
+        run_test_success(
+            "summarize by resource.Attributes['service.name']",
+            SummaryDataExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::from([(
+                    "service.name".into(),
+                    ScalarExpression::Attached(AttachedScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "service.name",
+                                ),
+                            )),
+                        ]),
+                    )),
+                )]),
+                HashMap::new(),
+            ),
+        );
+
         run_test_failure(
             "summarize | extend v = 1",
             "Invalid summarize operator: missing both aggregates and group-by expressions",
+        );
+
+        run_test_failure(
+            "summarize by resource",
+            "Cannot refer to a root map directly in a group-by expression",
+        );
+
+        run_test_failure(
+            "summarize by Attributes[tostring(now())]",
+            "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+        );
+
+        run_test_failure(
+            "summarize by Attributes['array'][0]",
+            "Could not determine the name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
+        );
+
+        run_test_failure(
+            "summarize by const",
+            "Could not determine the source and/or name for summary group-by expression. Try using assignment syntax instead (Name = [expression]).",
         );
     }
 
