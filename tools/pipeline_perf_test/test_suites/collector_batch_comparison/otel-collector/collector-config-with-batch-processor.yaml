@@ -35,6 +35,6 @@ service:
       receivers: [otlp]
       exporters: [debug]
     logs:
-      receivers: [otlp, syslog/tcp, syslog/udp]
+      receivers: [otlp, syslog/udp]
       processors: [batch]
       exporters: [otlp]
