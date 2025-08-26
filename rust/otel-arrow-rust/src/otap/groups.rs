@@ -3,7 +3,7 @@
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::Hash,
     iter::{once, repeat, repeat_n},
     num::NonZeroU64,
@@ -1214,8 +1214,9 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
     // map of struct columns where, keyed by the struct field name, and the values are a map of
     // field name -> field definition for the columns in the struct array.
+    // TODO comment on this datastructure is not correct
     // TODO - we could avoid some heap allocations if this took an Arc<Field> ...
-    let mut struct_fields: HashMap<String, HashMap<String, Field>> = HashMap::new();
+    let mut struct_fields: BTreeMap<String, (Field, BTreeMap<String, Field>)> = BTreeMap::new();
 
     let mut all_batch_indices: HashSet<usize> = HashSet::new();
 
@@ -1232,7 +1233,11 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
         for (batch_index, schema) in schemas.iter().enumerate() {
             for field in schema.fields.iter() {
-                // TODO, I think we want to skip here if it's a struct ...
+                if matches!(field.data_type(), DataType::Struct(_)) {
+                    // skip struct fields, as they get unified in a code path that doesn't use the
+                    // data structure we're populating here
+                    continue;
+                }
 
                 let _ = field_name_to_batch_indices
                     .entry(field.name().clone())
@@ -1375,21 +1380,21 @@ fn flatten_dictionary_column(old_field: &Field, column: Arc<dyn Array>) -> Resul
 
 fn try_record_struct_fields(
     record_batch: &RecordBatch,
-    all_struct_fields: &mut HashMap<String, HashMap<String, Field>>,
+    all_struct_fields: &mut BTreeMap<String, (Field, BTreeMap<String, Field>)>,
 ) -> Result<()> {
-    for field in record_batch.schema_ref().fields() {
-        if let DataType::Struct(struct_fields) = field.data_type() {
-            if !all_struct_fields.contains_key(field.name()) {
+    for rb_field in record_batch.schema_ref().fields() {
+        if let DataType::Struct(struct_fields) = rb_field.data_type() {
+            if !all_struct_fields.contains_key(rb_field.name()) {
                 _ = all_struct_fields.insert(
-                    field.name().clone(),
-                    HashMap::with_capacity(struct_fields.len()),
+                    rb_field.name().clone(),
+                    (rb_field.as_ref().clone(), BTreeMap::new()),
                 );
             }
 
             // this is the fields contained within the "field" struct array column on any record
             // batch for which we're unifying the schemas
-            let all_this_struct_fields = all_struct_fields
-                .get_mut(field.name())
+            let (_, all_this_struct_fields) = all_struct_fields
+                .get_mut(rb_field.name())
                 .expect("struct fields should be initialized for this field name");
 
             for struct_field in struct_fields {
@@ -1410,43 +1415,65 @@ fn try_record_struct_fields(
 
 fn try_unify_struct_columns(
     record_batch: &RecordBatch,
-    all_struct_fields_defs: &HashMap<String, HashMap<String, Field>>,
+    all_struct_fields_defs: &BTreeMap<String, (Field, BTreeMap<String, Field>)>,
 ) -> Result<RecordBatch> {
     let schema = record_batch.schema_ref();
-    let mut fields = schema.fields.to_vec();
-    let mut columns = record_batch.columns().to_vec();
+    let mut rb_fields = schema.fields.to_vec();
+    let mut rb_columns = record_batch.columns().to_vec();
 
-    for (field_name, desired_fields) in all_struct_fields_defs {
-        match schema.index_of(field_name) {
-            Ok(field_index) => {
-                let field = schema.field(field_index);
+    for (struct_field_name, (rb_field, desired_struct_fields)) in all_struct_fields_defs {
+        match schema.index_of(struct_field_name) {
+            Ok(rb_field_index) => {
+                let field = schema.field(rb_field_index);
 
                 if let DataType::Struct(curr_struct_fields) = field.data_type() {
                     // safety: we've just checked the column's data type
-                    let column = columns[field_index]
+                    let rb_column = rb_columns[rb_field_index]
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expect can downcast to struct");
-                    let new_column = try_unify_struct_fields(&column, desired_fields)?;
+                    let new_rb_column = try_unify_struct_fields(&rb_column, desired_struct_fields)?;
 
-                    let new_field =
-                        Arc::new(field.clone().with_data_type(new_column.data_type().clone()));
-                    fields[field_index] = new_field;
-                    columns[field_index] = Arc::new(new_column);
+                    let new_field = Arc::new(
+                        field
+                            .clone()
+                            .with_data_type(new_rb_column.data_type().clone()),
+                    );
+                    rb_fields[rb_field_index] = new_field;
+                    rb_columns[rb_field_index] = Arc::new(new_rb_column);
                 } else {
                     todo!("return an error here cause we got the wrong data type ..");
                 }
             }
+
             Err(_) => {
-                // here the struct field doesn't exist at all, and we need to create a fully new one
-                todo!("create new fully empty struct and add it to columns")
+                let len = record_batch.num_rows();
+                let struct_fields =
+                    Fields::from(desired_struct_fields.values().cloned().collect::<Vec<_>>());
+                let struct_columns = desired_struct_fields
+                    .values()
+                    .map(|field| arrow::array::new_null_array(field.data_type(), len))
+                    .collect::<Vec<_>>();
+                let struct_nulls = rb_field
+                    .is_nullable()
+                    .then(|| NullBuffer::from_iter(repeat_n(false, len)));
+                let new_rb_column = StructArray::new(struct_fields, struct_columns, struct_nulls);
+                let new_rb_field = Field::new(
+                    rb_field.name(),
+                    new_rb_column.data_type().clone(),
+                    rb_field.is_nullable(),
+                );
+                rb_fields.push(Arc::new(new_rb_field));
+                rb_columns.push(Arc::new(new_rb_column));
             }
         }
     }
 
     // Safety: TODO comment on why this is safe
-    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .expect("could not new record batch with unified struct columns"))
+    Ok(
+        RecordBatch::try_new(Arc::new(Schema::new(rb_fields)), rb_columns)
+            .expect("could not new record batch with unified struct columns"),
+    )
 }
 
 fn try_unify_struct_fields(
@@ -1454,7 +1481,7 @@ fn try_unify_struct_fields(
     // current_fields: &mut Vec<Arc<Field>>,
     // current_columns: &mut Vec<ArrayRef>,
     current_array: &StructArray,
-    desired_fields: &HashMap<String, Field>,
+    desired_fields: &BTreeMap<String, Field>,
 ) -> Result<StructArray> {
     let mut new_columns = Vec::with_capacity(desired_fields.len());
     let array_len = current_array.len();
@@ -1567,11 +1594,11 @@ fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
 
 #[cfg(test)]
 mod test {
-    use arrow::array::record_batch;
     use arrow::array::{
         ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray, StructArray,
         TimestampNanosecondArray, UInt8Array, UInt16Array,
     };
+    use arrow::array::{RecordBatchOptions, record_batch};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type};
     use arrow_schema;
 
@@ -1610,7 +1637,7 @@ mod test {
     }
 
     #[test]
-    fn test_unify_structs() {
+    fn test_unify_structs_adds_missing_fields() {
         let field_1 = Field::new("f1", DataType::UInt8, true);
         let field_2 = Field::new("f2", DataType::UInt8, true);
 
@@ -1679,6 +1706,65 @@ mod test {
         .unwrap();
 
         assert_eq!(batches[0][0].as_ref().unwrap(), &expected_rb_a);
+        assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
+    }
+
+    #[test]
+    fn test_unify_structs_handles_missing_struct() {
+        // test that for nullable structs, if the entire struct is missing then we add a struct
+        // where all the structs = null, otherwise we add a list of non null struct where all the
+        // fields in the struct are null
+        let field = Field::new("f1", DataType::UInt8, true);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s1", DataType::Struct(vec![field.clone()].into()), true),
+            Field::new("s2", DataType::Struct(vec![field.clone()].into()), false),
+        ]));
+
+        let rb_a = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StructArray::new(
+                    vec![field.clone()].into(),
+                    vec![Arc::new(UInt8Array::from_iter_values(vec![1, 2, 3]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    vec![field.clone()].into(),
+                    vec![Arc::new(UInt8Array::from_iter_values(vec![4, 5, 6]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+
+        let rb_b = RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(3)),
+        )
+        .unwrap();
+
+        let mut batches: [[Option<RecordBatch>; 1]; 2] = [[Some(rb_a.clone())], [Some(rb_b)]];
+        unify(&mut batches).unwrap();
+
+        let expected_rb_b = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StructArray::new(
+                    vec![field.clone()].into(),
+                    vec![Arc::new(UInt8Array::from_iter(vec![None, None, None]))],
+                    Some(NullBuffer::from_iter(vec![false, false, false])),
+                )),
+                Arc::new(StructArray::new(
+                    vec![field.clone()].into(),
+                    vec![Arc::new(UInt8Array::from_iter(vec![None, None, None]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(batches[0][0].as_ref().unwrap(), &rb_a);
         assert_eq!(batches[1][0].as_ref().unwrap(), &expected_rb_b);
     }
 
