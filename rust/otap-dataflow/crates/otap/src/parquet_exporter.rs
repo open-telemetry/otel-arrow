@@ -240,7 +240,6 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 mod test {
     use crate::grpc::OtapArrowBytes;
     use crate::parquet_exporter::config::WriterOptions;
-    use crate::pdata::OtlpProtoBytes;
 
     use super::*;
 
@@ -266,11 +265,7 @@ mod test {
         test_node,
     };
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otel_arrow_rust::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
-    use prost::Message;
     use tokio::fs::File;
     use tokio::time::sleep;
 
@@ -560,19 +555,19 @@ mod test {
                 }),
             )
             .into();
-            pdata_tx.send(otap_batch.into()).await.unwrap();
+            pdata_tx.send(otap_batch).await.unwrap();
 
             let otap_batch2: OtapPdata = OtapArrowBytes::ArrowLogs(
                 fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    // a pretty big batch
                     num_rows: 1,
                     ..Default::default()
                 }),
             )
             .into();
             let mut otap_batch2 = OtapArrowRecords::try_from(otap_batch2).unwrap();
-
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
+            // adding extra attributes should just put us over the limit where this table will be
+            // flushed on write
             otap_batch2.set(
                 ArrowPayloadType::LogAttrs,
                 concat_batches(log_attrs.schema_ref(), vec![&log_attrs.clone(), log_attrs])
