@@ -1600,7 +1600,8 @@ fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        ArrayRef, DictionaryArray, FixedSizeBinaryArray, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array, UInt64Array, UInt8Array
+        ArrayRef, DictionaryArray, FixedSizeBinaryArray, Int32Array, Int64Array, RecordBatch,
+        StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt64Array,
     };
     use arrow::array::{RecordBatchOptions, record_batch};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type};
@@ -2021,31 +2022,39 @@ mod test {
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2, 3])),
-                Arc::new(FixedSizeBinaryArray::try_from_iter([1, 2, 3, 4].into_iter().map(|id| u64::to_be_bytes(id))).unwrap())
-            ]
-        ).unwrap();
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        [1, 2, 3, 4].into_iter().map(|id| u64::to_be_bytes(id)),
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
 
         let span_links_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new(consts::ID, DataType::UInt32, true),
-                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2, 3])),
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1, 1])),
-            ]
-        ).unwrap();
+            ],
+        )
+        .unwrap();
 
         let span_events_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new(consts::ID, DataType::UInt32, true),
-                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2])),
                 Arc::new(UInt16Array::from_iter_values(vec![3, 3, 3])),
-            ]
-        ).unwrap();
+            ],
+        )
+        .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
         otap_batch.set(ArrowPayloadType::Spans, spans_rb);
