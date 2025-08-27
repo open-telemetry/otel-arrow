@@ -25,7 +25,8 @@ Collector.
 ## Architecture
 
 A list of the design principles followed by this project can be found
-[in /docs](../../docs/design-principles.md). More specifically, the pipeline engine
+[in /docs](../../docs/design-principles.md). More specifically, the pipeline
+engine
 implemented in this crate follows a share-nothing, thread-per-core approach. In
 particular, one instance of the pipeline engine is created per core. This
 engine:
@@ -166,3 +167,22 @@ without requiring a full rebuild of the engine.
 **Note:** The plugin system is still a work-in-progress. While the compile-time
 registration and dynamic instantiation of built-in nodes is functional, support
 for external (e.g. WASM-based) plugins is planned but not yet implemented.
+
+## Telemetry
+
+### Predefined Attributes
+
+The pipeline engine defines a set of predefined attributes that can be used for
+labeling metrics and traces. These attributes provide context about the pipeline
+and its components, facilitating better observability and analysis.
+
+| Scope    | Attribute           | Type    | Description                                                  |
+|----------|---------------------|---------|--------------------------------------------------------------|
+| Resource | process_instance_id | string  | Unique process instance identifier (base32-encoded UUID v7). |
+| Resource | host_id             | string  | Host identifier (e.g. hostname).                             |
+| Resource | container_id        | string  | Container identifier (e.g. Docker/containerd container ID).  |
+| Engine   | core_id             | integer | Core identifier.                                             |
+| Engine   | numa_node_id        | integer | NUMA node identifier.                                        |
+| Pipeline | pipeline_id         | string  | Pipeline identifier.                                         |
+| Node     | node_id             | string  | Node unique identifier (in scope of the pipeline).           |
+| Node     | node_type           | string  | Node type (e.g. "receiver", "processor", "exporter").        |

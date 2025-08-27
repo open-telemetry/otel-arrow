@@ -74,8 +74,8 @@ pub enum ScalarExpression {
 
 impl ScalarExpression {
     pub fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
             ScalarExpression::Source(s) => Ok(s.get_value_type()),
@@ -85,45 +85,61 @@ impl ScalarExpression {
             ScalarExpression::Constant(c) => Ok(Some(c.get_value_type())),
             ScalarExpression::List(_) => Ok(Some(ValueType::Array)),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
-            ScalarExpression::Coalesce(c) => c.try_resolve_value_type(pipeline),
-            ScalarExpression::Conditional(c) => c.try_resolve_value_type(pipeline),
-            ScalarExpression::Case(c) => c.try_resolve_value_type(pipeline),
-            ScalarExpression::Convert(c) => c.try_resolve_value_type(pipeline),
-            ScalarExpression::Length(l) => l.try_resolve_value_type(pipeline),
-            ScalarExpression::Slice(s) => s.try_resolve_value_type(pipeline),
-            ScalarExpression::Parse(p) => p.try_resolve_value_type(pipeline),
-            ScalarExpression::Temporal(t) => t.try_resolve_value_type(pipeline),
-            ScalarExpression::Text(r) => r.try_resolve_value_type(pipeline),
-            ScalarExpression::Math(m) => m.try_resolve_value_type(pipeline),
+            ScalarExpression::Coalesce(c) => c.try_resolve_value_type(scope),
+            ScalarExpression::Conditional(c) => c.try_resolve_value_type(scope),
+            ScalarExpression::Case(c) => c.try_resolve_value_type(scope),
+            ScalarExpression::Convert(c) => c.try_resolve_value_type(scope),
+            ScalarExpression::Length(l) => l.try_resolve_value_type(scope),
+            ScalarExpression::Slice(s) => s.try_resolve_value_type(scope),
+            ScalarExpression::Parse(p) => p.try_resolve_value_type(scope),
+            ScalarExpression::Temporal(t) => t.try_resolve_value_type(scope),
+            ScalarExpression::Text(r) => r.try_resolve_value_type(scope),
+            ScalarExpression::Math(m) => m.try_resolve_value_type(scope),
         }
     }
 
-    pub fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
         match self {
-            ScalarExpression::Source(_) => Ok(None),
-            ScalarExpression::Attached(_) => Ok(None),
-            ScalarExpression::Variable(_) => Ok(None),
-            ScalarExpression::Static(s) => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
-            ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(pipeline))),
-            ScalarExpression::List(l) => l.try_resolve_static(pipeline),
-            ScalarExpression::Logical(l) => l.try_resolve_static(pipeline),
-            ScalarExpression::Coalesce(c) => c.try_resolve_static(pipeline),
-            ScalarExpression::Conditional(c) => c.try_resolve_static(pipeline),
-            ScalarExpression::Case(c) => c.try_resolve_static(pipeline),
-            ScalarExpression::Convert(c) => c.try_resolve_static(pipeline),
-            ScalarExpression::Length(l) => l.try_resolve_static(pipeline),
-            ScalarExpression::Slice(s) => s.try_resolve_static(pipeline),
-            ScalarExpression::Parse(p) => p.try_resolve_static(pipeline),
-            ScalarExpression::Temporal(t) => t.try_resolve_static(pipeline),
-            ScalarExpression::Text(r) => r.try_resolve_static(pipeline),
-            ScalarExpression::Math(m) => m.try_resolve_static(pipeline),
+            ScalarExpression::Source(s) => {
+                s.accessor.try_fold(scope)?;
+                Ok(None)
+            }
+            ScalarExpression::Attached(a) => {
+                a.accessor.try_fold(scope)?;
+                Ok(None)
+            }
+            ScalarExpression::Variable(v) => {
+                v.accessor.try_fold(scope)?;
+                Ok(None)
+            }
+            ScalarExpression::Static(s) => match s.try_fold() {
+                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(v))),
+                None => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
+            },
+            ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(scope))),
+            ScalarExpression::List(l) => l.try_resolve_static(scope),
+            ScalarExpression::Logical(l) => match l.try_resolve_static(scope)? {
+                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        l.get_query_location().clone(),
+                        v,
+                    )),
+                ))),
+                None => Ok(None),
+            },
+            ScalarExpression::Coalesce(c) => c.try_resolve_static(scope),
+            ScalarExpression::Conditional(c) => c.try_resolve_static(scope),
+            ScalarExpression::Case(c) => c.try_resolve_static(scope),
+            ScalarExpression::Convert(c) => c.try_resolve_static(scope),
+            ScalarExpression::Length(l) => l.try_resolve_static(scope),
+            ScalarExpression::Slice(s) => s.try_resolve_static(scope),
+            ScalarExpression::Parse(p) => p.try_resolve_static(scope),
+            ScalarExpression::Temporal(t) => t.try_resolve_static(scope),
+            ScalarExpression::Text(r) => r.try_resolve_static(scope),
+            ScalarExpression::Math(m) => m.try_resolve_static(scope),
         }
     }
 }
@@ -340,26 +356,36 @@ impl ConstantScalarExpression {
         }
     }
 
-    pub(crate) fn resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> ResolvedStaticScalarExpression<'c>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> ResolvedStaticScalarExpression<'a> {
         match self {
             ConstantScalarExpression::Reference(r) => {
                 let constant_id = r.get_constant_id();
 
-                ResolvedStaticScalarExpression::Reference(
-                    pipeline.get_constant(constant_id).unwrap_or_else(|| {
-                        panic!("Constant for id '{constant_id}' was not found on pipeline")
-                    }),
-                )
+                let value = scope.get_constant(constant_id).unwrap_or_else(|| {
+                    panic!("Constant for id '{constant_id}' was not found on pipeline")
+                });
+
+                match value.try_fold() {
+                    Some(v) => {
+                        // Note: If we get a folded static we convert the
+                        // constant expression to a copy instead of a reference.
+                        // The effect this has is for small constants a copy is
+                        // made in the tree to bypass a lookup at runtime.
+                        *self = ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
+                            self.get_query_location().clone(),
+                            constant_id,
+                            v.clone(),
+                        ));
+                        ResolvedStaticScalarExpression::FoldedConstant(value)
+                    }
+                    None => ResolvedStaticScalarExpression::Reference(value),
+                }
             }
             ConstantScalarExpression::Copy(c) => {
-                ResolvedStaticScalarExpression::Reference(c.get_value())
+                ResolvedStaticScalarExpression::FoldedConstant(&c.value)
             }
         }
     }
@@ -481,11 +507,11 @@ impl CoalesceScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        for expression in &self.expressions {
-            match expression.try_resolve_value_type(pipeline)? {
+        for expression in &mut self.expressions {
+            match expression.try_resolve_value_type(scope)? {
                 Some(r) => {
                     if r != ValueType::Null {
                         return Ok(Some(r));
@@ -498,16 +524,12 @@ impl CoalesceScalarExpression {
         Ok(Some(ValueType::Null))
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        for expression in &self.expressions {
-            match expression.try_resolve_static(pipeline)? {
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
+        for expression in &mut self.expressions {
+            match expression.try_resolve_static(scope)? {
                 Some(r) => {
                     if r.get_value_type() != ValueType::Null {
                         return Ok(Some(r));
@@ -517,7 +539,7 @@ impl CoalesceScalarExpression {
             }
         }
 
-        Ok(Some(ResolvedStaticScalarExpression::Value(
+        Ok(Some(ResolvedStaticScalarExpression::Computed(
             StaticScalarExpression::Null(NullScalarExpression::new(self.query_location.clone())),
         )))
     }
@@ -569,15 +591,15 @@ impl ConditionalScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        if let Some(s) = self.try_resolve_static(pipeline)? {
+        if let Some(s) = self.try_resolve_static(scope)? {
             return Ok(Some(s.get_value_type()));
         }
 
-        let true_e = self.true_expression.try_resolve_static(pipeline)?;
-        let false_e = self.false_expression.try_resolve_static(pipeline)?;
+        let true_e = self.true_expression.try_resolve_static(scope)?;
+        let false_e = self.false_expression.try_resolve_static(scope)?;
 
         if true_e.is_some() && false_e.is_some() {
             if let (Some(true_expr), Some(false_expr)) = (true_e, false_e) {
@@ -593,41 +615,14 @@ impl ConditionalScalarExpression {
         Ok(None)
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        let condition = self.condition.try_resolve_static(pipeline)?;
-
-        if condition.is_none() {
-            return Ok(None);
-        }
-
-        match condition.unwrap().to_value() {
-            Value::Boolean(b) => {
-                if b.get_value() {
-                    let true_e = self.true_expression.try_resolve_static(pipeline)?;
-
-                    if true_e.is_none() {
-                        return Ok(None);
-                    }
-
-                    return Ok(Some(true_e.unwrap()));
-                }
-
-                let false_e = self.false_expression.try_resolve_static(pipeline)?;
-
-                if false_e.is_none() {
-                    return Ok(None);
-                }
-
-                Ok(Some(false_e.unwrap()))
-            }
-            _ => panic!("LogicalExpression did not return a bool value"),
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
+        match self.condition.try_resolve_static(scope)? {
+            None => Ok(None),
+            Some(true) => self.true_expression.try_resolve_static(scope),
+            Some(false) => self.false_expression.try_resolve_static(scope),
         }
     }
 }
@@ -671,18 +666,18 @@ impl CaseScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        if let Some(s) = self.try_resolve_static(pipeline)? {
+        if let Some(s) = self.try_resolve_static(scope)? {
             return Ok(Some(s.get_value_type()));
         }
 
         // Check if all expressions (including else) have the same static type
         let mut resolved_type: Option<ValueType> = None;
 
-        for (_, expr) in &self.expressions_with_conditions {
-            if let Some(expr_static) = expr.try_resolve_static(pipeline)? {
+        for (_, expr) in &mut self.expressions_with_conditions {
+            if let Some(expr_static) = expr.try_resolve_static(scope)? {
                 let expr_type = expr_static.get_value_type();
                 if let Some(existing_type) = &resolved_type {
                     if *existing_type != expr_type {
@@ -696,7 +691,7 @@ impl CaseScalarExpression {
             }
         }
 
-        if let Some(else_static) = self.else_expression.try_resolve_static(pipeline)? {
+        if let Some(else_static) = self.else_expression.try_resolve_static(scope)? {
             let else_type = else_static.get_value_type();
             if let Some(existing_type) = &resolved_type {
                 if *existing_type == else_type {
@@ -710,44 +705,25 @@ impl CaseScalarExpression {
         Ok(None)
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
         // Check each condition in order
-        for (condition, expression) in &self.expressions_with_conditions {
-            let condition_result = condition.try_resolve_static(pipeline)?;
-
-            if condition_result.is_none() {
-                return Ok(None);
-            }
-
-            match condition_result.unwrap().to_value() {
-                Value::Boolean(b) => {
-                    if b.get_value() {
+        for (condition, expression) in &mut self.expressions_with_conditions {
+            match condition.try_resolve_static(scope)? {
+                None => return Ok(None),
+                Some(b) => {
+                    if b {
                         // This condition is true, return its expression
-                        let expr_result = expression.try_resolve_static(pipeline)?;
-                        if expr_result.is_none() {
-                            return Ok(None);
-                        }
-                        return Ok(Some(expr_result.unwrap()));
+                        return expression.try_resolve_static(scope);
                     }
-                    // This condition is false, continue to next condition
                 }
-                _ => panic!("LogicalExpression did not return a bool value"),
             }
         }
 
         // No condition was true, return else expression
-        let else_result = self.else_expression.try_resolve_static(pipeline)?;
-        if else_result.is_none() {
-            return Ok(None);
-        }
-        Ok(Some(else_result.unwrap()))
+        self.else_expression.try_resolve_static(scope)
     }
 }
 
@@ -783,13 +759,10 @@ impl LengthScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        if let Some(v) = self
-            .get_inner_expression()
-            .try_resolve_value_type(pipeline)?
-        {
+        if let Some(v) = self.inner_expression.try_resolve_value_type(scope)? {
             Ok(Some(match v {
                 ValueType::String | ValueType::Array | ValueType::Map => ValueType::Integer,
                 _ => ValueType::Null,
@@ -799,16 +772,12 @@ impl LengthScalarExpression {
         }
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        if let Some(v) = self.get_inner_expression().try_resolve_static(pipeline)? {
-            Ok(Some(ResolvedStaticScalarExpression::Value(
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+        if let Some(v) = self.inner_expression.try_resolve_static(scope)? {
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
                 match v.to_value() {
                     Value::String(s) => {
                         StaticScalarExpression::Integer(IntegerScalarExpression::new(
@@ -865,29 +834,22 @@ impl ListScalarExpression {
         &self.value_expressions
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         let mut values = Vec::new();
 
-        for v in self.get_value_expressions() {
-            match v.try_resolve_static(pipeline)? {
-                Some(ResolvedStaticScalarExpression::Reference(v)) => {
-                    values.push(v.clone());
-                }
-                Some(ResolvedStaticScalarExpression::Value(v)) => {
+        for v in &mut self.value_expressions {
+            match v.try_resolve_static(scope)?.and_then(|v| v.try_fold()) {
+                Some(v) => {
                     values.push(v);
                 }
                 None => return Ok(None),
             }
         }
 
-        Ok(Some(ResolvedStaticScalarExpression::Value(
+        Ok(Some(ResolvedStaticScalarExpression::Computed(
             StaticScalarExpression::Array(ArrayScalarExpression::new(
                 self.query_location.clone(),
                 values,
@@ -942,14 +904,14 @@ impl SliceScalarExpression {
     }
 
     pub(crate) fn try_resolve_value_type(
-        &self,
-        pipeline: &PipelineExpression,
+        &mut self,
+        scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
-        if let Some(s) = self.try_resolve_static(pipeline)? {
+        if let Some(s) = self.try_resolve_static(scope)? {
             return Ok(Some(s.get_value_type()));
         }
 
-        if let Some(t) = self.get_source().try_resolve_value_type(pipeline)? {
+        if let Some(t) = self.source.try_resolve_value_type(scope)? {
             match t {
                 ValueType::Array => Ok(Some(ValueType::Array)),
                 ValueType::String => Ok(Some(ValueType::String)),
@@ -960,34 +922,47 @@ impl SliceScalarExpression {
         }
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        let range_start_inclusive = match self.get_range_start_inclusive() {
-            Some(s) => match s.try_resolve_static(pipeline)? {
-                Some(v) => self.validate_resolved_range_value("start", v.to_value())?,
-                None => return Ok(None),
-            },
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
+        let range_start_inclusive = match &mut self.range_start_inclusive {
+            Some(s) => {
+                let location = s.get_query_location().clone();
+
+                match s.try_resolve_static(scope)? {
+                    Some(v) => {
+                        Self::validate_resolved_range_value(&location, "start", v.to_value())?
+                    }
+                    None => return Ok(None),
+                }
+            }
             None => 0,
         };
 
-        let range_end_exclusive = match self.get_range_end_exclusive() {
-            Some(s) => match s.try_resolve_static(pipeline)? {
-                Some(v) => Some(self.validate_resolved_range_value("end", v.to_value())?),
-                None => return Ok(None),
-            },
+        let range_end_exclusive = match &mut self.range_end_exclusive {
+            Some(s) => {
+                let location = s.get_query_location().clone();
+
+                match s.try_resolve_static(scope)? {
+                    Some(v) => Some(Self::validate_resolved_range_value(
+                        &location,
+                        "end",
+                        v.to_value(),
+                    )?),
+                    None => return Ok(None),
+                }
+            }
             None => None,
         };
 
-        match self.get_source().try_resolve_static(pipeline)? {
+        let query_location = &self.query_location;
+
+        match self.source.try_resolve_static(scope)? {
             Some(s) => match s.to_value() {
                 Value::Array(a) => {
-                    self.validate_slice_range(
+                    Self::validate_slice_range(
+                        query_location,
                         "Array",
                         a.len(),
                         range_start_inclusive,
@@ -1001,7 +976,8 @@ impl SliceScalarExpression {
                     Ok(None)
                 }
                 Value::String(s) => {
-                    let range_end_exclusive = self.validate_slice_range(
+                    let range_end_exclusive = Self::validate_slice_range(
+                        query_location,
                         "String",
                         s.get_value().chars().count(),
                         range_start_inclusive,
@@ -1015,7 +991,7 @@ impl SliceScalarExpression {
                     if range_end_exclusive - range_start_inclusive > 32 {
                         Ok(None)
                     } else {
-                        Ok(Some(ResolvedStaticScalarExpression::Value(
+                        Ok(Some(ResolvedStaticScalarExpression::Computed(
                             StaticScalarExpression::String(StringScalarExpression::new(
                                 self.query_location.clone(),
                                 &Self::slice_string(
@@ -1027,7 +1003,7 @@ impl SliceScalarExpression {
                         )))
                     }
                 }
-                _ => Ok(Some(ResolvedStaticScalarExpression::Value(
+                _ => Ok(Some(ResolvedStaticScalarExpression::Computed(
                     StaticScalarExpression::Null(NullScalarExpression::new(
                         self.query_location.clone(),
                     )),
@@ -1038,7 +1014,7 @@ impl SliceScalarExpression {
     }
 
     pub fn validate_resolved_range_value(
-        &self,
+        query_location: &QueryLocation,
         name: &str,
         value: Value,
     ) -> Result<usize, ExpressionError> {
@@ -1046,21 +1022,21 @@ impl SliceScalarExpression {
             let v = i.get_value();
             if v < 0 {
                 return Err(ExpressionError::ValidationFailure(
-                    self.get_query_location().clone(),
+                    query_location.clone(),
                     format!("Range {name} for a slice expression cannot be a negative value"),
                 ));
             }
             Ok(v as usize)
         } else {
             Err(ExpressionError::TypeMismatch(
-                self.get_query_location().clone(),
+                query_location.clone(),
                 format!("Range {name} for a slice expression should be an integer type"),
             ))
         }
     }
 
     pub fn validate_slice_range(
-        &self,
+        query_location: &QueryLocation,
         name: &str,
         target_length: usize,
         range_start_inclusive: usize,
@@ -1070,7 +1046,7 @@ impl SliceScalarExpression {
 
         if range_start_inclusive > end {
             return Err(ExpressionError::ValidationFailure(
-                self.query_location.clone(),
+                query_location.clone(),
                 format!(
                     "{name} slice index starts at '{range_start_inclusive}' but ends at '{end}'"
                 ),
@@ -1078,7 +1054,7 @@ impl SliceScalarExpression {
         }
         if end > target_length {
             return Err(ExpressionError::ValidationFailure(
-                self.query_location.clone(),
+                query_location.clone(),
                 format!(
                     "{name} slice index ends at '{end}' which is beyond the length of '{target_length}'"
                 ),
@@ -1122,9 +1098,11 @@ mod tests {
 
     #[test]
     pub fn try_resolve_value_type() {
-        let run_test_success = |expression: ScalarExpression, expected: Option<ValueType>| {
+        let run_test_success = |mut expression: ScalarExpression, expected: Option<ValueType>| {
+            let pipeline: PipelineExpression = Default::default();
+
             let actual = expression
-                .try_resolve_value_type(&Default::default())
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
                 .unwrap();
 
             assert_eq!(expected, actual)
@@ -1229,14 +1207,18 @@ mod tests {
 
     #[test]
     pub fn test_coalesce_try_resolve_value_type() {
-        let run_test = |expression: CoalesceScalarExpression, expected: Option<Value>| {
-            let pipeline = Default::default();
+        let run_test = |mut expression: CoalesceScalarExpression, expected: Option<Value>| {
+            let pipeline: PipelineExpression = Default::default();
 
-            let actual_type = expression.try_resolve_value_type(&pipeline).unwrap();
+            let actual_type = expression
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
 
             assert_eq!(expected.as_ref().map(|v| v.get_value_type()), actual_type);
 
-            let actual_static = expression.try_resolve_static(&pipeline).unwrap();
+            let actual_static = expression
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
 
             assert_eq!(expected, actual_static.as_ref().map(|v| v.to_value()));
         };
@@ -1316,10 +1298,12 @@ mod tests {
 
     #[test]
     pub fn test_conditional_try_resolve_value_type() {
-        let run_test_success = |expression: ConditionalScalarExpression,
+        let run_test_success = |mut expression: ConditionalScalarExpression,
                                 expected: Option<ValueType>| {
+            let pipeline: PipelineExpression = Default::default();
+
             let actual = expression
-                .try_resolve_value_type(&Default::default())
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
                 .unwrap();
 
             assert_eq!(expected, actual)
@@ -1443,14 +1427,16 @@ mod tests {
     #[test]
     pub fn test_try_resolve_static() {
         let run_test_success =
-            |expression: ScalarExpression, expected: Option<StaticScalarExpression>| {
+            |mut expression: ScalarExpression, expected: Option<StaticScalarExpression>| {
                 let mut pipeline: PipelineExpression = Default::default();
 
                 pipeline.push_constant(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
                 ));
 
-                let actual = expression.try_resolve_static(&pipeline).unwrap();
+                let actual = expression
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
 
                 assert_eq!(expected, actual.map(|v| v.as_ref().clone()))
             };
@@ -1589,11 +1575,12 @@ mod tests {
     #[test]
     pub fn test_conditional_try_resolve_static() {
         let run_test_success =
-            |expression: ConditionalScalarExpression, expected: Option<StaticScalarExpression>| {
-                let pipeline = Default::default();
+            |mut expression: ConditionalScalarExpression,
+             expected: Option<StaticScalarExpression>| {
+                let pipeline: PipelineExpression = Default::default();
 
                 let actual = expression
-                    .try_resolve_static(&pipeline)
+                    .try_resolve_static(&pipeline.get_resolution_scope())
                     .unwrap()
                     .map(|v| v.as_ref().clone());
 
@@ -1704,14 +1691,18 @@ mod tests {
     pub fn test_length_scalar_expression_try_resolve() {
         fn run_test(input: Vec<(ScalarExpression, Option<ValueType>, Option<Value>)>) {
             for (inner, expected_type, expected_value) in input {
-                let e = LengthScalarExpression::new(QueryLocation::new_fake(), inner);
+                let mut e = LengthScalarExpression::new(QueryLocation::new_fake(), inner);
 
-                let pipeline = Default::default();
+                let pipeline: PipelineExpression = Default::default();
 
-                let actual_type = e.try_resolve_value_type(&pipeline).unwrap();
+                let actual_type = e
+                    .try_resolve_value_type(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_type, actual_type);
 
-                let actual_value = e.try_resolve_static(&pipeline).unwrap();
+                let actual_value = e
+                    .try_resolve_static(&pipeline.get_resolution_scope())
+                    .unwrap();
                 assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
             }
         }
@@ -1800,13 +1791,17 @@ mod tests {
 
     #[test]
     pub fn test_slice_scalar_expression_try_resolve() {
-        fn run_test_failure(input: SliceScalarExpression, expected: ExpressionError) {
-            let pipeline = Default::default();
+        fn run_test_failure(mut input: SliceScalarExpression, expected: ExpressionError) {
+            let pipeline: PipelineExpression = Default::default();
 
-            let actual_type = input.try_resolve_value_type(&pipeline).unwrap_err();
+            let actual_type = input
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap_err();
             validate_error(&expected, actual_type);
 
-            let actual_value = input.try_resolve_static(&pipeline).unwrap_err();
+            let actual_value = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
             validate_error(&expected, actual_value);
 
             fn validate_error(expected: &ExpressionError, actual: ExpressionError) {
@@ -1898,30 +1893,38 @@ mod tests {
     #[test]
     pub fn test_string_slice_scalar_expression_try_resolve() {
         fn run_test_success(
-            input: SliceScalarExpression,
+            mut input: SliceScalarExpression,
             expected_value_type: Option<ValueType>,
             expected_value: Option<Value>,
         ) {
-            let pipeline = Default::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            let actual_type = input.try_resolve_value_type(&pipeline).unwrap();
+            let actual_type = input
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
             assert_eq!(expected_value_type, actual_type);
 
-            let actual_value = input.try_resolve_static(&pipeline).unwrap();
+            let actual_value = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
             assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
         }
 
-        fn run_test_failure(input: SliceScalarExpression, expected_msg: &str) {
-            let pipeline = Default::default();
+        fn run_test_failure(mut input: SliceScalarExpression, expected_msg: &str) {
+            let pipeline: PipelineExpression = Default::default();
 
-            let actual_type = input.try_resolve_value_type(&pipeline).unwrap_err();
+            let actual_type = input
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap_err();
             if let ExpressionError::ValidationFailure(_, a) = actual_type {
                 assert_eq!(expected_msg, a);
             } else {
                 panic!("Unexpected ExpressionError")
             }
 
-            let actual_value = input.try_resolve_static(&pipeline).unwrap_err();
+            let actual_value = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
             if let ExpressionError::ValidationFailure(_, a) = actual_value {
                 assert_eq!(expected_msg, a);
             } else {
@@ -2081,30 +2084,38 @@ mod tests {
     #[test]
     pub fn test_array_slice_scalar_expression_try_resolve() {
         fn run_test_success(
-            input: SliceScalarExpression,
+            mut input: SliceScalarExpression,
             expected_value_type: Option<ValueType>,
             expected_value: Option<Value>,
         ) {
-            let pipeline = Default::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            let actual_type = input.try_resolve_value_type(&pipeline).unwrap();
+            let actual_type = input
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
             assert_eq!(expected_value_type, actual_type);
 
-            let actual_value = input.try_resolve_static(&pipeline).unwrap();
+            let actual_value = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
             assert_eq!(expected_value, actual_value.as_ref().map(|v| v.to_value()));
         }
 
-        fn run_test_failure(input: SliceScalarExpression, expected_msg: &str) {
-            let pipeline = Default::default();
+        fn run_test_failure(mut input: SliceScalarExpression, expected_msg: &str) {
+            let pipeline: PipelineExpression = Default::default();
 
-            let actual_type = input.try_resolve_value_type(&pipeline).unwrap_err();
+            let actual_type = input
+                .try_resolve_value_type(&pipeline.get_resolution_scope())
+                .unwrap_err();
             if let ExpressionError::ValidationFailure(_, a) = actual_type {
                 assert_eq!(expected_msg, a);
             } else {
                 panic!("Unexpected ExpressionError")
             }
 
-            let actual_value = input.try_resolve_static(&pipeline).unwrap_err();
+            let actual_value = input
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
             if let ExpressionError::ValidationFailure(_, a) = actual_value {
                 assert_eq!(expected_msg, a);
             } else {

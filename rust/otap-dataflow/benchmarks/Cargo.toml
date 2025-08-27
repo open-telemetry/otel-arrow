@@ -21,6 +21,7 @@ otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
 otap-df-otlp = { path="../crates/otlp"}
+otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
 otap-df-syslog-cef = { path="../crates/syslog_cef_receiver"}
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
