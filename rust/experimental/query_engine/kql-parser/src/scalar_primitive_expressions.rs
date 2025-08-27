@@ -339,13 +339,7 @@ pub(crate) fn parse_accessor_expression(
             Rule::scalar_expression => {
                 let mut scalar = parse_scalar_expression(pair, scope)?;
 
-                let value_type_result =
-                    scalar.try_resolve_value_type(&scope.get_pipeline().get_resolution_scope());
-                if let Err(e) = value_type_result {
-                    return Err(ParserError::from(&e));
-                }
-
-                let value_type = value_type_result.unwrap();
+                let value_type = scope.try_resolve_value_type(&mut scalar)?;
 
                 if negate_location.is_some() {
                     if let Some(t) = value_type

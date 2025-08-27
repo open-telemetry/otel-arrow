@@ -20,14 +20,14 @@ pub(crate) fn parse_array_concat_expression(
     for rule in array_concat_rules {
         let mut scalar = parse_scalar_expression(rule, scope)?;
 
-        if let Some(t) = scope.try_resolve_value_type(&mut scalar)? {
-            if t != ValueType::Array {
-                return Err(ParserError::QueryLanguageDiagnostic {
-                    location: scalar.get_query_location().clone(),
-                    diagnostic_id: "KS234",
-                    message: "The expression value must be a dynamic array".into(),
-                });
-            }
+        if let Some(t) = scope.try_resolve_value_type(&mut scalar)?
+            && t != ValueType::Array
+        {
+            return Err(ParserError::QueryLanguageDiagnostic {
+                location: scalar.get_query_location().clone(),
+                diagnostic_id: "KS234",
+                message: "The expression value must be a dynamic array".into(),
+            });
         }
 
         values.push(scalar);
