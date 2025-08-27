@@ -135,7 +135,7 @@ impl CombineScalarExpression {
         scope: &PipelineResolutionScope,
     ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         let (mut values, len) = match self.values_expression.try_resolve_static(scope)? {
-            Some(ResolvedStaticScalarExpression::Value(StaticScalarExpression::Array(v))) => {
+            Some(ResolvedStaticScalarExpression::Computed(StaticScalarExpression::Array(v))) => {
                 let value_expressions = v.get_values();
 
                 let mut len = 0;
@@ -154,7 +154,10 @@ impl CombineScalarExpression {
 
                 (values, len)
             }
-            Some(ResolvedStaticScalarExpression::Reference(StaticScalarExpression::Array(v))) => {
+            Some(ResolvedStaticScalarExpression::Reference(StaticScalarExpression::Array(v)))
+            | Some(ResolvedStaticScalarExpression::FoldedConstant(
+                StaticScalarExpression::Array(v),
+            )) => {
                 let value_expressions = v.get_values();
 
                 let mut len = 0;
@@ -192,7 +195,7 @@ impl CombineScalarExpression {
         };
 
         if values.len() == 1 {
-            Ok(Some(ResolvedStaticScalarExpression::Value(
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
                 StaticScalarExpression::String(values.drain(0..1).next().unwrap()),
             )))
         } else {
@@ -202,7 +205,7 @@ impl CombineScalarExpression {
                 s.push_str(v.get_value());
             }
 
-            Ok(Some(ResolvedStaticScalarExpression::Value(
+            Ok(Some(ResolvedStaticScalarExpression::Computed(
                 StaticScalarExpression::String(StringScalarExpression::new(
                     self.query_location.clone(),
                     s.as_str(),
@@ -250,21 +253,15 @@ impl ListScalarExpression {
         let mut values = Vec::new();
 
         for v in &mut self.value_expressions {
-            match v.try_resolve_static(scope)? {
-                Some(ResolvedStaticScalarExpression::Reference(_)) => {
-                    // Note: Don't copy referenced statics because if they were
-                    // foldable they would already have switched to values. For
-                    // example the reference could be to a large constant array.
-                    return Ok(None);
-                }
-                Some(ResolvedStaticScalarExpression::Value(v)) => {
+            match v.try_resolve_static(scope)?.and_then(|v| v.try_fold()) {
+                Some(v) => {
                     values.push(v);
                 }
                 None => return Ok(None),
             }
         }
 
-        Ok(Some(ResolvedStaticScalarExpression::Value(
+        Ok(Some(ResolvedStaticScalarExpression::Computed(
             StaticScalarExpression::Array(ArrayScalarExpression::new(
                 self.query_location.clone(),
                 values,
@@ -351,6 +348,69 @@ mod tests {
                     )),
                 ],
             ))),
+        );
+    }
+
+    #[test]
+    pub fn test_concat_collection_scalar_expression_try_resolve() {
+        let run_test = |values: ScalarExpression, expected_type: Option<ValueType>| {
+            let mut e = CombineScalarExpression::new(QueryLocation::new_fake(), values);
+
+            let pipeline: PipelineExpression = Default::default();
+
+            let actual_type = e
+                .try_resolve_array_value_type(&pipeline.get_resolution_scope())
+                .unwrap();
+            assert_eq!(expected_type, actual_type);
+        };
+
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            Some(ValueType::Array),
+        );
+
+        run_test(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Array(ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![],
+                    )),
+                    StaticScalarExpression::Array(ArrayScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![],
+                    )),
+                ],
+            ))),
+            Some(ValueType::Array),
+        );
+
+        run_test(
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(QueryLocation::new_fake(), vec![]),
+            )),
+            Some(ValueType::Array),
+        );
+
+        run_test(
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Static(StaticScalarExpression::Array(
+                            ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
+                        )),
+                        ScalarExpression::Collection(CollectionScalarExpression::List(
+                            ListScalarExpression::new(QueryLocation::new_fake(), vec![]),
+                        )),
+                    ],
+                ),
+            )),
+            None,
         );
     }
 }

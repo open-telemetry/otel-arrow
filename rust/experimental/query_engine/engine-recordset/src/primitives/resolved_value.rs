@@ -506,6 +506,7 @@ impl ArrayValue for Sequence<'_> {
 
         let mut start = range.get_start_range_inclusize().unwrap_or(0);
         let mut end = range.get_end_range_exclusive().unwrap_or(len);
+        let mut index = 0;
 
         if end > len {
             panic!(
@@ -517,15 +518,24 @@ impl ArrayValue for Sequence<'_> {
         for v in &self.values {
             let len = usize::min(end, v.len());
             if len == 0 {
-                break;
+                continue;
             }
             if start < len {
                 let range = (start..len).into();
-                if !v.get_item_range(range, item_callback) {
+                if !v.get_item_range(
+                    range,
+                    &mut IndexValueClosureCallback::new(|_, v| {
+                        let r = item_callback.next(index, v);
+                        index += 1;
+                        r
+                    }),
+                ) {
                     return false;
                 }
+                start = 0;
+            } else {
+                start -= len;
             }
-            start += len;
             end -= len;
         }
 
@@ -874,13 +884,18 @@ mod tests {
     #[test]
     fn test_sequence_get_item_range() {
         fn run_test(v: &Sequence, range: ArrayRange, expected: &[Value]) {
-            v.get_item_range(
+            let mut items = 0;
+
+            assert!(v.get_item_range(
                 range,
                 &mut IndexValueClosureCallback::new(|i, v| {
                     assert_eq!(expected[i], v);
+                    items += 1;
                     true
                 }),
-            );
+            ));
+
+            assert_eq!(expected.len(), items);
         }
 
         let sequence = Sequence::new(vec![

@@ -475,4 +475,173 @@ mod tests {
             )),
         );
     }
+
+    #[test]
+    pub fn text_execute_concat_text_scalar_expression() {
+        fn run_test_success(values: ScalarExpression, expected_value: &str) {
+            let expression = ScalarExpression::Text(TextScalarExpression::Concat(
+                CombineScalarExpression::new(QueryLocation::new_fake(), values),
+            ));
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value().to_string().as_str());
+        }
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                ],
+            ))),
+            "2hello world",
+        );
+
+        run_test_success(
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(QueryLocation::new_fake(), vec![]),
+            )),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Math(MathScalarExpression::Add(
+                            BinaryMathematicalScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                            ),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                        )),
+                    ],
+                ),
+            )),
+            "2hello world",
+        );
+    }
+
+    #[test]
+    pub fn text_execute_join_text_scalar_expression() {
+        fn run_test_success(
+            separator: ScalarExpression,
+            values: ScalarExpression,
+            expected_value: &str,
+        ) {
+            let expression = ScalarExpression::Text(TextScalarExpression::Join(
+                JoinTextScalarExpression::new(QueryLocation::new_fake(), separator, values),
+            ));
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value().to_string().as_str());
+        }
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "|",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "|",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                ],
+            ))),
+            "2|hello world",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "|",
+            ))),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(QueryLocation::new_fake(), vec![]),
+            )),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                ", ",
+            ))),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Math(MathScalarExpression::Add(
+                            BinaryMathematicalScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                            ),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "world"),
+                        )),
+                    ],
+                ),
+            )),
+            "2, hello, world",
+        );
+    }
 }
