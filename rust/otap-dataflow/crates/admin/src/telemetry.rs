@@ -339,14 +339,8 @@ fn aggregate_metric_groups(
 
         // Accumulate metrics
         for (field, value) in metrics_iter {
-            match metrics_map.entry(field.name.to_string()) {
-                Entry::Occupied(mut e) => {
-                    let _ = e.insert(e.get().saturating_add(value));
-                }
-                Entry::Vacant(e) => {
-                    let _ = e.insert(value);
-                }
-            }
+            let entry = metrics_map.entry(field.name.to_string()).or_insert(0);
+            *entry = entry.saturating_add(value);
         }
     };
 
