@@ -3,11 +3,10 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
-  syslog:
-  # TODO: Add udp too
-    tcp:
-      listen_address: "0.0.0.0:514"
+  syslog/udp:
     protocol: rfc3164
+    udp:
+      listen_address: "0.0.0.0:514"
 
 processors:
   batch:
@@ -36,6 +35,6 @@ service:
       receivers: [otlp]
       exporters: [debug]
     logs:
-      receivers: [otlp, syslog]
+      receivers: [otlp, syslog/udp]
       processors: [batch]
       exporters: [otlp]
