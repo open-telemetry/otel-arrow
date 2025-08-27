@@ -11,10 +11,16 @@ use fluke_hpack::Encoder;
 use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
+use otel_arrow_rust::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_rust::proto::opentelemetry::common::v1::KeyValue;
+use otel_arrow_rust::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use otel_arrow_rust::schema::consts::{self, metadata};
+use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 
 pub struct SimpleDataGenOptions {
     pub id_offset: u16,
@@ -103,6 +109,24 @@ impl Default for SimpleMetricsDataGenOptions {
             with_exp_histogram_dp_exemplars_attrs: true,
         }
     }
+}
+
+pub fn create_single_logs_pdata_with_attrs(attributes: Vec<KeyValue>) -> OtapPdata {
+    let log_req_1 = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    attributes,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let mut bytes = vec![];
+    log_req_1.encode(&mut bytes).unwrap();
+    OtapPdata::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes))
 }
 
 pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) -> BatchArrowRecords {
