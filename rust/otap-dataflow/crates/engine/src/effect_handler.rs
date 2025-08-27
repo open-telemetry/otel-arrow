@@ -165,7 +165,9 @@ impl EffectHandlerCore {
             })
             .await
             // Drop the SendError
-            .map_err(|e| Error::PipelineControlMsgError(e.to_string()))?;
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })?;
 
         Ok(TimerCancelHandle {
             node_id: self.node_id.index,
@@ -189,7 +191,9 @@ impl EffectHandlerCore {
                 duration,
             })
             .await
-            .map_err(|e| Error::PipelineControlMsgError(e.to_string()))?;
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })?;
 
         Ok(TelemetryTimerCancelHandle {
             node_id: self.node_id.clone(),

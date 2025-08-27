@@ -21,7 +21,7 @@ use std::borrow::Cow;
 pub enum TypedError<T> {
     /// A wrapper for the channel errors.
     #[error("A channel error occurred: {0}")]
-    ChannelSendError(#[from] SendError<T>),
+    ChannelSendError(SendError<T>),
 
     /// A wrapper for the pipeline control message send errors.
     #[error("A pipeline control channel error occurred: {0}")]
@@ -46,8 +46,12 @@ impl<T: Sized> From<TypedError<T>> for Error {
     /// This drops the SendError<T> field yielding an untyped error.
     fn from(value: TypedError<T>) -> Self {
         match value {
-            TypedError::ChannelSendError(e) => Error::ChannelSendError(e.to_string()),
-            TypedError::PipelineControlMsgError(e) => Error::PipelineControlMsgError(e.to_string()),
+            TypedError::ChannelSendError(e) => Error::ChannelSendError {
+                error: e.to_string(),
+            },
+            TypedError::PipelineControlMsgError(e) => Error::PipelineControlMsgError {
+                error: e.to_string(),
+            },
             TypedError::NodeControlMsgSendError { node, error } => Error::NodeControlMsgSendError {
                 node,
                 error: error.to_string(),
@@ -69,19 +73,25 @@ pub enum Error {
     ChannelRecvError(#[from] otap_df_channel::error::RecvError),
 
     /// A wrapper for the channel errors.
-    #[error("A data channel error occurred: {0}")]
-    ChannelSendError(String),
+    #[error("A data channel error occurred: {error}")]
+    ChannelSendError {
+        /// The reason (e.g., channel full)
+        error: String,
+    },
 
     /// A wrapper for the pipeline control message send errors.
-    #[error("A control channel error occurred: {0}")]
-    PipelineControlMsgError(String),
+    #[error("A control channel error occurred: {error}")]
+    PipelineControlMsgError {
+        /// The reason (e.g., channel closed)
+        error: String,
+    },
 
     /// A wrapper for the node control message send errors.
     #[error("A node control message send error occurred in node {node}: {error}")]
     NodeControlMsgSendError {
         /// The node to which a message could not be sent.
         node: NodeId,
-        /// The string form of the message
+        /// The reason (e.g., channel closed)
         error: String,
     },
 
