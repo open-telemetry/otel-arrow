@@ -209,12 +209,7 @@ pub(crate) fn parse_logical_expression(
                     if let ScalarExpression::Logical(l) = scalar {
                         Ok(*l)
                     } else {
-                        let value_type_result = scalar
-                            .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope());
-                        if let Err(e) = value_type_result {
-                            return Err(ParserError::from(&e));
-                        }
-                        if let Some(t) = value_type_result.unwrap()
+                        if let Some(t) = scope.try_resolve_value_type(&mut scalar)?
                             && t != ValueType::Boolean
                         {
                             return Err(ParserError::QueryLanguageDiagnostic {
