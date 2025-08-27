@@ -6,18 +6,22 @@ use crate::*;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrayScalarExpression {
     query_location: QueryLocation,
-    value: Vec<StaticScalarExpression>,
+    values: Vec<StaticScalarExpression>,
 }
 
 impl ArrayScalarExpression {
     pub fn new(
         query_location: QueryLocation,
-        value: Vec<StaticScalarExpression>,
+        values: Vec<StaticScalarExpression>,
     ) -> ArrayScalarExpression {
         Self {
             query_location,
-            value,
+            values,
         }
+    }
+
+    pub fn get_values(&self) -> &[StaticScalarExpression] {
+        &self.values
     }
 }
 
@@ -33,19 +37,19 @@ impl Expression for ArrayScalarExpression {
 
 impl ArrayValue for ArrayScalarExpression {
     fn is_empty(&self) -> bool {
-        self.value.is_empty()
+        self.values.is_empty()
     }
 
     fn len(&self) -> usize {
-        self.value.len()
+        self.values.len()
     }
 
     fn get(&self, index: usize) -> Option<&(dyn AsValue)> {
-        self.value.get(index).map(|v| v as &dyn AsValue)
+        self.values.get(index).map(|v| v as &dyn AsValue)
     }
 
     fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
-        Ok(self.value.get(index).map(|v| v as &dyn AsStaticValue))
+        Ok(self.values.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
     fn get_item_range(
@@ -53,7 +57,7 @@ impl ArrayValue for ArrayScalarExpression {
         range: ArrayRange,
         item_callback: &mut dyn IndexValueCallback,
     ) -> bool {
-        for (index, value) in range.get_slice(&self.value).iter().enumerate() {
+        for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !item_callback.next(index, value.to_value()) {
                 return false;
             }

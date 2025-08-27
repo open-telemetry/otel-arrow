@@ -156,11 +156,20 @@ strlen_expression = { "strlen" ~ "(" ~ scalar_expression ~ ")" }
 replace_string_expression = { "replace_string" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ "," ~ scalar_expression ~ ")" }
 substring_expression = { "substring" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)? ~ ")" }
 parse_json_expression = { "parse_json" ~ "(" ~ scalar_expression ~ ")" }
+strcat_expression = { "strcat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
+strcat_delim_expression = { "strcat_delim" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
 string_expressions = _{
     strlen_expression
     | replace_string_expression
     | substring_expression
     | parse_json_expression
+    | strcat_expression
+    | strcat_delim_expression
+}
+
+array_concat_expression = { "array_concat" ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")" }
+array_expressions = _{
+    array_concat_expression
 }
 
 negate_expression = { "-" ~ scalar_expression }
@@ -191,6 +200,7 @@ scalar_expression = {
     | conditional_expressions
     | conversion_expressions
     | string_expressions
+    | array_expressions
     | boolean_expression
     | double_literal
     | integer_literal
