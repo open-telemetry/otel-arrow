@@ -19,11 +19,7 @@ pub(crate) fn parse_strlen_expression(
     let inner_expression_rule_location = to_query_location(&inner_expression_rule);
     let mut inner_expression = parse_scalar_expression(inner_expression_rule, scope)?;
 
-    let inner_expression_value_type_result = inner_expression
-        .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
-        .map_err(|e| ParserError::from(&e))?;
-
-    if let Some(v) = inner_expression_value_type_result
+    if let Some(v) = scope.try_resolve_value_type(&mut inner_expression)?
         && v != ValueType::String
     {
         return Err(ParserError::QueryLanguageDiagnostic {
@@ -65,11 +61,7 @@ pub(crate) fn parse_replace_string_expression(
 
         let mut scalar = parse_scalar_expression(rule, scope)?;
 
-        let scalar_value_type_result = scalar
-            .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
-            .map_err(|e| ParserError::from(&e))?;
-
-        if let Some(v) = scalar_value_type_result
+        if let Some(v) = scope.try_resolve_value_type(&mut scalar)?
             && v != ValueType::String
         {
             return Err(ParserError::QueryLanguageDiagnostic {
@@ -96,11 +88,7 @@ pub(crate) fn parse_substring_expression(
     let starting_index_rule_location = to_query_location(&starting_index_rule);
     let mut starting_index_scalar = parse_scalar_expression(starting_index_rule, scope)?;
 
-    let starting_index_value_type_result = starting_index_scalar
-        .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
-        .map_err(|e| ParserError::from(&e))?;
-
-    if let Some(v) = starting_index_value_type_result
+    if let Some(v) = scope.try_resolve_value_type(&mut starting_index_scalar)?
         && v != ValueType::Integer
     {
         return Err(ParserError::QueryLanguageDiagnostic {
@@ -114,11 +102,7 @@ pub(crate) fn parse_substring_expression(
         let length_scalar_rule_location = to_query_location(&length_rule);
         let mut length_scalar = parse_scalar_expression(length_rule, scope)?;
 
-        let length_scalar_value_type_result = length_scalar
-            .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
-            .map_err(|e| ParserError::from(&e))?;
-
-        if let Some(v) = length_scalar_value_type_result
+        if let Some(v) = scope.try_resolve_value_type(&mut length_scalar)?
             && v != ValueType::Integer
         {
             return Err(ParserError::QueryLanguageDiagnostic {
@@ -153,9 +137,7 @@ pub(crate) fn parse_parse_json_expression(
     let inner_rule_location = to_query_location(&inner_rule);
     let mut inner_scalar = parse_scalar_expression(inner_rule, scope)?;
 
-    if let Some(v) = inner_scalar
-        .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
-        .map_err(|e| ParserError::from(&e))?
+    if let Some(v) = scope.try_resolve_value_type(&mut inner_scalar)?
         && v != ValueType::String
     {
         return Err(ParserError::QueryLanguageDiagnostic {
