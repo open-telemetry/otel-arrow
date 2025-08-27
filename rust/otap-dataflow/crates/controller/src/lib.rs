@@ -135,6 +135,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         drop(metrics_reporter);
 
         // Wait for all pipeline threads to finish
+        // ToDo We should collect all the errors and wait for all threads to finish instead of bailing out on the first error.
         for (thread_name, thread_id, core_id, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
