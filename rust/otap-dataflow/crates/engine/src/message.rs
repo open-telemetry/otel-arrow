@@ -119,6 +119,14 @@ impl<T> Sender<T> {
             Sender::Shared(sender) => sender.send(msg).await,
         }
     }
+
+    /// Attempts to send a message without awaiting.
+    pub fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+        match self {
+            Sender::Local(sender) => sender.try_send(msg),
+            Sender::Shared(sender) => sender.try_send(msg),
+        }
+    }
 }
 
 /// A generic channel Receiver supporting both local and shared semantic (i.e. !Send and Send).

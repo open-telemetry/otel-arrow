@@ -35,6 +35,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -65,9 +66,12 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            ParquetExporter::from_config(&node_config.config)?,
+            ParquetExporter::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             exporter_config,
@@ -83,7 +87,10 @@ impl ParquetExporter {
     }
 
     /// construct a new instance from the configuration object
-    pub fn from_config(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &serde_json::Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: config::Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -500,10 +507,10 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
-                target_rows_per_file: Some(5000),
+                target_rows_per_file: Some(50),
                 ..Default::default()
             }),
         });
@@ -550,7 +557,7 @@ mod test {
             let otap_batch: OtapPdata = OtapArrowBytes::ArrowLogs(
                 fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                     // a pretty big batch
-                    num_rows: 4998,
+                    num_rows: 48,
                     ..Default::default()
                 }),
             )
@@ -598,7 +605,7 @@ mod test {
             // shutdown faster than it could possibly flush
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Duration::from_nanos(1),
+                    deadline: Duration::from_millis(1),
                     reason: "shutting down".into(),
                 })
                 .await;

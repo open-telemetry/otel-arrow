@@ -15,6 +15,8 @@ use crate::{
     runtime_pipeline::{PipeNode, RuntimePipeline},
     shared::message::{SharedReceiver, SharedSender},
 };
+use context::PipelineContext;
+pub use linkme::distributed_slice;
 use otap_df_config::{
     PortName,
     node::{DispatchStrategy, NodeUserConfig},
@@ -32,7 +34,9 @@ pub mod message;
 pub mod processor;
 pub mod receiver;
 
+mod attributes;
 pub mod config;
+pub mod context;
 pub mod control;
 mod effect_handler;
 pub mod local;
@@ -41,8 +45,6 @@ pub mod pipeline_ctrl;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod testing;
-
-pub use linkme::distributed_slice;
 
 /// Trait for factory types that expose a name.
 ///
@@ -59,6 +61,7 @@ pub struct ReceiverFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new receiver instance.
     pub create: fn(
+        pipeline_ctx: PipelineContext,
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
@@ -87,6 +90,7 @@ pub struct ProcessorFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new processor instance.
     pub create: fn(
+        pipeline: PipelineContext,
         node: NodeId,
         config: &Value,
         processor_config: &ProcessorConfig,
@@ -115,6 +119,7 @@ pub struct ExporterFactory<PData> {
     pub name: &'static str,
     /// A function that creates a new exporter instance.
     pub create: fn(
+        pipeline: PipelineContext,
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
@@ -244,6 +249,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     ///   analysis.
     pub fn build(
         self: &PipelineFactory<PData>,
+        pipeline_ctx: PipelineContext,
         config: PipelineConfig,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -257,8 +263,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
+            let pipeline_ctx = pipeline_ctx.with_node_context(name.clone(), node_config.kind);
+
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => self.create_receiver(
+                    pipeline_ctx,
                     &mut receiver_names,
                     &mut nodes,
                     &mut receivers,
@@ -266,6 +275,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     node_config.clone(),
                 )?,
                 otap_df_config::node::NodeKind::Processor => self.create_processor(
+                    pipeline_ctx,
                     &mut processor_names,
                     &mut nodes,
                     &mut processors,
@@ -273,6 +283,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     node_config.clone(),
                 )?,
                 otap_df_config::node::NodeKind::Exporter => self.create_exporter(
+                    pipeline_ctx,
                     &mut exporter_names,
                     &mut nodes,
                     &mut exporters,
@@ -438,6 +449,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a receiver node and adds it to the list of runtime nodes.
     fn create_receiver(
         &self,
+        pipeline_ctx: PipelineContext,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
         receivers: &mut Vec<ReceiverWrapper<PData>>,
@@ -463,7 +475,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         }
 
         receivers.push(
-            create(node_id, node_config, &runtime_config)
+            create(pipeline_ctx, node_id, node_config, &runtime_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         Ok(())
@@ -472,6 +484,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a processor node and adds it to the list of runtime nodes.
     fn create_processor(
         &self,
+        pipeline_ctx: PipelineContext,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
         processors: &mut Vec<ProcessorWrapper<PData>>,
@@ -496,8 +509,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::ProcessorAlreadyExists { processor: node_id });
         }
         processors.push(
-            create(node_id, &node_config.config, &processor_config)
-                .map_err(|e| Error::ConfigError(Box::new(e)))?,
+            create(
+                pipeline_ctx,
+                node_id,
+                &node_config.config,
+                &processor_config,
+            )
+            .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
 
         Ok(())
@@ -506,6 +524,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates an exporter node and adds it to the list of runtime nodes.
     fn create_exporter(
         &self,
+        pipeline_ctx: PipelineContext,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
         exporters: &mut Vec<ExporterWrapper<PData>>,
@@ -531,7 +550,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::ExporterAlreadyExists { exporter: node_id });
         }
         exporters.push(
-            create(node_id, node_config, &exporter_config)
+            create(pipeline_ctx, node_id, node_config, &exporter_config)
                 .map_err(|e| Error::ConfigError(Box::new(e)))?,
         );
         Ok(())

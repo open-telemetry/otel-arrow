@@ -301,6 +301,12 @@ impl<T: EnumerableValueSource<T>> ArrayValueStorage<T> {
     pub fn get_values_mut(&mut self) -> &mut Vec<T> {
         &mut self.values
     }
+
+    pub fn drain(&mut self, range: ArrayRange) -> std::vec::Drain<'_, T> {
+        let start = range.get_start_range_inclusize().unwrap_or(0);
+        let end = range.get_end_range_exclusive().unwrap_or(self.values.len());
+        self.values.drain(start..end)
+    }
 }
 
 impl<T: EnumerableValueSource<T>> ArrayValue for ArrayValueStorage<T> {

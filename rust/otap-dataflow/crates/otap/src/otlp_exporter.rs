@@ -9,6 +9,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -16,8 +17,12 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_otlp::compression::CompressionMethod;
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -34,6 +39,7 @@ pub struct Config {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
+    metrics: MetricSet<OtlpExporterMetrics>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -41,9 +47,12 @@ pub struct OTLPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            OTLPExporter::from_config(&node_config.config)?,
+            OTLPExporter::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             exporter_config,
@@ -53,21 +62,59 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 
 impl OTLPExporter {
     /// create a new instance of the `[OTLPExporter]` from json config value
-    pub fn from_config(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &serde_json::Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
+        let metrics = pipeline_ctx.register_metrics::<OtlpExporterMetrics>();
+
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
 
-        Ok(Self { config })
+        Ok(Self { config, metrics })
     }
+}
+
+/// OTLP exporter metrics moved into the node module.
+#[metric_set(name = "otlp.exporter.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct OtlpExporterMetrics {
+    /// Number of OTLP logs request received
+    #[metric(unit = "{req}")]
+    pub export_logs_request_received: Counter<u64>,
+    /// Number of OTLP logs request successful
+    #[metric(unit = "{req}")]
+    pub export_logs_request_success: Counter<u64>,
+    /// Number of OTLP logs request failed
+    #[metric(unit = "{req}")]
+    pub export_logs_request_failure: Counter<u64>,
+    /// Number of OTLP metrics request received
+    #[metric(unit = "{req}")]
+    pub export_metrics_request_received: Counter<u64>,
+    /// Number of OTLP metrics request successful
+    #[metric(unit = "{req}")]
+    pub export_metrics_request_success: Counter<u64>,
+    /// Number of OTLP metrics request failed
+    #[metric(unit = "{req}")]
+    pub export_metrics_request_failure: Counter<u64>,
+    /// Number of OTLP traces request received
+    #[metric(unit = "{req}")]
+    pub export_traces_request_received: Counter<u64>,
+    /// Number of OTLP traces request successful
+    #[metric(unit = "{req}")]
+    pub export_traces_request_success: Counter<u64>,
+    /// Number of OTLP traces request failed
+    #[metric(unit = "{req}")]
+    pub export_traces_request_failure: Counter<u64>,
 }
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for OTLPExporter {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
@@ -77,6 +124,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 self.config.grpc_endpoint
             ))
             .await;
+
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
 
         // start a grpc client and connect to the server
         let mut metrics_client = MetricsServiceClient::connect(self.config.grpc_endpoint.clone())
@@ -115,32 +166,46 @@ impl Exporter<OtapPdata> for OTLPExporter {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    _ = metrics_reporter.report(&mut self.metrics);
+                }
                 Message::PData(data) => {
                     let service_req: OtlpProtoBytes = data.try_into()?;
                     _ = match service_req {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                            self.metrics.export_logs_request_received.inc();
                             _ = logs_client.export(bytes).await.map_err(|e| {
+                                self.metrics.export_logs_request_failure.inc();
                                 Error::ExporterError {
                                     exporter: effect_handler.exporter_id(),
                                     error: e.to_string(),
                                 }
-                            })?
+                            })?;
+                            self.metrics.export_logs_request_success.inc();
                         }
                         OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                            self.metrics.export_metrics_request_received.inc();
                             _ = metrics_client.export(bytes).await.map_err(|e| {
+                                self.metrics.export_metrics_request_failure.inc();
                                 Error::ExporterError {
                                     exporter: effect_handler.exporter_id(),
                                     error: e.to_string(),
                                 }
-                            })?
+                            })?;
+                            self.metrics.export_metrics_request_success.inc();
                         }
                         OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                            self.metrics.export_traces_request_received.inc();
                             _ = trace_client.export(bytes).await.map_err(|e| {
+                                self.metrics.export_traces_request_failure.inc();
                                 Error::ExporterError {
                                     exporter: effect_handler.exporter_id(),
                                     error: e.to_string(),
                                 }
-                            })?
+                            })?;
+                            self.metrics.export_traces_request_success.inc();
                         }
                     };
                 }
@@ -159,6 +224,7 @@ mod tests {
     use super::*;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::{
@@ -172,6 +238,7 @@ mod tests {
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_server::MetricsServiceServer},
         trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     };
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
@@ -294,12 +361,20 @@ mod tests {
             .expect("Server failed to start");
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
                     grpc_endpoint,
                     compression_method: None,
                 },
+                metrics: pipeline_ctx.register_metrics::<OtlpExporterMetrics>(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,

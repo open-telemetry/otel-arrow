@@ -39,7 +39,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use otap_df_otap::retry_processor::{RetryProcessor, RetryConfig};
+//! use otap_df_otap::retry_processor::{RetryConfig, RetryProcessor};
 //!
 //! let config = RetryConfig {
 //!     max_retries: 3,
@@ -57,6 +57,7 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
@@ -139,6 +140,7 @@ pub struct RetryProcessor {
 
 /// Factory function to create a SignalTypeRouter processor
 pub fn create_retry_processor(
+    _pipeline_ctx: PipelineContext,
     node: NodeId,
     config: &Value,
     processor_config: &ProcessorConfig,
@@ -336,6 +338,10 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.cleanup_expired_messages();
                     Ok(())
                 }
+                NodeControlMsg::CollectTelemetry { .. } => {
+                    // Retry processor has no telemetry collection to perform here.
+                    Ok(())
+                }
                 NodeControlMsg::Config { config } => {
                     if let Ok(new_config) = serde_json::from_value::<RetryConfig>(config) {
                         self.config = new_config;
@@ -370,8 +376,10 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_config::experimental::SignalType;
     use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use serde_json::json;
     use tokio::time::{Duration, sleep};
 
@@ -443,7 +451,15 @@ mod tests {
             "cleanup_interval_secs": 30
         });
         let processor_config = ProcessorConfig::new("test_retry");
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
         let result = create_retry_processor(
+            pipeline_ctx,
             test_node(processor_config.name.clone()),
             &config,
             &processor_config,

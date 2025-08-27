@@ -8,8 +8,9 @@ use crate::error::{Error, ErrorT};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
-
 use otap_df_config::pipeline::PipelineConfig;
+use otap_df_telemetry::reporter::MetricsReporter;
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
@@ -80,7 +81,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
-    pub fn run_forever(self) -> Result<(), Error> {
+    pub fn run_forever(self, metrics_reporter: MetricsReporter) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let rt = Builder::new_current_thread()
@@ -124,18 +125,24 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
-            let manager = PipelineCtrlMsgManager::new(pipeline_ctrl_msg_rx, control_senders);
+            let manager = PipelineCtrlMsgManager::new(
+                pipeline_ctrl_msg_rx,
+                control_senders,
+                metrics_reporter,
+            );
             manager.run().await
         }));
 
         rt.block_on(async {
             local_tasks
                 .run_until(async {
+                    let mut task_results = Vec::new();
                     // Process each future as they complete and handle errors
                     while let Some(result) = futures.next().await {
                         match result {
-                            Ok(Ok(())) => {
-                                // Task completed successfully, continue
+                            Ok(Ok(res)) => {
+                                // Task completed successfully, collect its result
+                                task_results.push(res);
                             }
                             Ok(Err(e)) => {
                                 // A task returned an error
@@ -151,7 +158,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                             }
                         }
                     }
-                    Ok(())
+                    Ok(task_results)
                 })
                 .await
         })

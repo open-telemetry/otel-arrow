@@ -172,6 +172,30 @@ impl EffectHandlerCore {
             pipeline_ctrl_msg_sender,
         })
     }
+
+    /// Starts a cancellable periodic telemetry collection timer that emits CollectTelemetry on the control channel.
+    /// Returns a handle that can be used to cancel the telemetry timer.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle, Error> {
+        let pipeline_ctrl_msg_sender = self
+            .pipeline_ctrl_msg_sender
+            .clone()
+            .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
+        pipeline_ctrl_msg_sender
+            .send(PipelineControlMsg::StartTelemetryTimer {
+                node_id: self.node_id.index,
+                duration,
+            })
+            .await
+            .map_err(|_| Error::PipelineControlMsgError)?;
+
+        Ok(TelemetryTimerCancelHandle {
+            node_id: self.node_id.clone(),
+            pipeline_ctrl_msg_sender,
+        })
+    }
 }
 
 /// Handle to cancel a running timer.
@@ -186,6 +210,23 @@ impl TimerCancelHandle {
         self.pipeline_ctrl_msg_sender
             .send(PipelineControlMsg::CancelTimer {
                 node_id: self.node_id,
+            })
+            .await
+    }
+}
+
+/// Handle to cancel a running telemetry timer.
+pub struct TelemetryTimerCancelHandle {
+    node_id: NodeId,
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+}
+
+impl TelemetryTimerCancelHandle {
+    /// Cancels the telemetry collection timer.
+    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg>> {
+        self.pipeline_ctrl_msg_sender
+            .send(PipelineControlMsg::CancelTelemetryTimer {
+                node_id: self.node_id.index,
             })
             .await
     }

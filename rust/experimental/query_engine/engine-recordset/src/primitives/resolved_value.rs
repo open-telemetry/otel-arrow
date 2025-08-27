@@ -31,6 +31,9 @@ pub enum ResolvedValue<'a> {
 
     /// A list of resolved values
     List(List<'a>),
+
+    /// A sequence of arrays
+    Sequence(Sequence<'a>),
 }
 
 impl<'a> ResolvedValue<'a> {
@@ -42,6 +45,9 @@ impl<'a> ResolvedValue<'a> {
             }
             ResolvedValue::List(l) => {
                 return l.copy_if_borrowed_from_target(target);
+            }
+            ResolvedValue::Sequence(s) => {
+                return s.copy_if_borrowed_from_target(target);
             }
             _ => None,
         };
@@ -102,6 +108,7 @@ impl<'a> ResolvedValue<'a> {
                 Slice::String(s) => Ok(ResolvedStringValue::Slice(s.into())),
             },
             ResolvedValue::List(_) => panic!(),
+            ResolvedValue::Sequence(_) => panic!(),
         }
     }
 
@@ -139,6 +146,7 @@ impl<'a> ResolvedValue<'a> {
             }
             ResolvedValue::Slice(_) => panic!(),
             ResolvedValue::List(_) => panic!(),
+            ResolvedValue::Sequence(_) => panic!(),
         }
     }
 
@@ -156,14 +164,18 @@ impl<'a> ResolvedValue<'a> {
                 }
             }
             ResolvedValue::Borrowed(s, b) => {
-                match Ref::filter_map(b, |v| {
+                match Ref::filter_map(Ref::clone(&b), |v| {
                     if let StaticValue::Array(s) = v.to_static_value() {
                         Some(s)
                     } else {
                         None
                     }
                 }) {
-                    Ok(v) => Ok(ResolvedArrayValue::Borrowed(s, v)),
+                    Ok(v) => Ok(ResolvedArrayValue::Borrowed(BorrowedArrayValue {
+                        source: s,
+                        orig: b,
+                        value: v,
+                    })),
                     Err(_) => panic!(),
                 }
             }
@@ -179,6 +191,7 @@ impl<'a> ResolvedValue<'a> {
                 Slice::String(_) => panic!(),
             },
             ResolvedValue::List(l) => Ok(ResolvedArrayValue::List(l)),
+            ResolvedValue::Sequence(s) => Ok(ResolvedArrayValue::Sequence(s)),
         }
     }
 }
@@ -194,6 +207,7 @@ impl From<ResolvedValue<'_>> for OwnedValue {
                 Slice::String(s) => Value::String(s).into(),
             },
             ResolvedValue::List(l) => Value::Array(&l).into(),
+            ResolvedValue::Sequence(s) => Value::Array(&s).into(),
         }
     }
 }
@@ -209,6 +223,7 @@ impl AsValue for ResolvedValue<'_> {
                 Slice::String(_) => ValueType::String,
             },
             ResolvedValue::List(_) => ValueType::Array,
+            ResolvedValue::Sequence(_) => ValueType::Array,
         }
     }
 
@@ -222,6 +237,7 @@ impl AsValue for ResolvedValue<'_> {
                 Slice::String(s) => Value::String(s),
             },
             ResolvedValue::List(l) => Value::Array(l),
+            ResolvedValue::Sequence(s) => Value::Array(s),
         }
     }
 }
@@ -423,6 +439,111 @@ impl StringValue for StringSlice<'_> {
 }
 
 #[derive(Debug)]
+pub struct Sequence<'a> {
+    values: Vec<ResolvedArrayValue<'a>>,
+}
+
+impl<'a> Sequence<'a> {
+    pub fn new(values: Vec<ResolvedArrayValue<'a>>) -> Sequence<'a> {
+        Self { values }
+    }
+
+    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+        let mut copied = false;
+
+        for value in &mut self.values {
+            if value.copy_if_borrowed_from_target(target) {
+                copied = true;
+            }
+        }
+
+        copied
+    }
+}
+
+impl ArrayValue for Sequence<'_> {
+    fn is_empty(&self) -> bool {
+        for v in &self.values {
+            if !v.is_empty() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn len(&self) -> usize {
+        let mut len = 0;
+        for v in &self.values {
+            len += v.len();
+        }
+
+        len
+    }
+
+    fn get(&self, mut index: usize) -> Option<&(dyn AsValue)> {
+        for v in &self.values {
+            let end = v.len();
+            if index < end {
+                return v.get(index);
+            }
+            index -= end;
+        }
+
+        None
+    }
+
+    fn get_static(&self, _: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Err("Sequence does not support static access".to_string())
+    }
+
+    fn get_item_range(
+        &self,
+        range: ArrayRange,
+        item_callback: &mut dyn IndexValueCallback,
+    ) -> bool {
+        let len = self.len();
+
+        let mut start = range.get_start_range_inclusize().unwrap_or(0);
+        let mut end = range.get_end_range_exclusive().unwrap_or(len);
+        let mut index = 0;
+
+        if end > len {
+            panic!(
+                "range end index {} out of range for slice of length {}",
+                end, len
+            )
+        }
+
+        for v in &self.values {
+            let len = usize::min(end, v.len());
+            if len == 0 {
+                continue;
+            }
+            if start < len {
+                let range = (start..len).into();
+                if !v.get_item_range(
+                    range,
+                    &mut IndexValueClosureCallback::new(|_, v| {
+                        let r = item_callback.next(index, v);
+                        index += 1;
+                        r
+                    }),
+                ) {
+                    return false;
+                }
+                start = 0;
+            } else {
+                start -= len;
+            }
+            end -= len;
+        }
+
+        true
+    }
+}
+
+#[derive(Debug)]
 pub enum ResolvedStringValue<'a> {
     /// A value resolved from the expression tree or an attached record
     Value(&'a dyn StringValue),
@@ -548,7 +669,7 @@ pub enum ResolvedArrayValue<'a> {
     Value(&'a dyn ArrayValue),
 
     /// A value borrowed from the record being modified by the engine
-    Borrowed(BorrowSource, Ref<'a, dyn ArrayValue + 'static>),
+    Borrowed(BorrowedArrayValue<'a>),
 
     /// A value computed by the engine as the result of a dynamic expression
     Computed(ArrayValueStorage<OwnedValue>),
@@ -558,17 +679,30 @@ pub enum ResolvedArrayValue<'a> {
 
     /// A list of resolved values
     List(List<'a>),
+
+    /// A sequence of arrays
+    Sequence(Sequence<'a>),
 }
 
-impl ResolvedArrayValue<'_> {
+#[derive(Debug)]
+pub struct BorrowedArrayValue<'a> {
+    source: BorrowSource,
+    orig: Ref<'a, dyn AsStaticValue + 'static>,
+    value: Ref<'a, dyn ArrayValue + 'static>,
+}
+
+impl<'a> ResolvedArrayValue<'a> {
     pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
         let v = match self {
-            ResolvedArrayValue::Borrowed(b, v) => Some((b, v)),
+            ResolvedArrayValue::Borrowed(b) => Some((&b.source, &b.value)),
             ResolvedArrayValue::Slice(s) => {
                 return s.inner_value.copy_if_borrowed_from_target(target);
             }
             ResolvedArrayValue::List(l) => {
                 return l.copy_if_borrowed_from_target(target);
+            }
+            ResolvedArrayValue::Sequence(s) => {
+                return s.copy_if_borrowed_from_target(target);
             }
             _ => None,
         };
@@ -592,13 +726,111 @@ impl ResolvedArrayValue<'_> {
         false
     }
 
+    pub fn take<FConvert, FTake, R>(
+        self,
+        range: ArrayRange,
+        convert: FConvert,
+        mut take: FTake,
+    ) -> Result<(), ExpressionError>
+    where
+        FConvert: Fn(usize, ResolvedValue<'a>) -> Result<R, ExpressionError>,
+        FTake: FnMut(R),
+    {
+        let start = range.get_start_range_inclusize().unwrap_or(0);
+
+        match self {
+            ResolvedArrayValue::Value(a) => {
+                let end = range.get_end_range_exclusive().unwrap_or(a.len());
+                for i in start..end {
+                    let v = (convert)(
+                        i,
+                        ResolvedValue::Value(
+                            a.get(i).expect("Array index was not found").to_value(),
+                        ),
+                    )?;
+                    (take)(v);
+                }
+                Ok(())
+            }
+            ResolvedArrayValue::Borrowed(b) => {
+                let a = &b.value;
+                let end = range.get_end_range_exclusive().unwrap_or(a.len());
+                for i in start..end {
+                    match Ref::filter_map(Ref::clone(a), |a| {
+                        a.get_static(i)
+                            .expect("Borrowed array does not implement get_static")
+                    }) {
+                        Ok(v) => {
+                            let v = (convert)(i, ResolvedValue::Borrowed(b.source.clone(), v))?;
+                            (take)(v);
+                        }
+                        Err(_) => panic!("Array index was not found"),
+                    }
+                }
+                Ok(())
+            }
+            ResolvedArrayValue::Computed(mut a) => {
+                let end = range.get_end_range_exclusive().unwrap_or(a.len());
+                for (i, v) in a.drain((start..end).into()).enumerate() {
+                    let v = (convert)(i, ResolvedValue::Computed(v))?;
+                    (take)(v);
+                }
+                Ok(())
+            }
+            ResolvedArrayValue::Slice(s) => {
+                let start = s.range_start_inclusive + start;
+                let end =
+                    s.range_start_inclusive + range.get_end_range_exclusive().unwrap_or(s.len());
+                s.inner_value.take((start..end).into(), convert, take)?;
+                Ok(())
+            }
+            ResolvedArrayValue::List(mut l) => {
+                let end = range.get_end_range_exclusive().unwrap_or(l.len());
+                for (i, v) in l.values.drain(start..end).enumerate() {
+                    (take)((convert)(i, v)?);
+                }
+                Ok(())
+            }
+            ResolvedArrayValue::Sequence(mut s) => {
+                let end = range.get_end_range_exclusive().unwrap_or(s.len());
+                for (i, v) in s.values.drain(start..end).enumerate() {
+                    let r = match v {
+                        ResolvedArrayValue::Value(a) => ResolvedValue::Value(Value::Array(a)),
+                        ResolvedArrayValue::Borrowed(b) => {
+                            ResolvedValue::Borrowed(b.source, b.orig)
+                        }
+                        ResolvedArrayValue::Computed(a) => {
+                            ResolvedValue::Computed(OwnedValue::Array(a))
+                        }
+                        ResolvedArrayValue::Slice(a) => ResolvedValue::Slice(Slice::Array(*a)),
+                        ResolvedArrayValue::List(l) => ResolvedValue::List(l),
+                        ResolvedArrayValue::Sequence(s) => ResolvedValue::Sequence(s),
+                    };
+
+                    (take)((convert)(i, r)?);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn to_vec<F, R>(self, range: ArrayRange, convert: F) -> Result<Vec<R>, ExpressionError>
+    where
+        F: Fn(usize, ResolvedValue<'a>) -> Result<R, ExpressionError>,
+    {
+        let mut values = Vec::with_capacity(self.len());
+        self.take(range, convert, &mut |i| values.push(i))?;
+        Ok(values)
+    }
+
     fn get_array(&self) -> &dyn ArrayValue {
         match self {
             ResolvedArrayValue::Value(v) => *v,
-            ResolvedArrayValue::Borrowed(_, b) => &**b,
+            ResolvedArrayValue::Borrowed(b) => &*b.value,
             ResolvedArrayValue::Computed(c) => c,
             ResolvedArrayValue::Slice(s) => &**s,
             ResolvedArrayValue::List(l) => l,
+            ResolvedArrayValue::Sequence(s) => s,
         }
     }
 }
@@ -642,5 +874,131 @@ impl AsValue for ResolvedArrayValue<'_> {
 impl Display for ResolvedArrayValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.to_value().fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sequence_get_item_range() {
+        fn run_test(v: &Sequence, range: ArrayRange, expected: &[Value]) {
+            let mut items = 0;
+
+            assert!(v.get_item_range(
+                range,
+                &mut IndexValueClosureCallback::new(|i, v| {
+                    assert_eq!(expected[i], v);
+                    items += 1;
+                    true
+                }),
+            ));
+
+            assert_eq!(expected.len(), items);
+        }
+
+        let sequence = Sequence::new(vec![
+            ResolvedArrayValue::Computed(ArrayValueStorage::new(vec![
+                OwnedValue::Integer(IntegerValueStorage::new(0)),
+                OwnedValue::Integer(IntegerValueStorage::new(1)),
+                OwnedValue::Integer(IntegerValueStorage::new(2)),
+            ])),
+            ResolvedArrayValue::Computed(ArrayValueStorage::new(vec![
+                OwnedValue::Integer(IntegerValueStorage::new(3)),
+                OwnedValue::Integer(IntegerValueStorage::new(4)),
+                OwnedValue::Integer(IntegerValueStorage::new(5)),
+            ])),
+        ]);
+
+        run_test(&sequence, (0..0).into(), &[]);
+        run_test(
+            &sequence,
+            (0..1).into(),
+            &[OwnedValue::Integer(IntegerValueStorage::new(0)).to_value()],
+        );
+        run_test(
+            &sequence,
+            (0..=2).into(),
+            &[
+                OwnedValue::Integer(IntegerValueStorage::new(0)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(1)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(2)).to_value(),
+            ],
+        );
+        run_test(
+            &sequence,
+            (1..=1).into(),
+            &[OwnedValue::Integer(IntegerValueStorage::new(1)).to_value()],
+        );
+        run_test(
+            &sequence,
+            (2..=3).into(),
+            &[
+                OwnedValue::Integer(IntegerValueStorage::new(2)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(3)).to_value(),
+            ],
+        );
+        run_test(
+            &sequence,
+            (2..).into(),
+            &[
+                OwnedValue::Integer(IntegerValueStorage::new(2)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(3)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(4)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(5)).to_value(),
+            ],
+        );
+        run_test(
+            &sequence,
+            (3..=5).into(),
+            &[
+                OwnedValue::Integer(IntegerValueStorage::new(3)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(4)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(5)).to_value(),
+            ],
+        );
+        run_test(
+            &sequence,
+            (..).into(),
+            &[
+                OwnedValue::Integer(IntegerValueStorage::new(0)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(1)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(2)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(3)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(4)).to_value(),
+                OwnedValue::Integer(IntegerValueStorage::new(5)).to_value(),
+            ],
+        );
+        run_test(&sequence, (10..).into(), &[]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_sequence_get_item_range_panic() {
+        fn run_test(v: &Sequence, range: ArrayRange, expected: &[Value]) {
+            v.get_item_range(
+                range,
+                &mut IndexValueClosureCallback::new(|i, v| {
+                    assert_eq!(expected[i], v);
+                    true
+                }),
+            );
+        }
+
+        let sequence = Sequence::new(vec![
+            ResolvedArrayValue::Computed(ArrayValueStorage::new(vec![
+                OwnedValue::Integer(IntegerValueStorage::new(0)),
+                OwnedValue::Integer(IntegerValueStorage::new(1)),
+                OwnedValue::Integer(IntegerValueStorage::new(2)),
+            ])),
+            ResolvedArrayValue::Computed(ArrayValueStorage::new(vec![
+                OwnedValue::Integer(IntegerValueStorage::new(3)),
+                OwnedValue::Integer(IntegerValueStorage::new(4)),
+                OwnedValue::Integer(IntegerValueStorage::new(5)),
+            ])),
+        ]);
+
+        run_test(&sequence, (..10).into(), &[]);
     }
 }

@@ -36,6 +36,8 @@ prost = "0.13"
 replace_with = "0.1.8"
 tonic = "0.13"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
+itertools = "0.14.0"
+smallvec = { version = "1.15.1", features = ["union"] }
 
 [[bench]]
 name = "attribute_transform"
@@ -58,6 +60,8 @@ rand = "0.9"
 nix = { version = "0.30.0", features = ["process", "signal"] }
 tokio-stream = "0.1.17"
 criterion = { version = "0.7" }
+arrow-schema = "56.0.0"
+pretty_assertions = "1.4.1"
 
 [build-dependencies]
 tonic-build = "0.13"

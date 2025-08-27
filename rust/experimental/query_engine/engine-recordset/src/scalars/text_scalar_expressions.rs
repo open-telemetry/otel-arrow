@@ -14,6 +14,119 @@ where
     'b: 'c,
 {
     match text_scalar_expression {
+        TextScalarExpression::Concat(c) => {
+            match execute_scalar_expression(execution_context, c.get_values_expression())?
+                .try_resolve_array()
+            {
+                Ok(a) => {
+                    let mut s = String::new();
+
+                    a.take((..).into(), |_, r| Ok(r), &mut |r: ResolvedValue<'_>| {
+                        match r.to_value() {
+                            Value::String(v) => s.push_str(v.get_value()),
+                            v => {
+                                let mut result = None;
+                                v.convert_to_string(&mut |v| {
+                                    s.push_str(v);
+                                    result = Some(true)
+                                });
+                                result.expect(
+                                    "Encountered a Value which does not correctly implement convert_to_string",
+                                );
+                            }
+                        }
+                    })?;
+
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        text_scalar_expression,
+                        || format!("Evaluated as: '{s}'"),
+                    );
+
+                    Ok(ResolvedValue::Computed(OwnedValue::String(
+                        StringValueStorage::new(s),
+                    )))
+                }
+                Err(v) => Err(ExpressionError::TypeMismatch(
+                    c.get_values_expression().get_query_location().clone(),
+                    format!(
+                        "Value of '{:?}' type returned by scalar expression was not an array",
+                        v.get_value_type()
+                    ),
+                )),
+            }
+        }
+        TextScalarExpression::Join(j) => {
+            let mut separator_as_string = String::new();
+            let separator_scalar =
+                execute_scalar_expression(execution_context, j.get_separator_expression())?;
+            let separator = match separator_scalar.to_value() {
+                Value::String(s) => s.get_value(),
+                v => {
+                    let mut result = None;
+                    v.convert_to_string(&mut |s| {
+                        separator_as_string.push_str(s);
+                        result = Some(true);
+                    });
+                    result.expect(
+                        "Encountered a Value which does not correctly implement convert_to_string",
+                    );
+                    separator_as_string.as_str()
+                }
+            };
+
+            match execute_scalar_expression(execution_context, j.get_values_expression())?
+                .try_resolve_array()
+            {
+                Ok(a) => {
+                    let mut s = String::new();
+                    let mut len = 0;
+
+                    a.take((..).into(), |_, r| Ok(r), &mut |r: ResolvedValue<'_>| {
+                        match r.to_value() {
+                            Value::String(v) => {
+                                len += 1;
+                                if len > 1 {
+                                    s.push_str(separator);
+                                }
+                                s.push_str(v.get_value())
+                            },
+                            v => {
+                                let mut result = None;
+                                v.convert_to_string(&mut |v| {
+                                    len += 1;
+                                    if len > 1 {
+                                        s.push_str(separator);
+                                    }
+                                    s.push_str(v);
+                                    result = Some(true)
+                                });
+                                result.expect(
+                                    "Encountered a Value which does not correctly implement convert_to_string",
+                                );
+                            }
+                        }
+                    })?;
+
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        text_scalar_expression,
+                        || format!("Evaluated as: '{s}'"),
+                    );
+
+                    Ok(ResolvedValue::Computed(OwnedValue::String(
+                        StringValueStorage::new(s),
+                    )))
+                }
+                Err(v) => Err(ExpressionError::TypeMismatch(
+                    j.get_values_expression().get_query_location().clone(),
+                    format!(
+                        "Value of '{:?}' type returned by scalar expression was not an array",
+                        v.get_value_type()
+                    ),
+                )),
+            }
+        }
         TextScalarExpression::Replace(r) => {
             let haystack_value =
                 execute_scalar_expression(execution_context, r.get_haystack_expression())?;
@@ -360,6 +473,175 @@ mod tests {
                 QueryLocation::new_fake(),
                 "dog dog dog", // All variants of "cat" replaced
             )),
+        );
+    }
+
+    #[test]
+    pub fn text_execute_concat_text_scalar_expression() {
+        fn run_test_success(values: ScalarExpression, expected_value: &str) {
+            let expression = ScalarExpression::Text(TextScalarExpression::Concat(
+                CombineScalarExpression::new(QueryLocation::new_fake(), values),
+            ));
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value().to_string().as_str());
+        }
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                ],
+            ))),
+            "2hello world",
+        );
+
+        run_test_success(
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(QueryLocation::new_fake(), vec![]),
+            )),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Math(MathScalarExpression::Add(
+                            BinaryMathematicalScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                            ),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                        )),
+                    ],
+                ),
+            )),
+            "2hello world",
+        );
+    }
+
+    #[test]
+    pub fn text_execute_join_text_scalar_expression() {
+        fn run_test_success(
+            separator: ScalarExpression,
+            values: ScalarExpression,
+            expected_value: &str,
+        ) {
+            let expression = ScalarExpression::Text(TextScalarExpression::Join(
+                JoinTextScalarExpression::new(QueryLocation::new_fake(), separator, values),
+            ));
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value().to_string().as_str());
+        }
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "|",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "|",
+            ))),
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                ],
+            ))),
+            "2|hello world",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "|",
+            ))),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(QueryLocation::new_fake(), vec![]),
+            )),
+            "",
+        );
+
+        run_test_success(
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                ", ",
+            ))),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    vec![
+                        ScalarExpression::Math(MathScalarExpression::Add(
+                            BinaryMathematicalScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                                )),
+                            ),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "world"),
+                        )),
+                    ],
+                ),
+            )),
+            "2, hello, world",
         );
     }
 }
