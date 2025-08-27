@@ -390,7 +390,7 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
         if !metrics.is_empty() {
             out.push(MetricSetWithMetadata {
                 name: g.name.clone(),
-                brief: "".to_string(),
+                brief: String::new(),
                 attributes: g.attributes.clone(),
                 metrics,
             });
@@ -539,7 +539,7 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWi
 
             metric_sets.push(MetricSetWithMetadata {
                 name: descriptor.name.to_owned(),
-                brief: "".to_string(), // MetricsDescriptor doesn't have description field
+                brief: String::new(), // MetricsDescriptor doesn't have description field
                 attributes: attrs_map,
                 metrics,
             });
@@ -780,19 +780,46 @@ fn format_prometheus_text(
 }
 
 fn escape_lp_measurement(s: &str) -> String {
-    s.replace(',', "\\,").replace(' ', "\\ ")
+    // Fast path: no escaping needed
+    if !s.as_bytes().iter().any(|&b| b == b',' || b == b' ') {
+        return s.to_string();
+    }
+    // Single-pass escape
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            ',' | ' ' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn escape_lp_tag_key(s: &str) -> String {
-    s.replace(',', "\\,")
-        .replace(' ', "\\ ")
-        .replace('=', "\\=")
+    // Fast path: no escaping needed
+    if !s.as_bytes().iter().any(|&b| b == b',' || b == b' ' || b == b'=') {
+        return s.to_string();
+    }
+    // Single-pass escape
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            ',' | ' ' | '=' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn escape_lp_tag_value(s: &str) -> String {
-    s.replace(',', "\\,")
-        .replace(' ', "\\ ")
-        .replace('=', "\\=")
+    // Same escaping rules as tag key for spaces/commas/equals
+    escape_lp_tag_key(s)
 }
 
 fn escape_lp_field_key(s: &str) -> String {
@@ -1170,5 +1197,29 @@ mod tests {
             }
         }
         assert!(prod_us_found && dev_us_found && dev_eu_found);
+    }
+
+    #[test]
+    fn test_escape_lp_measurement() {
+        assert_eq!(escape_lp_measurement("cpu, name=avg"), "cpu\\,\\ name=avg");
+        assert_eq!(escape_lp_measurement("plain"), "plain");
+    }
+
+    #[test]
+    fn test_escape_lp_tag_key() {
+        assert_eq!(
+            escape_lp_tag_key("host name,role=primary"),
+            "host\\ name\\,role\\=primary"
+        );
+        assert_eq!(escape_lp_tag_key("plain"), "plain");
+    }
+
+    #[test]
+    fn test_escape_lp_tag_value() {
+        assert_eq!(
+            escape_lp_tag_value("us west,zone=1"),
+            "us\\ west\\,zone\\=1"
+        );
+        assert_eq!(escape_lp_tag_value("plain"), "plain");
     }
 }
