@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1756323042270,
+  "lastUpdate": 1756329508563,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "drewrelmas@gmail.com",
-            "name": "Drew Relmas",
-            "username": "drewrelmas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "f7e3858de91f51eb7cefba442b46135d1dcd3b26",
-          "message": "Document recent branch protection changes (#605)\n\n- Document merge queue change on `main` branch from earlier this month\n- Document `**/**` branch change to uncheck require status checks\n  - Enabled Copilot Autofix to create #604 \n  - Does not affect `main` branch rule, that is still protected",
-          "timestamp": "2025-06-16T18:00:47Z",
-          "tree_id": "e5eed7a9b7a1a0359cd31e08b9ee878140c90fcd",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/f7e3858de91f51eb7cefba442b46135d1dcd3b26"
-        },
-        "date": 1750097425907,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 465500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 13965000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 13965000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 2.49,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 2.84,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 148.29,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 173.86,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 434500,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 13035000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 13035000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 2.32,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 2.8,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 112.89,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 136.57,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 198.62,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "232bf368a14f0b15f2a224004dea5e41fae08148",
+          "message": "Script around Github markdown wrapping display differences for Release process (#1019)\n\nWhen using the `Prepare Release` and `Push Release` actions the\nextracted Changelog content displays incorrectly. The repo lint enforces\nline length in markdown files, leading to extra newlines in raw content:\n\n```md\n- Upgrade to v0.133.0 / v1.37.0 of collector dependencies.\n  [#890](https://github.com/open-telemetry/otel-arrow/pull/890),\n  [#1010](https://github.com/open-telemetry/otel-arrow/pull/1010)\n  - Notable upgrade, this also bumps minimum Go version from `1.23.0` to `1.24`,\n    see [collector\n    #13627](https://github.com/open-telemetry/opentelemetry-collector/pull/13627)\n    and [collector-contrib\n    #41968](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/41968).\n```\n\nWhen viewing the [Changelog\nitself](https://github.com/open-telemetry/otel-arrow/blob/main/CHANGELOG.md)\nGitHub renders this in proper way. However, when we extract it to embed\nin a PR body (in `Prepare Release`) or in a Release object (in `Push\nRelease`) the rendering is not the same:\n\n<img width=\"1078\" height=\"539\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/9eb14da1-4754-4a2c-962b-7bde9267bcba\"\n/>\n\nThe script now normalizes whitespace in the extracted content to display\nproperly in the specific use cases we have:\n\n<img width=\"2045\" height=\"417\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/ca07579e-ca69-4ef3-8954-902a6f0c2852\"\n/>\n\nSmall improvement but saves 2 seconds of manual tweaking during each\nrelease 😄",
+          "timestamp": "2025-08-27T21:09:47Z",
+          "tree_id": "941287fa7b127f977c3ccf3da6fb44351bc5565f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/232bf368a14f0b15f2a224004dea5e41fae08148"
+        },
+        "date": 1756329506525,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 739333.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22180000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22180000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.8,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.86,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 162.79,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 191.48,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 736833.3333333334,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 22105000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 22105000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.71,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.7,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 129.64,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 153.96,
             "unit": "MiB"
           }
         ]
