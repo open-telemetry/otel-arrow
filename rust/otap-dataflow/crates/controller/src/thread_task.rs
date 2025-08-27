@@ -13,7 +13,6 @@ use tokio_util::sync::CancellationToken;
 ///
 /// - `shutdown()` requests cancellation via the token (idempotent, best-effort).
 /// - `shutdown_and_join()` requests shutdown and then waits for completion, returning controller::Error on failure.
-/// - `join_raw()` waits for the thread to finish and returns the raw nested result.
 pub struct ThreadLocalTaskHandle<T, E> {
     cancel_token: CancellationToken,
     join_handle: Option<thread::JoinHandle<Result<T, E>>>,
@@ -22,7 +21,7 @@ pub struct ThreadLocalTaskHandle<T, E> {
 
 impl<T, E> ThreadLocalTaskHandle<T, E> {
     /// Request a graceful shutdown by cancelling the token.
-    pub fn shutdown(&mut self) {
+    fn shutdown(&mut self) {
         self.cancel_token.cancel();
     }
 
@@ -43,9 +42,42 @@ impl<T, E> ThreadLocalTaskHandle<T, E> {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(e.into()),
             Err(panic) => Err(crate::error::Error::ThreadJoinPanic {
-                thread_name: self.name,
+                thread_name: self.name.clone(),
                 panic_message: format!("{panic:?}"),
             }),
+        }
+    }
+}
+
+impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
+    #[allow(clippy::print_stderr)]
+    fn drop(&mut self) {
+        // Best-effort, idempotent shutdown on drop.
+        self.cancel_token.cancel();
+
+        // If we still own the join handle, attempt to join the thread.
+        if let Some(handle) = self.join_handle.take() {
+            match handle.join() {
+                Ok(Ok(_)) => {
+                    // Task completed successfully; nothing to report.
+                }
+                Ok(Err(_)) => {
+                    // Task returned an error; can't propagate it from Drop, so just log.
+                    // ToDo Replace this eprintln once we have selected a logging solution
+                    eprintln!(
+                        "Thread '{}' finished with an error during drop; error suppressed",
+                        self.name
+                    );
+                }
+                Err(panic) => {
+                    // Don't panic in Drop; report and suppress.
+                    // ToDo Replace this eprintln once we have selected a logging solution
+                    eprintln!(
+                        "Thread '{}' panicked during drop: {panic:?}; panic suppressed",
+                        self.name
+                    );
+                }
+            }
         }
     }
 }

@@ -800,7 +800,11 @@ fn escape_lp_measurement(s: &str) -> String {
 
 fn escape_lp_tag_key(s: &str) -> String {
     // Fast path: no escaping needed
-    if !s.as_bytes().iter().any(|&b| b == b',' || b == b' ' || b == b'=') {
+    if !s
+        .as_bytes()
+        .iter()
+        .any(|&b| b == b',' || b == b' ' || b == b'=')
+    {
         return s.to_string();
     }
     // Single-pass escape
