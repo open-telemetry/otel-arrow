@@ -32,6 +32,14 @@ impl<T> LocalSender<T> {
             LocalSender::MpmcSender(sender) => sender.send_async(msg).await,
         }
     }
+
+    /// Attempts to send a message without awaiting.
+    pub fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+        match self {
+            LocalSender::MpscSender(sender) => sender.send(msg),
+            LocalSender::MpmcSender(sender) => sender.send(msg),
+        }
+    }
 }
 
 /// A generic local channel Receiver.

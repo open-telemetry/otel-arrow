@@ -15,6 +15,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
@@ -764,7 +765,10 @@ pub fn create_otlp_batch_processor(
 #[distributed_slice(OTLP_PROCESSOR_FACTORIES)]
 pub static OTLP_BATCH_PROCESSOR: ProcessorFactory<OTLPData> = ProcessorFactory {
     name: _OTLP_BATCH_PROCESSOR_URN,
-    create: |node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+    create: |_pipeline_ctx: PipelineContext,
+             node: NodeId,
+             config: &Value,
+             proc_cfg: &ProcessorConfig| {
         create_otlp_batch_processor(node, config, proc_cfg)
     },
 };

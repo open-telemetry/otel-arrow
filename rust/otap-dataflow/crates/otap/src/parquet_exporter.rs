@@ -35,6 +35,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -65,9 +66,12 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            ParquetExporter::from_config(&node_config.config)?,
+            ParquetExporter::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             exporter_config,
@@ -83,7 +87,10 @@ impl ParquetExporter {
     }
 
     /// construct a new instance from the configuration object
-    pub fn from_config(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &serde_json::Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: config::Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),

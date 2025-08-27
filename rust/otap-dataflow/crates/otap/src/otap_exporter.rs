@@ -16,6 +16,7 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
@@ -55,9 +56,12 @@ pub struct OTAPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            OTAPExporter::from_config(&node_config.config)?,
+            OTAPExporter::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             exporter_config,
@@ -78,7 +82,10 @@ impl OTAPExporter {
     }
 
     /// Creates a new OTAPExporter from a configuration object
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        _pipeline_handle: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -222,6 +229,7 @@ mod tests {
     use crate::pdata::OtapPdata;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::{
@@ -229,6 +237,7 @@ mod tests {
         test_node,
     };
     use otap_df_otlp::compression::CompressionMethod;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
     use otel_arrow_rust::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
@@ -404,7 +413,14 @@ mod tests {
             "compression_method": "Gzip"
         });
 
-        let exporter = OTAPExporter::from_config(&json_config).expect("Config should be valid");
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let exporter =
+            OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
 
         assert_eq!(exporter.config.grpc_endpoint, "http://localhost:4317");
         match exporter.config.compression_method {
@@ -422,7 +438,13 @@ mod tests {
             "compression_method": "Gzip"
         });
 
-        let result = OTAPExporter::from_config(&json_config);
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let result = OTAPExporter::from_config(pipeline_ctx, &json_config);
 
         assert!(result.is_err());
         if let Err(err) = result {

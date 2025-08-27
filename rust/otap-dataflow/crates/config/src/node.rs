@@ -13,6 +13,7 @@ use crate::{Description, NodeId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 /// User configuration for a node in the pipeline.
@@ -90,10 +91,11 @@ pub enum DispatchStrategy {
 }
 
 /// Node kinds
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     /// A source of signals
+    #[default]
     Receiver,
     /// A processor of signals
     Processor,
@@ -105,6 +107,17 @@ pub enum NodeKind {
     // Connector,
     /// A merged chain of consecutive processors (experimental).
     ProcessorChain,
+}
+
+impl From<NodeKind> for Cow<'static, str> {
+    fn from(kind: NodeKind) -> Self {
+        match kind {
+            NodeKind::Receiver => "receiver".into(),
+            NodeKind::Processor => "processor".into(),
+            NodeKind::Exporter => "exporter".into(),
+            NodeKind::ProcessorChain => "processor_chain".into(),
+        }
+    }
 }
 
 impl NodeUserConfig {
