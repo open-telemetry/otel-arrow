@@ -173,8 +173,8 @@ jobs:
           ## Go Modules
 
           This release includes the following Go modules:
-          - `github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}`
-          - `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}`
+          - github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
+          - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}
           EOF
 
           # Create the GitHub release using GitHub CLI
