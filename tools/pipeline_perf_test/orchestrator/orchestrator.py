@@ -20,6 +20,7 @@ Key Arguments:
     - --k8s-namespace: Kubernetes namespace to use (default: 'default').
     - --k8s-collector-manifest / --k8s-backend-manifest / --k8s-loadgen-manifest: Paths to
             respective Kubernetes manifest YAML files (all required for Kubernetes deployment).
+    - --kind-cluster: Name of the Kubernetes cluster to use, optional for local Kubernetes deployment if you are using local kind cluster. If not specified, the script will not use kind cluster.
 
 Usage Example:
     python3 orchestrator/orchestrator.py \
@@ -48,6 +49,8 @@ Pre-requisites:
         --k8s-backend-manifest backend/backend-manifest.yaml \
         --k8s-loadgen-manifest load_generator/loadgen-manifest.yaml \
         --k8s-namespace perf-test-otel --duration 30
+        [--kind-cluster [kind-cluster-name]]  # Optional, if you want to use kind cluster, if passed without a value it defaults to 'kind'.
+        [--install-metrics-server]  # Optional, if you do not have metrics server in the kubernetes cluster. This is a dev option, using insecure TLS, and not suitable for production use.
 """
 import argparse
 import os
@@ -84,6 +87,14 @@ def main():
     parser.add_argument("--k8s-collector-manifest", type=str, help="Path to collector Kubernetes manifest YAML")
     parser.add_argument("--k8s-backend-manifest", type=str, help="Path to backend Kubernetes manifest YAML")
     parser.add_argument("--k8s-loadgen-manifest", type=str, help="Path to load generator Kubernetes manifest YAML")
+    parser.add_argument(
+        "--kind-cluster",
+        nargs="?",
+        const="kind",
+        default=None,
+        help="Name of the kind cluster to use. If passed without a value, defaults to 'kind'. If not specified, the script will not use kind cluster."
+    )
+    parser.add_argument("--install-metrics-server", action="store_true", help="Install metrics server in the Kubernetes cluster. This is required for Kubernetes deployment to collect metrics.")
 
     args = parser.parse_args()
 
@@ -238,6 +249,45 @@ def main():
             if not create_k8s_namespace(args.k8s_namespace):
                 print("Failed to create or confirm Kubernetes namespace. Exiting.")
                 return 1
+
+            if args.kind_cluster is not None:
+                print(f"Loading images into kind cluster '{args.kind_cluster}'...")
+                if not args.skip_backend_build:
+                    subprocess.run(
+                        ["kind", "load", "docker-image", backend_image, "--name", args.kind_cluster],
+                        check=True
+                    )
+                if not args.skip_loadgen_build:
+                    subprocess.run(
+                        ["kind", "load", "docker-image", loadgen_image, "--name", args.kind_cluster],
+                        check=True
+                    )
+                print("Images loaded into kind cluster.")
+
+            if args.install_metrics_server:
+                print("Installing metrics server in the cluster...")
+                subprocess.run([
+                    "kubectl", "apply", "-f",
+                    "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+                ], check=True)
+
+                patch = (
+                    '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"},'
+                    '{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-preferred-address-types=InternalIP"}]'
+                )
+                subprocess.run([
+                    "kubectl", "patch", "deployment", "metrics-server", "-n", "kube-system",
+                    "--type=json", "-p", patch
+                ], check=True)
+
+                subprocess.run([
+                    "kubectl", "rollout", "restart", "deployment", "metrics-server", "-n", "kube-system"
+                ], check=True)
+
+                # Wait until the rollout is complete
+                subprocess.run([
+                    "kubectl", "rollout", "status", "deployment", "metrics-server", "-n", "kube-system", "--timeout=60s"
+                ], check=True)
 
             # Deploy backend
             k8s_backend_resource = deploy_kubernetes_resources(

@@ -12,13 +12,29 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }
 tokio = { workspace = true }
+linkme = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
+flume = { workspace = true }
 
-socket2 = "0.5.9"
+socket2 = { version = "0.6.0", features = ["all"] }
+
+# Deps for generating a unique per-process identifier
+uuid = { workspace = true, features = ["v7"] }
+once_cell = { workspace = true }
+# Base32 encoding
+data-encoding = "2.9.0"

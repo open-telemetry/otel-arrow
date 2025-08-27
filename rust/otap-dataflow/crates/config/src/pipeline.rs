@@ -1,16 +1,17 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pipeline configuration specification.
 
-use crate::error::{Context, Error};
-use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeConfig, NodeKind};
-use crate::{Description, NodeId, PipelineId, PortName, TenantId, Urn};
+use crate::error::{Context, Error, HyperEdgeSpecDetails};
+use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -24,74 +25,184 @@ use std::rc::Rc;
 /// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineConfig {
-    /// Optional description of the pipeline’s purpose.
-    description: Option<Description>,
+    /// Type of the pipeline, which determines the type of PData it processes.
+    ///
+    /// Note: Even though technically our engine can support several types of pdata, we
+    /// are focusing our efforts on the OTAP pipeline (hence the default value).
+    #[serde(default = "default_pipeline_type")]
+    r#type: PipelineType,
 
     /// Settings for this pipeline.
     #[serde(default)]
     settings: PipelineSettings,
 
     /// All nodes in this pipeline, keyed by node ID.
-    nodes: HashMap<NodeId, Rc<NodeConfig>>,
+    ///
+    /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
+    /// across multiple cores/threads without cloning the entire configuration.
+    nodes: HashMap<NodeId, Arc<NodeUserConfig>>,
 }
 
-fn default_control_channel_size() -> usize {
-    100
-}
-fn default_pdata_channel_size() -> usize {
-    100
+fn default_pipeline_type() -> PipelineType {
+    PipelineType::Otap
 }
 
+/// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
+/// OTAP (OpenTelemetry with Apache Arrow Protocol).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineType {
+    /// OpenTelemetry Protocol (OTLP) pipeline.
+    /// ToDo: With the recent benchmark results on proto_bytes->views->OTAP, we could consider to get rid of the OTLP pipeline type.
+    Otlp,
+    /// OpenTelemetry with Apache Arrow Protocol (OTAP) pipeline.
+    Otap,
+}
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineSettings {
-    /// The default size of the control channels.
-    #[serde(default = "default_control_channel_size")]
-    pub default_control_channel_size: usize,
+    /// The default size of the node control message channels.
+    /// These channels are used for sending control messages by the pipeline engine to nodes.
+    #[serde(default = "default_node_ctrl_msg_channel_size")]
+    pub default_node_ctrl_msg_channel_size: usize,
+
+    /// The default size of the pipeline control message channels.
+    /// This MPSC channel is used for sending control messages from nodes to the pipeline engine.
+    #[serde(default = "default_pipeline_ctrl_msg_channel_size")]
+    pub default_pipeline_ctrl_msg_channel_size: usize,
 
     /// The default size of the pdata channels.
     #[serde(default = "default_pdata_channel_size")]
     pub default_pdata_channel_size: usize,
 }
 
+fn default_node_ctrl_msg_channel_size() -> usize {
+    100
+}
+fn default_pipeline_ctrl_msg_channel_size() -> usize {
+    100
+}
+fn default_pdata_channel_size() -> usize {
+    100
+}
+
 impl Default for PipelineSettings {
     fn default() -> Self {
         Self {
-            default_control_channel_size: default_control_channel_size(),
+            default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
+            default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
         }
     }
 }
 
 impl PipelineConfig {
-    /// Create a new PipelineSpec from a JSON string.
+    /// Create a new [`PipelineConfig`] from a JSON string.
     pub fn from_json(
-        tenant_id: TenantId,
+        pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         json_str: &str,
     ) -> Result<Self, Error> {
-        let spec: PipelineConfig =
+        let cfg: PipelineConfig =
             serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
-                context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 format: "JSON".to_string(),
                 details: e.to_string(),
             })?;
 
-        spec.validate(&tenant_id, &pipeline_id)?;
+        cfg.validate(&pipeline_group_id, &pipeline_id)?;
+        Ok(cfg)
+    }
+
+    /// Create a new [`PipelineConfig`] from a YAML string.
+    pub fn from_yaml(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        yaml_str: &str,
+    ) -> Result<Self, Error> {
+        let spec: PipelineConfig =
+            serde_yaml::from_str(yaml_str).map_err(|e| Error::DeserializationError {
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                format: "YAML".to_string(),
+                details: e.to_string(),
+            })?;
+
+        spec.validate(&pipeline_group_id, &pipeline_id)?;
         Ok(spec)
     }
 
-    /// Load a PipelineSpec from a JSON file.
+    /// Load a [`PipelineConfig`] from a JSON file.
     pub fn from_json_file<P: AsRef<Path>>(
-        tenant_id: TenantId,
+        pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         path: P,
     ) -> Result<Self, Error> {
         let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
             details: e.to_string(),
         })?;
-        Self::from_json(tenant_id, pipeline_id, &contents)
+        Self::from_json(pipeline_group_id, pipeline_id, &contents)
+    }
+
+    /// Load a [`PipelineConfig`] from a YAML file.
+    pub fn from_yaml_file<P: AsRef<Path>>(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        path: P,
+    ) -> Result<Self, Error> {
+        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
+            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+            details: e.to_string(),
+        })?;
+        Self::from_yaml(pipeline_group_id, pipeline_id, &contents)
+    }
+
+    /// Load a [`PipelineConfig`] from a file, automatically detecting the format based on file extension.
+    ///
+    /// Supports:
+    /// - JSON files: `.json`
+    /// - YAML files: `.yaml`, `.yml`
+    pub fn from_file<P: AsRef<Path>>(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        path: P,
+    ) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase());
+
+        match extension.as_deref() {
+            Some("json") => Self::from_json_file(pipeline_group_id, pipeline_id, path),
+            Some("yaml") | Some("yml") => {
+                Self::from_yaml_file(pipeline_group_id, pipeline_id, path)
+            }
+            _ => {
+                let context = Context::new(pipeline_group_id, pipeline_id);
+                let details = format!(
+                    "Unsupported file extension: {}. Supported extensions are: .json, .yaml, .yml",
+                    extension.unwrap_or_else(|| "<none>".to_string())
+                );
+                Err(Error::FileReadError { context, details })
+            }
+        }
+    }
+
+    /// Returns the general settings for this pipeline.
+    #[must_use]
+    pub fn pipeline_settings(&self) -> &PipelineSettings {
+        &self.settings
+    }
+
+    /// Returns an iterator visiting all nodes in the pipeline.
+    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
+        self.nodes.iter()
+    }
+
+    /// Creates a consuming iterator over the nodes in the pipeline.
+    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
+        self.nodes.into_iter()
     }
 
     /// Validate the pipeline specification.
@@ -101,7 +212,11 @@ impl PipelineConfig {
     /// - Duplicate out-ports (same source node + port name)
     /// - Invalid hyper-edges (missing source or target nodes)
     /// - Cycles in the DAG
-    pub fn validate(&self, tenant_id: &TenantId, pipeline_id: &PipelineId) -> Result<(), Error> {
+    pub fn validate(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
         // Check for invalid hyper-edges (references to non-existent nodes)
@@ -117,12 +232,14 @@ impl PipelineConfig {
 
                 if !missing_targets.is_empty() {
                     errors.push(Error::InvalidHyperEdgeSpec {
-                        context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                         source_node: node_id.clone(),
-                        target_nodes: edge.destinations.iter().cloned().collect(),
-                        dispatch_strategy: edge.dispatch_strategy.clone(),
                         missing_source: false, // source exists since we're iterating over nodes
-                        missing_targets,
+                        details: Box::new(HyperEdgeSpecDetails {
+                            target_nodes: edge.destinations.iter().cloned().collect(),
+                            dispatch_strategy: edge.dispatch_strategy.clone(),
+                            missing_targets,
+                        }),
                     });
                 }
             }
@@ -133,7 +250,7 @@ impl PipelineConfig {
             let cycles = self.detect_cycles();
             for cycle in cycles {
                 errors.push(Error::CycleDetected {
-                    context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                     nodes: cycle,
                 });
             }
@@ -149,7 +266,7 @@ impl PipelineConfig {
     fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
         fn visit(
             node: &NodeId,
-            nodes: &HashMap<NodeId, Rc<NodeConfig>>,
+            nodes: &HashMap<NodeId, Arc<NodeUserConfig>>,
             visiting: &mut HashSet<NodeId>,
             visited: &mut HashSet<NodeId>,
             current_path: &mut Vec<NodeId>,
@@ -204,9 +321,9 @@ impl PipelineConfig {
 }
 
 /// A builder for constructing a [`PipelineConfig`].
-pub struct PipelineBuilder {
+pub struct PipelineConfigBuilder {
     description: Option<Description>,
-    nodes: HashMap<NodeId, NodeConfig>,
+    nodes: HashMap<NodeId, NodeUserConfig>,
     duplicate_nodes: Vec<NodeId>,
     pending_connections: Vec<PendingConnection>,
 }
@@ -218,7 +335,7 @@ struct PendingConnection {
     strategy: DispatchStrategy,
 }
 
-impl PipelineBuilder {
+impl PipelineConfigBuilder {
     /// Create a new pipeline builder.
     #[must_use]
     pub fn new() -> Self {
@@ -253,11 +370,12 @@ impl PipelineBuilder {
         } else {
             _ = self.nodes.insert(
                 id.clone(),
-                NodeConfig {
+                NodeUserConfig {
                     kind,
                     plugin_urn,
                     description: None,
                     out_ports: HashMap::new(),
+                    default_out_port: None,
                     config: config.unwrap_or(Value::Null),
                 },
             );
@@ -373,19 +491,24 @@ impl PipelineBuilder {
     /// missing source/targets, invalid edges, cycles) into one `InvalidHyperDag`
     /// report. This lets callers see every problem at once, rather than failing
     /// fast on the first error.
-    pub fn build<T, P>(mut self, tenant_id: T, pipeline_id: P) -> Result<PipelineConfig, Error>
+    pub fn build<T, P>(
+        mut self,
+        pipeline_type: PipelineType,
+        pipeline_group_id: T,
+        pipeline_id: P,
+    ) -> Result<PipelineConfig, Error>
     where
-        T: Into<TenantId>,
+        T: Into<PipelineGroupId>,
         P: Into<PipelineId>,
     {
         let mut errors = Vec::new();
-        let tenant_id = tenant_id.into();
+        let pipeline_group_id = pipeline_group_id.into();
         let pipeline_id = pipeline_id.into();
 
         // Report duplicated nodes
         for node_id in &self.duplicate_nodes {
             errors.push(Error::DuplicateNode {
-                context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 node_id: node_id.clone(),
             });
         }
@@ -397,7 +520,7 @@ impl PipelineBuilder {
                 let key = (conn.src.clone(), conn.out_port.clone());
                 if !seen_ports.insert(key.clone()) {
                     errors.push(Error::DuplicateOutPort {
-                        context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                         source_node: conn.src.clone(),
                         port: conn.out_port.clone(),
                     });
@@ -426,12 +549,14 @@ impl PipelineBuilder {
             // if anything is missing, record as InvalidHyperEdgeSpec
             if !src_exists || !missing.is_empty() {
                 errors.push(Error::InvalidHyperEdgeSpec {
-                    context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                     source_node: conn.src.clone(),
-                    target_nodes: conn.targets.iter().cloned().collect(),
-                    dispatch_strategy: conn.strategy,
                     missing_source: !src_exists,
-                    missing_targets: missing,
+                    details: Box::new(HyperEdgeSpecDetails {
+                        target_nodes: conn.targets.iter().cloned().collect(),
+                        dispatch_strategy: conn.strategy,
+                        missing_targets: missing,
+                    }),
                 });
                 continue;
             }
@@ -453,22 +578,22 @@ impl PipelineBuilder {
         } else {
             // Build the spec and validate it
             let spec = PipelineConfig {
-                description: self.description,
                 nodes: self
                     .nodes
                     .into_iter()
-                    .map(|(id, node)| (id, Rc::new(node)))
+                    .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
                 settings: PipelineSettings::default(),
+                r#type: pipeline_type,
             };
 
-            spec.validate(&tenant_id, &pipeline_id)?;
+            spec.validate(&pipeline_group_id, &pipeline_id)?;
             Ok(spec)
         }
     }
 }
 
-impl Default for PipelineBuilder {
+impl Default for PipelineConfigBuilder {
     fn default() -> Self {
         Self::new()
     }
@@ -478,15 +603,15 @@ impl Default for PipelineBuilder {
 mod tests {
     use crate::error::Error;
     use crate::node::DispatchStrategy;
-    use crate::pipeline::PipelineBuilder;
+    use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
 
     #[test]
     fn test_duplicate_node_errors() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .add_processor("A", "urn:test:processor", None) // duplicate
-            .build("tenant", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -494,21 +619,21 @@ mod tests {
                 assert_eq!(errors.len(), 1);
                 match &errors[0] {
                     Error::DuplicateNode { node_id, .. } if node_id == "A" => {}
-                    other => panic!("expected DuplicateNode(\"A\"), got {:?}", other),
+                    other => panic!("expected DuplicateNode(\"A\"), got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
     #[test]
     fn test_duplicate_outport_errors() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .add_exporter("B", "urn:test:exporter", None)
             .round_robin("A", "p", ["B"])
             .round_robin("A", "p", ["B"]) // duplicate port on A
-            .build("tenant", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -518,19 +643,19 @@ mod tests {
                     Error::DuplicateOutPort {
                         source_node, port, ..
                     } if source_node == "A" && port == "p" => {}
-                    other => panic!("expected DuplicateOutPort(A, p), got {:?}", other),
+                    other => panic!("expected DuplicateOutPort(A, p), got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
     #[test]
     fn test_missing_source_error() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("B", "urn:test:receiver", None)
             .connect("X", "out", ["B"], DispatchStrategy::Broadcast) // X does not exist
-            .build("tenant", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -539,22 +664,24 @@ mod tests {
                     Error::InvalidHyperEdgeSpec {
                         source_node,
                         missing_source,
-                        missing_targets,
+                        details,
                         ..
-                    } if source_node == "X" && *missing_source && missing_targets.is_empty() => {}
-                    other => panic!("expected InvalidHyperEdge missing_source, got {:?}", other),
+                    } if source_node == "X"
+                        && *missing_source
+                        && details.missing_targets.is_empty() => {}
+                    other => panic!("expected InvalidHyperEdge missing_source, got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
     #[test]
     fn test_missing_target_error() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .connect("A", "out", ["Y"], DispatchStrategy::Broadcast) // Y does not exist
-            .build("tenant", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -563,28 +690,27 @@ mod tests {
                     Error::InvalidHyperEdgeSpec {
                         source_node,
                         missing_source,
-                        missing_targets,
-                        target_nodes,
+                        details,
                         ..
                     } if source_node == "A"
                         && !*missing_source
-                        && missing_targets.as_slice() == ["Y"]
-                        && target_nodes.as_slice() == ["Y"] => {}
-                    other => panic!("expected InvalidHyperEdge missing_targets, got {:?}", other),
+                        && details.missing_targets.as_slice() == ["Y"]
+                        && details.target_nodes.as_slice() == ["Y"] => {}
+                    other => panic!("expected InvalidHyperEdge missing_targets, got {other:?}"),
                 }
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
     #[test]
     fn test_cycle_detection_error() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_processor("A", "urn:test:processor", None)
             .add_processor("B", "urn:test:processor", None)
             .round_robin("A", "p", ["B"])
             .round_robin("B", "p", ["A"])
-            .build("tenant", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -600,17 +726,17 @@ mod tests {
                 }
                 assert!(found, "expected a CycleDetected error");
             }
-            other => panic!("expected Err(InvalidPipelineSpec), got {:?}", other),
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
         }
     }
 
     #[test]
     fn test_successful_simple_build() {
-        let dag = PipelineBuilder::new()
+        let dag = PipelineConfigBuilder::new()
             .add_receiver("Start", "urn:test:receiver", Some(json!({"foo": 1})))
             .add_exporter("End", "urn:test:exporter", None)
             .broadcast("Start", "out", ["End"])
-            .build("tenant", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match dag {
             Ok(pipeline_spec) => {
@@ -621,13 +747,13 @@ mod tests {
                 let edge = &start.out_ports["out"];
                 assert!(edge.destinations.contains("End"));
             }
-            Err(e) => panic!("expected successful build, got {:?}", e),
+            Err(e) => panic!("expected successful build, got {e:?}"),
         }
     }
 
     #[test]
     fn test_valid_complex_pipeline_spec() {
-        let dag = PipelineBuilder::new()
+        let dag = PipelineConfigBuilder::new()
             // ----- TRACES pipeline -----
             .add_receiver(
                 "receiver_otlp_traces",
@@ -768,7 +894,7 @@ mod tests {
                 ["processor_enrich_events"],
             )
             // Finalize build
-            .build("tenant", "pipeline");
+            .build(PipelineType::Otap, "pgroup", "pipeline");
 
         // Assert the DAG is valid and acyclic
         match dag {
@@ -776,6 +902,185 @@ mod tests {
                 assert_eq!(pipeline_spec.nodes.len(), 18);
             }
             Err(e) => panic!("Failed to build pipeline DAG: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_json_file() {
+        // Use a dedicated test fixture file
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.json"
+        );
+
+        // Test loading from JSON file
+        let result = super::PipelineConfig::from_json_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 2);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_yaml_file() {
+        // Use a dedicated test fixture file
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.yaml"
+        );
+
+        // Test loading from YAML file
+        let result = super::PipelineConfig::from_yaml_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 3);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("processor1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_json_file_nonexistent_file() {
+        let result = super::PipelineConfig::from_json_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/nonexistent/path/pipeline.json",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { .. }) => {}
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_yaml_file_nonexistent_file() {
+        let result = super::PipelineConfig::from_yaml_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/nonexistent/path/pipeline.yaml",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { .. }) => {}
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_json_extension() {
+        // Test auto-detection with .json extension
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.json"
+        );
+
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 2);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_file_yaml_extension() {
+        // Test auto-detection with .yaml extension
+        let file_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_pipeline.yaml"
+        );
+
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            file_path,
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.nodes.len(), 3);
+        assert!(config.nodes.contains_key("receiver1"));
+        assert!(config.nodes.contains_key("processor1"));
+        assert!(config.nodes.contains_key("exporter1"));
+    }
+
+    #[test]
+    fn test_from_file_yml_extension() {
+        // Test auto-detection with .yml extension (alternative YAML extension)
+        // We'll create a simple test using a path that would have .yml extension
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/nonexistent/test.yml", // This will fail at file reading, but should pass extension detection
+        );
+
+        assert!(result.is_err());
+        // Should be FileReadError (file doesn't exist), not unsupported extension
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                // Make sure it's a file read error and not an extension error
+                assert!(!details.contains("Unsupported file extension"));
+            }
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_unsupported_extension() {
+        // Test with unsupported file extension
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/some/path/config.txt",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                assert!(details.contains("Unsupported file extension"));
+                assert!(details.contains("txt"));
+                assert!(details.contains(".json, .yaml, .yml"));
+            }
+            other => panic!("Expected FileReadError with unsupported extension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_no_extension() {
+        // Test with file that has no extension
+        let result = super::PipelineConfig::from_file(
+            "test_group".into(),
+            "test_pipeline".into(),
+            "/some/path/config",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                assert!(details.contains("Unsupported file extension"));
+                assert!(details.contains("<none>"));
+                assert!(details.contains(".json, .yaml, .yml"));
+            }
+            other => panic!("Expected FileReadError with no extension, got {other:?}"),
         }
     }
 }

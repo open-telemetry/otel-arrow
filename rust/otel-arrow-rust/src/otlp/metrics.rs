@@ -1,21 +1,12 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
     Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_bool_array_opt,
     get_u8_array, get_u16_array,
 };
 use crate::error;
-use crate::otap::OtapBatch;
+use crate::otap::OtapArrowRecords;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::related_data::RelatedData;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -95,7 +86,9 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
 }
 
 /// Builds [ExportMetricsServiceRequest] from given record batch.
-pub fn metrics_from(metrics_otap_batch: OtapBatch) -> error::Result<ExportMetricsServiceRequest> {
+pub fn metrics_from(
+    metrics_otap_batch: OtapArrowRecords,
+) -> error::Result<ExportMetricsServiceRequest> {
     let mut metrics = ExportMetricsServiceRequest::default();
 
     let mut prev_res_id: Option<u16> = None;

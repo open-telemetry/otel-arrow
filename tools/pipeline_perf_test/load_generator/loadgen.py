@@ -1,118 +1,734 @@
-import os
-import grpc
-import time
+"""
+OTLP Logs Load Generator
+
+This module implements a configurable load generator for OpenTelemetry
+Protocol (OTLP) logs. It supports generating batches of randomized log records
+with customizable sizes and attributes, and sending them concurrently to an
+OTLP collector endpoint over gRPC.
+
+Features:
+- Generates OTLP log records with random content for testing or benchmarking.
+- Runs multiple worker threads to simulate concurrent load.
+- Supports shared or dedicated TCP connection per-worker thread.
+- Supports optional rate targeting for message throughput (or max achievable).
+- Provides a Flask-based HTTP API to start, stop, and monitor the load
+    generator.
+- Can run either as a one-off command line tool or as a long-running server.
+- Handles graceful shutdown on system signals.
+
+Usage:
+- As a command-line tool: run with desired parameters for batch size, threads,
+    duration, etc.
+- As a server: start with --serve flag and control load generation via HTTP
+    endpoints (/start, /stop, /metrics).
+
+Examples:
+  Standalone OTLP load generation:
+    python load_generator/loadgen.py --load-type otlp --duration 30 --threads 4 --batch-size 1000
+
+  Standalone syslog UDP load generation:
+    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 python load_generator/loadgen.py --load-type syslog --duration 2
+
+  Standalone syslog TCP load generation:
+    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 SYSLOG_TRANSPORT=tcp python load_generator/loadgen.py --load-type syslog --duration 2
+
+  Server mode for API control:
+    python load_generator/loadgen.py --serve
+    # Then control via HTTP:
+    # curl -X POST http://localhost:5001/start -H "Content-Type: application/json" -d '{"load_type": "syslog", "batch_size": 1000, "threads": 2}'
+    # curl -X POST http://localhost:5001/stop
+    # curl http://localhost:5001/metrics
+
+Endpoints:
+- POST /start: Start load generation with specified parameters in JSON.
+- POST /stop: Stop the load generation.
+- GET /metrics: Retrieve current load generation metrics (logs sent, failed,
+    bytes sent).
+
+Environment Variables:
+- OTLP_ENDPOINT: Target OTLP gRPC endpoint (default: localhost:4317).
+- SYSLOG_SERVER: Target syslog server hostname/IP (default: localhost).
+- SYSLOG_PORT: Target syslog server port (default: 514).
+- SYSLOG_TRANSPORT: Transport protocol for syslog: 'tcp' or 'udp' (default: udp).
+"""
+
 import argparse
-import random
-import string
-import threading
 import concurrent.futures
-from opentelemetry.proto.collector.logs.v1 import logs_service_pb2_grpc, logs_service_pb2
+import os
+import random
+import signal
+import socket
+import string
+import sys
+import threading
+import time
+from datetime import datetime as dt, timezone
+from typing import Optional
+
+import grpc  # type: ignore
+from flask import Flask, jsonify, request
+from opentelemetry.proto.collector.logs.v1 import (
+    logs_service_pb2_grpc,
+    logs_service_pb2,
+)
 from opentelemetry.proto.logs.v1 import logs_pb2
 from opentelemetry.proto.common.v1 import common_pb2
+from pydantic import BaseModel, Field, field_validator, ValidationError
 
-def generate_random_string(length):
-    """Generate a random string of given length."""
-    return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
 
-def create_log_record(body_size=25, num_attributes=2, attribute_value_size=15):
-    log_message = generate_random_string(body_size)
+FLASK_PORT = 5001
+LOG_SEVERITY_NUMBER = logs_pb2.SeverityNumber.SEVERITY_NUMBER_INFO
+LOG_SEVERITY_TEXT = "INFO"
 
-    attributes = []
-    for i in range(num_attributes):
-        attr_key = f"attribute.{i+1}"
-        attr_value = generate_random_string(attribute_value_size)
-        attributes.append(
-            common_pb2.KeyValue(
-                key=attr_key,
-                value=common_pb2.AnyValue(string_value=attr_value)
-            )
+
+app = Flask(__name__)
+
+
+class LoadGenConfig(BaseModel):
+    body_size: int = Field(
+        25, gt=0, description="Size of log message body in characters"
+    )
+    num_attributes: int = Field(2, gt=0, description="Number of attributes per log")
+    attribute_value_size: int = Field(
+        15, gt=0, description="Size of attribute values in characters"
+    )
+    batch_size: int = Field(5000, gt=0, description="Number of logs per batch")
+    threads: int = Field(4, gt=0, description="Number of worker threads to run")
+    target_rate: Optional[int] = Field(
+        None, gt=0, description="Optional target messages per second"
+    )
+    tcp_connection_per_thread: bool = Field(
+        True, description="Use a dedicated TCP connection per-thread"
+    )
+    load_type: str = Field(
+        "otlp", description="Load generation type: 'otlp' or 'syslog'"
+    )
+
+    @field_validator(
+        "body_size", "num_attributes", "attribute_value_size", "batch_size", "threads"
+    )
+    def must_be_positive(cls, v):
+        """Ensure positive values for key config attributes."""
+        if v <= 0:
+            raise ValueError("must be a positive integer")
+        return v
+
+    @field_validator("load_type")
+    def validate_load_type(cls, v):
+        """Ensure load_type is either 'otlp' or 'syslog'."""
+        if v.lower() not in ["otlp", "syslog"]:
+            raise ValueError("load_type must be 'otlp' or 'syslog'")
+        return v.lower()
+
+
+class LoadGenerator:
+    def __init__(self):
+        self.controller_thread = None
+        self.stop_event = threading.Event()
+        self.current_config = {}
+        self.lock = threading.Lock()
+        self.metrics = {"sent": 0, "failed": 0, "bytes_sent": 0, "late_batches": 0}
+
+    def generate_random_string(self, length: int) -> str:
+        """
+        Generate a random alphanumeric string of the specified length.
+        """
+        return "".join(
+            random.choice(string.ascii_letters + string.digits) for _ in range(length)
         )
 
-    return logs_pb2.LogRecord(
-        time_unix_nano=int(time.time_ns()),
-        severity_text="INFO",
-        severity_number=9,
-        body=common_pb2.AnyValue(string_value=log_message),
-        attributes=attributes,
-    )
+    def create_log_record(
+        self,
+        body_size: int = 25,
+        num_attributes: int = 2,
+        attribute_value_size: int = 15,
+    ):
+        """
+        Create a single OTLP log record with random content.
+        """
+        log_message = self.generate_random_string(body_size)
+        attributes = [
+            common_pb2.KeyValue(
+                key=f"attribute.{i+1}",
+                value=common_pb2.AnyValue(
+                    string_value=self.generate_random_string(attribute_value_size)
+                ),
+            )
+            for i in range(num_attributes)
+        ]
+        return logs_pb2.LogRecord(
+            time_unix_nano=int(time.time_ns()),
+            severity_text=LOG_SEVERITY_TEXT,
+            severity_number=LOG_SEVERITY_NUMBER,
+            body=common_pb2.AnyValue(string_value=log_message),
+            attributes=attributes,
+        )
 
-def worker_thread(thread_id, args, end_time):
-    """Worker thread function that sends logs to the collector."""
-    endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
-    channel = grpc.insecure_channel(endpoint)
-    stub = logs_service_pb2_grpc.LogsServiceStub(channel)
+    def increment_metric(self, key: str, amount: int = 1) -> None:
+        with self.lock:
+            self.metrics[key] += amount
 
-    # Pre-create the batch once and reuse it
-    log_batch = [create_log_record(
-        body_size=args.body_size,
-        num_attributes=args.num_attributes,
-        attribute_value_size=args.attribute_value_size
-    ) for _ in range(args.batch_size)]
+    def update_metrics(self, **updates) -> None:
+        """Update multiple metrics in a single lock acquisition."""
+        with self.lock:
+            for key, amount in updates.items():
+                if key in self.metrics:
+                    self.metrics[key] += amount
 
-    scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
-    resource_logs = logs_pb2.ResourceLogs(
-        scope_logs=[scope_logs]
-    )
-    request = logs_service_pb2.ExportLogsServiceRequest(
-        resource_logs=[resource_logs]
-    )
+    def worker_thread(self, thread_id: int, args: dict) -> None:
+        """
+        Worker thread that sends batches of log records to an OTLP endpoint.
+        """
+        endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
 
-    bytes_sent = 0
-    sent = 0
-    failed = 0
+        channel = None
+        if args.get("tcp_connection_per_thread"):
+            # This disables the default python grpc client behavior of shared global
+            # subchannels per destination.
+            channel = grpc.insecure_channel(
+                endpoint, options=[("grpc.use_local_subchannel_pool", 1)]
+            )
+        else:
+            channel = grpc.insecure_channel(endpoint)
 
-    print(f"Thread {thread_id} started, sending logs to {endpoint}")
-    while time.time() < end_time:
+        stub = logs_service_pb2_grpc.LogsServiceStub(channel)
+
+        batch_size = args["batch_size"]
+        thread_count = args["threads"]
+        target_rate = args.get("target_rate")
+
+        if target_rate:
+            thread_rate = target_rate / thread_count
+            batch_interval = batch_size / thread_rate
+            print(
+                f"Thread {thread_id} started with rate limit: {thread_rate} "
+                f"logs/sec (interval: {batch_interval:.4f}s)"
+            )
+        else:
+            batch_interval = None
+            print(f"Thread {thread_id} started with no rate limit")
+
+        log_batch = [
+            self.create_log_record(
+                body_size=args["body_size"],
+                num_attributes=args["num_attributes"],
+                attribute_value_size=args["attribute_value_size"],
+            )
+            for _ in range(batch_size)
+        ]
+
+        scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
+        resource_logs = logs_pb2.ResourceLogs(scope_logs=[scope_logs])
+        logs_request = logs_service_pb2.ExportLogsServiceRequest(
+            resource_logs=[resource_logs]
+        )
+
+        # Accumulate metrics locally to avoid lock contention
+        total_sent = 0
+        total_failed = 0
+        total_bytes_sent = 0
+        total_late_batches = 0
+
+        next_send_time = time.perf_counter()
+        while not self.stop_event.is_set():
+            try:
+                stub.Export(logs_request)
+                total_sent += args["batch_size"]
+                total_bytes_sent += logs_request.ByteSize()
+            except Exception as e:
+                print(f"Thread {thread_id}: Failed to send log batch: {e}")
+                total_failed += args["batch_size"]
+
+            # If we're targeting a specific rate we do additional calculations
+            # to ensure we're not exceeding it via sleep. If we're not reaching
+            # the target rate (e.g. we're sending without sleep and it's
+            # still too slow), we increment a metric to inform observers.
+            if batch_interval:
+                now = time.perf_counter()
+                sleep_time = next_send_time - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif now - next_send_time > batch_interval:
+                    # More than 1 interval behind
+                    total_late_batches += 1
+                next_send_time += batch_interval
+
+        # Update global metrics once when thread exits
+        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
+            updates = {}
+            if total_sent > 0:
+                updates["sent"] = total_sent
+                updates["bytes_sent"] = total_bytes_sent
+            if total_failed > 0:
+                updates["failed"] = total_failed
+            if total_late_batches > 0:
+                updates["late_batches"] = total_late_batches
+            self.update_metrics(**updates)
+
+    def syslog_tcp_worker_thread(self, thread_id: int, args: dict) -> None:
+        """
+        Worker thread that sends syslog messages to a syslog server via TCP.
+        """
+        syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
+        syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
+
+        # Create TCP socket for syslog
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+
         try:
-            stub.Export(request)
-            sent += args.batch_size
-            bytes_sent += request.ByteSize()
+            sock.connect((syslog_server, syslog_port))
+            print(f"Thread {thread_id}: Successfully connected to syslog server {syslog_server}:{syslog_port}")
         except Exception as e:
-            failed += args.batch_size
-            print(f"Thread {thread_id}: Failed to send log batch: {e}")
+            print(f"Thread {thread_id}: Failed to connect to syslog server {syslog_server}:{syslog_port}: {e}")
+            sock.close()
+            return
 
-    return sent, failed, bytes_sent
+        batch_size = args["batch_size"]
+        thread_count = args["threads"]
+        target_rate = args.get("target_rate")
+
+        if target_rate:
+            thread_rate = target_rate / thread_count
+            batch_interval = batch_size / thread_rate
+            print(
+                f"Thread {thread_id} started with rate limit: {thread_rate} "
+                f"logs/sec (interval: {batch_interval:.4f}s)"
+            )
+        else:
+            batch_interval = None
+            print(f"Thread {thread_id} started with no rate limit")
+
+        hostname = socket.gethostname()
+
+        # Pre-generate syslog messages batch (similar to OTLP log_batch)
+        syslog_batch = []
+        for _ in range(batch_size):
+            syslog_message = self.create_syslog_message(
+                hostname=hostname,
+                body_size=args["body_size"]
+            )
+            syslog_batch.append(syslog_message)
+
+        # Combine all messages into a single buffer for efficient sending
+        batch_buffer = b''.join(syslog_batch)
+        batch_total_size = len(batch_buffer)
+
+        # Accumulate metrics locally to avoid lock contention
+        total_sent = 0
+        total_failed = 0
+        total_bytes_sent = 0
+        total_late_batches = 0
+
+        next_send_time = time.perf_counter()
+        while not self.stop_event.is_set():
+            try:
+                sock.sendall(batch_buffer)
+                total_sent += args["batch_size"]
+                total_bytes_sent += batch_total_size
+            except Exception as e:
+                print(f"Thread {thread_id}: Failed to send syslog batch: {e}")
+                total_failed += args["batch_size"]
+                # Try to reconnect
+                try:
+                    sock.close()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)
+                    sock.connect((syslog_server, syslog_port))
+                except Exception as reconnect_error:
+                    print(f"Thread {thread_id}: Reconnection failed: {reconnect_error}")
+                    break
+
+            # If we're targeting a specific rate we do additional calculations
+            # to ensure we're not exceeding it via sleep. If we're not reaching
+            # the target rate (e.g. we're sending without sleep and it's
+            # still too slow), we increment a metric to inform observers.
+            if batch_interval:
+                now = time.perf_counter()
+                sleep_time = next_send_time - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif now - next_send_time > batch_interval:
+                    # More than 1 interval behind
+                    total_late_batches += 1
+                next_send_time += batch_interval
+
+        # Update global metrics once when thread exits
+        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
+            updates = {}
+            if total_sent > 0:
+                updates["sent"] = total_sent
+                updates["bytes_sent"] = total_bytes_sent
+            if total_failed > 0:
+                updates["failed"] = total_failed
+            if total_late_batches > 0:
+                updates["late_batches"] = total_late_batches
+            self.update_metrics(**updates)
+
+        sock.close()
+
+    def syslog_udp_worker_thread(self, thread_id: int, args: dict) -> None:
+        """
+        Worker thread that sends syslog messages to a syslog server via UDP.
+        """
+        syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
+        syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
+
+        print(f"Thread {thread_id}: Using UDP transport to syslog server {syslog_server}:{syslog_port}")
+
+        # Create UDP socket for syslog
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # TODO: We need to find the right values
+        # sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024*1024)
+        sock.setblocking(False)
+        recv_buf = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        send_buf = sock.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+        print(f"Thread {thread_id}: UDP Send buffer: {send_buf} bytes, Recv buffer: {recv_buf} bytes")
+
+        batch_size = args["batch_size"]
+        thread_count = args["threads"]
+        target_rate = args.get("target_rate")
+
+        if target_rate:
+            thread_rate = target_rate / thread_count
+            batch_interval = batch_size / thread_rate
+            print(
+                f"Thread {thread_id} started with rate limit: {thread_rate} "
+                f"logs/sec (interval: {batch_interval:.4f}s)"
+            )
+        else:
+            batch_interval = None
+            print(f"Thread {thread_id} started with no rate limit")
+
+        hostname = socket.gethostname()
+
+        # Pre-generate syslog messages batch
+        syslog_batch = []
+        for _ in range(batch_size):
+            syslog_message = self.create_syslog_message(
+                hostname=hostname,
+                body_size=args["body_size"],
+            )
+            syslog_batch.append(syslog_message)
+
+        # Accumulate metrics locally to avoid lock contention
+        total_sent = 0
+        total_failed = 0
+        total_bytes_sent = 0
+        total_late_batches = 0
+
+        next_send_time = time.perf_counter()
+        while not self.stop_event.is_set():
+            # UDP: Send individual messages instead of single batch of messages
+            for message in syslog_batch:
+                try:
+                    bytes_sent = sock.sendto(message, (syslog_server, syslog_port))
+                    total_sent += 1
+                    total_bytes_sent += bytes_sent
+                except Exception as e:
+                    total_failed += 1
+                    # Only print first few errors to avoid spam
+                    if total_failed <= 3:
+                        print(f"Thread {thread_id}: Failed to send syslog message via UDP: {e}")
+
+            # Rate limiting logic
+            if batch_interval:
+                now = time.perf_counter()
+                sleep_time = next_send_time - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif now - next_send_time > batch_interval:
+                    # More than 1 interval behind
+                    total_late_batches += 1
+                next_send_time += batch_interval
+
+        # Update global metrics once when thread exits
+        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
+            updates = {}
+            if total_sent > 0:
+                updates["sent"] = total_sent
+                updates["bytes_sent"] = total_bytes_sent
+            if total_failed > 0:
+                updates["failed"] = total_failed
+            if total_late_batches > 0:
+                updates["late_batches"] = total_late_batches
+            self.update_metrics(**updates)
+
+        sock.close()
+        print(f"Thread {thread_id}: Syslog UDP worker exiting")
+
+    def create_syslog_message(
+        self,
+        hostname: str,
+        body_size: int = 25,
+    ) -> bytes:
+        """
+        Create a single syslog message with structure similar to OTLP log record.
+        """
+        # Pre-generate static parts of the message
+        pri = "<134>"  # local0.info = 16*8+6 = 134
+        tag = "loadgen"
+
+        # Generate timestamp (RFC3164 format with space-padded day)
+        utc_time = dt.now(timezone.utc)
+        day = utc_time.day
+        timestamp = utc_time.strftime(f"%b {day:2d} %H:%M:%S")
+
+        # Create log message body (similar to OTLP body)
+        log_message = self.generate_random_string(body_size)
+
+        syslog_message = f"{pri}{timestamp} {hostname} {tag}: {log_message}\n"
+        return syslog_message.encode('utf-8')
+
+    def run_loadgen(self, args_dict):
+        """
+        Start the load generation process by launching multiple worker threads.
+        Chooses between OTLP and syslog workers based on configuration.
+        """
+        with self.lock:
+            self.metrics.update({"sent": 0, "failed": 0, "bytes_sent": 0})
+
+        # Determine which worker thread to use based on configuration
+        load_type = args_dict.get("load_type", "otlp").lower()
+
+        if load_type == "syslog":
+            syslog_transport = os.getenv("SYSLOG_TRANSPORT", "udp").lower()
+
+            if syslog_transport not in ["tcp", "udp"]:
+                print(f"Invalid SYSLOG_TRANSPORT '{syslog_transport}', using 'udp'")
+                syslog_transport = "udp"
+
+            if syslog_transport == "udp":
+                worker_func = self.syslog_udp_worker_thread
+            else:
+                worker_func = self.syslog_tcp_worker_thread
+        else:
+            worker_func = self.worker_thread
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=args_dict.get("threads", 4)
+        ) as executor:
+            futures = [
+                executor.submit(worker_func, i, args_dict)
+                for i in range(args_dict.get("threads", 4))
+            ]
+            concurrent.futures.wait(futures)
+
+        with self.lock:
+            self.current_config["metrics"] = self.metrics.copy()
+
+    def start(self, config: LoadGenConfig):
+        """
+        Start the load generator with the specified configuration.
+        Returns a tuple of (response_dict, status_code).
+        """
+
+        if self.controller_thread and self.controller_thread.is_alive():
+            return {"error": "Load generation already running"}, 400
+
+        self.stop_event.clear()
+        with self.lock:
+            self.current_config.update(config)
+            self.current_config["running"] = True
+            self.current_config["metrics"] = {}
+
+        self.controller_thread = threading.Thread(
+            target=self.run_loadgen, args=(config.model_dump(),)
+        )
+        self.controller_thread.start()
+
+        return {"status": "started"}, 200
+
+    def stop(self):
+        """
+        Stop the currently running load generator.
+        Returns a tuple of (response_dict, status_code).
+        """
+        self.stop_event.set()
+        if self.controller_thread:
+            self.controller_thread.join(timeout=10)
+            self.controller_thread = None
+        with self.lock:
+            self.current_config["running"] = False
+        return {"status": "stopped"}, 200
+
+    def get_metrics(self):
+        """
+        Get a copy of the current metrics.
+        """
+        with self.lock:
+            return self.metrics.copy()
+
+
+# Create a global LoadGenerator instance for the Flask app to use
+loadgen = LoadGenerator()
+
+
+@app.route("/start", methods=["POST"])
+def start():
+    try:
+        config_data = request.get_json()
+        config = LoadGenConfig(**config_data)
+    except ValidationError as e:
+        return jsonify({"error": e.errors()}), 400
+    except Exception:
+        return jsonify({"error": "Invalid JSON or missing data"}), 400
+
+    resp, code = loadgen.start(config)
+    return jsonify(resp), code
+
+
+@app.route("/stop", methods=["POST"])
+def stop():
+    resp, code = loadgen.stop()
+    return jsonify(resp), code
+
+
+@app.route("/metrics", methods=["GET"])
+def metrics_endpoint():
+    metrics = loadgen.get_metrics()
+    lines = [f"{k} {v}" for k, v in metrics.items()]
+    return "\n".join(lines), 200
+
+
+def handle_signal(sig, frame):
+    print(f"\nReceived signal {sig}, shutting down gracefully...")
+    loadgen.stop()
+    sys.exit(0)
+
+
+def is_port_in_use(port, host="0.0.0.0"):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
+
 
 def main():
+    def get_default_value(field_name: str):
+        return LoadGenConfig.model_fields[field_name].default
+
     parser = argparse.ArgumentParser(description="Loadgen for OTLP logs")
-    parser.add_argument("--duration", type=int, default=15, help="Duration in seconds (default: 15)")
-    parser.add_argument("--batch-size", type=int, default=5000, help="Number of logs per batch (default: 10000)")
-    parser.add_argument("--threads", type=int, default=4, help="Number of worker threads (default: 8)")
-    parser.add_argument("--body-size", type=int, default=25,
-                        help="Size of log message body in characters (default: 25)")
-    parser.add_argument("--num-attributes", type=int, default=2,
-                        help="Number of attributes per log (default: 2)")
-    parser.add_argument("--attribute-value-size", type=int, default=15,
-                        help="Size of attribute values in characters (default: 15)")
+    parser.add_argument(
+        "--serve", action="store_true", help="Start the server (default: False)"
+    )
+    parser.add_argument(
+        "--serve-port",
+        type=int,
+        default=FLASK_PORT,
+        help=f"Server port to listen on (default {FLASK_PORT})",
+    )
+    parser.add_argument(
+        "--duration", type=int, default=15, help="Duration in seconds (default: 15)"
+    )
+    parser.add_argument(
+        "--body-size",
+        type=int,
+        default=get_default_value("body_size"),
+        help=(
+            "Size of log message body in characters "
+            f"(default {get_default_value('body_size')})"
+        ),
+    )
+    parser.add_argument(
+        "--num-attributes",
+        type=int,
+        default=get_default_value("num_attributes"),
+        help=(
+            "Number of attributes per log "
+            f"(default {get_default_value('num_attributes')})"
+        ),
+    )
+    parser.add_argument(
+        "--attribute-value-size",
+        type=int,
+        default=get_default_value("attribute_value_size"),
+        help=(
+            "Size of attribute values in characters "
+            f"(default {get_default_value('attribute_value_size')})"
+        ),
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=get_default_value("batch_size"),
+        help=f"Number of logs per batch (default {get_default_value('batch_size')})",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=get_default_value("threads"),
+        help=f"Number of worker threads (default {get_default_value('threads')})",
+    )
+    parser.add_argument(
+        "--target-rate",
+        type=int,
+        default=get_default_value("target_rate"),
+        help=(
+            "Optional message rate to target "
+            f"(default {get_default_value('target_rate')})"
+        ),
+    )
+    parser.add_argument(
+        "--tcp-connection-per-thread",
+        type=bool,
+        default=get_default_value("tcp_connection_per_thread"),
+        help=(
+            "Use a dedicated TCP connection per-thread (default "
+            f"{get_default_value("tcp_connection_per_thread")})"
+        ),
+    )
+    parser.add_argument(
+        "--load-type",
+        type=str,
+        default=get_default_value("load_type"),
+        help=(
+            "Load generation type: 'otlp' or 'syslog' (default "
+            f"{get_default_value('load_type')})"
+        ),
+    )
     args = parser.parse_args()
 
-    print(f"Starting load generator with configuration:")
+    if args.serve:
+        if is_port_in_use(FLASK_PORT):
+            raise RuntimeError(f"Port {FLASK_PORT} is already in use.")
+        app.run(host="0.0.0.0", port=args.serve_port)
+        return
+
+    print("Starting load generator with configuration:")
     print(f"- Duration: {args.duration} seconds")
+    print(f"- Load type: {args.load_type}")
     print(f"- Batch size: {args.batch_size} logs")
     print(f"- Threads: {args.threads}")
+    print(f"- Target Rate: {args.target_rate}")
     print(f"- Log body size: {args.body_size} characters")
     print(f"- Attributes per log: {args.num_attributes}")
     print(f"- Attribute value size: {args.attribute_value_size} characters")
 
-    end_time = time.time() + args.duration
+    config = LoadGenConfig(
+        body_size=args.body_size,
+        num_attributes=args.num_attributes,
+        attribute_value_size=args.attribute_value_size,
+        batch_size=args.batch_size,
+        threads=args.threads,
+        target_rate=args.target_rate,
+        load_type=args.load_type,
+    )
 
-    # Create and start worker threads
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [executor.submit(worker_thread, i, args, end_time) for i in range(args.threads)]
+    loadgen.start(config=config)
 
-        # Wait for all threads to complete
-        total_sent = 0
-        total_failed = 0
-        total_bytes_sent = 0
-        for future in concurrent.futures.as_completed(futures):
-            sent, failed, bytes_sent = future.result()
-            total_sent += sent
-            total_failed += failed
-            total_bytes_sent += bytes_sent
+    try:
+        time.sleep(args.duration)
+    except KeyboardInterrupt:
+        print("Interrupted by user, stopping early...")
 
-    print(f"LOADGEN_LOGS_SENT: {total_sent}")
-    print(f"LOADGEN_LOGS_FAILED: {total_failed}")
-    print(f"LOADGEN_BYTES_SENT: {total_bytes_sent} bytes")
+    loadgen.stop()
+
+    print(f'LOADGEN_LOGS_SENT: {loadgen.metrics.get("sent", 0)}')
+    print(f'LOADGEN_LOGS_FAILED: {loadgen.metrics.get("failed", 0)}')
+    print(f'LOADGEN_BYTES_SENT: {loadgen.metrics.get("bytes_sent", 0)} bytes')
+
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
     main()

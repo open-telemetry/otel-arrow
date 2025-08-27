@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTLP receiver node
@@ -8,7 +9,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::SHARED_RECEIVERS;
+use crate::OTLP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::grpc::{
     LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl, TraceServiceImpl,
@@ -21,13 +22,33 @@ use crate::proto::opentelemetry::collector::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ReceiverFactory;
+use otap_df_engine::config::ReceiverConfig;
+use otap_df_engine::context::PipelineContext;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
-use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
+use otap_df_engine::node::NodeId;
+use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::shared::receiver as shared;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
+
+/// URN for the OTLP receiver
+pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
+
+/// Configuration for the OTLP receiver
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// The address to listen for incoming OTLP messages
+    pub listening_addr: SocketAddr,
+    /// The compression method to use for the gRPC connection
+    pub compression_method: Option<CompressionMethod>,
+}
 
 /// A Receiver that listens for OTLP messages
 pub struct OTLPReceiver {
@@ -40,10 +61,20 @@ pub struct OTLPReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(SHARED_RECEIVERS)]
-pub static OTLP_RECEIVER: SharedReceiverFactory<OTLPData> = SharedReceiverFactory {
-    name: "urn:otel:otlp:receiver",
-    create: |config: &Value| Box::new(OTLPReceiver::from_config(config)),
+#[distributed_slice(OTLP_RECEIVER_FACTORIES)]
+pub static OTLP_RECEIVER: ReceiverFactory<OTLPData> = ReceiverFactory {
+    name: OTLP_RECEIVER_URN,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
+        Ok(ReceiverWrapper::shared(
+            OTLPReceiver::from_config(pipeline, &node_config.config)?,
+            node,
+            node_config,
+            receiver_config,
+        ))
+    },
 };
 
 impl OTLPReceiver {
@@ -57,13 +88,19 @@ impl OTLPReceiver {
     }
 
     /// Creates a new OTLPReceiver from a configuration object
-    #[must_use]
-    pub fn from_config(_config: &Value) -> Self {
-        // ToDo: implement config parsing
-        OTLPReceiver {
-            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
-            compression_method: None,
-        }
+    pub fn from_config(
+        _pipeline: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        Ok(OTLPReceiver {
+            listening_addr: config.listening_addr,
+            compression_method: config.compression_method,
+        })
     }
 }
 
@@ -74,12 +111,19 @@ impl OTLPReceiver {
 impl shared::Receiver<OTLPData> for OTLPReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: shared::ControlChannel,
+        mut ctrl_msg_recv: shared::ControlChannel<OTLPData>,
         effect_handler: shared::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
+
+        effect_handler
+            .info(&format!(
+                "Listening on {} for OTLP data",
+                self.listening_addr
+            ))
+            .await;
 
         //start event loop
         loop {
@@ -117,7 +161,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {..}) => {
+                        Ok(NodeControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
                         },
@@ -138,7 +182,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                 .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(error) = result {
                         // Report receiver error
-                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: error.to_string()});
+                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_id(), error: error.to_string()});
                     }
                 }
             }
@@ -151,7 +195,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
 #[cfg(test)]
 mod tests {
     use crate::grpc::OTLPData;
-    use crate::otlp_receiver::OTLPReceiver;
+    use crate::otlp_receiver::{OTLP_RECEIVER_URN, OTLPReceiver};
     use crate::proto::opentelemetry::collector::{
         logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
@@ -160,17 +204,22 @@ mod tests {
         },
         trace::v1::{ExportTraceServiceRequest, trace_service_client::TraceServiceClient},
     };
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        test_node,
+    };
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
+    use std::sync::Arc;
     use tokio::time::{Duration, timeout};
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
         grpc_endpoint: String,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OTLPData>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // send data to the receiver
@@ -274,9 +323,14 @@ mod tests {
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
         // create our receiver
-        let receiver =
-            ReceiverWrapper::shared(OTLPReceiver::new(addr, None), test_runtime.config());
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver::new(addr, None),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime

@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Set of traits and structures used to implement processors.
@@ -30,12 +31,15 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::effect_handler::EffectHandlerCore;
-use crate::error::Error;
+use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
+use crate::error::{Error, TypedError};
 use crate::message::Message;
+use crate::node::NodeId;
+use crate::shared::message::SharedSender;
 use async_trait::async_trait;
-use otap_df_channel::error::SendError;
-use std::borrow::Cow;
+use otap_df_config::PortName;
+use std::collections::HashMap;
+use std::time::Duration;
 
 /// A trait for processors in the pipeline (Send definition).
 #[async_trait]
@@ -75,45 +79,120 @@ pub trait Processor<PData> {
         &mut self,
         msg: Message<PData>,
         effect_handler: &mut EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A `Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
+    /// Supports multiple named output ports.
+    msg_senders: HashMap<PortName, SharedSender<PData>>,
+    /// Cached default sender for fast access in the hot path
+    default_sender: Option<SharedSender<PData>>,
 }
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new shared (Send) `EffectHandler` with the given processor name.
+    /// Creates a new shared (Send) `EffectHandler` with the given processor name and pdata sender.
     #[must_use]
-    pub fn new(name: Cow<'static, str>, msg_sender: tokio::sync::mpsc::Sender<PData>) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, SharedSender<PData>>,
+        default_port: Option<PortName>,
+    ) -> Self {
+        let core = EffectHandlerCore::new(node_id);
+
+        // Determine and cache the default sender
+        let default_sender = if let Some(ref port) = default_port {
+            msg_senders.get(port).cloned()
+        } else if msg_senders.len() == 1 {
+            msg_senders.values().next().cloned()
+        } else {
+            None
+        };
+
         EffectHandler {
-            core: EffectHandlerCore { node_name: name },
-            msg_sender,
+            core,
+            msg_senders,
+            default_sender,
         }
     }
 
-    /// Returns the name of the processor associated with this handler.
+    /// Returns the id of the processor associated with this handler.
     #[must_use]
-    pub fn processor_name(&self) -> Cow<'static, str> {
-        self.core.node_name()
+    pub fn processor_id(&self) -> NodeId {
+        self.core.node_id()
+    }
+
+    /// Returns the list of connected out ports for this processor.
+    #[must_use]
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.msg_senders.keys().cloned().collect()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
-            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
+    /// Returns an [`Error::ProcessorError`] if the message could not be routed to a port.
+    #[inline]
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+        match &self.default_sender {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ProcessorError {
+                processor: self.processor_id(),
+                error:
+                    "Ambiguous default out port: multiple ports connected and no default configured"
+                        .to_string(),
+            })),
+        }
+    }
+
+    /// Sends a message to a specific named out port.
+    #[inline]
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        match self.msg_senders.get(&port_name) {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ProcessorError {
+                processor: self.processor_id(),
+                error: format!(
+                    "Unknown out port '{port_name}' for node {}",
+                    self.processor_id()
+                ),
+            })),
+        }
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for processors to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a processor at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle, Error> {
+        self.core.start_periodic_timer(duration).await
     }
 
     // More methods will be added in the future as needed.
