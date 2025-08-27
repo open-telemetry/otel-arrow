@@ -195,7 +195,7 @@ impl RetryProcessor {
         &mut self,
         id: u64,
         reason: String,
-        _rvalue: Option<OtapPdata>,
+        _pdata: Option<Box<OtapPdata>>,
         _effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         if let Some(mut pending) = self.pending_messages.remove(&id) {

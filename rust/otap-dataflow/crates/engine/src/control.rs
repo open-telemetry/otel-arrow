@@ -35,9 +35,7 @@ pub enum NodeControlMsg<PData> {
 
         /// Placeholder for optional return value, making it possible for the
         /// retry sender to be stateless.
-        ///
-        /// TODO: should this be boxed to reduce the size of NodeControlMsg?
-        pdata: Option<PData>,
+        pdata: Option<Box<PData>>,
     },
 
     /// Notifies the node of a configuration change.

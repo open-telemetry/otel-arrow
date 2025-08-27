@@ -43,7 +43,7 @@ impl<Data> Message<Data> {
     pub fn nack_ctrl_msg(id: u64, reason: &str, pdata: Option<Data>) -> Self {
         Message::Control(NodeControlMsg::Nack {
             id,
-            pdata,
+            pdata: pdata.map(Box::new),
             reason: reason.to_owned(),
         })
     }
