@@ -9,6 +9,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.42.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.42.0) - 2025-08-27
+
 - Standardize to shorthand license header.
   [#954](https://github.com/open-telemetry/otel-arrow/pull/954)
 - Fix logs handling of missing optional trace_id and span_id columns.
