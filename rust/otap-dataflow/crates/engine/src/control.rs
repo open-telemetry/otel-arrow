@@ -37,7 +37,7 @@ pub enum NodeControlMsg<PData> {
         /// retry sender to be stateless.
         ///
         /// TODO: should this be boxed to reduce the size of NodeControlMsg?
-        rvalue: Option<PData>,
+        pdata: Option<PData>,
     },
 
     /// Notifies the node of a configuration change.

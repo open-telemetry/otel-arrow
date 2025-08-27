@@ -54,7 +54,7 @@ impl<PData> TestContext<PData> {
             .send(NodeControlMsg::TimerTick {})
             .await
             // Drop the SendError
-            .map_err(|_| Error::PipelineControlMsgError)
+            .map_err(|e| Error::PipelineControlMsgError(e.to_string()))
     }
 
     /// Sends a config control message.
@@ -67,7 +67,7 @@ impl<PData> TestContext<PData> {
             .send(NodeControlMsg::Config { config })
             .await
             // Drop the SendError
-            .map_err(|_| Error::PipelineControlMsgError)
+            .map_err(|e| Error::PipelineControlMsgError(e.to_string()))
     }
 
     /// Sends a shutdown control message.
@@ -83,7 +83,7 @@ impl<PData> TestContext<PData> {
             })
             .await
             // Drop the SendError
-            .map_err(|_| Error::PipelineControlMsgError)
+            .map_err(|e| Error::PipelineControlMsgError(e.to_string()))
     }
 
     /// Sleeps for the specified duration.

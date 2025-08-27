@@ -40,10 +40,10 @@ impl<Data> Message<Data> {
 
     /// Create a NACK control message with the given ID and reason.
     #[must_use]
-    pub fn nack_ctrl_msg(id: u64, reason: &str, rvalue: Option<Data>) -> Self {
+    pub fn nack_ctrl_msg(id: u64, reason: &str, pdata: Option<Data>) -> Self {
         Message::Control(NodeControlMsg::Nack {
             id,
-            rvalue,
+            pdata,
             reason: reason.to_owned(),
         })
     }

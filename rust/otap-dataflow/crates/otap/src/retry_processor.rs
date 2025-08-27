@@ -330,8 +330,8 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.acknowledge(id);
                     Ok(())
                 }
-                NodeControlMsg::Nack { id, reason, rvalue } => {
-                    self.handle_nack(id, reason, rvalue, effect_handler).await
+                NodeControlMsg::Nack { id, reason, pdata } => {
+                    self.handle_nack(id, reason, pdata, effect_handler).await
                 }
                 NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
@@ -545,7 +545,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -582,7 +582,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: 1,
                         reason: format!("Test failure {i}"),
-                        rvalue: None,
+                        pdata: None,
                     }),
                     &mut effect_handler,
                 )
@@ -615,7 +615,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -697,7 +697,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "First failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -713,7 +713,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Second failure".to_string(),
-                    rvalue: None,
+                    pdata: None,
                 }),
                 &mut effect_handler,
             )
@@ -750,7 +750,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: i,
                         reason: "Test failure".to_string(),
-                        rvalue: None,
+                        pdata: None,
                     }),
                     &mut effect_handler,
                 )

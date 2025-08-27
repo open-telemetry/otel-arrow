@@ -34,7 +34,7 @@
 
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::{Error, ErrorT};
+use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
 use crate::node::NodeId;
 use async_trait::async_trait;
@@ -176,13 +176,16 @@ impl<PData> EffectHandler<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`ErrorT::ChannelSendError`] if the message could not be sent or
-    /// [`ErrorT::Error::ReceiverError`] if the default port is not configured.
+    /// Returns an [`TypedError::ChannelSendError`] if the message could not be sent or
+    /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
     #[inline]
-    pub async fn send_message(&self, data: PData) -> Result<(), ErrorT<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
-            Some(sender) => sender.send(data).await.map_err(ErrorT::ChannelSendError),
-            None => Err(ErrorT::Error(Error::ReceiverError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
@@ -198,14 +201,17 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`Error::ChannelSendError`] if the message could not be sent, or
     /// [`Error::ReceiverError`] if the port does not exist.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), ErrorT<PData>>
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.send(data).await.map_err(ErrorT::ChannelSendError),
-            None => Err(ErrorT::Error(Error::ReceiverError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
