@@ -172,7 +172,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(data) => {
-                    let service_req: OtlpProtoBytes = data.try_into()?;
+                    let service_req: OtlpProtoBytes = data.try_into().map(|(_, value)| value)?;
                     _ = match service_req {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             self.metrics.export_logs_request_received.inc();

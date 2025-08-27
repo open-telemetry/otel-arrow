@@ -153,19 +153,26 @@ impl OtlpProtoBytes {
 pub enum OtapPdata {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes {
+        /// context about the request
         context: Context,
+
+        /// the request as OTLP protobuf bytes
         value: OtlpProtoBytes,
     },
 
     /// data is contained in `BatchArrowRecords`, which contain ArrowIPC serialized
     OtapArrowBytes {
+        /// context about the request
         context: Context,
+        /// the request as OTAP Arrow IPC bytes
         value: OtapArrowBytes,
     },
 
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
     OtapArrowRecords {
+        /// context about the request
         context: Context,
+        /// the request as OTAP Arrow record batches
         value: OtapArrowRecords,
     },
 }
@@ -249,38 +256,42 @@ impl From<OtapArrowBytes> for OtapPdata {
     }
 }
 
-impl TryFrom<OtapPdata> for OtapArrowRecords {
+impl TryFrom<OtapPdata> for (Context, OtapArrowRecords) {
     type Error = error::Error;
 
     fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
         match value {
-            OtapPdata::OtapArrowBytes(otap_data) => otap_data.try_into(),
-            OtapPdata::OtapArrowRecords(otap_batch) => Ok(otap_batch),
-            OtapPdata::OtlpBytes(otlp_bytes) => otlp_bytes.try_into(),
+            OtapPdata::OtapArrowBytes { context, value } => value.try_into().map(|v| (context, v)),
+            OtapPdata::OtapArrowRecords { context, value } => Ok((context, value)),
+            OtapPdata::OtlpBytes { value, context } => value.try_into().map(|v| (context, v)),
         }
     }
 }
 
-impl TryFrom<OtapPdata> for OtlpProtoBytes {
+impl TryFrom<OtapPdata> for (Context, OtlpProtoBytes) {
     type Error = error::Error;
 
     fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
         match value {
-            OtapPdata::OtapArrowBytes(otap_data) => otap_data.try_into(),
-            OtapPdata::OtapArrowRecords(otap_batch) => otap_batch.try_into(),
-            OtapPdata::OtlpBytes(otlp_bytes) => Ok(otlp_bytes),
+            OtapPdata::OtapArrowBytes { value, context } => value.try_into().map(|v| (context, v)),
+            OtapPdata::OtapArrowRecords { value, context } => {
+                value.try_into().map(|v| (context, v))
+            }
+            OtapPdata::OtlpBytes { value, context } => Ok((context, value)),
         }
     }
 }
 
-impl TryFrom<OtapPdata> for OtapArrowBytes {
+impl TryFrom<OtapPdata> for (Context, OtapArrowBytes) {
     type Error = error::Error;
 
     fn try_from(value: OtapPdata) -> Result<Self, Self::Error> {
         match value {
-            OtapPdata::OtapArrowBytes(otap_data) => Ok(otap_data),
-            OtapPdata::OtapArrowRecords(otap_batch) => otap_batch.try_into(),
-            OtapPdata::OtlpBytes(otlp_bytes) => otlp_bytes.try_into(),
+            OtapPdata::OtapArrowBytes { value, context } => Ok((context, value)),
+            OtapPdata::OtapArrowRecords { value, context } => {
+                value.try_into().map(|v| (context, v))
+            }
+            OtapPdata::OtlpBytes { value, context } => value.try_into().map(|v| (context, v)),
         }
     }
 }
@@ -462,31 +473,31 @@ mod test {
         let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
         let pdata: OtapPdata = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPdata = otlp_bytes.into();
 
         // test can go OtlpProtoBytes -> OTAPData
-        let otap_data: OtapArrowBytes = pdata.try_into().unwrap();
+        let otap_data: OtapArrowBytes = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otap_data, OtapArrowBytes::ArrowLogs(_)));
         let pdata: OtapPdata = otap_data.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPdata = otlp_bytes.into();
 
         // test can go otap_batch -> OTAPData
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
         let pdata: OtapPdata = otap_batch.into();
-        let otap_data: OtapArrowBytes = pdata.try_into().unwrap();
+        let otap_data: OtapArrowBytes = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otap_data, OtapArrowBytes::ArrowLogs(_)));
         let pdata: OtapPdata = otap_data.into();
 
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
     }
 
@@ -500,11 +511,11 @@ mod test {
         let pdata: OtapPdata = OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
         let pdata: OtapPdata = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
         let bytes = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => bytes,
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -520,11 +531,11 @@ mod test {
         let pdata: OtapPdata = OtlpProtoBytes::ExportTracesRequest(otlp_bytes).into();
 
         // test can go OtlpBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v).unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
         let pdata: OtapPdata = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into().map(|(_, v)| v).unwrap();
         let bytes = match otlp_bytes {
             OtlpProtoBytes::ExportTracesRequest(bytes) => bytes,
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -819,11 +830,18 @@ mod test {
         assert_eq!(traces_bytes.signal_type(), SignalType::Traces);
 
         // Test signal_type for OtapPdata variants
-        let pdata_logs = OtapPdata::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(vec![]));
-        let pdata_metrics =
-            OtapPdata::OtapArrowRecords(OtapArrowRecords::Metrics(Default::default()));
-        let pdata_traces =
-            OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowTraces(Default::default()));
+        let pdata_logs = OtapPdata::OtlpBytes {
+            context: Default::default(),
+            value: OtlpProtoBytes::ExportLogsRequest(vec![]),
+        };
+        let pdata_metrics = OtapPdata::OtapArrowRecords {
+            context: Default::default(),
+            value: OtapArrowRecords::Metrics(Default::default()),
+        };
+        let pdata_traces = OtapPdata::OtapArrowBytes {
+            context: Default::default(),
+            value: OtapArrowBytes::ArrowTraces(Default::default()),
+        };
 
         assert_eq!(pdata_logs.signal_type(), SignalType::Logs);
         assert_eq!(pdata_metrics.signal_type(), SignalType::Metrics);

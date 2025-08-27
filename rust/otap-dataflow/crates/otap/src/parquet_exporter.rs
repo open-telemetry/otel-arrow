@@ -174,7 +174,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(pdata) => {
-                    let mut otap_batch: OtapArrowRecords = pdata.try_into()?;
+                    let mut otap_batch: OtapArrowRecords = pdata.try_into().map(|(_, v)| v)?;
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
@@ -571,7 +571,7 @@ mod test {
                 }),
             )
             .into();
-            let mut otap_batch2 = OtapArrowRecords::try_from(otap_batch2).unwrap();
+            let mut otap_batch2: OtapArrowRecords = otap_batch2.try_into().map(|(_, v)| v).unwrap();
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
             // flushed on write

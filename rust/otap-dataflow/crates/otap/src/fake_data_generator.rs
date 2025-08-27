@@ -411,8 +411,10 @@ mod tests {
 
     impl From<OtapPdata> for OTLPSignal {
         fn from(value: OtapPdata) -> Self {
-            let otlp_bytes: OtlpProtoBytes =
-                value.try_into().expect("can convert signal to otlp bytes");
+            let otlp_bytes: OtlpProtoBytes = value
+                .try_into()
+                .map(|(_, v)| v)
+                .expect("can convert signal to otlp bytes");
             match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                     Self::Logs(LogsData::decode(bytes.as_ref()).expect("can decode bytes"))

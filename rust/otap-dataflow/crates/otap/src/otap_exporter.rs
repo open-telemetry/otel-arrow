@@ -159,7 +159,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
                 //send data
                 Message::PData(message) => {
-                    let message: OtapArrowBytes = message.try_into()?;
+                    let message: OtapArrowBytes = message.try_into().map(|(_, value)| value)?;
 
                     match message {
                         // match on OTAPData type and use the respective client to send message
@@ -313,6 +313,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .try_into()
+                        .map(|(_, value)| value)
                         .expect("Could convert pdata to OTAPData");
 
                 // Assert that the message received is what the exporter sent
@@ -328,6 +329,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .try_into()
+                        .map(|(_, value)| value)
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
                     create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -339,6 +341,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .try_into()
+                        .map(|(_, value)| value)
                         .expect("Could convert pdata to OTAPData");
 
                 let _expected_trace_message =

@@ -340,6 +340,7 @@ mod tests {
                     .expect("Timed out waiting for message")
                     .expect("No message received")
                     .try_into()
+                    .map(|(_, value)| value)
                     .expect("can convert to OtlpProtoBytes");
 
                 assert!(matches!(logs_pdata, OtlpProtoBytes::ExportLogsRequest(_)));
@@ -354,6 +355,7 @@ mod tests {
                     .expect("Timed out waiting for message")
                     .expect("No message received")
                     .try_into()
+                    .map(|(_, value)| value)
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     metrics_pdata,
@@ -370,6 +372,7 @@ mod tests {
                     .expect("Timed out waiting for message")
                     .expect("No message received")
                     .try_into()
+                    .map(|(_, value)| value)
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     trace_pdata,

@@ -128,7 +128,10 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     break;
                 }
                 Message::PData(pdata) => {
-                    let batch = match OtapArrowBytes::try_from(pdata) {
+                    //.map(|(_, v)| v)
+                    let rbatch: Result<OtapArrowBytes, _> = pdata.try_into().map(|(_, v)| v);
+
+                    let batch = match rbatch {
                         Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowTraces(batch)) => batch,

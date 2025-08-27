@@ -400,12 +400,15 @@ mod tests {
     }
 
     fn create_test_data(_id: u64) -> OtapPdata {
-        OtapPdata::OtapArrowBytes(OtapArrowBytes::ArrowLogs(
-            create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                num_rows: 1,
-                ..Default::default()
-            }),
-        ))
+        OtapPdata::OtapArrowBytes {
+            context: Default::default(),
+            value: OtapArrowBytes::ArrowLogs(create_simple_logs_arrow_record_batches(
+                SimpleDataGenOptions {
+                    num_rows: 1,
+                    ..Default::default()
+                },
+            )),
+        }
     }
 
     /// num_rows is a placeholder for maybe a testing helper library for OTAP pdata?
@@ -413,21 +416,21 @@ mod tests {
         match pdata.signal_type() {
             SignalType::Logs => {
                 let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
+                    pdata.clone().try_into().map(|(_, v)| v).unwrap();
                 records
                     .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs)
                     .map_or(0, |batch| batch.num_rows())
             }
             SignalType::Traces => {
                 let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
+                    pdata.clone().try_into().map(|(_, v)| v).unwrap();
                 records
                     .get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::Spans)
                     .map_or(0, |batch| batch.num_rows())
             }
             SignalType::Metrics => {
                 let records: otel_arrow_rust::otap::OtapArrowRecords =
-                    pdata.clone().try_into().unwrap();
+                    pdata.clone().try_into().map(|(_, v)| v).unwrap();
                 records.get(otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType::UnivariateMetrics)
                     .map_or(0, |batch| batch.num_rows())
             }
