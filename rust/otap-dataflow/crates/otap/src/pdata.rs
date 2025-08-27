@@ -100,6 +100,8 @@ use prost::{EncodeError, Message};
 use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
+pub use crate::context::Context;
+
 /// module contains related to pdata
 pub mod error {
     /// Errors related to pdata
@@ -150,13 +152,22 @@ impl OtlpProtoBytes {
 #[allow(clippy::large_enum_variant)]
 pub enum OtapPdata {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
-    OtlpBytes(OtlpProtoBytes),
+    OtlpBytes {
+        context: Context,
+        value: OtlpProtoBytes,
+    },
 
     /// data is contained in `BatchArrowRecords`, which contain ArrowIPC serialized
-    OtapArrowBytes(OtapArrowBytes),
+    OtapArrowBytes {
+        context: Context,
+        value: OtapArrowBytes,
+    },
 
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
-    OtapArrowRecords(OtapArrowRecords),
+    OtapArrowRecords {
+        context: Context,
+        value: OtapArrowRecords,
+    },
 }
 
 impl OtapPdata {
@@ -164,9 +175,9 @@ impl OtapPdata {
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
         match self {
-            Self::OtlpBytes(inner) => inner.signal_type(),
-            Self::OtapArrowBytes(inner) => inner.signal_type(),
-            Self::OtapArrowRecords(inner) => inner.signal_type(),
+            Self::OtlpBytes { value, .. } => value.signal_type(),
+            Self::OtapArrowBytes { value, .. } => value.signal_type(),
+            Self::OtapArrowRecords { value, .. } => value.signal_type(),
         }
     }
 }
@@ -213,19 +224,28 @@ impl OtapPdataHelpers for OtapArrowBytes {
 
 impl From<OtapArrowRecords> for OtapPdata {
     fn from(value: OtapArrowRecords) -> Self {
-        Self::OtapArrowRecords(value)
+        Self::OtapArrowRecords {
+            value,
+            context: Default::default(),
+        }
     }
 }
 
 impl From<OtlpProtoBytes> for OtapPdata {
     fn from(value: OtlpProtoBytes) -> Self {
-        Self::OtlpBytes(value)
+        Self::OtlpBytes {
+            value,
+            context: Default::default(),
+        }
     }
 }
 
 impl From<OtapArrowBytes> for OtapPdata {
     fn from(value: OtapArrowBytes) -> Self {
-        Self::OtapArrowBytes(value)
+        Self::OtapArrowBytes {
+            value,
+            context: Default::default(),
+        }
     }
 }
 
