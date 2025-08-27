@@ -228,12 +228,7 @@ impl UpDownCounter<u64> {
 
 impl<T> Gauge<T>
 where
-    T: Copy
-        + Default
-        + std::ops::Add<Output = T>
-        + std::ops::Sub<Output = T>
-        + AddAssign
-        + SubAssign,
+    T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>,
 {
     /// Creates a new gauge initialized with the provided value.
     #[inline]
@@ -258,18 +253,6 @@ where
     pub fn get(&self) -> T {
         self.0
     }
-
-    /// Adds an arbitrary value to the gauge.
-    #[inline]
-    pub fn add(&mut self, v: T) {
-        self.0 += v;
-    }
-
-    /// Subs an arbitrary value to the gauge.
-    #[inline]
-    pub fn sub(&mut self, v: T) {
-        self.0 -= v;
-    }
 }
 
 impl Debug for Gauge<u64> {
@@ -281,66 +264,6 @@ impl Debug for Gauge<u64> {
 impl From<u64> for Gauge<u64> {
     fn from(value: u64) -> Self {
         Gauge(value)
-    }
-}
-
-impl AddAssign<u64> for Gauge<u64> {
-    fn add_assign(&mut self, rhs: u64) {
-        #[cfg(feature = "unchecked-arithmetic")]
-        {
-            // SAFETY: Gauge arithmetic is expected to be well-behaved in telemetry scenarios.
-            // Wrapping behavior is acceptable for performance-critical metric operations.
-            self.0 = self.0.wrapping_add(rhs);
-        }
-        #[cfg(not(feature = "unchecked-arithmetic"))]
-        {
-            self.0 += rhs;
-        }
-    }
-}
-
-impl SubAssign<u64> for Gauge<u64> {
-    fn sub_assign(&mut self, rhs: u64) {
-        #[cfg(feature = "unchecked-arithmetic")]
-        {
-            // SAFETY: Gauge subtraction is expected to be well-behaved in telemetry scenarios.
-            // Wrapping behavior is acceptable for performance-critical metric operations.
-            self.0 = self.0.wrapping_sub(rhs);
-        }
-        #[cfg(not(feature = "unchecked-arithmetic"))]
-        {
-            self.0 -= rhs;
-        }
-    }
-}
-
-impl Gauge<u64> {
-    /// Increments the gauge by 1.
-    #[inline]
-    pub fn inc(&mut self) {
-        #[cfg(feature = "unchecked-arithmetic")]
-        {
-            // SAFETY: Incrementing by 1 is safe for wrapping arithmetic in telemetry contexts
-            self.0 = self.0.wrapping_add(1);
-        }
-        #[cfg(not(feature = "unchecked-arithmetic"))]
-        {
-            self.0 += 1;
-        }
-    }
-
-    /// Decrements the gauge by 1.
-    #[inline]
-    pub fn dec(&mut self) {
-        #[cfg(feature = "unchecked-arithmetic")]
-        {
-            // SAFETY: Decrementing by 1 is safe for wrapping arithmetic in telemetry contexts
-            self.0 = self.0.wrapping_sub(1);
-        }
-        #[cfg(not(feature = "unchecked-arithmetic"))]
-        {
-            self.0 -= 1;
-        }
     }
 }
 

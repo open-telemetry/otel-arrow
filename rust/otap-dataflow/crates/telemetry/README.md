@@ -38,8 +38,8 @@ while still exporting high-fidelity operational data.
   attribute keys and their types.
 - Registry & reflection: a global registry tracks live metric sets, enabling
   periodic flush loops without bespoke wiring.
-- Transport decoupling: snapshot batches move over MPSC queues to
-  aggregation / export workers.
+- Transport decoupling (aka bottom half of the SDK): snapshot batches move over
+  MPSC queues to aggregation / export workers.
 
 ![Architecture Phase 1](assets/Metrics%20Phase%201.svg)
 
