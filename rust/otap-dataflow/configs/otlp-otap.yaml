@@ -13,7 +13,6 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
-
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otap:exporter"
