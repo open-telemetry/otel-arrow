@@ -57,19 +57,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_id: PipelineId,
         pipeline: PipelineConfig,
         quota: Quota,
+        admin_settings: HttpAdminSettings,
     ) -> Result<(), error::Error> {
         // Initialize a global metrics system and reporter.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let metrics_system = MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
-        let http_settings = HttpAdminSettings::default();
 
         // Start the admin HTTP server
         let metrics_registry = metrics_system.registry();
         let admin_server_handle =
             spawn_thread_local_task("http-admin", move |cancellation_token| {
-                otap_df_admin::run(http_settings, metrics_registry, cancellation_token)
+                otap_df_admin::run(admin_settings, metrics_registry, cancellation_token)
             })?;
 
         // Start the metrics aggregation

@@ -31,6 +31,10 @@ struct Args {
     /// Number of cores to use (0 for default)
     #[arg(long, default_value = "0")]
     num_cores: usize,
+
+    /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080")
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    http_admin_bind: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,7 +60,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting pipeline with {} cores", args.num_cores);
 
-    let result = controller.run_forever(pipeline_group_id, pipeline_id, pipeline_cfg, quota);
+    let admin_settings = otap_df_config::engine::HttpAdminSettings {
+        bind_address: args.http_admin_bind,
+    };
+    let result = controller.run_forever(
+        pipeline_group_id,
+        pipeline_id,
+        pipeline_cfg,
+        quota,
+        admin_settings,
+    );
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
