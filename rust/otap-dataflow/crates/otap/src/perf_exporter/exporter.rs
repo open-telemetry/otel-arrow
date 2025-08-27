@@ -314,7 +314,7 @@ mod tests {
         metrics_registry_handle: MetricsRegistryHandle,
     ) -> impl FnOnce(
         TestContext<OtapPdata>,
-        Result<(), Error<OtapPdata>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {

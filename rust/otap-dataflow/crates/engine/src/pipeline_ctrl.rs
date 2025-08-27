@@ -240,7 +240,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
 // Test-only helpers to introspect internal state without exposing fields publicly.
 #[cfg(test)]
-impl PipelineCtrlMsgManager {
+impl<PData> PipelineCtrlMsgManager<PData> {
     pub(crate) fn test_tick_count(&self) -> usize {
         self.tick_timers.timers.len()
     }
