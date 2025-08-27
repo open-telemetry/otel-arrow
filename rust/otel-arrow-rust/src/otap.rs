@@ -873,6 +873,99 @@ mod test {
     }
 
     #[test]
+    fn test_logs_batch_length() {
+        let logs_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ID,
+                DataType::UInt16,
+                false,
+            )])),
+            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
+        )
+        .unwrap();
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, logs_rb);
+        assert_eq!(otap_batch.batch_length(), 4);
+    }
+
+    #[test]
+    fn test_traces_batch_length() {
+        let spans_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ID,
+                DataType::UInt16,
+                false,
+            )])),
+            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
+        )
+        .unwrap();
+        let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
+        otap_batch.set(ArrowPayloadType::Spans, spans_rb);
+        assert_eq!(otap_batch.batch_length(), 4);
+    }
+
+    #[test]
+    fn test_metrics_batch_length() {
+        let metrics_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ID,
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
+        )
+        .unwrap();
+        let dp_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        ]));
+        let numbers_dp_rb = RecordBatch::try_new(
+            dp_schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
+            ],
+        )
+        .unwrap();
+
+        let summary_dp_rb = RecordBatch::try_new(
+            dp_schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
+            ],
+        )
+        .unwrap();
+
+        let hist_dp_rb = RecordBatch::try_new(
+            dp_schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3, 7, 8])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1])),
+            ],
+        )
+        .unwrap();
+
+        let exp_hist_dp_rb = RecordBatch::try_new(
+            dp_schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![2, 3])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
+        otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
+        otap_batch.set(ArrowPayloadType::NumberDataPoints, numbers_dp_rb);
+        otap_batch.set(ArrowPayloadType::SummaryDataPoints, summary_dp_rb);
+        otap_batch.set(ArrowPayloadType::HistogramDataPoints, hist_dp_rb);
+        otap_batch.set(ArrowPayloadType::ExpHistogramDataPoints, exp_hist_dp_rb);
+
+        assert_eq!(otap_batch.batch_length(), 13);
+    }
+
+    #[test]
     fn test_multivariate_metrics_child_types() {
         let multivariate_types = child_payload_types(ArrowPayloadType::MultivariateMetrics);
         let univariate_types = child_payload_types(ArrowPayloadType::UnivariateMetrics);

@@ -1605,7 +1605,6 @@ mod test {
     };
     use arrow::array::{RecordBatchOptions, record_batch};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type};
-    use arrow_ipc::FixedSizeBinary;
     use arrow_schema;
 
     use crate::otlp::metrics::MetricType;
@@ -2024,7 +2023,7 @@ mod test {
                 Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2, 3])),
                 Arc::new(
                     FixedSizeBinaryArray::try_from_iter(
-                        [1, 2, 3, 4].into_iter().map(|id| u64::to_be_bytes(id)),
+                        [1, 2, 3, 4].into_iter().map(u64::to_be_bytes),
                     )
                     .unwrap(),
                 ),
