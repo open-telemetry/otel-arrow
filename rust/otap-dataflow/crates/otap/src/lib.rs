@@ -50,6 +50,9 @@ pub mod signal_type_router;
 pub mod attributes_processor;
 mod metrics;
 
+/// Retry processor (OTAP-based)
+pub mod retry_processor;
+
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
