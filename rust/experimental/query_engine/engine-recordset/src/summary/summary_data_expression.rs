@@ -161,7 +161,7 @@ mod tests {
                     OwnedValue::String(StringValueStorage::new("value3".into())),
                 );
 
-            let pipeline = PipelineExpressionBuilder::new(" ")
+            let pipeline = PipelineExpressionBuilder::new("")
                 .with_expressions(vec![DataExpression::Summary(summary_data_expression)])
                 .build()
                 .unwrap();
@@ -376,7 +376,7 @@ mod tests {
                 OwnedValue::Integer(IntegerValueStorage::new(18)),
             );
 
-            let pipeline = PipelineExpressionBuilder::new(" ")
+            let pipeline = PipelineExpressionBuilder::new("")
                 .with_expressions(vec![DataExpression::Summary(summary_data_expression)])
                 .build()
                 .unwrap();
