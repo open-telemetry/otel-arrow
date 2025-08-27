@@ -29,7 +29,7 @@ use tokio::time::sleep;
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
     /// Sender for control messages
-    control_tx: Sender<NodeControlMsg>,
+    control_tx: Sender<NodeControlMsg<PData>>,
     /// Sender for pipeline data
     pdata_tx: Sender<PData>,
     /// Message counter for tracking processed messages
@@ -50,7 +50,7 @@ impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
     #[must_use]
     pub fn new(
-        control_tx: Sender<NodeControlMsg>,
+        control_tx: Sender<NodeControlMsg<PData>>,
         pdata_tx: Sender<PData>,
         counters: CtrlMsgCounters,
     ) -> Self {
@@ -72,7 +72,7 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_timer_tick(&self) -> Result<(), SendError<NodeControlMsg>> {
+    pub async fn send_timer_tick(&self) -> Result<(), SendError<NodeControlMsg<PData>>> {
         self.control_tx.send(NodeControlMsg::TimerTick {}).await
     }
 
@@ -81,7 +81,7 @@ impl<PData> TestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_config(&self, config: Value) -> Result<(), SendError<NodeControlMsg>> {
+    pub async fn send_config(&self, config: Value) -> Result<(), SendError<NodeControlMsg<PData>>> {
         self.control_tx
             .send(NodeControlMsg::Config { config })
             .await
@@ -96,7 +96,7 @@ impl<PData> TestContext<PData> {
         &self,
         deadline: Duration,
         reason: &str,
-    ) -> Result<(), SendError<NodeControlMsg>> {
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         self.control_tx
             .send(NodeControlMsg::Shutdown {
                 deadline,
@@ -148,11 +148,11 @@ pub struct TestPhase<PData> {
 
     counters: CtrlMsgCounters,
 
-    control_sender: Sender<NodeControlMsg>,
+    control_sender: Sender<NodeControlMsg<PData>>,
     pdata_sender: Sender<PData>,
 
     /// Join handle for the starting the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
 }
@@ -167,7 +167,7 @@ pub struct ValidationPhase<PData> {
     context: TestContext<PData>,
 
     /// Join handle for the running the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error<PData>>>,
+    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
     // ToDo implement support for pipeline control messages in a future PR.
     #[allow(unused_variables)]
@@ -296,7 +296,7 @@ impl<PData> ValidationPhase<PData> {
     /// The result of the provided future.
     pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
     where
-        F: FnOnce(TestContext<PData>, Result<(), Error<PData>>) -> Fut,
+        F: FnOnce(TestContext<PData>, Result<(), Error>) -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion

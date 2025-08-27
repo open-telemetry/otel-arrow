@@ -43,7 +43,7 @@ impl<PData> TestContext<PData> {
     }
 
     /// Processes a new message.
-    pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
+    pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error> {
         match &mut self.runtime {
             ProcessorWrapperRuntime::Local {
                 processor,

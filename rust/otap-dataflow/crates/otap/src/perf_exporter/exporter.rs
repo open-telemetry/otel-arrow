@@ -102,7 +102,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         // init variables for tracking
         let mut average_pipeline_latency: f64 = 0.0;
 
@@ -314,7 +314,7 @@ mod tests {
         metrics_registry_handle: MetricsRegistryHandle,
     ) -> impl FnOnce(
         TestContext<OtapPdata>,
-        Result<(), Error<OtapPdata>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {

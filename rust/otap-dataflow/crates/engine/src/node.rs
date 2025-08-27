@@ -20,7 +20,7 @@ pub use otap_df_config::NodeId as NodeName;
 
 /// Common trait for nodes in the pipeline.
 #[async_trait::async_trait(?Send)]
-pub trait Node {
+pub trait Node<PData> {
     /// Flag indicating whether the node is shared (true) or local (false).
     #[must_use]
     fn is_shared(&self) -> bool;
@@ -33,7 +33,10 @@ pub trait Node {
     fn user_config(&self) -> Arc<NodeUserConfig>;
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>>;
+    async fn send_control_msg(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>>;
 }
 
 /// NodeId consists of a unique integer index and a name.
@@ -58,24 +61,20 @@ pub enum NodeType {
 }
 
 /// Trait for nodes that can send pdata to a specific port.
-pub trait NodeWithPDataSender<PData>: Node {
+pub trait NodeWithPDataSender<PData>: Node<PData> {
     /// Sets the sender for pdata messages on the node.
     fn set_pdata_sender(
         &mut self,
         node: NodeId,
         port: PortName,
         sender: Sender<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// Trait for nodes that can receive pdata.
-pub trait NodeWithPDataReceiver<PData>: Node {
+pub trait NodeWithPDataReceiver<PData>: Node<PData> {
     /// Sets the receiver for pdata messages on the node.
-    fn set_pdata_receiver(
-        &mut self,
-        node: NodeId,
-        receiver: Receiver<PData>,
-    ) -> Result<(), Error<PData>>;
+    fn set_pdata_receiver(&mut self, node: NodeId, receiver: Receiver<PData>) -> Result<(), Error>;
 }
 
 /// NodeDefinition is an entry in NodeDefs, indexed by the corresponding NodeIndex assignment.
@@ -114,12 +113,7 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
 
     /// Gets the next unique node identifier. Returns an error when
     /// the node limit (65,535) is exceeded.
-    pub fn next(
-        &mut self,
-        name: NodeName,
-        ntype: NodeType,
-        inner: Inner,
-    ) -> Result<NodeId, Error<PData>> {
+    pub fn next(&mut self, name: NodeName, ntype: NodeType, inner: Inner) -> Result<NodeId, Error> {
         let index = self.entries.len();
         if index > u16::MAX as usize {
             return Err(Error::TooManyNodes {});

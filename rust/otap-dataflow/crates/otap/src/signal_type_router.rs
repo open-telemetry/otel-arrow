@@ -61,7 +61,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         match msg {
             Message::Control(_ctrl) => {
                 // No specific control handling required currently.
@@ -80,10 +80,17 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
 
                 // ToDo [LQ] send_message_to should returns a dedicated error when the port is not found so we can avoid to call the `connected.iter().any(...)`.
                 if has_port {
-                    effect_handler.send_message_to(desired_port, data).await
+                    effect_handler
+                        .send_message_to(desired_port, data)
+                        .await
+                        // Note: is there a nicer way to write the following?
+                        .map_err(|e| e.into())
                 } else {
                     // No matching named port: fall back to engine default behavior
-                    effect_handler.send_message(data).await
+                    effect_handler
+                        .send_message(data)
+                        .await
+                        .map_err(|e| e.into())
                 }
             }
         }

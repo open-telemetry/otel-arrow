@@ -6,15 +6,64 @@
 //! Important note: It is important not to use `!Send` data types in errors (e.g. avoid using Rc) to
 //! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
-use crate::control::{NodeControlMsg, PipelineControlMsg};
 use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
 use otap_df_config::{PortName, Urn};
 use std::borrow::Cow;
 
+/// All errors that can occur in the pipeline engine infrastructure
+/// that contain a variant type <T>. Generally these errors are
+/// returned in situations where you may want to take ownership of the
+/// request after it has failed to send. Most callers that encounter
+/// TypedError<T> and wish to drop the <T> can use .map_err(|e| e.into())
+/// to return an Error.
+#[derive(thiserror::Error, Debug)]
+pub enum TypedError<T> {
+    /// A wrapper for the channel errors.
+    #[error("A channel error occurred: {0}")]
+    ChannelSendError(SendError<T>),
+
+    /// A wrapper for the pipeline control message send errors.
+    #[error("A pipeline control channel error occurred: {0}")]
+    PipelineControlMsgError(SendError<T>),
+
+    /// A wrapper for the node control message send errors.
+    #[error("A node control message send error occurred in node {node}: {error}")]
+    NodeControlMsgSendError {
+        /// The name of the node that encountered the error.
+        node: NodeId,
+
+        /// The error that occurred.
+        error: SendError<T>,
+    },
+
+    /// A type-less error in TypedError<T> context.
+    #[error("{0}")]
+    Error(Error),
+}
+
+impl<T: Sized> From<TypedError<T>> for Error {
+    /// This drops the SendError<T> field yielding an untyped error.
+    fn from(value: TypedError<T>) -> Self {
+        match value {
+            TypedError::ChannelSendError(e) => Error::ChannelSendError {
+                error: e.to_string(),
+            },
+            TypedError::PipelineControlMsgError(e) => Error::PipelineControlMsgError {
+                error: e.to_string(),
+            },
+            TypedError::NodeControlMsgSendError { node, error } => Error::NodeControlMsgSendError {
+                node,
+                error: error.to_string(),
+            },
+            TypedError::Error(e) => e,
+        }
+    }
+}
+
 /// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
-pub enum Error<T> {
+pub enum Error {
     /// A wrapper for the config errors.
     #[error("A config error occurred: {0}")]
     ConfigError(#[from] Box<otap_df_config::error::Error>),
@@ -24,21 +73,26 @@ pub enum Error<T> {
     ChannelRecvError(#[from] otap_df_channel::error::RecvError),
 
     /// A wrapper for the channel errors.
-    #[error("A channel error occurred: {0}")]
-    ChannelSendError(#[from] SendError<T>),
+    #[error("A data channel error occurred: {error}")]
+    ChannelSendError {
+        /// The reason (e.g., channel full)
+        error: String,
+    },
 
     /// A wrapper for the pipeline control message send errors.
-    #[error("A pipeline control channel error occurred: {0}")]
-    PipelineControlMsgError(SendError<PipelineControlMsg>),
+    #[error("A control channel error occurred: {error}")]
+    PipelineControlMsgError {
+        /// The reason (e.g., channel closed)
+        error: String,
+    },
 
     /// A wrapper for the node control message send errors.
     #[error("A node control message send error occurred in node {node}: {error}")]
     NodeControlMsgSendError {
-        /// The name of the node that encountered the error.
+        /// The node to which a message could not be sent.
         node: NodeId,
-
-        /// The error that occurred.
-        error: SendError<NodeControlMsg>,
+        /// The reason (e.g., channel closed)
+        error: String,
     },
 
     /// The specified hyper-edge is invalid.

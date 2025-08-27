@@ -34,7 +34,7 @@
 
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::Error;
+use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use async_trait::async_trait;
@@ -54,23 +54,23 @@ pub trait Receiver<PData> {
     /// Similar to local::receiver::Receiver::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
-        ctrl_chan: ControlChannel,
+        ctrl_chan: ControlChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error<PData>>;
+    ) -> Result<(), Error>;
 }
 
 /// A channel for receiving control messages (in a Send environment).
 ///
 /// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
-pub struct ControlChannel {
-    rx: SharedReceiver<NodeControlMsg>,
+pub struct ControlChannel<PData> {
+    rx: SharedReceiver<NodeControlMsg<PData>>,
 }
 
-impl ControlChannel {
+impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
-    pub fn new(rx: SharedReceiver<NodeControlMsg>) -> Self {
+    pub fn new(rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
         Self { rx }
     }
 
@@ -79,7 +79,7 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<NodeControlMsg, RecvError> {
+    pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
         self.rx.recv().await
     }
 }
@@ -146,34 +146,40 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ReceiverError`] if the message could not be routed to a port.
     #[inline]
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
-            Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
-            None => Err(Error::ReceiverError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
-            }),
+            })),
         }
     }
 
     /// Sends a message to a specific named out port.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), Error<PData>>
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.send(data).await.map_err(Error::ChannelSendError),
-            None => Err(Error::ReceiverError {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
                     self.receiver_id()
                 ),
-            }),
+            })),
         }
     }
 
@@ -184,7 +190,7 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
-    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
+    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error> {
         self.core.tcp_listener(addr, self.receiver_id())
     }
 
@@ -203,7 +209,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error<PData>> {
+    ) -> Result<TimerCancelHandle, Error> {
         self.core.start_periodic_timer(duration).await
     }
 

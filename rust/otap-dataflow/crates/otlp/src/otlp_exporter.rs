@@ -107,7 +107,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         effect_handler
             .info(&format!(
                 "Exporting OTLP traffic to gRPC endpoint: {}",
@@ -290,7 +290,7 @@ mod tests {
         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
     ) -> impl FnOnce(
         TestContext<OTLPData>,
-        Result<(), Error<OTLPData>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {

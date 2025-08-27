@@ -64,9 +64,9 @@ impl FakeSignalReceiver {
 impl local::Receiver<OTLPSignal> for FakeSignalReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: local::ControlChannel,
+        mut ctrl_msg_recv: local::ControlChannel<OTLPSignal>,
         effect_handler: local::EffectHandler<OTLPSignal>,
-    ) -> Result<(), Error<OTLPSignal>> {
+    ) -> Result<(), Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();
         let registry = self
@@ -145,7 +145,7 @@ async fn generate_signal(
     trace_count: usize,
     log_count: usize,
     registry: &ResolvedRegistry,
-) -> Result<(), Error<OTLPSignal>> {
+) -> Result<(), Error> {
     // nothing to send
     if max_batch_size == 0 {
         return Ok(());
@@ -366,7 +366,7 @@ mod tests {
     const MAX_BATCH: usize = 2;
 
     /// Test closure that simulates a typical receiver scenario.
-    fn scenario() -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    fn scenario() -> impl FnOnce(TestContext<OTLPSignal>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // no scenario to run here as scenario is already defined in the configuration

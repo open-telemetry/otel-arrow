@@ -39,9 +39,9 @@ pub enum ReceiverWrapper<PData> {
         /// The receiver instance.
         receiver: Box<dyn local::Receiver<PData>>,
         /// A sender for control messages.
-        control_sender: LocalSender<NodeControlMsg>,
+        control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: LocalReceiver<NodeControlMsg>,
+        control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
         pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
@@ -58,9 +58,9 @@ pub enum ReceiverWrapper<PData> {
         /// The receiver instance.
         receiver: Box<dyn shared::Receiver<PData>>,
         /// A sender for control messages.
-        control_sender: SharedSender<NodeControlMsg>,
+        control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: SharedReceiver<NodeControlMsg>,
+        control_receiver: SharedReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
@@ -69,9 +69,9 @@ pub enum ReceiverWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable for ReceiverWrapper<PData> {
+impl<PData> Controllable<PData> for ReceiverWrapper<PData> {
     /// Returns the control message sender for the receiver.
-    fn control_sender(&self) -> Sender<NodeControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
             ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ReceiverWrapper::Shared { control_sender, .. } => {
@@ -133,10 +133,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Starts the receiver and begins receiver incoming data.
-    pub async fn start(
-        self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
         match self {
             ReceiverWrapper::Local {
                 node_id,
@@ -207,7 +204,7 @@ impl<PData> ReceiverWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node for ReceiverWrapper<PData> {
+impl<PData> Node<PData> for ReceiverWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ReceiverWrapper::Local { .. } => false,
@@ -236,7 +233,10 @@ impl<PData> Node for ReceiverWrapper<PData> {
     }
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_control_msg(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         match self {
             ReceiverWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ReceiverWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
@@ -250,7 +250,7 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
         node_id: NodeId,
         port: PortName,
         sender: Sender<PData>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         match (self, sender) {
             (ReceiverWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
                 let _ = pdata_senders.insert(port, sender);
@@ -317,9 +317,9 @@ mod tests {
     impl local::Receiver<TestMsg> for TestReceiver {
         async fn start(
             self: Box<Self>,
-            mut ctrl_msg_recv: local::ControlChannel,
+            mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
@@ -396,9 +396,9 @@ mod tests {
     impl shared::Receiver<TestMsg> for TestReceiver {
         async fn start(
             self: Box<Self>,
-            mut ctrl_msg_recv: shared::ControlChannel,
+            mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
@@ -474,7 +474,7 @@ mod tests {
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
         port_rx: oneshot::Receiver<SocketAddr>,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // Wait for the receiver to send the listening address.

@@ -97,9 +97,9 @@ pub struct OtlpReceiverMetrics {
 impl shared::Receiver<OtapPdata> for OTLPReceiver {
     async fn start(
         mut self: Box<Self>,
-        mut ctrl_msg_recv: shared::ControlChannel,
+        mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
@@ -272,7 +272,7 @@ mod tests {
 
     fn scenario(
         grpc_endpoint: String,
-    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
