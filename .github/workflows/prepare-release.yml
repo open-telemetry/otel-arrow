@@ -49,7 +49,7 @@ jobs:
         run: |
           # Extract original content for CHANGELOG.md update (preserves formatting)
           ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
-          
+
           # Extract normalized content for PR body (removes extra newlines)
           ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content_normalized.txt --normalize
 
