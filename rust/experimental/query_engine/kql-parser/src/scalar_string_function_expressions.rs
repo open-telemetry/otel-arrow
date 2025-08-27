@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_strlen_expression(
     strlen_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strlen_expression_rule);
 
@@ -17,10 +17,10 @@ pub(crate) fn parse_strlen_expression(
 
     let inner_expression_rule = strlen_rules.next().unwrap();
     let inner_expression_rule_location = to_query_location(&inner_expression_rule);
-    let mut inner_expression = parse_scalar_expression(inner_expression_rule, state)?;
+    let mut inner_expression = parse_scalar_expression(inner_expression_rule, scope)?;
 
     let inner_expression_value_type_result = inner_expression
-        .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
+        .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?;
 
     if let Some(v) = inner_expression_value_type_result
@@ -41,7 +41,7 @@ pub(crate) fn parse_strlen_expression(
 
 pub(crate) fn parse_replace_string_expression(
     replace_string_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&replace_string_expression_rule);
 
@@ -50,23 +50,23 @@ pub(crate) fn parse_replace_string_expression(
     return Ok(ScalarExpression::Text(TextScalarExpression::Replace(
         ReplaceTextScalarExpression::new(
             query_location,
-            parse_and_validate_string_rule(replace_string_rules.next().unwrap(), state)?,
-            parse_and_validate_string_rule(replace_string_rules.next().unwrap(), state)?,
-            parse_and_validate_string_rule(replace_string_rules.next().unwrap(), state)?,
+            parse_and_validate_string_rule(replace_string_rules.next().unwrap(), scope)?,
+            parse_and_validate_string_rule(replace_string_rules.next().unwrap(), scope)?,
+            parse_and_validate_string_rule(replace_string_rules.next().unwrap(), scope)?,
             false, // case_insensitive - set to false for KQL
         ),
     )));
 
     fn parse_and_validate_string_rule(
         rule: Pair<Rule>,
-        state: &dyn ParserScope,
+        scope: &dyn ParserScope,
     ) -> Result<ScalarExpression, ParserError> {
         let location = to_query_location(&rule);
 
-        let mut scalar = parse_scalar_expression(rule, state)?;
+        let mut scalar = parse_scalar_expression(rule, scope)?;
 
         let scalar_value_type_result = scalar
-            .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
+            .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
             .map_err(|e| ParserError::from(&e))?;
 
         if let Some(v) = scalar_value_type_result
@@ -85,19 +85,19 @@ pub(crate) fn parse_replace_string_expression(
 
 pub(crate) fn parse_substring_expression(
     substring_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&substring_expression_rule);
 
     let mut substring_rules = substring_expression_rule.into_inner();
-    let source_scalar = parse_scalar_expression(substring_rules.next().unwrap(), state)?;
+    let source_scalar = parse_scalar_expression(substring_rules.next().unwrap(), scope)?;
 
     let starting_index_rule = substring_rules.next().unwrap();
     let starting_index_rule_location = to_query_location(&starting_index_rule);
-    let mut starting_index_scalar = parse_scalar_expression(starting_index_rule, state)?;
+    let mut starting_index_scalar = parse_scalar_expression(starting_index_rule, scope)?;
 
     let starting_index_value_type_result = starting_index_scalar
-        .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
+        .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?;
 
     if let Some(v) = starting_index_value_type_result
@@ -112,10 +112,10 @@ pub(crate) fn parse_substring_expression(
 
     let length_scalar = if let Some(length_rule) = substring_rules.next() {
         let length_scalar_rule_location = to_query_location(&length_rule);
-        let mut length_scalar = parse_scalar_expression(length_rule, state)?;
+        let mut length_scalar = parse_scalar_expression(length_rule, scope)?;
 
         let length_scalar_value_type_result = length_scalar
-            .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
+            .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
             .map_err(|e| ParserError::from(&e))?;
 
         if let Some(v) = length_scalar_value_type_result
@@ -143,7 +143,7 @@ pub(crate) fn parse_substring_expression(
 
 pub(crate) fn parse_parse_json_expression(
     parse_json_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&parse_json_expression_rule);
 
@@ -151,10 +151,10 @@ pub(crate) fn parse_parse_json_expression(
 
     let inner_rule = parse_json_rules.next().unwrap();
     let inner_rule_location = to_query_location(&inner_rule);
-    let mut inner_scalar = parse_scalar_expression(inner_rule, state)?;
+    let mut inner_scalar = parse_scalar_expression(inner_rule, scope)?;
 
     if let Some(v) = inner_scalar
-        .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
+        .try_resolve_value_type(&scope.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?
         && v != ValueType::String
     {
@@ -174,7 +174,7 @@ pub(crate) fn parse_parse_json_expression(
     // tree gets constant folding which should automatically call into
     // try_resolve_static.
     parse_json_scalar
-        .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+        .try_resolve_static(&scope.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?;
 
     Ok(parse_json_scalar)
@@ -182,7 +182,7 @@ pub(crate) fn parse_parse_json_expression(
 
 pub(crate) fn parse_strcat_expression(
     strcat_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strcat_expression_rule);
 
@@ -191,7 +191,7 @@ pub(crate) fn parse_strcat_expression(
     let mut values = Vec::new();
 
     for rule in strcat_rules {
-        let scalar = parse_scalar_expression(rule, state)?;
+        let scalar = parse_scalar_expression(rule, scope)?;
 
         values.push(scalar);
     }
@@ -208,18 +208,18 @@ pub(crate) fn parse_strcat_expression(
 
 pub(crate) fn parse_strcat_delim_expression(
     strcat_delim_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&strcat_delim_expression_rule);
 
     let mut strcat_delim_rules = strcat_delim_expression_rule.into_inner();
 
-    let separator = parse_scalar_expression(strcat_delim_rules.next().unwrap(), state)?;
+    let separator = parse_scalar_expression(strcat_delim_rules.next().unwrap(), scope)?;
 
     let mut values = Vec::new();
 
     for rule in strcat_delim_rules {
-        let scalar = parse_scalar_expression(rule, state)?;
+        let scalar = parse_scalar_expression(rule, scope)?;
 
         values.push(scalar);
     }
