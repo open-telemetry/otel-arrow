@@ -15,6 +15,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -120,7 +121,10 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+    create: |_pipeline: PipelineContext,
+             node: NodeId,
+             config: &Value,
+             proc_cfg: &ProcessorConfig| {
         create_signal_type_router(node, config, proc_cfg)
     },
 };
