@@ -37,6 +37,22 @@ pub trait ArrayValue: Debug {
     }
 }
 
+impl AsStaticValue for dyn ArrayValue + 'static {
+    fn to_static_value(&self) -> StaticValue<'_> {
+        todo!()
+    }
+}
+
+impl AsValue for dyn ArrayValue {
+    fn get_value_type(&self) -> ValueType {
+        todo!()
+    }
+
+    fn to_value(&self) -> Value<'_> {
+        todo!()
+    }
+}
+
 #[derive(Debug)]
 pub struct ArrayRange {
     start_range_inclusize: Option<usize>,
