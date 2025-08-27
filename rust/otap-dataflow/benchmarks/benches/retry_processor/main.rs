@@ -155,7 +155,7 @@ fn bench_individual_operations(c: &mut Criterion) {
                     Message::Control(NodeControlMsg::Nack {
                         id: 1,
                         reason: "Benchmark failure".to_string(),
-                        rvalue: None,
+                        pdata: None,
                     }),
                     &mut effect_handler,
                 )
@@ -199,7 +199,7 @@ fn bench_timer_tick_scaling(c: &mut Criterion) {
                                 Message::Control(NodeControlMsg::Nack {
                                     id: i as u64 + 1,
                                     reason: "Keep pending".to_string(),
-                                    rvalue: None,
+                                    pdata: None,
                                 }),
                                 &mut effect_handler,
                             )
