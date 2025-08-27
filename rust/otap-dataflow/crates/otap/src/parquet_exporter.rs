@@ -48,6 +48,7 @@ mod config;
 mod idgen;
 mod object_store;
 mod partition;
+mod schema;
 mod writer;
 
 #[allow(dead_code)]
