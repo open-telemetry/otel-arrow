@@ -27,7 +27,7 @@ Examples:
     python load_generator/loadgen.py --load-type otlp --duration 30 --threads 4 --batch-size 1000
 
   Standalone syslog UDP load generation:
-    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=515 python load_generator/loadgen.py --load-type syslog --duration 2
+    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 python load_generator/loadgen.py --load-type syslog --duration 2
 
   Standalone syslog TCP load generation:
     SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 SYSLOG_TRANSPORT=tcp python load_generator/loadgen.py --load-type syslog --duration 2
@@ -223,15 +223,21 @@ class LoadGenerator:
             resource_logs=[resource_logs]
         )
 
+        # Accumulate metrics locally to avoid lock contention
+        total_sent = 0
+        total_failed = 0
+        total_bytes_sent = 0
+        total_late_batches = 0
+
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
                 stub.Export(logs_request)
-                self.increment_metric("sent", args["batch_size"])
-                self.increment_metric("bytes_sent", logs_request.ByteSize())
+                total_sent += args["batch_size"]
+                total_bytes_sent += logs_request.ByteSize()
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send log batch: {e}")
-                self.increment_metric("failed", args["batch_size"])
+                total_failed += args["batch_size"]
 
             # If we're targeting a specific rate we do additional calculations
             # to ensure we're not exceeding it via sleep. If we're not reaching
@@ -244,8 +250,20 @@ class LoadGenerator:
                     time.sleep(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
-                    self.increment_metric("late_batches")
+                    total_late_batches += 1
                 next_send_time += batch_interval
+
+        # Update global metrics once when thread exits
+        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
+            updates = {}
+            if total_sent > 0:
+                updates["sent"] = total_sent
+                updates["bytes_sent"] = total_bytes_sent
+            if total_failed > 0:
+                updates["failed"] = total_failed
+            if total_late_batches > 0:
+                updates["late_batches"] = total_late_batches
+            self.update_metrics(**updates)
 
     def syslog_tcp_worker_thread(self, thread_id: int, args: dict) -> None:
         """
@@ -281,10 +299,13 @@ class LoadGenerator:
             batch_interval = None
             print(f"Thread {thread_id} started with no rate limit")
 
+        hostname = socket.gethostname()
+
         # Pre-generate syslog messages batch (similar to OTLP log_batch)
         syslog_batch = []
         for _ in range(batch_size):
             syslog_message = self.create_syslog_message(
+                hostname=hostname,
                 body_size=args["body_size"]
             )
             syslog_batch.append(syslog_message)
@@ -293,15 +314,21 @@ class LoadGenerator:
         batch_buffer = b''.join(syslog_batch)
         batch_total_size = len(batch_buffer)
 
+        # Accumulate metrics locally to avoid lock contention
+        total_sent = 0
+        total_failed = 0
+        total_bytes_sent = 0
+        total_late_batches = 0
+
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
                 sock.sendall(batch_buffer)
-                # Update both metrics with a single lock acquisition
-                self.update_metrics(sent=args["batch_size"], bytes_sent=batch_total_size)
+                total_sent += args["batch_size"]
+                total_bytes_sent += batch_total_size
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send syslog batch: {e}")
-                self.increment_metric("failed", args["batch_size"])
+                total_failed += args["batch_size"]
                 # Try to reconnect
                 try:
                     sock.close()
@@ -323,8 +350,20 @@ class LoadGenerator:
                     time.sleep(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
-                    self.increment_metric("late_batches")
+                    total_late_batches += 1
                 next_send_time += batch_interval
+
+        # Update global metrics once when thread exits
+        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
+            updates = {}
+            if total_sent > 0:
+                updates["sent"] = total_sent
+                updates["bytes_sent"] = total_bytes_sent
+            if total_failed > 0:
+                updates["failed"] = total_failed
+            if total_late_batches > 0:
+                updates["late_batches"] = total_late_batches
+            self.update_metrics(**updates)
 
         sock.close()
 
@@ -342,6 +381,9 @@ class LoadGenerator:
         # TODO: We need to find the right values
         # sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024*1024)
         sock.setblocking(False)
+        recv_buf = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        send_buf = sock.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+        print(f"Thread {thread_id}: UDP Send buffer: {send_buf} bytes, Recv buffer: {recv_buf} bytes")
 
         batch_size = args["batch_size"]
         thread_count = args["threads"]
@@ -358,44 +400,36 @@ class LoadGenerator:
             batch_interval = None
             print(f"Thread {thread_id} started with no rate limit")
 
+        hostname = socket.gethostname()
+
         # Pre-generate syslog messages batch
         syslog_batch = []
         for _ in range(batch_size):
             syslog_message = self.create_syslog_message(
+                hostname=hostname,
                 body_size=args["body_size"],
             )
             syslog_batch.append(syslog_message)
 
-        batch_total_size = sum(len(msg) for msg in syslog_batch)
+        # Accumulate metrics locally to avoid lock contention
+        total_sent = 0
+        total_failed = 0
+        total_bytes_sent = 0
+        total_late_batches = 0
 
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
-            # Track success/failure counts locally for this batch
-            sent_count = 0
-            failed_count = 0
-            bytes_sent_count = 0
-
             # UDP: Send individual messages instead of single batch of messages
             for message in syslog_batch:
                 try:
-                    sock.sendto(message, (syslog_server, syslog_port))
-                    sent_count += 1
-                    bytes_sent_count += len(message)
+                    bytes_sent = sock.sendto(message, (syslog_server, syslog_port))
+                    total_sent += 1
+                    total_bytes_sent += bytes_sent
                 except Exception as e:
-                    failed_count += 1
+                    total_failed += 1
                     # Only print first few errors to avoid spam
-                    if failed_count <= 3:
+                    if total_failed <= 3:
                         print(f"Thread {thread_id}: Failed to send syslog message via UDP: {e}")
-
-            # Update metrics once per batch with actual counts
-            if sent_count > 0 or failed_count > 0:
-                updates = {}
-                if sent_count > 0:
-                    updates["sent"] = sent_count
-                    updates["bytes_sent"] = bytes_sent_count
-                if failed_count > 0:
-                    updates["failed"] = failed_count
-                self.update_metrics(**updates)
 
             # Rate limiting logic
             if batch_interval:
@@ -405,21 +439,32 @@ class LoadGenerator:
                     time.sleep(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
-                    self.increment_metric("late_batches")
+                    total_late_batches += 1
                 next_send_time += batch_interval
+
+        # Update global metrics once when thread exits
+        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
+            updates = {}
+            if total_sent > 0:
+                updates["sent"] = total_sent
+                updates["bytes_sent"] = total_bytes_sent
+            if total_failed > 0:
+                updates["failed"] = total_failed
+            if total_late_batches > 0:
+                updates["late_batches"] = total_late_batches
+            self.update_metrics(**updates)
 
         sock.close()
         print(f"Thread {thread_id}: Syslog UDP worker exiting")
 
     def create_syslog_message(
         self,
+        hostname: str,
         body_size: int = 25,
     ) -> bytes:
         """
         Create a single syslog message with structure similar to OTLP log record.
         """
-        hostname = socket.gethostname()
-
         # Pre-generate static parts of the message
         pri = "<134>"  # local0.info = 16*8+6 = 134
         tag = "loadgen"
