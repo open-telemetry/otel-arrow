@@ -10,6 +10,40 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::time::Duration;
 
+/// The ACK
+#[derive(Debug, Clone)]
+pub struct AckMsg {
+    /// Unique identifier of the message being acknowledged.
+    id: u64,
+
+    /// Human-readable reason provided with the ACK.
+    reason: Option<String>,
+
+    /// Number of rejected items
+    rejected: Option<i64>, // Note: OTLP .proto defines as i64
+}
+
+/// The NACK
+#[derive(Debug, Clone)]
+pub struct NackMsg<PData> {
+    /// Unique identifier of the message not being acknowledged.
+    id: u64,
+
+    /// Human-readable reason for the NACK.
+    reason: String,
+
+    failure: bool,
+    permanent: bool,
+    code: Option<i32>,
+    rejected: Option<i64>, // Note: OTLP .proto defines as i64
+
+    /// Placeholder for optional return value, making it possible for the
+    /// retry sender to be stateless.
+    ///
+    /// TODO: should this be boxed to reduce the size of NodeControlMsg?
+    rvalue: Option<PData>,
+}
+
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
 #[derive(Debug, Clone)]
@@ -18,27 +52,13 @@ pub enum NodeControlMsg<PData> {
     /// and processed telemetry data for the specified message ID.
     ///
     /// Typically used for confirming successful delivery or processing.
-    Ack {
-        /// Unique identifier of the message being acknowledged.
-        id: u64,
-    },
+    Ack(AckMsg),
 
     /// Indicates that a downstream component failed to process or deliver telemetry data.
     ///
     /// The NACK signal includes a reason, such as exceeding a deadline, downstream system
     /// unavailability, or other conditions preventing successful processing.
-    Nack {
-        /// Unique identifier of the message not being acknowledged.
-        id: u64,
-        /// Human-readable reason for the NACK.
-        reason: String,
-
-        /// Placeholder for optional return value, making it possible for the
-        /// retry sender to be stateless.
-        ///
-        /// TODO: should this be boxed to reduce the size of NodeControlMsg?
-        rvalue: Option<PData>,
-    },
+    Nack(NackMsg<PData>),
 
     /// Notifies the node of a configuration change.
     ///

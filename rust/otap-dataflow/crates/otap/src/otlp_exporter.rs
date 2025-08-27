@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
+use crate::grpc::{
+    code_is_permanent,
+    otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient},
+};
+use crate::pdata::{OtapPdata, OtlpProtoBytes, ReturnContext};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -23,6 +26,7 @@ use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::Status;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -75,6 +79,36 @@ impl OTLPExporter {
         })?;
 
         Ok(Self { config, metrics })
+    }
+
+    fn partial_success(self: &Box<Self>, rejected: i64, message: String) -> ReturnContext {
+        ReturnContext {
+            message: message,
+            failure: false,
+            permanent: false,
+            code: None,
+            rejected: Some(rejected),
+        }
+    }
+
+    fn ok(self: &Box<Self>) -> ReturnContext {
+        ReturnContext {
+            message: "".into(),
+            failure: false,
+            permanent: false,
+            code: None,
+            rejected: None,
+        }
+    }
+
+    fn grpc_status(self: &Box<Self>, status: Status) -> ReturnContext {
+        ReturnContext {
+            message: status.message().into(),
+            failure: true,
+            permanent: code_is_permanent(&status),
+            rejected: None,
+            code: Some(status.code() as i32),
+        }
     }
 }
 
@@ -149,7 +183,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 error: error.to_string(),
             })?;
 
-        if let Some(compression) = self.config.compression_method {
+        if let Some(ref compression) = self.config.compression_method {
             let encoding = compression.map_to_compression_encoding();
 
             logs_client = logs_client
@@ -172,42 +206,62 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(data) => {
-                    let service_req: OtlpProtoBytes = data.try_into().map(|(_, value)| value)?;
-                    _ = match service_req {
+                    // Note: Tonic takes and does not return a Vec<u8>; we have to clone
+                    // the pdata before or after it is unpacked. Cloning before means
+                    // copying the input data and duplicating the context, cloning after
+                    // means copying the output data and not the context.
+                    let rvalue = data.context().has_rsvp().then(|| data.clone());
+
+                    let (context, service_req): (_, OtlpProtoBytes) = data.try_into()?;
+
+                    let return_context = match service_req {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             self.metrics.export_logs_request_received.inc();
-                            _ = logs_client.export(bytes).await.map_err(|e| {
-                                self.metrics.export_logs_request_failure.inc();
-                                Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: e.to_string(),
-                                }
-                            })?;
+                            let rctx = logs_client.export(bytes).await.map_or_else(
+                                |status| self.grpc_status(status),
+                                |resp| match resp.into_inner().partial_success {
+                                    None => self.ok(),
+                                    Some(partial) => self.partial_success(
+                                        partial.rejected_log_records,
+                                        partial.error_message,
+                                    ),
+                                },
+                            );
                             self.metrics.export_logs_request_success.inc();
+                            rctx
                         }
                         OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                             self.metrics.export_metrics_request_received.inc();
-                            _ = metrics_client.export(bytes).await.map_err(|e| {
-                                self.metrics.export_metrics_request_failure.inc();
-                                Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: e.to_string(),
-                                }
-                            })?;
+                            let rctx = metrics_client.export(bytes).await.map_or_else(
+                                |status| self.grpc_status(status),
+                                |resp| match resp.into_inner().partial_success {
+                                    None => self.ok(),
+                                    Some(partial) => self.partial_success(
+                                        partial.rejected_data_points,
+                                        partial.error_message,
+                                    ),
+                                },
+                            );
                             self.metrics.export_metrics_request_success.inc();
+                            rctx
                         }
                         OtlpProtoBytes::ExportTracesRequest(bytes) => {
                             self.metrics.export_traces_request_received.inc();
-                            _ = trace_client.export(bytes).await.map_err(|e| {
-                                self.metrics.export_traces_request_failure.inc();
-                                Error::ExporterError {
-                                    exporter: effect_handler.exporter_id(),
-                                    error: e.to_string(),
-                                }
-                            })?;
+                            let rctx = trace_client.export(bytes).await.map_or_else(
+                                |status| self.grpc_status(status),
+                                |resp| match resp.into_inner().partial_success {
+                                    None => self.ok(),
+                                    Some(partial) => self.partial_success(
+                                        partial.rejected_spans,
+                                        partial.error_message,
+                                    ),
+                                },
+                            );
                             self.metrics.export_traces_request_success.inc();
+                            rctx
                         }
                     };
+                    effect_handler.rsvp(return_context.reply(context, rvalue))
                 }
                 _ => {
                     // ignore unhandled messages

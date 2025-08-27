@@ -101,6 +101,7 @@ use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
 pub use crate::context::Context;
+pub use crate::context::ReturnContext;
 
 /// module contains related to pdata
 pub mod error {
@@ -185,6 +186,16 @@ impl OtapPdata {
             Self::OtlpBytes { value, .. } => value.signal_type(),
             Self::OtapArrowBytes { value, .. } => value.signal_type(),
             Self::OtapArrowRecords { value, .. } => value.signal_type(),
+        }
+    }
+
+    /// Returns a reference to the request context context
+    #[must_use]
+    pub fn context(&self) -> &Context {
+        match self {
+            Self::OtlpBytes { context, .. } => context,
+            Self::OtapArrowBytes { context, .. } => context,
+            Self::OtapArrowRecords { context, .. } => context,
         }
     }
 }

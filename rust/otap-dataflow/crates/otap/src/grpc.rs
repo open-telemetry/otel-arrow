@@ -228,3 +228,9 @@ pub enum OtapArrowBytes {
     /// Trace object
     ArrowTraces(BatchArrowRecords),
 }
+
+/// returns true for gRPC error status codes that OTLP considers permanent.
+pub(crate) fn code_is_permanent(_status: &Status) -> bool {
+    // TODO
+    true
+}

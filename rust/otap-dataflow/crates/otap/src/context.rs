@@ -11,15 +11,21 @@ pub struct Context {
     reply_count: usize,
 }
 
-// /// Context for OTAP responses
-// #[derive(Clone, Debug)]
-// pub struct ReturnContext {
-//     pub(crate) message: String,
-//     pub(crate) failure: bool,
-//     pub(crate) permanent: bool,
-//     pub(crate) code: i32,
-//     pub(crate) rejected: Option<i32>,
-// }
+impl Context {
+    pub fn has_rsvp(&self) -> bool {
+        self.reply_count > 0
+    }
+}
+
+/// Context for OTAP responses
+#[derive(Clone, Debug)]
+pub struct ReturnContext {
+    pub(crate) message: String,
+    pub(crate) failure: bool,
+    pub(crate) permanent: bool,
+    pub(crate) code: Option<i32>,
+    pub(crate) rejected: Option<i64>, // Note: OTLP .proto defines as i64
+}
 
 impl Default for Context {
     fn default() -> Self {
