@@ -58,6 +58,7 @@ linkme = { workspace = true }
 uuid.workspace = true
 weaver_forge.workspace = true
 weaver_common.workspace = true
+humantime = "2.2.0"
 
 [dev-dependencies]
 portpicker = "0.1.1"
