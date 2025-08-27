@@ -707,7 +707,7 @@ fn split_metric_batches<const N: usize>(
             }
         } else {
             child_counts.clear();
-            child_counts.resize(max_metric_id as usize, 0);
+            child_counts.resize(max_metric_id as usize + 1, 0);
             for dpt in DATA_POINTS_TYPES {
                 let child = batches[POSITION_LOOKUP[dpt as usize]].as_ref();
                 if let Some(child) = child {
@@ -1600,13 +1600,14 @@ fn flatten_dictionary_array<K: arrow::datatypes::ArrowDictionaryKeyType>(
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray, StructArray,
-        TimestampNanosecondArray, UInt8Array, UInt16Array,
+        ArrayRef, DictionaryArray, FixedSizeBinaryArray, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array, UInt64Array, UInt8Array
     };
     use arrow::array::{RecordBatchOptions, record_batch};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt8Type};
+    use arrow_ipc::FixedSizeBinary;
     use arrow_schema;
 
+    use crate::otlp::metrics::MetricType;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -1995,7 +1996,7 @@ mod test {
     }
 
     #[test]
-    fn test_simple_split() {
+    fn test_simple_split_logs() {
         let [logs, _, _] = RecordsGroup::split_by_type(vec![make_logs()]);
         let original_logs = logs.clone();
         let split = logs.split(NonZeroU64::new(2).unwrap()).unwrap();
@@ -2010,5 +2011,121 @@ mod test {
         let merged2 = logs2.concatenate(None).unwrap();
         assert_eq!(merged, merged2);
         assert_eq!(merged, original_logs);
+    }
+
+    fn make_traces() -> OtapArrowRecords {
+        let spans_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2, 3])),
+                Arc::new(FixedSizeBinaryArray::try_from_iter([1, 2, 3, 4].into_iter().map(|id| u64::to_be_bytes(id))).unwrap())
+            ]
+        ).unwrap();
+
+        let span_links_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2, 3])),
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1, 1])),
+            ]
+        ).unwrap();
+
+        let span_events_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+            ])),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2])),
+                Arc::new(UInt16Array::from_iter_values(vec![3, 3, 3])),
+            ]
+        ).unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
+        otap_batch.set(ArrowPayloadType::Spans, spans_rb);
+        otap_batch.set(ArrowPayloadType::SpanLinks, span_links_rb);
+        otap_batch.set(ArrowPayloadType::SpanEvents, span_events_rb);
+
+        otap_batch
+    }
+
+    #[test]
+    #[ignore = "this test currently does not pass"]
+    fn test_simpl_slit_traces() {
+        let [_, _, traces] = RecordsGroup::split_by_type(vec![make_traces()]);
+        let _original_traces = traces.clone();
+        let _split = traces.split(NonZeroU64::new(2).unwrap()).unwrap();
+        todo!("add assertions")
+    }
+
+    fn make_metrics() -> OtapArrowRecords {
+        let metrics_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    MetricType::Gauge as u8,
+                    MetricType::Gauge as u8,
+                    MetricType::Summary as u8,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let number_dp_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ID, DataType::UInt32, false),
+                Field::new(consts::INT_VALUE, DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 0, 1, 1])),
+                Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2, 3])),
+                Arc::new(Int64Array::from_iter_values(vec![30, 50, 40, 60])),
+            ],
+        )
+        .unwrap();
+
+        let summary_db_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ID, DataType::UInt32, false),
+                Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![2, 2, 2, 2])),
+                Arc::new(UInt32Array::from_iter_values(vec![0, 1, 2, 3])),
+                Arc::new(UInt64Array::from_iter_values(vec![8, 9, 10, 11])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
+        otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
+        otap_batch.set(ArrowPayloadType::NumberDataPoints, number_dp_rb);
+        otap_batch.set(ArrowPayloadType::SummaryDataPoints, summary_db_rb);
+
+        otap_batch
+    }
+
+    // ignoring testing metrics for now. It seems like there's an issue where we subtract with
+    // underflow when calculating the splits.
+    #[test]
+    #[ignore = "this test currently does not pass"]
+    fn test_simple_split_metrics() {
+        let [_, metrics, _] = RecordsGroup::split_by_type(vec![make_metrics()]);
+
+        let _original_metrics = metrics.clone();
+        let _split = metrics.split(NonZeroU64::new(2).unwrap()).unwrap();
+        todo!("assert results")
     }
 }
