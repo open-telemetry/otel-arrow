@@ -98,8 +98,8 @@ impl TimerSet {
                     // Fire callback
                     on_fire(&node_id);
 
-                    // Schedule next recurrence
-                    let next_when = now + timer_state.duration;
+                    // Schedule next recurrence based on the original scheduled time to prevent drift
+                    let next_when = timer_state.scheduled_time + timer_state.duration;
                     self.timers.push(Reverse((next_when, node_id)));
                     timer_state.scheduled_time = next_when;
                 } else if timer_state.is_canceled {
@@ -192,9 +192,6 @@ impl PipelineCtrlMsgManager {
                         if when > now {
                             tokio::time::sleep_until(when).await;
                         }
-                    } else {
-                        // No timers scheduled, wait indefinitely.
-                        futures::future::pending::<()>().await;
                     }
                 }, if next_earliest.is_some() => {
                     let now = Instant::now();
