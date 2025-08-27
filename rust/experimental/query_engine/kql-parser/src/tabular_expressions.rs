@@ -19,7 +19,7 @@ use crate::{
 
 pub(crate) fn parse_extend_expression(
     extend_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let extend_rules = extend_expression_rule.into_inner();
 
@@ -29,7 +29,7 @@ pub(crate) fn parse_extend_expression(
         match rule.as_rule() {
             Rule::assignment_expression => {
                 let (query_location, source, destination) =
-                    parse_source_assignment_expression(rule, state)?;
+                    parse_source_assignment_expression(rule, scope)?;
 
                 set_expressions.push(TransformExpression::Set(SetTransformExpression::new(
                     query_location,
@@ -46,7 +46,7 @@ pub(crate) fn parse_extend_expression(
 
 pub(crate) fn parse_project_expression(
     project_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_expression_rule);
 
@@ -62,11 +62,11 @@ pub(crate) fn parse_project_expression(
         match rule.as_rule() {
             Rule::assignment_expression => {
                 let (query_location, source, destination) =
-                    parse_source_assignment_expression(rule, state)?;
+                    parse_source_assignment_expression(rule, scope)?;
 
                 process_map_selection_source_scalar_expression(
                     "project",
-                    state,
+                    scope,
                     &destination,
                     &mut reduction,
                 )?;
@@ -78,12 +78,12 @@ pub(crate) fn parse_project_expression(
                 )));
             }
             Rule::accessor_expression => {
-                let accessor_expression = parse_accessor_expression(rule, state, true)?;
+                let accessor_expression = parse_accessor_expression(rule, scope, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
                     process_map_selection_source_scalar_expression(
                         "project",
-                        state,
+                        scope,
                         s,
                         &mut reduction,
                     )?;
@@ -92,7 +92,7 @@ pub(crate) fn parse_project_expression(
                         rule_location.clone(),
                         format!(
                             "To be valid in a project expression '{}' should be an assignment expression or an accessor expression which refers to the source",
-                            state.get_query_slice(&rule_location).trim()
+                            scope.get_query_slice(&rule_location).trim()
                         ),
                     ));
                 }
@@ -103,7 +103,7 @@ pub(crate) fn parse_project_expression(
 
     push_map_transformation_expression(
         "project",
-        state,
+        scope,
         &mut expressions,
         &query_location,
         true,
@@ -115,7 +115,7 @@ pub(crate) fn parse_project_expression(
 
 pub(crate) fn parse_project_keep_expression(
     project_keep_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_keep_expression_rule);
 
@@ -131,7 +131,7 @@ pub(crate) fn parse_project_keep_expression(
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
                 if let Some(identifier_or_pattern) =
-                    parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
+                    parse_identifier_or_pattern_literal(scope, rule_location.clone(), rule)?
                 {
                     match identifier_or_pattern {
                         IdentifierOrPattern::Identifier(s) => reduction.keys.push(s),
@@ -147,18 +147,18 @@ pub(crate) fn parse_project_keep_expression(
                         rule_location.clone(),
                         format!(
                             "To be valid in a project-keep expression '{}' should be an accessor expression which refers to data on the source",
-                            state.get_query_slice(&rule_location).trim()
+                            scope.get_query_slice(&rule_location).trim()
                         ),
                     ));
                 }
             }
             Rule::accessor_expression => {
-                let accessor_expression = parse_accessor_expression(rule, state, true)?;
+                let accessor_expression = parse_accessor_expression(rule, scope, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
                     process_map_selection_source_scalar_expression(
                         "project-keep",
-                        state,
+                        scope,
                         s,
                         &mut reduction,
                     )?;
@@ -167,7 +167,7 @@ pub(crate) fn parse_project_keep_expression(
                         rule_location.clone(),
                         format!(
                             "To be valid in a project-keep expression '{}' should be an accessor expression which refers to the source",
-                            state.get_query_slice(&rule_location).trim()
+                            scope.get_query_slice(&rule_location).trim()
                         ),
                     ));
                 }
@@ -178,7 +178,7 @@ pub(crate) fn parse_project_keep_expression(
 
     push_map_transformation_expression(
         "project-keep",
-        state,
+        scope,
         &mut expressions,
         &query_location,
         true,
@@ -190,7 +190,7 @@ pub(crate) fn parse_project_keep_expression(
 
 pub(crate) fn parse_project_away_expression(
     project_away_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError> {
     let query_location = to_query_location(&project_away_expression_rule);
 
@@ -206,7 +206,7 @@ pub(crate) fn parse_project_away_expression(
         match rule.as_rule() {
             Rule::identifier_or_pattern_literal => {
                 if let Some(identifier_or_pattern) =
-                    parse_identifier_or_pattern_literal(state, rule_location.clone(), rule)?
+                    parse_identifier_or_pattern_literal(scope, rule_location.clone(), rule)?
                 {
                     match identifier_or_pattern {
                         IdentifierOrPattern::Identifier(s) => reduction.keys.push(s),
@@ -222,18 +222,18 @@ pub(crate) fn parse_project_away_expression(
                         rule_location.clone(),
                         format!(
                             "To be valid in a project-away expression '{}' should be an accessor expression which refers to data on the source",
-                            state.get_query_slice(&rule_location).trim()
+                            scope.get_query_slice(&rule_location).trim()
                         ),
                     ));
                 }
             }
             Rule::accessor_expression => {
-                let accessor_expression = parse_accessor_expression(rule, state, true)?;
+                let accessor_expression = parse_accessor_expression(rule, scope, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
                     process_map_selection_source_scalar_expression(
                         "project-away",
-                        state,
+                        scope,
                         s,
                         &mut reduction,
                     )?;
@@ -242,7 +242,7 @@ pub(crate) fn parse_project_away_expression(
                         rule_location.clone(),
                         format!(
                             "To be valid in a project-away expression '{}' should be an accessor expression which refers to the source",
-                            state.get_query_slice(&rule_location).trim()
+                            scope.get_query_slice(&rule_location).trim()
                         ),
                     ));
                 }
@@ -253,7 +253,7 @@ pub(crate) fn parse_project_away_expression(
 
     push_map_transformation_expression(
         "project-away",
-        state,
+        scope,
         &mut expressions,
         &query_location,
         false,
@@ -265,14 +265,14 @@ pub(crate) fn parse_project_away_expression(
 
 pub(crate) fn parse_where_expression(
     where_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<DataExpression, ParserError> {
     let query_location = to_query_location(&where_expression_rule);
 
     let where_rule = where_expression_rule.into_inner().next().unwrap();
 
     let predicate = match where_rule.as_rule() {
-        Rule::logical_expression => parse_logical_expression(where_rule, state)?,
+        Rule::logical_expression => parse_logical_expression(where_rule, scope)?,
         _ => panic!("Unexpected rule in where_expression: {where_rule}"),
     };
 
@@ -288,7 +288,7 @@ pub(crate) fn parse_where_expression(
 
 pub(crate) fn parse_summarize_expression(
     summarize_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<DataExpression, ParserError> {
     let query_location = to_query_location(&summarize_expression_rule);
 
@@ -300,7 +300,7 @@ pub(crate) fn parse_summarize_expression(
         match summarize_rule.as_rule() {
             Rule::aggregate_assignment_expression => {
                 let (key, aggregate) =
-                    parse_aggregate_assignment_expression(summarize_rule, state)?;
+                    parse_aggregate_assignment_expression(summarize_rule, scope)?;
 
                 aggregation_expressions.insert(key, aggregate);
             }
@@ -312,20 +312,20 @@ pub(crate) fn parse_summarize_expression(
 
                 match group_by_first_rule.as_rule() {
                     Rule::identifier_literal => {
-                        let scalar = parse_scalar_expression(group_by.next().unwrap(), state)?;
+                        let scalar = parse_scalar_expression(group_by.next().unwrap(), scope)?;
 
                         group_by_expressions
                             .insert(group_by_first_rule.as_str().trim().into(), scalar);
                     }
                     Rule::accessor_expression => {
                         let mut accessor =
-                            parse_accessor_expression(group_by_first_rule, state, true)?;
+                            parse_accessor_expression(group_by_first_rule, scope, true)?;
 
                         // Note: The call here into try_resolve_static is to
                         // make sure all eligible selectors on the accessor are
                         // folded into static values.
                         accessor
-                            .try_resolve_static(&state.get_pipeline().get_resolution_scope())
+                            .try_resolve_static(&scope.get_pipeline().get_resolution_scope())
                             .map_err(|e| ParserError::from(&e))?;
 
                         match &accessor {
@@ -334,7 +334,7 @@ pub(crate) fn parse_summarize_expression(
                                     parse_group_by_accessor(
                                         &group_by_first_rule_location,
                                         s.get_value_accessor(),
-                                        state,
+                                        scope,
                                     )?,
                                     accessor,
                                 );
@@ -344,7 +344,7 @@ pub(crate) fn parse_summarize_expression(
                                     parse_group_by_accessor(
                                         &group_by_first_rule_location,
                                         a.get_value_accessor(),
-                                        state,
+                                        scope,
                                     )?,
                                     accessor,
                                 );
@@ -354,7 +354,7 @@ pub(crate) fn parse_summarize_expression(
                                     parse_group_by_accessor(
                                         &group_by_first_rule_location,
                                         v.get_value_accessor(),
-                                        state,
+                                        scope,
                                     )?,
                                     accessor,
                                 );
@@ -371,7 +371,7 @@ pub(crate) fn parse_summarize_expression(
                 }
             }
             _ => {
-                let scope = state.create_scope(ParserOptions::new());
+                let scope = scope.create_scope(ParserOptions::new());
 
                 for e in parse_tabular_expression_rule(summarize_rule, &scope)? {
                     post_expressions.push(e);
@@ -446,7 +446,7 @@ pub(crate) fn parse_summarize_expression(
 
 pub(crate) fn parse_tabular_expression(
     tabular_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<Vec<DataExpression>, ParserError> {
     let mut rules = tabular_expression_rule.into_inner();
 
@@ -457,7 +457,7 @@ pub(crate) fn parse_tabular_expression(
     let mut expressions = Vec::new();
 
     for rule in rules {
-        for e in parse_tabular_expression_rule(rule, state)? {
+        for e in parse_tabular_expression_rule(rule, scope)? {
             expressions.push(e);
         }
     }
@@ -467,20 +467,20 @@ pub(crate) fn parse_tabular_expression(
 
 pub(crate) fn parse_tabular_expression_rule(
     tabular_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<Vec<DataExpression>, ParserError> {
     let mut expressions = Vec::new();
 
     match tabular_expression_rule.as_rule() {
         Rule::extend_expression => {
-            let extend_expressions = parse_extend_expression(tabular_expression_rule, state)?;
+            let extend_expressions = parse_extend_expression(tabular_expression_rule, scope)?;
 
             for e in extend_expressions {
                 expressions.push(DataExpression::Transform(e));
             }
         }
         Rule::project_expression => {
-            let project_expressions = parse_project_expression(tabular_expression_rule, state)?;
+            let project_expressions = parse_project_expression(tabular_expression_rule, scope)?;
 
             for e in project_expressions {
                 expressions.push(DataExpression::Transform(e));
@@ -488,7 +488,7 @@ pub(crate) fn parse_tabular_expression_rule(
         }
         Rule::project_keep_expression => {
             let project_keep_expressions =
-                parse_project_keep_expression(tabular_expression_rule, state)?;
+                parse_project_keep_expression(tabular_expression_rule, scope)?;
 
             for e in project_keep_expressions {
                 expressions.push(DataExpression::Transform(e));
@@ -496,17 +496,17 @@ pub(crate) fn parse_tabular_expression_rule(
         }
         Rule::project_away_expression => {
             let project_away_expressions =
-                parse_project_away_expression(tabular_expression_rule, state)?;
+                parse_project_away_expression(tabular_expression_rule, scope)?;
 
             for e in project_away_expressions {
                 expressions.push(DataExpression::Transform(e));
             }
         }
         Rule::where_expression => {
-            expressions.push(parse_where_expression(tabular_expression_rule, state)?)
+            expressions.push(parse_where_expression(tabular_expression_rule, scope)?)
         }
         Rule::summarize_expression => {
-            expressions.push(parse_summarize_expression(tabular_expression_rule, state)?)
+            expressions.push(parse_summarize_expression(tabular_expression_rule, scope)?)
         }
         _ => panic!("Unexpected rule in tabular_expression: {tabular_expression_rule}"),
     }
@@ -541,7 +541,7 @@ enum IdentifierOrPattern {
 }
 
 fn parse_identifier_or_pattern_literal(
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
     location: QueryLocation,
     identifier_or_pattern_literal: Pair<Rule>,
 ) -> Result<Option<IdentifierOrPattern>, ParserError> {
@@ -574,9 +574,9 @@ fn parse_identifier_or_pattern_literal(
         Ok(Some(IdentifierOrPattern::Pattern(
             RegexScalarExpression::new(location, regex.unwrap()),
         )))
-    } else if state.is_well_defined_identifier(&value) {
+    } else if scope.is_well_defined_identifier(&value) {
         Ok(None)
-    } else if let Some(schema) = state.get_source_schema() {
+    } else if let Some(schema) = scope.get_source_schema() {
         if schema.get_schema_for_key(&value).is_some() {
             Ok(Some(IdentifierOrPattern::Identifier(
                 StringScalarExpression::new(location, &value),
@@ -606,7 +606,7 @@ fn parse_identifier_or_pattern_literal(
 
 fn process_map_selection_source_scalar_expression(
     expression_name: &str,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
     source: &SourceScalarExpression,
     reduction: &mut MapReductionState,
 ) -> Result<(), ParserError> {
@@ -623,7 +623,7 @@ fn process_map_selection_source_scalar_expression(
             location.clone(),
             format!(
                 "The '{}' accessor expression should refer to a map key on the source when used in a {expression_name} expression",
-                state.get_query_slice(location).trim()
+                scope.get_query_slice(location).trim()
             ),
         ));
     }
@@ -631,14 +631,14 @@ fn process_map_selection_source_scalar_expression(
     let destination_selectors = destination_accessor.get_selectors();
 
     if destination_selectors.len() == 2 {
-        // Note: If state has source keys defined look for selectors targeting maps off the root.
+        // Note: If scope has source keys defined look for selectors targeting maps off the root.
         if let ScalarExpression::Static(StaticScalarExpression::String(root)) =
             destination_selectors.first().unwrap()
         {
             let root_key = root.get_value();
 
             if Some(Some(Some(ValueType::Map)))
-                == state
+                == scope
                     .get_source_schema()
                     .map(|v| v.get_schema_for_key(root_key).map(|v| v.get_value_type()))
             {
@@ -694,7 +694,7 @@ impl MapReductionState {
 
 fn push_map_transformation_expression(
     expression_name: &str,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
     expressions: &mut Vec<TransformExpression>,
     query_location: &QueryLocation,
     retain: bool,
@@ -792,7 +792,7 @@ fn push_map_transformation_expression(
         );
 
         if !reduction.patterns.is_empty() {
-            if let Some(schema) = state.get_source_schema() {
+            if let Some(schema) = scope.get_source_schema() {
                 let default_source_map = schema.get_default_map_key();
                 let mut default_source_map_matched_regex = false;
 
@@ -865,7 +865,7 @@ fn push_map_transformation_expression(
                     location.clone(),
                     format!(
                         "The '{}' accessor expression should refer to a map key on the source when used in a {expression_name} expression",
-                        state.get_query_slice(location).trim()
+                        scope.get_query_slice(location).trim()
                     ),
                 ));
             }

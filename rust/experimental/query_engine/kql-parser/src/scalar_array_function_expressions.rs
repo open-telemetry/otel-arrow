@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_array_concat_expression(
     array_concat_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&array_concat_expression_rule);
 
@@ -18,9 +18,9 @@ pub(crate) fn parse_array_concat_expression(
     let mut values = Vec::new();
 
     for rule in array_concat_rules {
-        let mut scalar = parse_scalar_expression(rule, state)?;
+        let mut scalar = parse_scalar_expression(rule, scope)?;
 
-        if let Some(t) = state.try_resolve_value_type(&mut scalar)? {
+        if let Some(t) = scope.try_resolve_value_type(&mut scalar)? {
             if t != ValueType::Array {
                 return Err(ParserError::QueryLanguageDiagnostic {
                     location: scalar.get_query_location().clone(),
