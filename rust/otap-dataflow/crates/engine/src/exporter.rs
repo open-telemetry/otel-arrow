@@ -38,9 +38,9 @@ pub enum ExporterWrapper<PData> {
         /// The effect handler instance for the exporter.
         effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: LocalSender<NodeControlMsg>,
+        control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: Option<LocalReceiver<NodeControlMsg>>,
+        control_receiver: Option<LocalReceiver<NodeControlMsg<PData>>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<Receiver<PData>>,
     },
@@ -55,18 +55,18 @@ pub enum ExporterWrapper<PData> {
         /// The effect handler instance for the exporter.
         effect_handler: shared::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: SharedSender<NodeControlMsg>,
+        control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: Option<SharedReceiver<NodeControlMsg>>,
+        control_receiver: Option<SharedReceiver<NodeControlMsg<PData>>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
     },
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Controllable for ExporterWrapper<PData> {
+impl<PData> Controllable<PData> for ExporterWrapper<PData> {
     /// Returns the control message sender for the exporter.
-    fn control_sender(&self) -> Sender<NodeControlMsg> {
+    fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
         match self {
             ExporterWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ExporterWrapper::Shared { control_sender, .. } => {
@@ -128,10 +128,7 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(
-        self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self, pipeline_ctrl_msg_tx: PipelineCtrlMsgSender) -> Result<(), Error> {
         match self {
             ExporterWrapper::Local {
                 mut effect_handler,
@@ -181,7 +178,7 @@ impl<PData> ExporterWrapper<PData> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<PData> Node for ExporterWrapper<PData> {
+impl<PData> Node<PData> for ExporterWrapper<PData> {
     fn is_shared(&self) -> bool {
         match self {
             ExporterWrapper::Local { .. } => false,
@@ -210,7 +207,10 @@ impl<PData> Node for ExporterWrapper<PData> {
     }
 
     /// Sends a control message to the node.
-    async fn send_control_msg(&self, msg: NodeControlMsg) -> Result<(), SendError<NodeControlMsg>> {
+    async fn send_control_msg(
+        &self,
+        msg: NodeControlMsg<PData>,
+    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
         match self {
             ExporterWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ExporterWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
@@ -223,7 +223,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
         &mut self,
         node_id: NodeId,
         receiver: Receiver<PData>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         match (self, receiver) {
             (ExporterWrapper::Local { pdata_receiver, .. }, receiver) => {
                 *pdata_receiver = Some(receiver);
@@ -283,7 +283,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: message::MessageChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -318,7 +318,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: shared::MessageChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
+        ) -> Result<(), Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -380,9 +380,9 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure<T>() -> impl FnOnce(
+    fn validation_procedure() -> impl FnOnce(
         TestContext<TestMsg>,
-        Result<(), Error<T>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx, _| {
             Box::pin(async move {
@@ -431,11 +431,11 @@ mod tests {
     }
 
     fn make_chan() -> (
-        mpsc::Sender<NodeControlMsg>,
+        mpsc::Sender<NodeControlMsg<String>>,
         mpsc::Sender<String>,
         message::MessageChannel<String>,
     ) {
-        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg>::new(10);
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(10);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
         (
             control_tx,

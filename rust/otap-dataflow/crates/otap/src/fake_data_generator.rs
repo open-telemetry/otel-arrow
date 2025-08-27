@@ -80,9 +80,9 @@ impl FakeGeneratorReceiver {
 impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: local::ControlChannel,
+        mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();
         let registry = self
@@ -159,7 +159,7 @@ async fn generate_signal(
     trace_count: usize,
     log_count: usize,
     registry: &ResolvedRegistry,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     // nothing to send
     if max_batch_size == 0 {
         return Ok(());
@@ -352,7 +352,7 @@ async fn generate_signal(
     Ok(())
 }
 impl TryFrom<OTLPSignal> for OtapPdata {
-    type Error = Error<OtapPdata>;
+    type Error = Error;
 
     fn try_from(value: OTLPSignal) -> Result<Self, Self::Error> {
         let map_error = |e: EncodeError| {
@@ -428,7 +428,7 @@ mod tests {
     }
 
     /// Test closure that simulates a typical receiver scenario.
-    fn scenario() -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+    fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 // no scenario to run here as scenario is already defined in the configuration

@@ -22,7 +22,7 @@ pub enum Message<PData> {
     PData(PData),
 
     /// A control message.
-    Control(NodeControlMsg),
+    Control(NodeControlMsg<PData>),
 }
 
 impl<Data> Message<Data> {
@@ -40,9 +40,10 @@ impl<Data> Message<Data> {
 
     /// Create a NACK control message with the given ID and reason.
     #[must_use]
-    pub fn nack_ctrl_msg(id: u64, reason: &str) -> Self {
+    pub fn nack_ctrl_msg(id: u64, reason: &str, pdata: Option<Data>) -> Self {
         Message::Control(NodeControlMsg::Nack {
             id,
+            pdata: pdata.map(Box::new),
             reason: reason.to_owned(),
         })
     }
@@ -169,19 +170,19 @@ impl<T> Receiver<T> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<Receiver<NodeControlMsg>>,
+    control_rx: Option<Receiver<NodeControlMsg<PData>>>,
     pdata_rx: Option<Receiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
-    pending_shutdown: Option<NodeControlMsg>,
+    pending_shutdown: Option<NodeControlMsg<PData>>,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(control_rx: Receiver<NodeControlMsg>, pdata_rx: Receiver<PData>) -> Self {
+    pub fn new(control_rx: Receiver<NodeControlMsg<PData>>, pdata_rx: Receiver<PData>) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),

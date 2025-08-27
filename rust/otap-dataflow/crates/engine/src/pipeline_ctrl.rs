@@ -116,11 +116,11 @@ impl TimerSet {
 /// Internally uses two TimerSet instances: one for generic TimerTick and one for
 /// CollectTelemetry events. It receives Start*/Cancel* requests and emits the
 /// corresponding NodeControlMsg to nodes when timers expire.
-pub struct PipelineCtrlMsgManager {
+pub struct PipelineCtrlMsgManager<PData> {
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
     /// Allows sending control messages back to nodes.
-    control_senders: HashMap<usize, Sender<NodeControlMsg>>,
+    control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
     /// Repeating timers for generic TimerTick.
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
@@ -129,12 +129,12 @@ pub struct PipelineCtrlMsgManager {
     metrics_reporter: MetricsReporter,
 }
 
-impl PipelineCtrlMsgManager {
+impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
     pub fn new(
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver,
-        control_senders: HashMap<usize, Sender<NodeControlMsg>>,
+        control_senders: HashMap<usize, Sender<NodeControlMsg<PData>>>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
         Self {
@@ -153,7 +153,7 @@ impl PipelineCtrlMsgManager {
     /// - On StartTimer: schedules a timer for the node.
     /// - On CancelTimer: marks the timer as canceled.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
-    pub async fn run<PData>(mut self) -> Result<(), Error<PData>> {
+    pub async fn run(mut self) -> Result<(), Error> {
         loop {
             // Get the next expirations, if any.
             let next_expiry = self.tick_timers.next_expiry();
@@ -198,7 +198,7 @@ impl PipelineCtrlMsgManager {
 
                     // Collect all due timer events, then send asynchronously outside of the
                     // TimerSet borrows to avoid blocking within the closure.
-                    let mut to_send: Vec<(usize, NodeControlMsg)> = Vec::new();
+                    let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
 
                     // Fire all due generic timers
                     self.tick_timers.fire_due(now, |node_id| {
@@ -240,7 +240,7 @@ impl PipelineCtrlMsgManager {
 
 // Test-only helpers to introspect internal state without exposing fields publicly.
 #[cfg(test)]
-impl PipelineCtrlMsgManager {
+impl<PData> PipelineCtrlMsgManager<PData> {
     pub(crate) fn test_tick_count(&self) -> usize {
         self.tick_timers.timers.len()
     }
@@ -282,7 +282,10 @@ mod tests {
     use tokio::task::LocalSet;
     use tokio::time::{Instant, timeout};
 
-    fn create_mock_control_sender() -> (Sender<NodeControlMsg>, Receiver<NodeControlMsg>) {
+    fn create_mock_control_sender<PData>() -> (
+        Sender<NodeControlMsg<PData>>,
+        Receiver<NodeControlMsg<PData>>,
+    ) {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         (
             Sender::Shared(SharedSender::MpscSender(tx)),
@@ -290,10 +293,10 @@ mod tests {
         )
     }
 
-    fn setup_test_manager() -> (
-        PipelineCtrlMsgManager,
+    fn setup_test_manager<PData>() -> (
+        PipelineCtrlMsgManager<PData>,
         crate::control::PipelineCtrlMsgSender,
-        HashMap<usize, Receiver<NodeControlMsg>>,
+        HashMap<usize, Receiver<NodeControlMsg<PData>>>,
         Vec<NodeId>,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
@@ -328,14 +331,14 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                    setup_test_manager::<()>();
 
                 let node = nodes.first().expect("ok");
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background using spawn_local (not Send)
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Send StartTimer message to schedule a recurring timer
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -388,14 +391,14 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                    setup_test_manager::<()>();
 
                 let node = nodes.first().expect("ok");
                 let duration = Duration::from_millis(100);
 
                 // Start the manager in the background
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Schedule a timer
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -436,7 +439,7 @@ mod tests {
         let local = LocalSet::new();
 
         local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
 
             let node1 = nodes.first().expect("ok");
             let node2 = nodes.get(1).expect("ok");
@@ -445,7 +448,7 @@ mod tests {
 
             // Start the manager in the background
             let manager_handle = tokio::task::spawn_local(async move {
-                manager.run::<()>().await
+                manager.run().await
             });
 
             // Schedule timers for both nodes
@@ -532,7 +535,7 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
 
 		let node = nodes.first().expect("ok");
                 let first_duration = Duration::from_millis(150); // Original (longer)
@@ -540,7 +543,7 @@ mod tests {
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run::<()>().await
+                    manager.run().await
                 });
 
                 // Schedule initial timer
@@ -592,11 +595,10 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, _control_receivers, _) = setup_test_manager();
+                let (manager, pipeline_tx, _control_receivers, _) = setup_test_manager::<()>();
 
                 // Start the manager in the background
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Send shutdown message
                 pipeline_tx
@@ -628,14 +630,15 @@ mod tests {
                 let (metrics_tx, _metrics_rx) = flume::unbounded();
                 let metrics_reporter = MetricsReporter::new(metrics_tx);
                 // Create manager with empty control_senders map (no registered nodes)
-                let manager =
-                    PipelineCtrlMsgManager::new(pipeline_rx, HashMap::new(), metrics_reporter);
-
+                let manager = PipelineCtrlMsgManager::<()>::new(
+                    pipeline_rx,
+                    HashMap::new(),
+                    metrics_reporter,
+                );
                 let duration = Duration::from_millis(50);
 
                 // Start the manager in the background
-                let manager_handle =
-                    tokio::task::spawn_local(async move { manager.run::<()>().await });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Send StartTimer for node with no control sender
                 let start_msg = PipelineControlMsg::StartTimer {
@@ -670,7 +673,7 @@ mod tests {
         let local = LocalSet::new();
 
         local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager();
+            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
 
             // Use different durations to test timer ordering
             let node1 = nodes.first().expect("ok");
@@ -679,7 +682,7 @@ mod tests {
 
             // Start the manager in the background
             let manager_handle = tokio::task::spawn_local(async move {
-                manager.run::<()>().await
+                manager.run().await
             });
 
             // Send timers in non-chronological order to test priority queue
@@ -793,7 +796,7 @@ mod tests {
     /// initial state for all internal data structures.
     #[tokio::test]
     async fn test_manager_creation() {
-        let (manager, _pipeline_tx, _control_receivers, _) = setup_test_manager();
+        let (manager, _pipeline_tx, _control_receivers, _) = setup_test_manager::<()>();
 
         // Verify manager is created with correct initial state
         assert_eq!(
@@ -830,7 +833,7 @@ mod tests {
     /// This is a unit test of the data structure, separate from the run() method.
     #[tokio::test]
     async fn test_timer_heap_ordering() {
-        let (mut manager, _pipeline_tx, _control_receivers, nodes) = setup_test_manager();
+        let (mut manager, _pipeline_tx, _control_receivers, nodes) = setup_test_manager::<()>();
 
         let node1 = nodes.first().expect("ok");
         let node2 = nodes.get(1).expect("ok");

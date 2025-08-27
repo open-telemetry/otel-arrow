@@ -408,30 +408,21 @@ impl GenericBatcher {
         req.resource_logs.len()
     }
 
-    async fn flush_traces(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_traces(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         if let Some(pending) = self.traces_pending.take() {
             handler.send_message(OTLPData::Traces(pending)).await?;
         }
         self.last_update_traces = Instant::now();
         Ok(())
     }
-    async fn flush_metrics(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_metrics(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         if let Some(pending) = self.metrics_pending.take() {
             handler.send_message(OTLPData::Metrics(pending)).await?;
         }
         self.last_update_metrics = Instant::now();
         Ok(())
     }
-    async fn flush_logs(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_logs(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         if let Some(pending) = self.logs_pending.take() {
             handler.send_message(OTLPData::Logs(pending)).await?;
         }
@@ -441,7 +432,7 @@ impl GenericBatcher {
     async fn flush_on_timeout(
         &mut self,
         handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         let now = Instant::now();
         let timeout = self.config.timeout;
         if timeout != TIMEOUT_DISABLED {
@@ -461,10 +452,7 @@ impl GenericBatcher {
         }
         Ok(())
     }
-    async fn flush_all(
-        &mut self,
-        handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    async fn flush_all(&mut self, handler: &mut EffectHandler<OTLPData>) -> Result<(), Error> {
         self.flush_traces(handler).await?;
         self.flush_metrics(handler).await?;
         self.flush_logs(handler).await?;
@@ -478,7 +466,7 @@ impl Processor<OTLPData> for GenericBatcher {
         &mut self,
         msg: Message<OTLPData>,
         effect_handler: &mut EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         // Check if we need to flush on requests size
 
         // ToDo: Future optimization, we should avoid to traverse multiple times the same request to compute multiple counters. That could be done in one pass.
