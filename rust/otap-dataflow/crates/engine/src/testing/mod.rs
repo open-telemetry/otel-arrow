@@ -61,7 +61,7 @@ impl CtrlMsgCounters {
     }
 
     /// Handles incoming control messages and increments the appropriate counter.
-    pub fn update_with(&self, msg: &NodeControlMsg) {
+    pub fn update_with<PData>(&self, msg: &NodeControlMsg<PData>) {
         match msg {
             NodeControlMsg::TimerTick { .. } => self.increment_timer_tick(),
             NodeControlMsg::Config { .. } => self.increment_config(),

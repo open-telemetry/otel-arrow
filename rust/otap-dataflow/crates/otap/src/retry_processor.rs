@@ -39,13 +39,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use otap_df_engine::retry_processor::{RetryProcessor, RetryConfig};
-//!
-//! #[derive(Clone)]
-//! struct MyData {
-//!     id: u64,
-//!     payload: String,
-//! }
+//! use otap_df_otap::retry_processor::{RetryProcessor, RetryConfig};
 //!
 //! let config = RetryConfig {
 //!     max_retries: 3,
@@ -55,7 +49,7 @@
 //!     max_pending_messages: 10000,
 //!     cleanup_interval_secs: 60,
 //! };
-//! let processor = RetryProcessor::<MyData>::with_config(config);
+//! let processor = RetryProcessor::with_config(config);
 //! ```
 
 use crate::pdata::OtapPdata;
@@ -199,8 +193,9 @@ impl RetryProcessor {
         &mut self,
         id: u64,
         reason: String,
+        _rvalue: Option<OtapPdata>,
         _effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         if let Some(mut pending) = self.pending_messages.remove(&id) {
             pending.retry_count += 1;
             pending.last_error = reason;
@@ -234,7 +229,7 @@ impl RetryProcessor {
     async fn process_pending_retries(
         &mut self,
         effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         let now = Instant::now();
         let mut ready_messages = Vec::new();
 
@@ -291,7 +286,7 @@ impl Processor<OtapPdata> for RetryProcessor {
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         match msg {
             Message::PData(data) => {
                 // Clone only if we need to add to retry queue AND send downstream
@@ -333,8 +328,8 @@ impl Processor<OtapPdata> for RetryProcessor {
                     self.acknowledge(id);
                     Ok(())
                 }
-                NodeControlMsg::Nack { id, reason } => {
-                    self.handle_nack(id, reason, effect_handler).await
+                NodeControlMsg::Nack { id, reason, rvalue } => {
+                    self.handle_nack(id, reason, rvalue, effect_handler).await
                 }
                 NodeControlMsg::TimerTick { .. } => {
                     self.process_pending_retries(effect_handler).await?;
@@ -534,6 +529,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
+                    rvalue: None,
                 }),
                 &mut effect_handler,
             )
@@ -570,6 +566,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: 1,
                         reason: format!("Test failure {i}"),
+                        rvalue: None,
                     }),
                     &mut effect_handler,
                 )
@@ -602,6 +599,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Test failure".to_string(),
+                    rvalue: None,
                 }),
                 &mut effect_handler,
             )
@@ -683,6 +681,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "First failure".to_string(),
+                    rvalue: None,
                 }),
                 &mut effect_handler,
             )
@@ -698,6 +697,7 @@ mod tests {
                 Message::Control(NodeControlMsg::Nack {
                     id: 1,
                     reason: "Second failure".to_string(),
+                    rvalue: None,
                 }),
                 &mut effect_handler,
             )
@@ -734,6 +734,7 @@ mod tests {
                     Message::Control(NodeControlMsg::Nack {
                         id: i,
                         reason: "Test failure".to_string(),
+                        rvalue: None,
                     }),
                     &mut effect_handler,
                 )

@@ -55,7 +55,7 @@ impl OutputWriter {
         }
     }
 
-    async fn write(&mut self, data: &str) -> Result<(), Error<OTLPData>> {
+    async fn write(&mut self, data: &str) -> Result<(), Error> {
         self.writer
             .write_all(data.as_bytes())
             .await
@@ -124,7 +124,7 @@ impl local::Exporter<OTLPData> for DebugExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OTLPData>,
         effect_handler: local::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+    ) -> Result<(), Error> {
         // counter to count number of objects received between timerticks
         let mut counter = DebugCounter::default();
 
@@ -256,7 +256,7 @@ async fn push_metric(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     // collect number of resource metrics
     // collect number of metrics
     // collect number of datapoints
@@ -316,7 +316,7 @@ async fn push_trace(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     // collect number of resource spans
     // collect number of spans
     let resource_spans = trace_request.resource_spans.len();
@@ -361,7 +361,7 @@ async fn push_log(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     let resource_logs = log_request.resource_logs.len();
     let mut log_records = 0;
     let mut events = 0;
@@ -398,7 +398,7 @@ async fn push_profile(
     marshaler: &dyn OTLPMarshaler,
     writer: &mut OutputWriter,
     counter: &mut DebugCounter,
-) -> Result<(), Error<OTLPData>> {
+) -> Result<(), Error> {
     // collect number of resource profiles
     // collect number of sample records
     let resource_profiles = profile_request.resource_profiles.len();
@@ -493,7 +493,7 @@ mod tests {
         output_file: String,
     ) -> impl FnOnce(
         TestContext<OTLPData>,
-        Result<(), Error<OTLPData>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {

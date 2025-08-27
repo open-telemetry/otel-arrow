@@ -53,7 +53,7 @@ impl OutputWriter {
         }
     }
 
-    async fn write(&mut self, data: &str) -> Result<(), Error<OtapPdata>> {
+    async fn write(&mut self, data: &str) -> Result<(), Error> {
         self.writer
             .write_all(data.as_bytes())
             .await
@@ -117,7 +117,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         // init variables for tracking
         let mut average_pipeline_latency: f64 = 0.0;
         let mut received_arrow_records_count: u64 = 0;
@@ -158,7 +158,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                                      config: &Config,
                                      writer: &mut OutputWriter,
                                      process_pid: sysinfo::Pid|
-               -> Result<(), Error<OtapPdata>> {
+               -> Result<(), Error> {
             let now = Instant::now();
             let duration = now - last_perf_time;
 
@@ -443,7 +443,7 @@ async fn display_cpu_usage(
     process: &Process,
     system: &System,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     let process_cpu_usage = process.cpu_usage(); // as %
     let global_cpu_usage = system.global_cpu_usage(); // as %
     writer
@@ -460,10 +460,7 @@ async fn display_cpu_usage(
 }
 
 /// takes in the process outputs memory stats via the writer
-async fn display_mem_usage(
-    process: &Process,
-    writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+async fn display_mem_usage(process: &Process, writer: &mut OutputWriter) -> Result<(), Error> {
     let memory_rss = process.memory(); // as bytes
     let memory_virtual = process.virtual_memory(); // as bytes
     writer
@@ -486,7 +483,7 @@ async fn display_disk_usage(
     disk_usage: DiskUsage,
     duration: Duration,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     let total_written_bytes = disk_usage.total_written_bytes;
     let total_read_bytes = disk_usage.total_read_bytes;
     let written_bytes = disk_usage.written_bytes;
@@ -526,7 +523,7 @@ async fn display_io_usage(
     network_data: &NetworkData,
     duration: Duration,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     // per interface, get networkdata
     let bytes_received = network_data.received(); //as bytes u64
     let total_bytes_received = network_data.total_received(); // as bytes u64
@@ -641,7 +638,7 @@ async fn display_report_pipeline(
     average_pipeline_latency: f64,
     duration: Duration,
     writer: &mut OutputWriter,
-) -> Result<(), Error<OtapPdata>> {
+) -> Result<(), Error> {
     writer
         .write(&format!(
             "\t- arrow records throughput          : {:.2} arrow-records/s\n",
@@ -778,7 +775,7 @@ mod tests {
         output_file: String,
     ) -> impl FnOnce(
         TestContext<OtapPdata>,
-        Result<(), Error<OtapPdata>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {

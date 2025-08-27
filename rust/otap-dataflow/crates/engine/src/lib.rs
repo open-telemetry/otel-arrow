@@ -245,7 +245,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     pub fn build(
         self: &PipelineFactory<PData>,
         config: PipelineConfig,
-    ) -> Result<RuntimePipeline<PData>, Error<PData>> {
+    ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
@@ -380,10 +380,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     ///
     /// ToDo (LQ): Support dispatch strategies.
     fn select_channel_type(
-        src_node: &dyn Node,
-        dest_nodes: &Vec<&dyn Node>,
+        src_node: &dyn Node<PData>,
+        dest_nodes: &Vec<&dyn Node<PData>>,
         buffer_size: NonZeroUsize,
-    ) -> Result<(Sender<PData>, Vec<Receiver<PData>>), Error<PData>> {
+    ) -> Result<(Sender<PData>, Vec<Receiver<PData>>), Error> {
         let source_is_shared = src_node.is_shared();
         let any_dest_is_shared = dest_nodes.iter().any(|dest| dest.is_shared());
         let use_shared_channels = source_is_shared || any_dest_is_shared;
@@ -443,7 +443,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         receivers: &mut Vec<ReceiverWrapper<PData>>,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         let factory = self
             .get_receiver_factory_map()
             .get(node_config.plugin_urn.as_ref())
@@ -477,7 +477,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         processors: &mut Vec<ProcessorWrapper<PData>>,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         let factory = self
             .get_processor_factory_map()
             .get(node_config.plugin_urn.as_ref())
@@ -511,7 +511,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         exporters: &mut Vec<ExporterWrapper<PData>>,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
-    ) -> Result<(), Error<PData>> {
+    ) -> Result<(), Error> {
         let factory = self
             .get_exporter_factory_map()
             .get(node_config.plugin_urn.as_ref())
@@ -562,9 +562,9 @@ fn collect_hyper_edges_runtime<PData>(
     processors: &[ProcessorWrapper<PData>],
 ) -> Vec<HyperEdgeRuntime> {
     let mut edges = Vec::new();
-    let mut nodes: Vec<&dyn Node> = Vec::new();
-    nodes.extend(receivers.iter().map(|node| node as &dyn Node));
-    nodes.extend(processors.iter().map(|node| node as &dyn Node));
+    let mut nodes: Vec<&dyn Node<PData>> = Vec::new();
+    nodes.extend(receivers.iter().map(|node| node as &dyn Node<PData>));
+    nodes.extend(processors.iter().map(|node| node as &dyn Node<PData>));
 
     for node in nodes {
         let config = node.user_config();

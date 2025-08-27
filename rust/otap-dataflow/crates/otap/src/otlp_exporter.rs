@@ -70,7 +70,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         effect_handler
             .info(&format!(
                 "Exporting OTLP traffic to endpoint: {}",
@@ -221,7 +221,7 @@ mod tests {
         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
     ) -> impl FnOnce(
         TestContext<OtapPdata>,
-        Result<(), Error<OtapPdata>>,
+        Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {

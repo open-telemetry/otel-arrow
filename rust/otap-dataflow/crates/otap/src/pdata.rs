@@ -113,7 +113,7 @@ pub mod error {
         },
     }
 
-    impl<T> From<Error> for otap_df_engine::error::Error<T> {
+    impl From<Error> for otap_df_engine::error::Error {
         fn from(e: Error) -> Self {
             otap_df_engine::error::Error::PdataConversionError {
                 error: format!("{e}"),

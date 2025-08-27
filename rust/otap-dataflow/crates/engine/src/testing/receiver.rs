@@ -26,9 +26,9 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
-pub struct TestContext {
+pub struct TestContext<PData> {
     /// Sender for control messages
-    control_sender: Sender<NodeControlMsg>,
+    control_sender: Sender<NodeControlMsg<PData>>,
 }
 
 /// Context used during the validation phase of a test (!Send context).
@@ -43,17 +43,18 @@ pub struct SendValidateContext<PData> {
     counters: CtrlMsgCounters,
 }
 
-impl TestContext {
+impl<PData> TestContext<PData> {
     /// Sends a timer tick control message.
     ///
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_timer_tick(&self) -> Result<(), Error<NodeControlMsg>> {
+    pub async fn send_timer_tick(&self) -> Result<(), Error> {
         self.control_sender
             .send(NodeControlMsg::TimerTick {})
             .await
-            .map_err(Error::ChannelSendError)
+            // Drop the SendError
+            .map_err(|_| Error::PipelineControlMsgError)
     }
 
     /// Sends a config control message.
@@ -61,11 +62,12 @@ impl TestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_config(&self, config: Value) -> Result<(), Error<NodeControlMsg>> {
+    pub async fn send_config(&self, config: Value) -> Result<(), Error> {
         self.control_sender
             .send(NodeControlMsg::Config { config })
             .await
-            .map_err(Error::ChannelSendError)
+            // Drop the SendError
+            .map_err(|_| Error::PipelineControlMsgError)
     }
 
     /// Sends a shutdown control message.
@@ -73,18 +75,15 @@ impl TestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_shutdown(
-        &self,
-        deadline: Duration,
-        reason: &str,
-    ) -> Result<(), Error<NodeControlMsg>> {
+    pub async fn send_shutdown(&self, deadline: Duration, reason: &str) -> Result<(), Error> {
         self.control_sender
             .send(NodeControlMsg::Shutdown {
                 deadline,
                 reason: reason.to_owned(),
             })
             .await
-            .map_err(Error::ChannelSendError)
+            // Drop the SendError
+            .map_err(|_| Error::PipelineControlMsgError)
     }
 
     /// Sleeps for the specified duration.
@@ -108,7 +107,7 @@ impl<PData> NotSendValidateContext<PData> {
 
 impl<PData> SendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
-    pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
+    pub async fn recv(&mut self) -> Result<PData, Error> {
         self.pdata_receiver
             .recv()
             .await
@@ -148,7 +147,7 @@ pub struct TestPhase<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    control_sender: Sender<NodeControlMsg>,
+    control_sender: Sender<NodeControlMsg<PData>>,
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
 }
@@ -225,7 +224,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
-        F: FnOnce(TestContext) -> Fut + 'static,
+        F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         let (node_id, pdata_sender, pdata_receiver) = match &self.receiver {

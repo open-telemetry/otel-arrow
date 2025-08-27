@@ -180,13 +180,16 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError<OtapPdata>> {
+    ) -> Result<(), EngineError> {
         match msg {
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
                 // Fast path: no actions to apply
                 if self.transform.rename.is_none() && self.transform.delete.is_none() {
-                    return effect_handler.send_message(pdata).await;
+                    return effect_handler
+                        .send_message(pdata)
+                        .await
+                        .map_err(|e| e.into());
                 }
 
                 let signal = pdata.signal_type();
@@ -195,7 +198,10 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 // Apply transform across selected domains
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
 
-                effect_handler.send_message(records.into()).await
+                effect_handler
+                    .send_message(records.into())
+                    .await
+                    .map_err(|e| e.into())
             }
         }
     }
@@ -207,7 +213,7 @@ fn apply_transform(
     signal: SignalType,
     transform: &AttributesTransform,
     domains: &HashSet<ApplyDomain>,
-) -> Result<(), EngineError<OtapPdata>> {
+) -> Result<(), EngineError> {
     let payloads = attrs_payloads(signal, domains);
 
     // Only apply if we have transforms to apply
@@ -295,7 +301,7 @@ fn attrs_payloads(signal: SignalType, domains: &HashSet<ApplyDomain>) -> Vec<Arr
     out
 }
 
-fn engine_err(msg: &str) -> EngineError<OtapPdata> {
+fn engine_err(msg: &str) -> EngineError {
     EngineError::PdataConversionError {
         error: msg.to_string(),
     }

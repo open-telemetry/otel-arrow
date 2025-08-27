@@ -100,7 +100,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
                 exporter: effect_handler.exporter_id(),
@@ -336,7 +336,7 @@ mod test {
         base_dir: &str,
         payload_type: ArrowPayloadType,
         max_wait: Duration,
-    ) -> Result<(), Error<OtapPdata>> {
+    ) -> Result<(), Error> {
         tokio::select! {
             _ = Delay::new(max_wait) => Err(Error::InternalError {
                 message: "timed out waiting for table to exist".into()
@@ -531,14 +531,14 @@ mod test {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-        ) -> Result<(), Error<OtapPdata>> {
+        ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
 
         async fn send_messages(
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
-            ctrl_sender: Sender<NodeControlMsg>,
+            ctrl_sender: Sender<NodeControlMsg<OtapPdata>>,
         ) -> () {
             // have the parquet writer queue a batch to be written. Since it's a bit difficult to
             // know for certain when the batches will actually be queued because we have no direct
@@ -664,16 +664,16 @@ mod test {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender,
-        ) -> Result<(), Error<OtapPdata>> {
+        ) -> Result<(), Error> {
             exporter.start(pipeline_ctrl_msg_tx).await
         }
 
         async fn run_test(
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
-            ctrl_tx: Sender<NodeControlMsg>,
+            ctrl_tx: Sender<NodeControlMsg<OtapPdata>>,
             mut ctrl_rx: PipelineCtrlMsgReceiver,
-        ) -> Result<(), Error<OtapPdata>> {
+        ) -> Result<(), Error> {
             // try to receive the first timer start message
             let msg = tokio::select! {
                 _ = Delay::new(Duration::from_secs(10)) => return Err(Error::InternalError {

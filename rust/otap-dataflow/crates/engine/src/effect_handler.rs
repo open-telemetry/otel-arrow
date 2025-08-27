@@ -65,11 +65,11 @@ impl EffectHandlerCore {
     /// Returns an [`Error::IoError`] if any step in the process fails.
     ///
     /// ToDo: return a std::net::TcpListener instead of a tokio::net::tcp::TcpListener to avoid leaking our current dependency on Tokio.
-    pub(crate) fn tcp_listener<PData>(
+    pub(crate) fn tcp_listener(
         &self,
         addr: SocketAddr,
         receiver_id: NodeId,
-    ) -> Result<TcpListener, Error<PData>> {
+    ) -> Result<TcpListener, Error> {
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
             node: receiver_id.clone(),
@@ -113,11 +113,11 @@ impl EffectHandlerCore {
     ///
     /// ToDo: return a std::net::UdpSocket instead of a tokio::net::UdpSocket to avoid leaking our current dependency on Tokio.
     #[allow(dead_code)]
-    pub(crate) fn udp_socket<PData>(
+    pub(crate) fn udp_socket(
         &self,
         addr: SocketAddr,
         receiver_id: NodeId,
-    ) -> Result<UdpSocket, Error<PData>> {
+    ) -> Result<UdpSocket, Error> {
         // Helper closure to convert errors.
         let into_engine_error = |error: std::io::Error| Error::IoError {
             node: receiver_id.clone(),
@@ -152,10 +152,10 @@ impl EffectHandlerCore {
     /// Returns a handle that can be used to cancel the timer.
     ///
     /// Current limitation: The timer can only be started once per node.
-    pub async fn start_periodic_timer<PData>(
+    pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error<PData>> {
+    ) -> Result<TimerCancelHandle, Error> {
         let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
         pipeline_ctrl_msg_sender
@@ -164,7 +164,8 @@ impl EffectHandlerCore {
                 duration,
             })
             .await
-            .map_err(Error::PipelineControlMsgError)?;
+            // Drop the SendError
+            .map_err(|_| Error::PipelineControlMsgError)?;
 
         Ok(TimerCancelHandle {
             node_id: self.node_id.index,

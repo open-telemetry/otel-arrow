@@ -12,7 +12,7 @@ use std::time::Duration;
 /// Control messages sent by the pipeline engine to nodes to manage their behavior,
 /// configuration, and lifecycle.
 #[derive(Debug, Clone)]
-pub enum NodeControlMsg {
+pub enum NodeControlMsg<PData> {
     /// Acknowledges that a downstream component (internal or external) has reliably received
     /// and processed telemetry data for the specified message ID.
     ///
@@ -31,6 +31,12 @@ pub enum NodeControlMsg {
         id: u64,
         /// Human-readable reason for the NACK.
         reason: String,
+
+        /// Placeholder for optional return value, making it possible for the
+        /// retry sender to be stateless.
+        ///
+        /// TODO: should this be boxed to reduce the size of NodeControlMsg?
+        rvalue: Option<PData>,
     },
 
     /// Notifies the node of a configuration change.
@@ -87,14 +93,14 @@ pub enum PipelineControlMsg {
 /// Implement this trait for node types that need to handle control messages such as configuration
 /// updates, shutdown requests, or timer events. Implementers are not required to be thread-safe.
 #[async_trait::async_trait(?Send)]
-pub trait Controllable {
+pub trait Controllable<PData> {
     /// Returns the sender for control messages to this node.
     ///
     /// Used for direct message passing from the pipeline engine.
-    fn control_sender(&self) -> Sender<NodeControlMsg>;
+    fn control_sender(&self) -> Sender<NodeControlMsg<PData>>;
 }
 
-impl NodeControlMsg {
+impl<PData> NodeControlMsg<PData> {
     /// Returns `true` if this control message is a shutdown request.
     #[must_use]
     pub const fn is_shutdown(&self) -> bool {
