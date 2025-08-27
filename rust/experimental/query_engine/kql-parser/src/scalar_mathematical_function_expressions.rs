@@ -9,7 +9,7 @@ use crate::{Rule, scalar_expression::parse_scalar_expression};
 
 pub(crate) fn parse_negate_expression(
     negate_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&negate_expression_rule);
     let mut inner = negate_expression_rule.into_inner();
@@ -17,7 +17,7 @@ pub(crate) fn parse_negate_expression(
     // Grammar guarantees exactly one scalar_expression
     let scalar_expr_rule = inner.next().unwrap();
 
-    let scalar = parse_scalar_expression(scalar_expr_rule, state)?;
+    let scalar = parse_scalar_expression(scalar_expr_rule, scope)?;
 
     Ok(ScalarExpression::Math(MathScalarExpression::Negate(
         UnaryMathematicalScalarExpression::new(query_location, scalar),
@@ -26,14 +26,14 @@ pub(crate) fn parse_negate_expression(
 
 pub(crate) fn parse_bin_expression(
     bin_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&bin_expression_rule);
 
     let mut inner = bin_expression_rule.into_inner();
 
-    let left_scalar = parse_scalar_expression(inner.next().unwrap(), state)?;
-    let right_scalar = parse_scalar_expression(inner.next().unwrap(), state)?;
+    let left_scalar = parse_scalar_expression(inner.next().unwrap(), scope)?;
+    let right_scalar = parse_scalar_expression(inner.next().unwrap(), scope)?;
 
     Ok(ScalarExpression::Math(MathScalarExpression::Bin(
         BinaryMathematicalScalarExpression::new(query_location, left_scalar, right_scalar),
@@ -42,17 +42,17 @@ pub(crate) fn parse_bin_expression(
 
 pub(crate) fn parse_arithmetic_expression(
     arithmetic_expr_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&arithmetic_expr_rule);
     let mut inner_rules = arithmetic_expr_rule.into_inner();
 
     let first = inner_rules.next().unwrap();
 
-    let mut current_expr = parse_arithmetic_factor(first, state)?;
+    let mut current_expr = parse_arithmetic_factor(first, scope)?;
 
     while let Some(op_rule) = inner_rules.next() {
-        let right = parse_arithmetic_factor(inner_rules.next().unwrap(), state)?;
+        let right = parse_arithmetic_factor(inner_rules.next().unwrap(), scope)?;
 
         current_expr = match op_rule.as_rule() {
             Rule::plus_token => ScalarExpression::Math(MathScalarExpression::Add(
@@ -78,15 +78,15 @@ pub(crate) fn parse_arithmetic_expression(
 
 fn parse_arithmetic_factor(
     factor_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&factor_rule);
     let mut inner_rules = factor_rule.into_inner();
-    let mut current_expr = parse_scalar_expression(inner_rules.next().unwrap(), state)?;
+    let mut current_expr = parse_scalar_expression(inner_rules.next().unwrap(), scope)?;
 
     // Process multiplication/division/modulo operations
     while let Some(op_rule) = inner_rules.next() {
-        let right = parse_scalar_expression(inner_rules.next().unwrap(), state)?;
+        let right = parse_scalar_expression(inner_rules.next().unwrap(), scope)?;
 
         current_expr = match op_rule.as_rule() {
             Rule::multiply_token => ScalarExpression::Math(MathScalarExpression::Multiply(

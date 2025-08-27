@@ -12,7 +12,7 @@ use crate::{
 
 pub(crate) fn parse_source_assignment_expression(
     assignment_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<
     (
         QueryLocation,
@@ -36,7 +36,7 @@ pub(crate) fn parse_source_assignment_expression(
         // String("constant1") = [expression] we need to treat the accessor in
         // this case as an assignment on the source
         // Source(MapKey("some_constant1")) = [expression].
-        Rule::accessor_expression => parse_accessor_expression(destination_rule, state, false)?,
+        Rule::accessor_expression => parse_accessor_expression(destination_rule, scope, false)?,
         _ => panic!("Unexpected rule in assignment_expression: {destination_rule}"),
     };
 
@@ -68,7 +68,7 @@ pub(crate) fn parse_source_assignment_expression(
     let source_rule = assignment_rules.next().unwrap();
 
     let scalar = match source_rule.as_rule() {
-        Rule::scalar_expression => parse_scalar_expression(source_rule, state)?,
+        Rule::scalar_expression => parse_scalar_expression(source_rule, scope)?,
         _ => panic!("Unexpected rule in assignment_expression: {source_rule}"),
     };
 
@@ -81,7 +81,7 @@ pub(crate) fn parse_source_assignment_expression(
 
 pub(crate) fn parse_let_expression(
     let_expression_rule: Pair<Rule>,
-    state: &dyn ParserScope,
+    scope: &dyn ParserScope,
 ) -> Result<TransformExpression, ParserError> {
     let query_location = to_query_location(&let_expression_rule);
 
@@ -90,7 +90,7 @@ pub(crate) fn parse_let_expression(
     let identifier_rule = let_rules.next().unwrap();
 
     let name = identifier_rule.as_str().trim();
-    if state.is_well_defined_identifier(name) {
+    if scope.is_well_defined_identifier(name) {
         return Err(ParserError::QueryLanguageDiagnostic {
             location: to_query_location(&identifier_rule).clone(),
             diagnostic_id: "KS201",
@@ -100,7 +100,7 @@ pub(crate) fn parse_let_expression(
 
     let identifier = StringScalarExpression::new(to_query_location(&identifier_rule), name);
 
-    let scalar = parse_scalar_expression(let_rules.next().unwrap(), state)?;
+    let scalar = parse_scalar_expression(let_rules.next().unwrap(), scope)?;
 
     Ok(TransformExpression::Set(SetTransformExpression::new(
         query_location,
