@@ -98,7 +98,7 @@ impl TimerSet {
                     // Fire callback
                     on_fire(&node_id);
 
-                    // Schedule next recurrence
+                    // Schedule next recurrence based on the original scheduled time to prevent drift
                     let next_when = timer_state.scheduled_time + timer_state.duration;
                     self.timers.push(Reverse((next_when, node_id)));
                     timer_state.scheduled_time = next_when;
