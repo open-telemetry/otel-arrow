@@ -91,7 +91,7 @@ jobs:
       - name: Extract changelog content for this release
         id: changelog
         run: |
-          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}"
+          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}" /tmp/release_content.txt --normalize
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run

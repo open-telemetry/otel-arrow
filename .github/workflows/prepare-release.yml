@@ -46,7 +46,12 @@ jobs:
 
       - name: Extract unreleased changelog content
         id: changelog
-        run: ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
+        run: |
+          # Extract original content for CHANGELOG.md update (preserves formatting)
+          ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
+          
+          # Extract normalized content for PR body (removes extra newlines)
+          ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content_normalized.txt --normalize
 
       - name: Update collector build version
         run: |
@@ -76,7 +81,7 @@ jobs:
           git diff
           echo "--------------------------------"
           echo "Unreleased content:"
-          cat /tmp/changelog_content.txt
+          cat /tmp/changelog_content_normalized.txt
           echo "--------------------------------"
           echo "Git operations that would occur:"
           echo "  - Create branch: otelbot/release-v${{ inputs.version }}"
@@ -109,8 +114,8 @@ jobs:
           # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Read changelog content into a variable
-          CHANGELOG_CONTENT=$(cat /tmp/changelog_content.txt)
+          # Read normalized changelog content for PR body
+          CHANGELOG_CONTENT=$(cat /tmp/changelog_content_normalized.txt)
 
           # Create PR body content
           cat > /tmp/pr_body.md << EOF
