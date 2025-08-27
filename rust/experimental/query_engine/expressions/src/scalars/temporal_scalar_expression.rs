@@ -11,22 +11,18 @@ pub enum TemporalScalarExpression {
 
 impl TemporalScalarExpression {
     pub(crate) fn try_resolve_value_type(
-        &self,
-        _pipeline: &PipelineExpression,
+        &mut self,
+        _scope: &PipelineResolutionScope,
     ) -> Result<Option<ValueType>, ExpressionError> {
         match self {
             TemporalScalarExpression::Now(_) => Ok(Some(ValueType::DateTime)),
         }
     }
 
-    pub(crate) fn try_resolve_static<'a, 'b, 'c>(
-        &'a self,
-        _pipeline: &'b PipelineExpression,
-    ) -> Result<Option<ResolvedStaticScalarExpression<'c>>, ExpressionError>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        _scope: &PipelineResolutionScope,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'_>>, ExpressionError> {
         match self {
             TemporalScalarExpression::Now(_) => Ok(None),
         }

@@ -9,9 +9,9 @@ use crate::{
     execution_context::*,
     logical_expressions::execute_logical_expression,
     scalars::{
-        execute_convert_scalar_expression, execute_math_scalar_expression,
-        execute_parse_scalar_expression, execute_temporal_scalar_expression,
-        execute_text_scalar_expression,
+        execute_collection_scalar_expression, execute_convert_scalar_expression,
+        execute_math_scalar_expression, execute_parse_scalar_expression,
+        execute_temporal_scalar_expression, execute_text_scalar_expression,
     },
     *,
 };
@@ -175,24 +175,8 @@ where
                 Ok(ResolvedValue::Value(value))
             }
         },
-        ScalarExpression::List(l) => {
-            let expressions = l.get_value_expressions();
-
-            let mut values = Vec::with_capacity(expressions.len());
-
-            for v in expressions {
-                values.push(execute_scalar_expression(execution_context, v)?);
-            }
-
-            let r = ResolvedValue::List(List::new(values));
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                scalar_expression,
-                || format!("Evaluated as: '{r}'"),
-            );
-
-            Ok(r)
+        ScalarExpression::Collection(c) => {
+            execute_collection_scalar_expression(execution_context, c)
         }
         ScalarExpression::Logical(l) => {
             let value = execute_logical_expression(execution_context, l)?;
@@ -318,14 +302,16 @@ where
             let inner_value = execute_scalar_expression(execution_context, s.get_source())?;
 
             let range_start_inclusive = match s.get_range_start_inclusive() {
-                Some(start) => s.validate_resolved_range_value(
+                Some(start) => SliceScalarExpression::validate_resolved_range_value(
+                    start.get_query_location(),
                     "start",
                     execute_scalar_expression(execution_context, start)?.to_value(),
                 )?,
                 None => 0,
             };
             let range_end_exclusive = match s.get_range_end_exclusive() {
-                Some(end) => Some(s.validate_resolved_range_value(
+                Some(end) => Some(SliceScalarExpression::validate_resolved_range_value(
+                    end.get_query_location(),
                     "end",
                     execute_scalar_expression(execution_context, end)?.to_value(),
                 )?),
@@ -334,7 +320,8 @@ where
 
             let v = match inner_value.try_resolve_string() {
                 Ok(string_value) => {
-                    let range_end_exclusive = s.validate_slice_range(
+                    let range_end_exclusive = SliceScalarExpression::validate_slice_range(
+                        s.get_query_location(),
                         "String",
                         string_value.get_value().chars().count(),
                         range_start_inclusive,
@@ -349,7 +336,8 @@ where
                 }
                 Err(v) => match v.try_resolve_array() {
                     Ok(array_value) => {
-                        let range_end_exclusive = s.validate_slice_range(
+                        let range_end_exclusive = SliceScalarExpression::validate_slice_range(
+                            s.get_query_location(),
                             "Array",
                             array_value.len(),
                             range_start_inclusive,
@@ -1640,42 +1628,6 @@ mod tests {
                 QueryLocation::new_fake(),
                 "Array slice index ends at '6' which is beyond the length of '5'".into(),
             ),
-        );
-    }
-
-    #[test]
-    pub fn text_execute_list_scalar_expression() {
-        fn run_test_success(input: Vec<ScalarExpression>, expected_value: Value) {
-            let expression =
-                ScalarExpression::List(ListScalarExpression::new(QueryLocation::new_fake(), input));
-
-            let mut test = TestExecutionContext::new();
-
-            let execution_context = test.create_execution_context();
-
-            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
-            assert_eq!(expected_value, actual_value.to_value());
-        }
-
-        run_test_success(
-            vec![],
-            OwnedValue::Array(ArrayValueStorage::new(vec![])).to_value(),
-        );
-
-        run_test_success(
-            vec![
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
-                )),
-            ],
-            OwnedValue::Array(ArrayValueStorage::new(vec![
-                OwnedValue::Integer(IntegerValueStorage::new(1)),
-                OwnedValue::Integer(IntegerValueStorage::new(2)),
-            ]))
-            .to_value(),
         );
     }
 }

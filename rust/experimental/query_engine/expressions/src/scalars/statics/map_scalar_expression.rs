@@ -8,7 +8,7 @@ use crate::*;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapScalarExpression {
     query_location: QueryLocation,
-    value: HashMap<Box<str>, StaticScalarExpression>,
+    values: HashMap<Box<str>, StaticScalarExpression>,
 }
 
 impl MapScalarExpression {
@@ -18,8 +18,12 @@ impl MapScalarExpression {
     ) -> MapScalarExpression {
         Self {
             query_location,
-            value,
+            values: value,
         }
+    }
+
+    pub fn get_values(&self) -> &HashMap<Box<str>, StaticScalarExpression> {
+        &self.values
     }
 }
 
@@ -35,23 +39,23 @@ impl Expression for MapScalarExpression {
 
 impl MapValue for MapScalarExpression {
     fn is_empty(&self) -> bool {
-        self.value.is_empty()
+        self.values.is_empty()
     }
 
     fn len(&self) -> usize {
-        self.value.len()
+        self.values.len()
     }
 
     fn contains_key(&self, key: &str) -> bool {
-        self.value.contains_key(key)
+        self.values.contains_key(key)
     }
 
     fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
-        self.value.get(key).map(|v| v as &dyn AsStaticValue)
+        self.values.get(key).map(|v| v as &dyn AsStaticValue)
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
-        for (key, value) in &self.value {
+        for (key, value) in &self.values {
             if !item_callback.next(key, value.to_value()) {
                 return false;
             }

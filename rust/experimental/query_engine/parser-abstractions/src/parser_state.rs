@@ -177,4 +177,29 @@ pub trait ParserScope {
     fn push_variable_name(&mut self, name: &str);
 
     fn create_scope<'a>(&'a self, options: ParserOptions) -> ParserStateScope<'a>;
+
+    fn try_resolve_value_type(
+        &self,
+        scalar: &mut ScalarExpression,
+    ) -> Result<Option<ValueType>, ParserError> {
+        scalar
+            .try_resolve_value_type(&self.get_pipeline().get_resolution_scope())
+            .map_err(|e| ParserError::from(&e))
+    }
+
+    fn scalar_as_static<'a>(
+        &'a self,
+        scalar: &'a ScalarExpression,
+    ) -> Option<&'a StaticScalarExpression> {
+        match scalar {
+            ScalarExpression::Static(v) => Some(v),
+            ScalarExpression::Constant(ConstantScalarExpression::Copy(v)) => Some(v.get_value()),
+            ScalarExpression::Constant(ConstantScalarExpression::Reference(v)) => Some(
+                self.get_pipeline()
+                    .get_constant(v.get_constant_id())
+                    .expect("Constant not found"),
+            ),
+            _ => None,
+        }
+    }
 }

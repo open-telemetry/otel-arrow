@@ -515,12 +515,13 @@ mod tests {
 
             let state = ParserState::new(input);
             let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
-            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+            let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
-            // Create a dummy pipeline for static resolution
-            let pipeline = PipelineExpression::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            if let Ok(Some(resolved)) = expression.try_resolve_static(&pipeline) {
+            if let Ok(Some(resolved)) =
+                expression.try_resolve_static(&pipeline.get_resolution_scope())
+            {
                 match resolved.to_value() {
                     Value::Integer(i) => Some(i.get_value()),
                     _ => None,
@@ -557,11 +558,13 @@ mod tests {
 
             let state = ParserState::new(input);
             let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
-            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+            let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
-            let pipeline = PipelineExpression::default();
+            let pipeline: PipelineExpression = Default::default();
 
-            if let Ok(Some(resolved)) = expression.try_resolve_static(&pipeline) {
+            if let Ok(Some(resolved)) =
+                expression.try_resolve_static(&pipeline.get_resolution_scope())
+            {
                 match resolved.to_value() {
                     Value::Double(d) => Some(d.get_value()),
                     _ => None,

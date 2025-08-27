@@ -17,10 +17,10 @@ pub(crate) fn parse_strlen_expression(
 
     let inner_expression_rule = strlen_rules.next().unwrap();
     let inner_expression_rule_location = to_query_location(&inner_expression_rule);
-    let inner_expression = parse_scalar_expression(inner_expression_rule, state)?;
+    let mut inner_expression = parse_scalar_expression(inner_expression_rule, state)?;
 
     let inner_expression_value_type_result = inner_expression
-        .try_resolve_value_type(state.get_pipeline())
+        .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?;
 
     if let Some(v) = inner_expression_value_type_result
@@ -63,10 +63,10 @@ pub(crate) fn parse_replace_string_expression(
     ) -> Result<ScalarExpression, ParserError> {
         let location = to_query_location(&rule);
 
-        let scalar = parse_scalar_expression(rule, state)?;
+        let mut scalar = parse_scalar_expression(rule, state)?;
 
         let scalar_value_type_result = scalar
-            .try_resolve_value_type(state.get_pipeline())
+            .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
             .map_err(|e| ParserError::from(&e))?;
 
         if let Some(v) = scalar_value_type_result
@@ -94,10 +94,10 @@ pub(crate) fn parse_substring_expression(
 
     let starting_index_rule = substring_rules.next().unwrap();
     let starting_index_rule_location = to_query_location(&starting_index_rule);
-    let starting_index_scalar = parse_scalar_expression(starting_index_rule, state)?;
+    let mut starting_index_scalar = parse_scalar_expression(starting_index_rule, state)?;
 
     let starting_index_value_type_result = starting_index_scalar
-        .try_resolve_value_type(state.get_pipeline())
+        .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?;
 
     if let Some(v) = starting_index_value_type_result
@@ -112,10 +112,10 @@ pub(crate) fn parse_substring_expression(
 
     let length_scalar = if let Some(length_rule) = substring_rules.next() {
         let length_scalar_rule_location = to_query_location(&length_rule);
-        let length_scalar = parse_scalar_expression(length_rule, state)?;
+        let mut length_scalar = parse_scalar_expression(length_rule, state)?;
 
         let length_scalar_value_type_result = length_scalar
-            .try_resolve_value_type(state.get_pipeline())
+            .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
             .map_err(|e| ParserError::from(&e))?;
 
         if let Some(v) = length_scalar_value_type_result
@@ -151,10 +151,10 @@ pub(crate) fn parse_parse_json_expression(
 
     let inner_rule = parse_json_rules.next().unwrap();
     let inner_rule_location = to_query_location(&inner_rule);
-    let inner_scalar = parse_scalar_expression(inner_rule, state)?;
+    let mut inner_scalar = parse_scalar_expression(inner_rule, state)?;
 
     if let Some(v) = inner_scalar
-        .try_resolve_value_type(state.get_pipeline())
+        .try_resolve_value_type(&state.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?
         && v != ValueType::String
     {
@@ -165,7 +165,7 @@ pub(crate) fn parse_parse_json_expression(
         });
     }
 
-    let parse_json_scalar = ScalarExpression::Parse(ParseScalarExpression::Json(
+    let mut parse_json_scalar = ScalarExpression::Parse(ParseScalarExpression::Json(
         ParseJsonScalarExpression::new(query_location, inner_scalar),
     ));
 
@@ -174,10 +174,65 @@ pub(crate) fn parse_parse_json_expression(
     // tree gets constant folding which should automatically call into
     // try_resolve_static.
     parse_json_scalar
-        .try_resolve_static(state.get_pipeline())
+        .try_resolve_static(&state.get_pipeline().get_resolution_scope())
         .map_err(|e| ParserError::from(&e))?;
 
     Ok(parse_json_scalar)
+}
+
+pub(crate) fn parse_strcat_expression(
+    strcat_expression_rule: Pair<Rule>,
+    state: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&strcat_expression_rule);
+
+    let strcat_rules = strcat_expression_rule.into_inner();
+
+    let mut values = Vec::new();
+
+    for rule in strcat_rules {
+        let scalar = parse_scalar_expression(rule, state)?;
+
+        values.push(scalar);
+    }
+
+    Ok(ScalarExpression::Text(TextScalarExpression::Concat(
+        CombineScalarExpression::new(
+            query_location.clone(),
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(query_location, values),
+            )),
+        ),
+    )))
+}
+
+pub(crate) fn parse_strcat_delim_expression(
+    strcat_delim_expression_rule: Pair<Rule>,
+    state: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&strcat_delim_expression_rule);
+
+    let mut strcat_delim_rules = strcat_delim_expression_rule.into_inner();
+
+    let separator = parse_scalar_expression(strcat_delim_rules.next().unwrap(), state)?;
+
+    let mut values = Vec::new();
+
+    for rule in strcat_delim_rules {
+        let scalar = parse_scalar_expression(rule, state)?;
+
+        values.push(scalar);
+    }
+
+    Ok(ScalarExpression::Text(TextScalarExpression::Join(
+        JoinTextScalarExpression::new(
+            query_location.clone(),
+            separator,
+            ScalarExpression::Collection(CollectionScalarExpression::List(
+                ListScalarExpression::new(query_location, values),
+            )),
+        ),
+    )))
 }
 
 #[cfg(test)]
@@ -472,6 +527,112 @@ mod tests {
             "parse_json('[')",
             None,
             "Input could not be parsed as JSON: EOF while parsing a list at line 1 column 1",
+        );
+    }
+
+    #[test]
+    fn test_parse_strcat_expression() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "strcat(\"hello\")",
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                        ))],
+                    ),
+                )),
+            ))),
+        );
+
+        run_test_success(
+            "strcat(\"hello\", 'world')",
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "world"),
+                            )),
+                        ],
+                    ),
+                )),
+            ))),
+        );
+    }
+
+    #[test]
+    fn test_parse_strcat_delim_expression() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            println!("Testing: {input}");
+
+            let state = ParserState::new(input);
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "strcat_delim(\"|\", \"hello\")",
+            ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "|"),
+                )),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                        ))],
+                    ),
+                )),
+            ))),
+        );
+
+        run_test_success(
+            "strcat_delim(\", \", \"hello\", 'world')",
+            ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ", "),
+                )),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "world"),
+                            )),
+                        ],
+                    ),
+                )),
+            ))),
         );
     }
 }

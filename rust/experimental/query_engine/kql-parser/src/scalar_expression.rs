@@ -6,7 +6,7 @@ use data_engine_parser_abstractions::*;
 use pest::iterators::Pair;
 
 use crate::{
-    Rule, logical_expressions::parse_logical_expression,
+    Rule, logical_expressions::parse_logical_expression, scalar_array_function_expressions::*,
     scalar_conditional_function_expressions::*, scalar_conversion_function_expressions::*,
     scalar_mathematical_function_expressions::*, scalar_primitive_expressions::*,
     scalar_string_function_expressions::*, scalar_temporal_function_expressions::*,
@@ -41,6 +41,9 @@ pub(crate) fn parse_scalar_expression(
         Rule::replace_string_expression => parse_replace_string_expression(scalar_rule, state)?,
         Rule::substring_expression => parse_substring_expression(scalar_rule, state)?,
         Rule::parse_json_expression => parse_parse_json_expression(scalar_rule, state)?,
+        Rule::strcat_expression => parse_strcat_expression(scalar_rule, state)?,
+        Rule::strcat_delim_expression => parse_strcat_delim_expression(scalar_rule, state)?,
+        Rule::array_concat_expression => parse_array_concat_expression(scalar_rule, state)?,
         Rule::true_literal | Rule::false_literal => {
             ScalarExpression::Static(parse_standard_bool_literal(scalar_rule))
         }
