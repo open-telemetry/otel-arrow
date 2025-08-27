@@ -26,7 +26,7 @@ impl MetricsReporter {
     }
 
     /// Report multivariate metrics and reset the metrics if successful.
-    pub async fn report<M: MetricSetHandler + 'static>(
+    pub fn report<M: MetricSetHandler + 'static>(
         &mut self,
         metrics: &mut MetricSet<M>,
     ) -> Result<(), Error> {
@@ -42,6 +42,7 @@ impl MetricsReporter {
             Err(flume::TrySendError::Full(_)) => {
                 // Channel is full, so we don't block the reporter, we don't reset the metrics
                 // and we will try again later.
+                // ToDo: We might have to change this behavior depending on how we apply timestamps to these snapshots otherwise we may have a thread report a larger value belonging to a longer interval than others.
                 Ok(())
             }
             Err(flume::TrySendError::Disconnected(_)) => Err(Error::MetricsChannelClosed),

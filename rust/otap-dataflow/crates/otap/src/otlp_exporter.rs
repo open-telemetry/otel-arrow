@@ -169,7 +169,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.metrics).await;
+                    _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(data) => {
                     let service_req: OtlpProtoBytes = data.try_into()?;

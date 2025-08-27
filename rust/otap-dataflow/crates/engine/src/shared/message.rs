@@ -35,6 +35,24 @@ impl<T> SharedSender<T> {
             }
         }
     }
+
+    /// Attempts to send a message to the channel without awaiting.
+    pub fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+        match self {
+            SharedSender::MpscSender(sender) => sender
+                .try_send(msg)
+                .map_err(|e| match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(v) => SendError::Full(v),
+                    tokio::sync::mpsc::error::TrySendError::Closed(v) => SendError::Closed(v),
+                }),
+            SharedSender::MpmcSender(sender) => sender
+                .try_send(msg)
+                .map_err(|e| match e {
+                    flume::TrySendError::Full(v) => SendError::Full(v),
+                    flume::TrySendError::Disconnected(v) => SendError::Closed(v),
+                }),
+        }
+    }
 }
 
 /// A generic shared channel Receiver.

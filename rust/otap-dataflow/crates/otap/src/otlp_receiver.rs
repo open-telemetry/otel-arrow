@@ -134,7 +134,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             // Report current receiver metrics.
-                            _ = metrics_reporter.report(&mut self.metrics).await;
+                            _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));

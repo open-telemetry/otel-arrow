@@ -79,7 +79,7 @@ implementation roughly like this:
 ```rust
 #[repr(C, align(64))]
 #[derive(Debug, Default, Clone, otap_df_telemetry_macros::MetricSetHandler)]
-#[metrics(name = "perf.exporter.pdata.metrics")]
+#[metric_set(name = "perf.exporter.pdata.metrics")]
 pub struct PerfExporterPdataMetrics {
     // same fields as above
     pub batches: otap_df_telemetry::instrument::Counter<u64>,

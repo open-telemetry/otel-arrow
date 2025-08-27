@@ -52,7 +52,7 @@ pub struct PipelineAttributeSet {
 }
 
 /// Node attributes.
-#[attribute_set(name = "pipeline.attrs")]
+#[attribute_set(name = "node.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeAttributeSet {
     /// Pipeline attributes.

@@ -120,7 +120,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.metrics).await;
+                    _ = metrics_reporter.report(&mut self.metrics);
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}

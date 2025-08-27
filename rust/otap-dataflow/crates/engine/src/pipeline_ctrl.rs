@@ -148,9 +148,10 @@ impl PipelineCtrlMsgManager {
 
     /// Runs the manager event loop.
     ///
-    /// Handles incoming control messages and timer expirations.
-    /// - On StartTimer: schedules a timer for the node, updating all relevant maps.
-    /// - On CancelTimer: marks the timer as canceled and removes from maps.
+    /// Handles incoming control messages and timer expirations (both regular timers and telemetry
+    /// timers).
+    /// - On StartTimer: schedules a timer for the node.
+    /// - On CancelTimer: marks the timer as canceled.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
     pub async fn run<PData>(mut self) -> Result<(), Error<PData>> {
         loop {
@@ -197,22 +198,42 @@ impl PipelineCtrlMsgManager {
                     }
                 }, if next_earliest.is_some() => {
                     let now = Instant::now();
+
+                    // Collect all due timer events, then send asynchronously outside of the
+                    // TimerSet borrows to avoid blocking within the closure.
+                    let mut to_send: Vec<(usize, NodeControlMsg)> = Vec::new();
+
                     // Fire all due generic timers
-                    let senders = &self.control_senders;
                     self.tick_timers.fire_due(now, |node_id| {
-                        if let Some(sender) = senders.get(node_id) {
-                            // best-effort; ignore send errors
-                            let _ = futures::executor::block_on(sender.send(NodeControlMsg::TimerTick {}));
-                        }
+                        to_send.push((*node_id, NodeControlMsg::TimerTick {}));
                     });
 
                     // Fire all due telemetry timers
-                    let senders = &self.control_senders;
-            self.telemetry_timers.fire_due(now, |node_id| {
-                        if let Some(sender) = senders.get(node_id) {
-                let _ = futures::executor::block_on(sender.send(NodeControlMsg::CollectTelemetry { metrics_reporter: self.metrics_reporter.clone() }));
-                        }
+                    let metrics_reporter = self.metrics_reporter.clone();
+                    self.telemetry_timers.fire_due(now, |node_id| {
+                        to_send.push((*node_id, NodeControlMsg::CollectTelemetry { metrics_reporter: metrics_reporter.clone() }));
                     });
+
+                    // Deliver all accumulated control messages (best-effort)
+                    for (node_id, msg) in to_send {
+                        if let Some(sender) = self.control_senders.get(&node_id) {
+                            // Use try_send as a fast path:
+                            // - avoids allocating/awaiting a future when the channel has capacity
+                            // - keeps the event loop responsive and reduces timer jitter
+                            // - isolates backpressure to congested channels (only await on Full)
+                            // On Full, fall back to send(msg).await to preserve delivery
+                            match sender.try_send(msg) {
+                                Ok(()) => {}
+                                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                                    // Channel backpressured: await until space is available
+                                    let _ = sender.send(msg).await;
+                                }
+                                Err(otap_df_channel::error::SendError::Closed(_)) => {
+                                    // Ignore closed channel
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
