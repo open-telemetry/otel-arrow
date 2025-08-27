@@ -2066,7 +2066,7 @@ mod test {
 
     #[test]
     #[ignore = "this test currently does not pass"]
-    fn test_simpl_slit_traces() {
+    fn test_simple_split_traces() {
         let [_, _, traces] = RecordsGroup::split_by_type(vec![make_traces()]);
         let _original_traces = traces.clone();
         let _split = traces.split(NonZeroU64::new(2).unwrap()).unwrap();
