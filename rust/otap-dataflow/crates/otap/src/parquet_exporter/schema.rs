@@ -6,10 +6,10 @@
 //!
 //! The main reason we can't write the record batch verbatim is because OTAP considers some columns
 //! optional, but parquet spec requires that each row group contain a column chunk for every field
-//! in the schema (and the column chunks must be in the correct order). 
-//! 
-//! This means we can't receive two consecutive OTAP batches for some payload type and write them 
-//! into the same writer. To  handle this, we insert all null columns for missing columns (or all 
+//! in the schema (and the column chunks must be in the correct order).
+//!
+//! This means we can't receive two consecutive OTAP batches for some payload type and write them
+//! into the same writer. To  handle this, we insert all null columns for missing columns (or all
 //! default-value where the column is not nullable), and also arrange the columns so they're always
 //! in the same order.
 //!
@@ -22,13 +22,15 @@ use std::iter::repeat_n;
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array
+    Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array,
+    Int32Array, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray,
+    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use otap_df_engine::error::Error;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_rust::schema::{consts, FieldExt};
+use otel_arrow_rust::schema::{FieldExt, consts};
 
 /// Transform the
 // TODO comments
@@ -42,16 +44,14 @@ pub fn transform_to_known_schema(
     let (new_columns, new_fields) = transform_to_known_schema_internal(
         record_batch.num_rows(),
         record_batch.columns(),
-        current_schema.fields(), 
-        template_schema.fields()
+        current_schema.fields(),
+        template_schema.fields(),
     )?;
 
     // safety: this shouldn't fail b/c we're creating a record batch where the columns all have
     // the correct length and their datatypes match the schema
-    let new_rb = RecordBatch::try_new(
-        Arc::new(Schema::new(new_fields)),
-        new_columns,
-    ).expect("unexpected error creating record batch with known schema");
+    let new_rb = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns)
+        .expect("unexpected error creating record batch with known schema");
 
     Ok(new_rb)
 }
@@ -59,24 +59,27 @@ pub fn transform_to_known_schema(
 fn transform_struct_to_known_schema(
     num_rows: usize,
     current_array: &StructArray,
-    template_fields: &Fields
+    template_fields: &Fields,
 ) -> Result<StructArray, Error> {
     let (new_columns, new_fields) = transform_to_known_schema_internal(
-        num_rows, 
+        num_rows,
         current_array.columns(),
-        current_array.fields(), 
-        template_fields
+        current_array.fields(),
+        template_fields,
     )?;
 
-    Ok(StructArray::new(new_fields, new_columns, current_array.nulls().cloned()))
+    Ok(StructArray::new(
+        new_fields,
+        new_columns,
+        current_array.nulls().cloned(),
+    ))
 }
-
 
 fn transform_to_known_schema_internal(
     num_rows: usize,
     current_columns: &[ArrayRef],
     current_fields: &Fields,
-    template_fields: &Fields
+    template_fields: &Fields,
 ) -> Result<(Vec<ArrayRef>, Fields), Error> {
     let mut new_columns = Vec::with_capacity(template_fields.len());
     let mut new_fields = Vec::with_capacity(template_fields.len());
@@ -94,8 +97,10 @@ fn transform_to_known_schema_internal(
                     let new_struct_arr = transform_struct_to_known_schema(
                         num_rows,
                         // safety: we've just checked the datatype
-                        current_column.as_any().downcast_ref().expect("can downcast to struct"),
-                        
+                        current_column
+                            .as_any()
+                            .downcast_ref()
+                            .expect("can downcast to struct"),
                         // TODO -- need to return an error here if this is None b/c it means that
                         // the record batch we received had a struct column where it shouldn't
                         template_field.as_struct_fields().unwrap(),
@@ -116,17 +121,14 @@ fn transform_to_known_schema_internal(
                 new_fields.push(Arc::new(new_field));
             }
 
-           None => {
+            None => {
                 // column doesn't exist, add a new "empty" column..
                 let new_column = if template_field.is_nullable() {
                     get_all_null_column(template_field.data_type(), num_rows)?
                 } else {
-                    get_all_default_value_column(
-                        template_field.data_type(),
-                        num_rows
-                    )?
+                    get_all_default_value_column(template_field.data_type(), num_rows)?
                 };
-                
+
                 // TODO if the datatypes are the same here, there's no need to create a new Arc
                 let new_field = template_field
                     .as_ref()
@@ -140,7 +142,6 @@ fn transform_to_known_schema_internal(
 
     Ok((new_columns, Fields::from(new_fields)))
 }
-
 
 fn get_all_null_column(data_type: &DataType, length: usize) -> Result<ArrayRef, Error> {
     // TODO once run-end encoding, we can save some memory here by  allocating a single RunArray
@@ -184,9 +185,10 @@ fn get_all_default_value_column(data_type: &DataType, length: usize) -> Result<A
     Ok(match data_type {
         DataType::Binary => Arc::new(BinaryArray::from_iter_values(repeat_n(b"", length))),
         DataType::Boolean => Arc::new(BooleanArray::from_iter(repeat_n(Some(false), length))),
-        DataType::FixedSizeBinary(fsl_len) => {
-            Arc::new(FixedSizeBinaryArray::try_from_iter(repeat_n(vec![0; *fsl_len as usize], length)).expect("can create FSB array from iter of correct len"))
-        },
+        DataType::FixedSizeBinary(fsl_len) => Arc::new(
+            FixedSizeBinaryArray::try_from_iter(repeat_n(vec![0; *fsl_len as usize], length))
+                .expect("can create FSB array from iter of correct len"),
+        ),
         DataType::Float32 => Arc::new(Float32Array::from_iter_values(repeat_n(0.0, length))),
         DataType::Float64 => Arc::new(Float64Array::from_iter_values(repeat_n(0.0, length))),
         DataType::Int32 => Arc::new(Int32Array::from_iter_values(repeat_n(0, length))),
@@ -197,7 +199,9 @@ fn get_all_default_value_column(data_type: &DataType, length: usize) -> Result<A
         DataType::UInt64 => Arc::new(UInt64Array::from_iter_values(repeat_n(0, length))),
         DataType::Utf8 => Arc::new(StringArray::from_iter(repeat_n(Some(""), length))),
         DataType::Timestamp(time_unit, _) => match *time_unit {
-            TimeUnit::Nanosecond => Arc::new(TimestampNanosecondArray::from_iter_values(repeat_n(0, length))),
+            TimeUnit::Nanosecond => Arc::new(TimestampNanosecondArray::from_iter_values(repeat_n(
+                0, length,
+            ))),
             _ => {
                 todo!()
             }
@@ -213,7 +217,11 @@ fn get_all_default_value_column(data_type: &DataType, length: usize) -> Result<A
 /// creates a a struct where all the columns are all null, or all default value if non-nullable.
 /// the intention is that this will be a stand-in for the struct column of a record batch that is
 /// missing some struct column.
-fn get_struct_full_of_nulls_or_defaults(fields: &Fields, length: usize, struct_nullable: bool) -> Result<ArrayRef, Error> {
+fn get_struct_full_of_nulls_or_defaults(
+    fields: &Fields,
+    length: usize,
+    struct_nullable: bool,
+) -> Result<ArrayRef, Error> {
     let mut new_fields = Vec::with_capacity(fields.len());
     let mut new_columns = Vec::with_capacity(fields.len());
 
@@ -229,7 +237,7 @@ fn get_struct_full_of_nulls_or_defaults(fields: &Fields, length: usize, struct_n
 
     let nulls = (!struct_nullable).then(|| NullBuffer::new_valid(length));
     let struct_array = StructArray::new(Fields::from(new_fields), new_columns, nulls);
-    
+
     Ok(Arc::new(struct_array))
 }
 
@@ -277,8 +285,8 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(
             consts::SCOPE,
             DataType::Struct(SCOPE_TEMPLATE_FIELDS.clone()),
-            true
-        )
+            true,
+        ),
     ])
 });
 
@@ -301,24 +309,26 @@ mod test {
                         // scope will have some missing columns (name, version, drop_attr's_count)
                         // so we should see them inserted
                     ])),
-                    false
-                )
+                    false,
+                ),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
                 Arc::new(StructArray::new(
-                    Fields::from(vec![
-                        Field::new(consts::ID, DataType::UInt16, true),
-                    ]),
-                    vec![
-                        Arc::new(UInt16Array::from_iter(vec![Some(0), None, Some(1)]))
-                    ],
-                    Some(NullBuffer::new_valid(3))
+                    Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]),
+                    vec![Arc::new(UInt16Array::from_iter(vec![
+                        Some(0),
+                        None,
+                        Some(1),
+                    ]))],
+                    Some(NullBuffer::new_valid(3)),
                 )),
-            ]
-        ).unwrap();
+            ],
+        )
+        .unwrap();
 
-        let result = transform_to_known_schema(&log_attrs_record_batch, ArrowPayloadType::Logs).unwrap();
+        let result =
+            transform_to_known_schema(&log_attrs_record_batch, ArrowPayloadType::Logs).unwrap();
 
         let expected_resource_fields = Fields::from(vec![
             Field::new(consts::ID, DataType::UInt16, true),
@@ -339,41 +349,38 @@ mod test {
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(expected_resource_fields.clone()),
-                    false
+                    false,
                 ),
                 Field::new(
                     consts::SCOPE,
                     DataType::Struct(expected_scope_fields.clone()),
-                    false
+                    false,
                 ),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
-                Arc::new(
-                    StructArray::new(
-                        expected_resource_fields.clone(),
-                        vec![
-                            Arc::new(UInt16Array::new_null(3)),
-                            Arc::new(StringArray::new_null(3)),
-                            Arc::new(UInt32Array::new_null(3)),
-                        ],
-                        Some(NullBuffer::new_valid(3))
-                    )
-                ),
-                Arc::new(
-                    StructArray::new(
-                        expected_scope_fields.clone(),
-                        vec![
-                            Arc::new(UInt16Array::from_iter(vec![Some(0), None, Some(1)])),
-                            Arc::new(StringArray::new_null(3)),
-                            Arc::new(StringArray::new_null(3)),
-                            Arc::new(UInt32Array::new_null(3)),
-                        ],
-                        Some(NullBuffer::new_valid(3))
-                    )
-                )
-            ]
-        ).unwrap();
+                Arc::new(StructArray::new(
+                    expected_resource_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::new_null(3)),
+                        Arc::new(StringArray::new_null(3)),
+                        Arc::new(UInt32Array::new_null(3)),
+                    ],
+                    Some(NullBuffer::new_valid(3)),
+                )),
+                Arc::new(StructArray::new(
+                    expected_scope_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::from_iter(vec![Some(0), None, Some(1)])),
+                        Arc::new(StringArray::new_null(3)),
+                        Arc::new(StringArray::new_null(3)),
+                        Arc::new(UInt32Array::new_null(3)),
+                    ],
+                    Some(NullBuffer::new_valid(3)),
+                )),
+            ],
+        )
+        .unwrap();
 
         assert_eq!(result, expected)
     }
