@@ -19,13 +19,12 @@
 //! - Support live reconfiguration via control message.
 
 use crate::OTAP_EXPORTER_FACTORIES;
-use crate::grpc::OtapArrowBytes;
 use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::OtapPdata;
 use crate::perf_exporter::config::Config;
 use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
 use async_trait::async_trait;
-use fluke_hpack::Decoder;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
@@ -37,10 +36,9 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_telemetry::metrics::MetricSet;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_rust::otap::OtapArrowRecords;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Duration;
 
 /// The URN for the OTAP Perf exporter
@@ -112,7 +110,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // init variables for tracking
-        let mut average_pipeline_latency: f64 = 0.0;
+        // let mut average_pipeline_latency: f64 = 0.0;
 
         effect_handler.info("Starting Perf Exporter\n").await;
 
@@ -143,40 +141,24 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // Increment consumed for this signal
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    let batch = match OtapArrowBytes::try_from(pdata) {
-                        Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
-                        Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
-                        Ok(OtapArrowBytes::ArrowTraces(batch)) => batch,
+                    let batch: OtapArrowRecords = match pdata.try_into() {
+                        Ok(batch) => batch,
                         Err(_) => {
-                            // if the pdata is not a valid Arrow batch, we skip it.
-                            // For example, when it is a not supported signal type.
                             self.pdata_metrics.inc_failed(signal_type);
                             continue;
                         }
                     };
 
-                    // Keep track of Arrow records received
-                    self.metrics
-                        .arrow_records
-                        .add(batch.arrow_payloads.len() as u64);
-
                     // Increment counters per type of OTLP signals
-                    for arrow_payload in &batch.arrow_payloads {
-                        match ArrowPayloadType::try_from(arrow_payload.r#type) {
-                            Ok(ArrowPayloadType::UnivariateMetrics) => {
-                                // Increment metrics counter (number of metric records)
-                                self.metrics.metrics.add(arrow_payload.record.len() as u64);
-                                break;
-                            }
-                            Ok(ArrowPayloadType::Logs) => {
-                                self.metrics.logs.add(arrow_payload.record.len() as u64);
-                                break;
-                            }
-                            Ok(ArrowPayloadType::Spans) => {
-                                self.metrics.spans.add(arrow_payload.record.len() as u64);
-                                break;
-                            }
-                            _ => {}
+                    match signal_type {
+                        SignalType::Metrics => {
+                            self.metrics.metrics.add(batch.batch_length() as u64);
+                        }
+                        SignalType::Logs => {
+                            self.metrics.logs.add(batch.batch_length() as u64);
+                        }
+                        SignalType::Traces => {
+                            self.metrics.spans.add(batch.batch_length() as u64);
                         }
                     }
 
@@ -185,36 +167,37 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // check for timestamp
                     // get time delta between now and timestamp
                     // calculate average
-                    let mut decoder = Decoder::new();
-                    let header_list =
-                        decoder
-                            .decode(&batch.headers)
-                            .map_err(|_| Error::ExporterError {
-                                exporter: effect_handler.exporter_id(),
-                                error: "Failed to decode batch headers".to_owned(),
-                            })?;
+                    // ToDo Temporary disable latency calculation until we have a better way to add the timestamp header
+                    // let mut decoder = Decoder::new();
+                    // let header_list =
+                    //     decoder
+                    //         .decode(&batch.headers)
+                    //         .map_err(|_| Error::ExporterError {
+                    //             exporter: effect_handler.exporter_id(),
+                    //             error: "Failed to decode batch headers".to_owned(),
+                    //         })?;
                     // find the timestamp header and parse it
                     // timestamp will be added in the receiver to enable pipeline latency calculation
-                    let timestamp_pair = header_list.iter().find(|(name, _)| name == b"timestamp");
-                    if let Some((_, value)) = timestamp_pair {
-                        let timestamp =
-                            decode_timestamp(value).map_err(|error| Error::ExporterError {
-                                exporter: effect_handler.exporter_id(),
-                                error,
-                            })?;
-                        let current_unix_time = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map_err(|error| Error::ExporterError {
-                                exporter: effect_handler.exporter_id(),
-                                error: error.to_string(),
-                            })?;
-                        let latency = (current_unix_time - timestamp).as_secs_f64();
-                        average_pipeline_latency = update_average(
-                            latency,
-                            average_pipeline_latency,
-                            self.config.smoothing_factor() as f64,
-                        );
-                    }
+                    // let timestamp_pair = header_list.iter().find(|(name, _)| name == b"timestamp");
+                    // if let Some((_, value)) = timestamp_pair {
+                    //     let timestamp =
+                    //         decode_timestamp(value).map_err(|error| Error::ExporterError {
+                    //             exporter: effect_handler.exporter_id(),
+                    //             error,
+                    //         })?;
+                    //     let current_unix_time = SystemTime::now()
+                    //         .duration_since(UNIX_EPOCH)
+                    //         .map_err(|error| Error::ExporterError {
+                    //             exporter: effect_handler.exporter_id(),
+                    //             error: error.to_string(),
+                    //         })?;
+                    //     let latency = (current_unix_time - timestamp).as_secs_f64();
+                    //     average_pipeline_latency = update_average(
+                    //         latency,
+                    //         average_pipeline_latency,
+                    //         self.config.smoothing_factor() as f64,
+                    //     );
+                    // }
 
                     // Successful perf reporting: mark as exported for this signal
                     self.pdata_metrics.inc_exported(signal_type);
@@ -233,25 +216,25 @@ impl local::Exporter<OtapPdata> for PerfExporter {
     }
 }
 
-/// uses the exponential moving average formula to update the average
-fn update_average(new_value: f64, old_average: f64, smoothing_factor: f64) -> f64 {
-    // update the average using a exponential moving average which allows new data points to have a greater impact depending on the smoothing factor
-    smoothing_factor * new_value + (1.0 - smoothing_factor) * old_average
-}
+// uses the exponential moving average formula to update the average
+// fn update_average(new_value: f64, old_average: f64, smoothing_factor: f64) -> f64 {
+//     // update the average using a exponential moving average which allows new data points to have a greater impact depending on the smoothing factor
+//     smoothing_factor * new_value + (1.0 - smoothing_factor) * old_average
+// }
 
-/// decodes the byte array from the timestamp header and gets the equivalent duration value
-fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
-    let timestamp_string = std::str::from_utf8(timestamp).map_err(|error| error.to_string())?;
-    let timestamp_parts: Vec<&str> = timestamp_string.split(":").collect();
-    let secs = timestamp_parts[0]
-        .parse::<u64>()
-        .map_err(|error| error.to_string())?;
-    let nanosecs = timestamp_parts[1]
-        .parse::<u32>()
-        .map_err(|error| error.to_string())?;
-
-    Ok(Duration::new(secs, nanosecs))
-}
+// decodes the byte array from the timestamp header and gets the equivalent duration value
+// fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
+//     let timestamp_string = std::str::from_utf8(timestamp).map_err(|error| error.to_string())?;
+//     let timestamp_parts: Vec<&str> = timestamp_string.split(":").collect();
+//     let secs = timestamp_parts[0]
+//         .parse::<u64>()
+//         .map_err(|error| error.to_string())?;
+//     let nanosecs = timestamp_parts[1]
+//         .parse::<u32>()
+//         .map_err(|error| error.to_string())?;
+//
+//     Ok(Duration::new(secs, nanosecs))
+// }
 
 #[cfg(test)]
 mod tests {

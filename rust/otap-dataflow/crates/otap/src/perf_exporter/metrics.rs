@@ -13,9 +13,6 @@ pub struct PerfExporterPdataMetrics {
     /// Number of invalid pdata batches received.
     #[metric(unit = "{msg}")]
     pub invalid_batches: Counter<u64>,
-    /// Number of Arrow records received.
-    #[metric(unit = "{record}")]
-    pub arrow_records: Counter<u64>,
     /// Number of logs received.
     #[metric(unit = "{log}")]
     pub logs: Counter<u64>,
