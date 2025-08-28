@@ -31,7 +31,7 @@ less_than_or_equal_to_token = @{ "<=" }
 and_token = @{ "and" }
 or_token = @{ "or" }
 
-// Misc Tokens
+// Comparison Tokens
 contains_token = @{ "contains" }
 contains_cs_token = @{ "contains_cs" }
 has_token = @{ "has" }
@@ -44,6 +44,9 @@ not_has_token = @{ "!has" }
 not_has_cs_token = @{ "!has_cs" }
 not_in_token = @{ "!in" }
 not_in_insensitive_token = @{ "!in~" }
+matches_regex_token = @{ "matches regex" }
+
+// Misc Tokens
 statement_end_token = { &";" }
 
 // Literals
@@ -214,7 +217,7 @@ scalar_expression = {
 }
 
 comparison_expression = {
-    scalar_expression ~ (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token|equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression
+    scalar_expression ~ (not_contains_cs_token|not_contains_token|not_has_cs_token|not_has_token|contains_cs_token|contains_token|has_cs_token|has_token|equals_token|equals_insensitive_token|not_equals_token|not_equals_insensitive_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token|matches_regex_token) ~ scalar_expression
     | scalar_expression ~ (not_in_insensitive_token|not_in_token|in_insensitive_token|in_token) ~ "(" ~ scalar_expression ~ ("," ~ scalar_expression)* ~ ")"
 }
 logical_expressions = _{ comparison_expression|scalar_expression }

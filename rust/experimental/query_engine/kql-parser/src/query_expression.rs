@@ -79,7 +79,7 @@ pub(crate) fn parse_query(
                                                 s,
                                             ))) => state.push_constant(name, s),
                                             Ok(Some(
-                                                ResolvedStaticScalarExpression::FoldedConstant(s),
+                                                ResolvedStaticScalarExpression::FoldEligibleReference(s),
                                             )) => state.push_constant(name, s.clone()),
                                             Ok(None)
                                             | Ok(Some(

@@ -102,6 +102,40 @@ impl ScalarExpression {
         &'a mut self,
         scope: &PipelineResolutionScope<'a>,
     ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
+        let computed = {
+            // Note: The unsafe re-borrow here is to work around false positives
+            // in the current iteration of the rust borrow checker:
+            // https://rust-lang.github.io/rfcs/2094-nll.html#problem-case-3-conditional-control-flow-across-functions.
+            // There is a nightly new version of the borrow checker known as
+            // Polonius (https://github.com/rust-lang/polonius) which is able to
+            // correctly reason out the safety of this pattern and release the
+            // borrow when the "return"s fire. This unsafe should be removable
+            // if/when Polonius is released stable and the borrow checker
+            // becomes smarter.
+            let scalar = unsafe { &mut *(self as *mut ScalarExpression) };
+
+            match scalar.try_resolve_static_inner(scope)? {
+                None => return Ok(None),
+                Some(ResolvedStaticScalarExpression::Computed(c)) => c,
+                Some(r) => return Ok(Some(r)),
+            }
+        };
+
+        *self = ScalarExpression::Static(computed);
+
+        if let ScalarExpression::Static(s) = self {
+            return Ok(Some(ResolvedStaticScalarExpression::FoldEligibleReference(
+                s,
+            )));
+        }
+
+        unreachable!()
+    }
+
+    pub(crate) fn try_resolve_static_inner<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> Result<Option<ResolvedStaticScalarExpression<'a>>, ExpressionError> {
         match self {
             ScalarExpression::Source(s) => {
                 s.accessor.try_fold(scope)?;
@@ -115,10 +149,15 @@ impl ScalarExpression {
                 v.accessor.try_fold(scope)?;
                 Ok(None)
             }
-            ScalarExpression::Static(s) => match s.try_fold() {
-                Some(v) => Ok(Some(ResolvedStaticScalarExpression::Computed(v))),
-                None => Ok(Some(ResolvedStaticScalarExpression::Reference(s))),
-            },
+            ScalarExpression::Static(s) => {
+                if s.foldable() {
+                    Ok(Some(ResolvedStaticScalarExpression::FoldEligibleReference(
+                        s,
+                    )))
+                } else {
+                    Ok(Some(ResolvedStaticScalarExpression::Reference(s)))
+                }
+            }
             ScalarExpression::Constant(c) => Ok(Some(c.resolve_static(scope))),
             ScalarExpression::Collection(c) => c.try_resolve_static(scope),
             ScalarExpression::Logical(l) => match l.try_resolve_static(scope)? {
@@ -356,10 +395,14 @@ impl ConstantScalarExpression {
         }
     }
 
-    pub(crate) fn resolve_static<'a>(
+    pub(crate) fn resolve_static<'a, 'b, 'c>(
         &'a mut self,
-        scope: &PipelineResolutionScope<'a>,
-    ) -> ResolvedStaticScalarExpression<'a> {
+        scope: &PipelineResolutionScope<'b>,
+    ) -> ResolvedStaticScalarExpression<'c>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
         match self {
             ConstantScalarExpression::Reference(r) => {
                 let constant_id = r.get_constant_id();
@@ -368,8 +411,8 @@ impl ConstantScalarExpression {
                     panic!("Constant for id '{constant_id}' was not found on pipeline")
                 });
 
-                match value.try_fold() {
-                    Some(v) => {
+                match value.foldable() {
+                    true => {
                         // Note: If we get a folded static we convert the
                         // constant expression to a copy instead of a reference.
                         // The effect this has is for small constants a copy is
@@ -377,15 +420,15 @@ impl ConstantScalarExpression {
                         *self = ConstantScalarExpression::Copy(CopyConstantScalarExpression::new(
                             self.get_query_location().clone(),
                             constant_id,
-                            v.clone(),
+                            value.clone(),
                         ));
-                        ResolvedStaticScalarExpression::FoldedConstant(value)
+                        ResolvedStaticScalarExpression::FoldEligibleReference(value)
                     }
-                    None => ResolvedStaticScalarExpression::Reference(value),
+                    false => ResolvedStaticScalarExpression::Reference(value),
                 }
             }
             ConstantScalarExpression::Copy(c) => {
-                ResolvedStaticScalarExpression::FoldedConstant(&c.value)
+                ResolvedStaticScalarExpression::FoldEligibleReference(&c.value)
             }
         }
     }
