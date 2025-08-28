@@ -23,6 +23,7 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
+use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::error::Error as EngineError;
@@ -57,9 +58,13 @@ pub const MIN_SEND_BATCH_SIZE: usize = 1;
 pub const FOLLOW_SEND_BATCH_SIZE_SENTINEL: usize = 0;
 /// Minimum allowed metadata cardinality limit when specified
 pub const MIN_METADATA_CARDINALITY_LIMIT: usize = 1;
+/// Minimum increment to apply when counting items for size calculations
+pub const MIN_ITEM_INCREMENT: usize = 1;
 
 /// Log messages
 const LOG_MSG_SHUTTING_DOWN: &str = "OTAP batch processor shutting down";
+const LOG_MSG_DROP_NON_OTAP: &str =
+    "OTAP batch processor: dropping non-OTAP message (conversion failed)";
 
 /// Configuration for the OTAP batch processor (parity with Go batchprocessor)
 #[derive(Debug, Clone, Deserialize)]
@@ -113,8 +118,16 @@ impl Default for Config {
 /// Local (!Send) OTAP batch processor
 pub struct OtapBatchProcessor {
     config: Config,
-    /// Single buffer of incoming pdata messages. We partition by signal type at flush.
-    current: Vec<OtapPdata>,
+    // Per-signal buffers of convertible OTAP records
+    current_logs: Vec<OtapArrowRecords>,
+    current_metrics: Vec<OtapArrowRecords>,
+    current_traces: Vec<OtapArrowRecords>,
+    // For inputs that cannot be converted to OTAP (currently dropped with a log)
+    passthrough: Vec<OtapPdata>,
+    // Running row counts per signal for size triggers
+    rows_logs: usize,
+    rows_metrics: usize,
+    rows_traces: usize,
 }
 
 impl OtapBatchProcessor {
@@ -161,71 +174,173 @@ impl OtapBatchProcessor {
         ));
         let proc = OtapBatchProcessor {
             config,
-            current: Vec::new(),
+            current_logs: Vec::new(),
+            current_metrics: Vec::new(),
+            current_traces: Vec::new(),
+            passthrough: Vec::new(),
+            rows_logs: 0,
+            rows_metrics: 0,
+            rows_traces: 0,
         };
         Ok(ProcessorWrapper::local(proc, node, user_config, proc_cfg))
     }
 
-    /// Returns true if the buffered items reach or exceed the emission threshold.
-    ///
-    /// MVP: threshold is based on count (number of messages). In future, switch to real
-    /// row counts for OtapArrowRecords.
+    /// Returns true if any per-signal buffered rows reach or exceed the emission threshold.
+    /// Uses actual row counts from OTAP records.
     fn size_triggers_emission(&self) -> bool {
-        self.current.len() >= self.config.send_batch_size
+        let threshold = self.config.send_batch_size;
+        self.rows_logs >= threshold
+            || self.rows_metrics >= threshold
+            || self.rows_traces >= threshold
     }
 
-    /// Partition buffered items by signal type when possible and emit them downstream.
-    /// Items that cannot be converted to OtapArrowRecords are passed through as-is.
+    /// Flush all per-signal buffers (logs, metrics, traces). Does nothing if all are empty.
     async fn flush_current(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError<OtapPdata>> {
-        if self.current.is_empty() {
+        self.flush_logs(effect).await?;
+        self.flush_metrics(effect).await?;
+        self.flush_traces(effect).await
+    }
+
+    async fn flush_logs(
+        &mut self,
+        effect: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError<OtapPdata>> {
+        // Only return early if there is nothing buffered for this signal at all
+        if self.current_logs.is_empty()
+            && !self
+                .passthrough
+                .iter()
+                .any(|p| p.signal_type() == SignalType::Logs)
+        {
             return Ok(());
         }
-        let mut drained: Vec<OtapPdata> = std::mem::take(&mut self.current);
-
-        // Separate items that can be converted to OtapArrowRecords from passthrough
-        let mut convertible: Vec<OtapArrowRecords> = Vec::new();
-        let mut passthrough: Vec<OtapPdata> = Vec::new();
-        for item in drained.drain(..) {
-            match OtapArrowRecords::try_from(item.clone()) {
-                Ok(rec) => convertible.push(rec),
-                Err(_) => passthrough.push(item),
+        let input = std::mem::take(&mut self.current_logs);
+        if !input.is_empty() {
+            let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
+            let output_batches = match low_make_output_batches(max, input) {
+                Ok(v) => v,
+                Err(e) => {
+                    effect
+                        .info(&format!(
+                            "OTAP batch processor: low-level batching failed for logs: {e}; dropping"
+                        ))
+                        .await;
+                    Vec::new()
+                }
+            };
+            for records in output_batches {
+                let pdata: OtapPdata = records.into();
+                effect.send_message(pdata).await?;
             }
         }
-
-        // If nothing convertible, just emit passthrough items and return.
-        if convertible.is_empty() {
-            for item in passthrough {
-                effect.send_message(item).await?;
+        // Also flush any passthrough items for this signal type
+        if !self.passthrough.is_empty() {
+            let mut remaining = Vec::with_capacity(self.passthrough.len());
+            for pdata in self.passthrough.drain(..) {
+                if pdata.signal_type() == SignalType::Logs {
+                    effect.send_message(pdata).await?;
+                } else {
+                    remaining.push(pdata);
+                }
             }
+            self.passthrough = remaining;
+        }
+        self.rows_logs = 0;
+        Ok(())
+    }
+
+    async fn flush_metrics(
+        &mut self,
+        effect: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError<OtapPdata>> {
+        if self.current_metrics.is_empty()
+            && !self
+                .passthrough
+                .iter()
+                .any(|p| p.signal_type() == SignalType::Metrics)
+        {
             return Ok(());
         }
-
-        // Build output batches using low-level batching (split + concatenate per type)
-        let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
-        let output_batches = match low_make_output_batches(max, convertible.clone()) {
-            Ok(v) => v,
-            Err(e) => {
-                // Fall back to passthrough of convertible records on error
-                effect
-                    .info(&format!(
-                        "OTAP batch processor: low-level batching failed: {e}; falling back"
-                    ))
-                    .await;
-                convertible
+        let input = std::mem::take(&mut self.current_metrics);
+        if !input.is_empty() {
+            let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
+            let output_batches = match low_make_output_batches(max, input) {
+                Ok(v) => v,
+                Err(e) => {
+                    effect
+                        .info(&format!(
+                            "OTAP batch processor: low-level batching failed for metrics: {e}; dropping"
+                        ))
+                        .await;
+                    Vec::new()
+                }
+            };
+            for records in output_batches {
+                let pdata: OtapPdata = records.into();
+                effect.send_message(pdata).await?;
             }
-        };
+        }
+        if !self.passthrough.is_empty() {
+            let mut remaining = Vec::with_capacity(self.passthrough.len());
+            for pdata in self.passthrough.drain(..) {
+                if pdata.signal_type() == SignalType::Metrics {
+                    effect.send_message(pdata).await?;
+                } else {
+                    remaining.push(pdata);
+                }
+            }
+            self.passthrough = remaining;
+        }
+        self.rows_metrics = 0;
+        Ok(())
+    }
 
-        // Emit converted (records) first, then passthrough
-        for records in output_batches {
-            let pdata: OtapPdata = records.into();
-            effect.send_message(pdata).await?;
+    async fn flush_traces(
+        &mut self,
+        effect: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError<OtapPdata>> {
+        if self.current_traces.is_empty()
+            && !self
+                .passthrough
+                .iter()
+                .any(|p| p.signal_type() == SignalType::Traces)
+        {
+            return Ok(());
         }
-        for item in passthrough {
-            effect.send_message(item).await?;
+        let input = std::mem::take(&mut self.current_traces);
+        if !input.is_empty() {
+            let max = NonZeroU64::new(self.config.send_batch_max_size as u64);
+            let output_batches = match low_make_output_batches(max, input) {
+                Ok(v) => v,
+                Err(e) => {
+                    effect
+                        .info(&format!(
+                            "OTAP batch processor: low-level batching failed for traces: {e}; dropping"
+                        ))
+                        .await;
+                    Vec::new()
+                }
+            };
+            for records in output_batches {
+                let pdata: OtapPdata = records.into();
+                effect.send_message(pdata).await?;
+            }
         }
+        if !self.passthrough.is_empty() {
+            let mut remaining = Vec::with_capacity(self.passthrough.len());
+            for pdata in self.passthrough.drain(..) {
+                if pdata.signal_type() == SignalType::Traces {
+                    effect.send_message(pdata).await?;
+                } else {
+                    remaining.push(pdata);
+                }
+            }
+            self.passthrough = remaining;
+        }
+        self.rows_traces = 0;
         Ok(())
     }
 }
@@ -241,8 +356,12 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
             Message::Control(ctrl) => {
                 match ctrl {
                     otap_df_engine::control::NodeControlMsg::TimerTick { .. } => {
-                        // Flush any buffered items on timer
-                        self.flush_current(effect).await
+                        // Follow OTLP semantics: only flush on timer if a size threshold has been reached
+                        if self.size_triggers_emission() {
+                            self.flush_current(effect).await
+                        } else {
+                            Ok(())
+                        }
                     }
                     otap_df_engine::control::NodeControlMsg::Config { .. } => Ok(()),
                     otap_df_engine::control::NodeControlMsg::Shutdown { .. } => {
@@ -252,36 +371,134 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         Ok(())
                     }
                     otap_df_engine::control::NodeControlMsg::Ack { .. }
-                    | otap_df_engine::control::NodeControlMsg::Nack { .. } => Ok(()),
+                    | otap_df_engine::control::NodeControlMsg::Nack { .. }
+                    | otap_df_engine::control::NodeControlMsg::CollectTelemetry { .. } => Ok(()),
                 }
             }
             Message::PData(data) => {
-                // Before buffering, respect send_batch_max_size best-effort without splitting.
-                // If adding this would exceed max, flush current first.
                 let max = self.config.send_batch_max_size;
-                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL {
-                    let current_len = self.current.len();
-                    let incoming_count = item_count(&data);
-                    if current_len + incoming_count > max {
-                        self.flush_current(effect).await?;
+                // Fallback item count for cases where conversion yields zero rows
+                let fallback_count = item_count(&data);
+                match OtapArrowRecords::try_from(data.clone()) {
+                    Ok(rec) => {
+                        let rows = rec.batch_length();
+                        match &rec {
+                            OtapArrowRecords::Logs(_) => {
+                                let eff = if rows > 0 { rows } else { fallback_count };
+                                // If adding this would exceed max, flush first
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                    && self.rows_logs + eff > max
+                                {
+                                    self.flush_logs(effect).await?;
+                                }
+                                // Append count and buffer appropriate storage
+                                self.rows_logs += eff;
+                                if rows > 0 {
+                                    self.current_logs.push(rec);
+                                } else {
+                                    // zero-row conversion -> keep original pdata for passthrough
+                                    self.passthrough.push(data.clone());
+                                }
+                                // Flush when reaching max, or when reaching send_batch_size
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_logs >= max {
+                                    self.flush_logs(effect).await
+                                } else if self.rows_logs >= self.config.send_batch_size {
+                                    self.flush_logs(effect).await
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            OtapArrowRecords::Metrics(_) => {
+                                let eff = if rows > 0 { rows } else { fallback_count };
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                    && self.rows_metrics + eff > max
+                                {
+                                    self.flush_metrics(effect).await?;
+                                }
+                                self.rows_metrics += eff;
+                                if rows > 0 {
+                                    self.current_metrics.push(rec);
+                                } else {
+                                    self.passthrough.push(data.clone());
+                                }
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_metrics >= max
+                                {
+                                    self.flush_metrics(effect).await
+                                } else if self.rows_metrics >= self.config.send_batch_size {
+                                    self.flush_metrics(effect).await
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            OtapArrowRecords::Traces(_) => {
+                                let eff = if rows > 0 { rows } else { fallback_count };
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                    && self.rows_traces + eff > max
+                                {
+                                    self.flush_traces(effect).await?;
+                                }
+                                self.rows_traces += eff;
+                                if rows > 0 {
+                                    self.current_traces.push(rec);
+                                } else {
+                                    self.passthrough.push(data.clone());
+                                }
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_traces >= max
+                                {
+                                    self.flush_traces(effect).await
+                                } else if self.rows_traces >= self.config.send_batch_size {
+                                    self.flush_traces(effect).await
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                        }
                     }
-                }
-
-                // Buffer the incoming message
-                self.current.push(data);
-
-                // Threshold-based flush on count
-                if self.size_triggers_emission() {
-                    self.flush_current(effect).await
-                } else if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL {
-                    // Also flush if we've hit or exceeded the max size
-                    if self.current.len() >= max {
-                        self.flush_current(effect).await
-                    } else {
-                        Ok(())
+                    Err(_) => {
+                        // If conversion fails, route based on signal type.
+                        match data.signal_type() {
+                            SignalType::Logs => {
+                                let eff = fallback_count.max(MIN_ITEM_INCREMENT);
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                    && self.rows_logs + eff > max
+                                {
+                                    self.flush_logs(effect).await?;
+                                }
+                                self.rows_logs += eff;
+                                self.passthrough.push(data);
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_logs >= max {
+                                    self.flush_logs(effect).await
+                                } else if self.rows_logs >= self.config.send_batch_size {
+                                    self.flush_logs(effect).await
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            SignalType::Traces => {
+                                let eff = fallback_count.max(MIN_ITEM_INCREMENT);
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL
+                                    && self.rows_traces + eff > max
+                                {
+                                    self.flush_traces(effect).await?;
+                                }
+                                self.rows_traces += eff;
+                                self.passthrough.push(data);
+                                if max > FOLLOW_SEND_BATCH_SIZE_SENTINEL && self.rows_traces >= max
+                                {
+                                    self.flush_traces(effect).await
+                                } else if self.rows_traces >= self.config.send_batch_size {
+                                    self.flush_traces(effect).await
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            SignalType::Metrics => {
+                                // Metrics conversion from OTLP bytes not supported yet -> drop
+                                effect.info(LOG_MSG_DROP_NON_OTAP).await;
+                                Ok(())
+                            }
+                        }
                     }
-                } else {
-                    Ok(())
                 }
             }
         }
@@ -294,7 +511,10 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
 pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: OTAP_BATCH_PROCESSOR_URN,
-        create: |node: NodeId, cfg: &Value, proc_cfg: &ProcessorConfig| {
+        create: |_: otap_df_engine::context::PipelineContext,
+                 node: NodeId,
+                 cfg: &Value,
+                 proc_cfg: &ProcessorConfig| {
             OtapBatchProcessor::from_config(node, cfg, proc_cfg)
         },
     };
@@ -305,7 +525,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 /// Currently returns 1 for all inputs. In future, use actual row counts for OtapArrowRecords,
 /// and decode or approximate for other formats if needed.
 fn item_count(_data: &OtapPdata) -> usize {
-    1
+    MIN_ITEM_INCREMENT
 }
 
 /// Parses duration strings using Go-like syntax (e.g., "200ms", "2s", "1m", "1m30s").
@@ -526,18 +746,18 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_metrics_bytes_flush_on_size() {
+    fn test_drop_non_convertible_metrics_bytes() {
         use crate::pdata::{OtapPdata, OtlpProtoBytes};
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::processor::TestRuntime;
 
-        // Set size trigger to 1 so we flush immediately
+        // Set size trigger to 1
         let cfg = json!({
             "send_batch_size": 1,
             "send_batch_max_size": 10,
             "timeout": 10
         });
-        let processor_config = ProcessorConfig::new("otap_batch_test_passthrough_size");
+        let processor_config = ProcessorConfig::new("otap_batch_test_drop_non_convertible");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
         let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
@@ -546,17 +766,21 @@ mod tests {
         let phase = test_rt.set_processor(proc);
 
         let validation = phase.run_test(|mut ctx| async move {
-            // Metrics OTLP bytes are not yet supported for conversion -> passthrough
+            // Metrics OTLP bytes are not yet supported for conversion -> should be dropped
             let pdata = OtapPdata::from(OtlpProtoBytes::ExportMetricsRequest(vec![1, 2, 3]));
             ctx.process(Message::PData(pdata)).await.expect("process 1");
             let emitted = ctx.drain_pdata().await;
-            assert_eq!(emitted.len(), 1, "passthrough should emit on size trigger");
+            assert_eq!(
+                emitted.len(),
+                0,
+                "non-convertible inputs should not be forwarded"
+            );
         });
         validation.validate(|_vctx| async move {});
     }
 
     #[test]
-    fn test_passthrough_metrics_bytes_flush_on_shutdown() {
+    fn test_non_convertible_metrics_bytes_dropped_on_shutdown() {
         use crate::pdata::{OtapPdata, OtlpProtoBytes};
         use otap_df_engine::control::NodeControlMsg;
         use otap_df_engine::message::Message;
@@ -569,7 +793,7 @@ mod tests {
             "send_batch_max_size": 10,
             "timeout": 10
         });
-        let processor_config = ProcessorConfig::new("otap_batch_test_passthrough_shutdown");
+        let processor_config = ProcessorConfig::new("otap_batch_test_drop_on_shutdown");
         let test_rt = TestRuntime::new();
         let node = test_node(processor_config.name.clone());
         let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config)
@@ -590,7 +814,7 @@ mod tests {
             .await
             .expect("shutdown");
             let emitted = ctx.drain_pdata().await;
-            assert_eq!(emitted.len(), 1, "passthrough should flush on shutdown");
+            assert_eq!(emitted.len(), 0, "non-convertible inputs should be dropped");
         });
         validation.validate(|_vctx| async move {});
     }
