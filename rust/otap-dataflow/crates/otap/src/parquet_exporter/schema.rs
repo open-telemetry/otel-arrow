@@ -22,13 +22,13 @@ use std::iter::repeat_n;
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
-    ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array
+    Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array
 };
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use otap_df_engine::error::Error;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_rust::schema::consts;
+use otel_arrow_rust::schema::{consts, FieldExt};
 
 /// Transform the
 // TODO comments
@@ -39,35 +39,12 @@ pub fn transform_to_known_schema(
     let current_schema = record_batch.schema_ref();
     let template_schema = get_template_schema(payload_type);
 
-    let mut new_columns = Vec::with_capacity(template_schema.fields.len());
-    let mut new_fields = Vec::with_capacity(template_schema.fields.len());
-
-    for template_field in template_schema.fields() {
-        match current_schema.index_of(template_field.name()) {
-            Ok(current_field_index) => {
-                // TODO handle struct here
-                new_columns.push(record_batch.column(current_field_index).clone());
-                new_fields.push(current_schema.fields[current_field_index].clone());
-            }
-            Err(_) => {
-                let new_column = if template_field.is_nullable() {
-                    get_all_null_column(template_field.data_type(), record_batch.num_rows())?
-                } else {
-                    get_all_default_value_column(
-                        template_field.data_type(),
-                        record_batch.num_rows(),
-                    )?
-                };
-                let new_field = template_field
-                    .as_ref()
-                    .clone()
-                    .with_data_type(new_column.data_type().clone());
-
-                new_columns.push(new_column);
-                new_fields.push(Arc::new(new_field));
-            }
-        }
-    }
+    let (new_columns, new_fields) = transform_to_known_schema_internal(
+        record_batch.num_rows(),
+        record_batch.columns(),
+        current_schema.fields(), 
+        template_schema.fields()
+    )?;
 
     // safety: this shouldn't fail b/c we're creating a record batch where the columns all have
     // the correct length and their datatypes match the schema
@@ -79,14 +56,91 @@ pub fn transform_to_known_schema(
     Ok(new_rb)
 }
 
-fn get_template_schema(payload_type: ArrowPayloadType) -> &'static Schema {
-    match payload_type {
-        ArrowPayloadType::Logs => &LOGS_TEMPLATE_SCHEMA,
-        _ => {
-            todo!()
+fn transform_struct_to_known_schema(
+    num_rows: usize,
+    current_array: &StructArray,
+    template_fields: &Fields
+) -> Result<StructArray, Error> {
+    let (new_columns, new_fields) = transform_to_known_schema_internal(
+        num_rows, 
+        current_array.columns(),
+        current_array.fields(), 
+        template_fields
+    )?;
+
+    Ok(StructArray::new(new_fields, new_columns, current_array.nulls().cloned()))
+}
+
+
+fn transform_to_known_schema_internal(
+    num_rows: usize,
+    current_columns: &[ArrayRef],
+    current_fields: &Fields,
+    template_fields: &Fields
+) -> Result<(Vec<ArrayRef>, Fields), Error> {
+    let mut new_columns = Vec::with_capacity(template_fields.len());
+    let mut new_fields = Vec::with_capacity(template_fields.len());
+
+    for template_field in template_fields {
+        // TODO -- the last 3 blocks of each of the some/none branches are the same here. We might
+        // but first need to figure out if we need to preserve the metadata?
+        match current_fields.find(template_field.name()) {
+            Some((current_field_index, current_field)) => {
+                // column exists, reuse the existing column..
+                // let current_field = &current_schema.fields[current_field_index];
+                let current_column = &current_columns[current_field_index];
+                let new_column = if let DataType::Struct(_) = current_field.data_type() {
+                    // handle struct column
+                    let new_struct_arr = transform_struct_to_known_schema(
+                        num_rows,
+                        // safety: we've just checked the datatype
+                        current_column.as_any().downcast_ref().expect("can downcast to struct"),
+                        
+                        // TODO -- need to return an error here if this is None b/c it means that
+                        // the record batch we received had a struct column where it shouldn't
+                        template_field.as_struct_fields().unwrap(),
+                    )?;
+
+                    Arc::new(new_struct_arr)
+                } else {
+                    // otherwise just keep the existing column
+                    current_column.clone()
+                };
+
+                // TODO if the datatypes are the same here, there's no need to create a new Arc
+                let new_field = current_field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(new_column.data_type().clone());
+                new_columns.push(new_column);
+                new_fields.push(Arc::new(new_field));
+            }
+
+           None => {
+                // column doesn't exist, add a new "empty" column..
+                let new_column = if template_field.is_nullable() {
+                    get_all_null_column(template_field.data_type(), num_rows)?
+                } else {
+                    get_all_default_value_column(
+                        template_field.data_type(),
+                        num_rows
+                    )?
+                };
+                
+                // TODO if the datatypes are the same here, there's no need to create a new Arc
+                let new_field = template_field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(new_column.data_type().clone());
+                new_columns.push(new_column);
+                new_fields.push(Arc::new(new_field));
+            }
         }
     }
+
+    Ok((new_columns, Fields::from(new_fields)))
 }
+
 
 fn get_all_null_column(data_type: &DataType, length: usize) -> Result<ArrayRef, Error> {
     // TODO once run-end encoding, we can save some memory here by  allocating a single RunArray
@@ -179,6 +233,15 @@ fn get_struct_full_of_nulls_or_defaults(fields: &Fields, length: usize, struct_n
     Ok(Arc::new(struct_array))
 }
 
+fn get_template_schema(payload_type: ArrowPayloadType) -> &'static Schema {
+    match payload_type {
+        ArrowPayloadType::Logs => &LOGS_TEMPLATE_SCHEMA,
+        _ => {
+            todo!()
+        }
+    }
+}
+
 // template schemas for various data types:
 //
 // note: these shouldn't be interpreted a comprehensive reference for OTAP generally. while the
@@ -223,6 +286,7 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 mod test {
     use super::*;
     use arrow::array::{RecordBatch, UInt16Array};
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_coalesces_new_columns_with_empty_columns() {
