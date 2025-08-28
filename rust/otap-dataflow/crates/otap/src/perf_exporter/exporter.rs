@@ -20,6 +20,7 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::grpc::OtapArrowBytes;
+use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::OtapPdata;
 use crate::perf_exporter::config::Config;
 use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
@@ -49,6 +50,7 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
 pub struct PerfExporter {
     config: Config,
     metrics: MetricSet<PerfExporterPdataMetrics>,
+    pdata_metrics: MetricSet<ExporterPDataMetrics>,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -77,7 +79,13 @@ impl PerfExporter {
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
         let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
-        PerfExporter { config, metrics }
+        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+
+        PerfExporter {
+            config,
+            metrics,
+            pdata_metrics,
+        }
     }
 
     /// Creates a new PerfExporter from a configuration object
@@ -121,6 +129,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     mut metrics_reporter,
                 }) => {
                     _ = metrics_reporter.report(&mut self.metrics);
+                    _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
@@ -128,6 +137,12 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     break;
                 }
                 Message::PData(pdata) => {
+                    // Capture signal type before moving pdata into try_from
+                    let signal_type = pdata.signal_type();
+
+                    // Increment consumed for this signal
+                    self.pdata_metrics.inc_consumed(signal_type);
+
                     let batch = match OtapArrowBytes::try_from(pdata) {
                         Ok(OtapArrowBytes::ArrowLogs(batch)) => batch,
                         Ok(OtapArrowBytes::ArrowMetrics(batch)) => batch,
@@ -135,13 +150,12 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         Err(_) => {
                             // if the pdata is not a valid Arrow batch, we skip it.
                             // For example, when it is a not supported signal type.
-                            self.metrics.invalid_batches.inc();
+                            self.pdata_metrics.inc_failed(signal_type);
                             continue;
                         }
                     };
 
-                    // Keep track of batches and Arrow records received
-                    self.metrics.batches.inc();
+                    // Keep track of Arrow records received
                     self.metrics
                         .arrow_records
                         .add(batch.arrow_payloads.len() as u64);
@@ -201,6 +215,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                             self.config.smoothing_factor() as f64,
                         );
                     }
+
+                    // Successful perf reporting: mark as exported for this signal
+                    self.pdata_metrics.inc_exported(signal_type);
 
                     // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
                 }

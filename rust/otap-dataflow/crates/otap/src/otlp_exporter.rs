@@ -7,7 +7,6 @@ use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -66,7 +65,7 @@ impl OTLPExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let batch_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -76,7 +75,7 @@ impl OTLPExporter {
 
         Ok(Self {
             config,
-            pdata_metrics: batch_metrics,
+            pdata_metrics,
         })
     }
 }
@@ -142,15 +141,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 }) => {
                     _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
-                Message::PData(data) => {
-                    match data.signal_type() {
-                        SignalType::Metrics => self.pdata_metrics.metrics_consumed.inc(),
-                        SignalType::Logs => self.pdata_metrics.logs_consumed.inc(),
-                        SignalType::Traces => self.pdata_metrics.traces_consumed.inc(),
-                    }
-                    let service_req: OtlpProtoBytes = data
+                Message::PData(pdata) => {
+                    // Capture signal type before moving pdata into try_from
+                    let signal_type = pdata.signal_type();
+
+                    self.pdata_metrics.inc_consumed(signal_type);
+                    let service_req: OtlpProtoBytes = pdata
                         .try_into()
-                        .inspect_err(|_| self.pdata_metrics.metrics_failed.inc())?;
+                        .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
                     _ = match service_req {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {

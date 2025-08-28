@@ -14,7 +14,6 @@ use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::experimental::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -50,7 +49,7 @@ pub struct Config {
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
     config: Config,
-    batch_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MetricSet<ExporterPDataMetrics>,
 }
 
 /// Declares the OTAP exporter as a local exporter factory
@@ -81,7 +80,7 @@ impl OTAPExporter {
         let batch_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
         OTAPExporter {
             config,
-            batch_metrics,
+            pdata_metrics: batch_metrics,
         }
     }
 
@@ -165,7 +164,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.batch_metrics);
+                    _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
                 // shutdown the exporter
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
@@ -173,15 +172,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     break;
                 }
                 //send data
-                Message::PData(message) => {
-                    match message.signal_type() {
-                        SignalType::Logs => self.batch_metrics.logs_consumed.inc(),
-                        SignalType::Metrics => self.batch_metrics.metrics_consumed.inc(),
-                        SignalType::Traces => self.batch_metrics.traces_consumed.inc(),
-                    }
-                    let message: OtapArrowBytes = message
+                Message::PData(pdata) => {
+                    // Capture signal type before moving pdata into try_from
+                    let signal_type = pdata.signal_type();
+
+                    self.pdata_metrics.inc_consumed(signal_type);
+                    let message: OtapArrowBytes = pdata
                         .try_into()
-                        .inspect_err(|_| self.batch_metrics.metrics_failed.inc())?;
+                        .inspect_err(|_| self.pdata_metrics.inc_failed(signal_type))?;
 
                     match message {
                         // match on OTAPData type and use the respective client to send message
@@ -197,13 +195,13 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 .arrow_metrics(request_stream)
                                 .await
                                 .map_err(|e| {
-                                    self.batch_metrics.metrics_failed.inc();
+                                    self.pdata_metrics.metrics_failed.inc();
                                     Error::ExporterError {
                                         exporter: exporter_id.clone(),
                                         error: e.to_string(),
                                     }
                                 })?;
-                            self.batch_metrics.metrics_exported.inc();
+                            self.pdata_metrics.metrics_exported.inc();
                         }
                         OtapArrowBytes::ArrowLogs(req) => {
                             let request_stream = stream! {
@@ -211,14 +209,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             };
                             _ = arrow_logs_client.arrow_logs(request_stream).await.map_err(
                                 |e| {
-                                    self.batch_metrics.logs_failed.inc();
+                                    self.pdata_metrics.logs_failed.inc();
                                     Error::ExporterError {
                                         exporter: exporter_id.clone(),
                                         error: e.to_string(),
                                     }
                                 },
                             )?;
-                            self.batch_metrics.logs_exported.inc();
+                            self.pdata_metrics.logs_exported.inc();
                         }
                         OtapArrowBytes::ArrowTraces(req) => {
                             let request_stream = stream! {
@@ -228,13 +226,13 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 .arrow_traces(request_stream)
                                 .await
                                 .map_err(|e| {
-                                    self.batch_metrics.traces_failed.inc();
+                                    self.pdata_metrics.traces_failed.inc();
                                     Error::ExporterError {
                                         exporter: exporter_id.clone(),
                                         error: e.to_string(),
                                     }
                                 })?;
-                            self.batch_metrics.traces_exported.inc();
+                            self.pdata_metrics.traces_exported.inc();
                         }
                     }
                 }

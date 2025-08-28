@@ -10,9 +10,6 @@ use otap_df_telemetry_macros::metric_set;
 #[metric_set(name = "perf.exporter.pdata.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct PerfExporterPdataMetrics {
-    /// Number of pdata batches received.
-    #[metric(unit = "{msg}")]
-    pub batches: Counter<u64>,
     /// Number of invalid pdata batches received.
     #[metric(unit = "{msg}")]
     pub invalid_batches: Counter<u64>,
