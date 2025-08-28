@@ -336,17 +336,13 @@ mod tests {
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         metrics::v1::{
-             ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+            ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
             HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
-            ScopeMetrics, Sum, Summary, SummaryDataPoint, 
-            exponential_histogram_data_point::Buckets, 
-            summary_data_point::ValueAtQuantile,
+            ScopeMetrics, Sum, Summary, SummaryDataPoint,
+            exponential_histogram_data_point::Buckets, summary_data_point::ValueAtQuantile,
         },
         resource::v1::Resource,
-        trace::v1::{
-            ResourceSpans, ScopeSpans, Span,  TracesData, 
-            
-        },
+        trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
     };
 
     #[test]

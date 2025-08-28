@@ -5,14 +5,14 @@ use crate::arrays::{
     NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor, get_required_array,
 };
 use crate::error;
-use crate::proto::opentelemetry::common::v1::{InstrumentationScope, AnyValue, any_value::Value};
+use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, any_value::Value};
 use crate::schema::consts;
 use arrow::array::{Array, RecordBatch, StructArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Fields};
 use snafu::OptionExt;
-use std::sync::LazyLock;
 use std::fmt;
 use std::fmt::Write;
+use std::sync::LazyLock;
 
 pub(in crate::otlp) struct ResourceArrays<'a> {
     pub id: &'a UInt16Array,

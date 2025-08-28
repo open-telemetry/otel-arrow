@@ -353,8 +353,7 @@ mod tests {
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         metrics::v1::{
-            Exemplar, Gauge, Metric,
-            MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, 
+            Exemplar, Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
         },
         resource::v1::Resource,
         trace::v1::{

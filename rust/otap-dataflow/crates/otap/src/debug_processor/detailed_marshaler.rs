@@ -647,9 +647,8 @@ mod tests {
         metrics::v1::{
             Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
             HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
-            ScopeMetrics, Sum, Summary, SummaryDataPoint, 
-            exponential_histogram_data_point::Buckets,
-             summary_data_point::ValueAtQuantile,
+            ScopeMetrics, Sum, Summary, SummaryDataPoint,
+            exponential_histogram_data_point::Buckets, summary_data_point::ValueAtQuantile,
         },
         resource::v1::Resource,
         trace::v1::{
@@ -930,19 +929,22 @@ mod tests {
                             vec![
                                 NumberDataPoint::build_int(1663718400000001400u64, 0i64)
                                     .start_time_unix_nano(1650499200000000000u64)
-                                    .attributes(vec![KeyValue::new("cpu_logical_processors", AnyValue::new_string("8"))])
+                                    .attributes(vec![KeyValue::new(
+                                        "cpu_logical_processors",
+                                        AnyValue::new_string("8"),
+                                    )])
                                     .exemplars(vec![
-                                    Exemplar::build_double(1663718400000001400u64, 22.2)
-                                        .filtered_attributes(vec![KeyValue::new(
-                                            "************",
-                                            AnyValue::new_bool(true),
-                                        )])
-                                        .trace_id(Vec::from(
-                                            "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
-                                        ))
-                                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
-                                        .finish(),
-                                ])
+                                        Exemplar::build_double(1663718400000001400u64, 22.2)
+                                            .filtered_attributes(vec![KeyValue::new(
+                                                "************",
+                                                AnyValue::new_bool(true),
+                                            )])
+                                            .trace_id(Vec::from(
+                                                "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
+                                            ))
+                                            .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                                            .finish(),
+                                    ])
                                     .finish(),
                             ],
                         ),
