@@ -1,112 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1756332053506,
+  "lastUpdate": 1756415139977,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "geukhanuslu@gmail.com",
-            "name": "Gokhan Uslu",
-            "username": "gouslu"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "38ed3e691cd849ec104a0e7c5ca163eb053feb45",
-          "message": "orchestrator.py auto load to kind cluster option and install metrics server option for convnience (#596)\n\n- added `--kind-cluster` option that accepts cluster name as a value, if\npassed without a value it will use `kind` as the cluster name, if not\npassed, doesn't use kind cluster.\n- added `--install-metrics-server`, works with kubernetes option,\ninstalls metrics server on the cluster with insecure TLS for dev\npurposes.",
-          "timestamp": "2025-06-17T16:02:02Z",
-          "tree_id": "3d9d603517767c83af136fb9ec5a525d27b67c6b",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/38ed3e691cd849ec104a0e7c5ca163eb053feb45"
-        },
-        "date": 1750176723828,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
-            "value": 469333.3333333333,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
-            "value": 14080000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
-            "value": 14080000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
-            "value": 2.48,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
-            "value": 2.82,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
-            "value": 151.76,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
-            "value": 214.4,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-throughput",
-            "value": 442166.6666666667,
-            "unit": "logs/sec"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-sent",
-            "value": 13265000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-logs-received",
-            "value": 13265000,
-            "unit": "count"
-          },
-          {
-            "name": "pipeline-perf-collector-config-loss-percentage",
-            "value": 0,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-avg",
-            "value": 2.31,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-cpu-max",
-            "value": 2.81,
-            "unit": "percent"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-avg",
-            "value": 108.15,
-            "unit": "MiB"
-          },
-          {
-            "name": "pipeline-perf-collector-config-memory-max",
-            "value": 128.96,
-            "unit": "MiB"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10399,6 +10295,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
             "value": 192.55,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0d3422f152e8dd7f188bf0c2e9f71b3f4f670e3f",
+          "message": "OTLP and OTAP Exporter Metrics (#1023)\n\nThis PR is a first iteration to progressively comply with this [RFC -\nPipeline Component\nTelemetry](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).\n\nThe OTLP and OTAP exporters have been updated.\n\nThe following metric set has been used:\n```rust\n/// PData metrics for exporters.\n/// Namespace grouped under `exporter.pdata`.\n/// Uses a monotonic counter per outcome.\n#[metric_set(name = \"exporter.pdata\")]\n#[derive(Debug, Default, Clone)]\npub struct ExporterPDataMetrics {\n    /// Number of pdata metrics consumed by this exporter.\n    #[metric(unit = \"{msg}\")]\n    pub metrics_consumed: Counter<u64>,\n\n    /// Number of pdata metrics successfully exported.\n    #[metric(unit = \"{msg}\")]\n    pub metrics_exported: Counter<u64>,\n\n    /// Number of pdata metrics that failed to be exported.\n    #[metric(unit = \"{msg}\")]\n    pub metrics_failed: Counter<u64>,\n\n    /// Number of pdata logs consumed by this exporter.\n    #[metric(unit = \"{msg}\")]\n    pub logs_consumed: Counter<u64>,\n\n    /// Number of pdata logs successfully exported.\n    #[metric(unit = \"{msg}\")]\n    pub logs_exported: Counter<u64>,\n\n    /// Number of pdata logs that failed to be exported.\n    #[metric(unit = \"{msg}\")]\n    pub logs_failed: Counter<u64>,\n\n    /// Number of pdata traces consumed by this exporter.\n    #[metric(unit = \"{msg}\")]\n    pub traces_consumed: Counter<u64>,\n\n    /// Number of pdata traces successfully exported.\n    #[metric(unit = \"{msg}\")]\n    pub traces_exported: Counter<u64>,\n\n    /// Number of pdata traces that failed to be exported.\n    #[metric(unit = \"{msg}\")]\n    pub traces_failed: Counter<u64>,\n}\n```",
+          "timestamp": "2025-08-28T20:57:08Z",
+          "tree_id": "0ed023f63d412c4d8bf401e5c22b80962dd4e1fc",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0d3422f152e8dd7f188bf0c2e9f71b3f4f670e3f"
+        },
+        "date": 1756415137924,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 731666.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 21950000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 21950000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 5.61,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 6.59,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 119.42,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 141.46,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 738166.6666666666,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 22145000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 22145000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 5.8,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 6.93,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 161.69,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 187.93,
             "unit": "MiB"
           }
         ]
