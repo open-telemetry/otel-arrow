@@ -5,6 +5,7 @@
 
 pub mod error;
 mod telemetry;
+mod pipeline;
 
 use axum::{Router, routing::get};
 use std::net::SocketAddr;
