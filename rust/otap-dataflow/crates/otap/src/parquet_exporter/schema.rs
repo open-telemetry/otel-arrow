@@ -28,8 +28,11 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+use futures::future::Lazy;
 use otap_df_engine::error::Error;
+use otap_df_otlp::proto::opentelemetry::metrics::v1::metric::Data;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_rust::schema::consts::ATTRIBUTE_SER;
 use otel_arrow_rust::schema::{FieldExt, consts};
 
 /// Transform the
@@ -150,7 +153,7 @@ fn get_all_null_column(data_type: &DataType, length: usize) -> Result<ArrayRef, 
     // https://github.com/apache/arrow-rs/issues/8016
     Ok(match data_type {
         DataType::Binary => Arc::new(BinaryArray::new_null(length)),
-        DataType::Boolean => Arc::new(BinaryArray::new_null(length)),
+        DataType::Boolean => Arc::new(BooleanArray::new_null(length)),
         DataType::FixedSizeBinary(fsl_len) => {
             Arc::new(FixedSizeBinaryArray::new_null(*fsl_len, length))
         }
@@ -244,7 +247,35 @@ fn get_struct_full_of_nulls_or_defaults(
 fn get_template_schema(payload_type: ArrowPayloadType) -> &'static Schema {
     match payload_type {
         ArrowPayloadType::Logs => &LOGS_TEMPLATE_SCHEMA,
-        _ => {
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+            &METRICS_TEMPLATE_SCHEMA
+        }
+        ArrowPayloadType::SummaryDataPoints => &SUMMARY_DP_TEMPLATE_SCHEMA,
+        ArrowPayloadType::NumberDataPoints => &NUMBERS_DP_TEMPLATE_SCHEMA,
+        ArrowPayloadType::HistogramDataPoints => &HISTOGRAM_DP_TEMPLATE_SCHEMA,
+        ArrowPayloadType::ExpHistogramDataPoints => &EXP_HISTOGRAM_DP_TEMPLATE_SCHEMA,
+        ArrowPayloadType::NumberDpExemplars
+        | ArrowPayloadType::HistogramDpExemplars
+        | ArrowPayloadType::ExpHistogramDpExemplars => &EXEMPLAR_TEMPLATE_SCHEMA,
+        ArrowPayloadType::Spans => &SPANS_TEMPLATE_SCHEMA,
+        ArrowPayloadType::SpanLinks => &SPAN_LINKS_TEMPLATE_SCHEMA,
+        ArrowPayloadType::SpanEvents => &SPAN_EVENTS_TEMPLATE_SCHEMA,
+        ArrowPayloadType::ResourceAttrs
+        | ArrowPayloadType::ScopeAttrs
+        | ArrowPayloadType::MetricAttrs
+        | ArrowPayloadType::SpanAttrs
+        | ArrowPayloadType::LogAttrs => &ATTRS_16_TEMPLATE_SCHEMA,
+        ArrowPayloadType::SpanLinkAttrs
+        | ArrowPayloadType::SpanEventAttrs
+        | ArrowPayloadType::NumberDpAttrs
+        | ArrowPayloadType::SummaryDpAttrs
+        | ArrowPayloadType::HistogramDpAttrs
+        | ArrowPayloadType::ExpHistogramDpAttrs
+        | ArrowPayloadType::HistogramDpExemplarAttrs
+        | ArrowPayloadType::NumberDpExemplarAttrs
+        | ArrowPayloadType::ExpHistogramDpExemplarAttrs => &ATTRS_32_TEMPLATE_SCHEMA,
+        ArrowPayloadType::Unknown => {
+            // TODO need to return error here?
             todo!()
         }
     }
@@ -287,13 +318,311 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
             DataType::Struct(SCOPE_TEMPLATE_FIELDS.clone()),
             true,
         ),
+        Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::OBSERVED_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+        Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(16), true),
+        Field::new(consts::SEVERITY_NUMBER, DataType::Int32, true),
+        Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+        Field::new(
+            consts::BODY,
+            DataType::Struct(Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+                Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+                Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ])),
+            true,
+        ),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+    ])
+});
+
+static METRICS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt16, true),
+        Field::new(
+            consts::RESOURCE,
+            DataType::Struct(RESOURCE_TEMPLATE_FIELDS.clone()),
+            false,
+        ),
+        Field::new(
+            consts::SCOPE,
+            DataType::Struct(SCOPE_TEMPLATE_FIELDS.clone()),
+            false,
+        ),
+        Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
+        Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+        Field::new(consts::NAME, DataType::Utf8, false),
+        Field::new(consts::DESCRIPTION, DataType::Utf8, false),
+        Field::new(consts::UNIT, DataType::Utf8, false),
+        Field::new(consts::AGGREGATION_TEMPORALITY, DataType::Int32, true),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+    ])
+});
+
+static NUMBERS_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+        Field::new(consts::INT_VALUE, DataType::Int64, true),
+        Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+    ])
+});
+
+static SUMMARY_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
+        Field::new(consts::SUMMARY_SUM, DataType::Float64, false),
+        Field::new(
+            consts::SUMMARY_QUANTILE_VALUES,
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(Fields::from(vec![
+                    Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
+                    Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
+                ])),
+                true,
+            ))),
+            false,
+        ),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+    ])
+});
+
+static HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
+        Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+        Field::new(
+            consts::HISTOGRAM_BUCKET_COUNTS,
+            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+            false,
+        ),
+        Field::new(
+            consts::HISTOGRAM_EXPLICIT_BOUNDS,
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            true,
+        ),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+        Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
+        Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
+    ])
+});
+
+static EXP_HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
+        Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+        Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, false),
+        Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, false),
+        Field::new(
+            consts::EXP_HISTOGRAM_POSITIVE,
+            DataType::Struct(Fields::from(vec![
+                Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
+                Field::new(
+                    consts::EXP_HISTOGRAM_BUCKET_COUNTS,
+                    DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+                    false,
+                ),
+            ])),
+            false,
+        ),
+        Field::new(
+            consts::EXP_HISTOGRAM_NEGATIVE,
+            DataType::Struct(Fields::from(vec![
+                Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
+                Field::new(
+                    consts::EXP_HISTOGRAM_BUCKET_COUNTS,
+                    DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+                    false,
+                ),
+            ])),
+            false,
+        ),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+        Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
+        Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
+    ])
+});
+
+static EXEMPLAR_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, true),
+        Field::new(consts::PARENT_ID, DataType::UInt32, false),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::INT_VALUE, DataType::Int64, false),
+        Field::new(consts::DOUBLE_VALUE, DataType::Int64, false),
+        Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), true),
+        Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+    ])
+});
+
+static SPANS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt16, true),
+        Field::new(
+            consts::RESOURCE,
+            DataType::Struct(RESOURCE_TEMPLATE_FIELDS.clone()),
+            true,
+        ),
+        Field::new(
+            consts::SCOPE,
+            DataType::Struct(SCOPE_TEMPLATE_FIELDS.clone()),
+            true,
+        ),
+        Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::DURATION_TIME_UNIX_NANO,
+            DataType::Duration(TimeUnit::Nanosecond),
+            false,
+        ),
+        Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+        Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+        Field::new(consts::TRACE_STATE, DataType::Utf8, true),
+        Field::new(consts::PARENT_SPAN_ID, DataType::FixedSizeBinary(8), true),
+        Field::new(consts::NAME, DataType::Utf8, false),
+        Field::new(consts::KIND, DataType::Int32, true),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+        Field::new(consts::DROPPED_EVENTS_COUNT, DataType::UInt32, true),
+        Field::new(consts::DROPPED_LINKS_COUNT, DataType::UInt32, true),
+        Field::new(
+            consts::STATUS,
+            DataType::Struct(Fields::from(vec![
+                Field::new(consts::STATUS_CODE, DataType::Int32, true),
+                Field::new(consts::STATUS_MESSAGE, DataType::Utf8, true),
+            ])),
+            true,
+        ),
+    ])
+});
+
+static SPAN_EVENTS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, true),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+        Field::new(consts::NAME, DataType::Utf8, false),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+    ])
+});
+
+static SPAN_LINKS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, true),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+        Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), true),
+        Field::new(consts::TRACE_STATE, DataType::Utf8, true),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+    ])
+});
+
+static ATTRS_16_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+        Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+        Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+        Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+    ])
+});
+
+static ATTRS_32_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+    Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt32, false),
+        Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+        Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+        Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+        Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
     ])
 });
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{RecordBatch, UInt16Array};
+    use arrow::array::{RecordBatch, RecordBatchOptions, UInt16Array};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -311,6 +640,11 @@ mod test {
                     ])),
                     false,
                 ),
+                // TODO fill in other columns:
+                // 1 - default null/values on FSL
+                // 2 - nullable struct (body?)
+                // 3 - keeps dicts
+                // ...
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
@@ -383,5 +717,48 @@ mod test {
         .unwrap();
 
         assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn test_generate_all_null_record_batch() {
+        // this is just a smoke test to ensure that all of our null/empty column generating code
+        // isn't missing any types that are actually used in one of the template schemas
+        for payload_type in [
+            ArrowPayloadType::Logs,
+            ArrowPayloadType::UnivariateMetrics,
+            ArrowPayloadType::MultivariateMetrics,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+            ArrowPayloadType::Spans,
+            ArrowPayloadType::SpanLinks,
+            ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::MetricAttrs,
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::SpanLinkAttrs,
+            ArrowPayloadType::SpanEventAttrs,
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::SummaryDpAttrs,
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ] {
+            let input = RecordBatch::try_new_with_options(
+                Arc::new(Schema::empty()),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(1)),
+            )
+            .unwrap();
+            _ = transform_to_known_schema(&input, payload_type).unwrap();
+        }
     }
 }
