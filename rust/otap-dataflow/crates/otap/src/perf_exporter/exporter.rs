@@ -115,7 +115,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         effect_handler.info("Starting Perf Exporter\n").await;
 
         // Start telemetry collection tick as a dedicated control message.
-        let _ = effect_handler
+        let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
             .await?;
 
@@ -132,6 +132,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                    _ = timer_cancel_handle.cancel().await;
                     break;
                 }
                 Message::PData(pdata) => {
