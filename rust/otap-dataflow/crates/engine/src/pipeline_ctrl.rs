@@ -183,10 +183,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::CancelTelemetryTimer { node_id } => {
                             self.telemetry_timers.cancel(node_id);
                         }
-                        PipelineControlMsg::DeliverAck { ..} => {
+                        PipelineControlMsg::DeliverAck { ack } => {
                 // @@@
             }
-                        PipelineControlMsg::DeliverNack { ..} => {
+                        PipelineControlMsg::DeliverNack { nack } => {
                 // @@@
             }
                     }

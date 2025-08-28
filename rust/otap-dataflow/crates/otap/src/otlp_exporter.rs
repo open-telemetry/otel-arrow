@@ -83,20 +83,20 @@ impl OTLPExporter {
 
     fn partial_success(
         self: &Box<Self>,
-        ctx: Context,
+        ctx: &Context,
         rejected: i64,
         message: String,
     ) -> AckOrNack<OtapPdata> {
         AckOrNack::Ack(AckMsg::new(ctx.msg_id(), Some((rejected, message))))
     }
 
-    fn ok(self: &Box<Self>, ctx: Context) -> AckOrNack<OtapPdata> {
+    fn ok(self: &Box<Self>, ctx: &Context) -> AckOrNack<OtapPdata> {
         AckOrNack::Ack(AckMsg::new(ctx.msg_id(), None))
     }
 
     fn grpc_status(
         self: &Box<Self>,
-        ctx: Context,
+        ctx: &Context,
         status: Status,
         pdata: Option<OtapPdata>,
     ) -> AckOrNack<OtapPdata> {
@@ -216,11 +216,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             self.metrics.export_logs_request_received.inc();
                             let rctx = logs_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(context, status, rvalue),
+                                |status| self.grpc_status(&context, status, rvalue),
                                 |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(context),
+                                    None => self.ok(&context),
                                     Some(partial) => self.partial_success(
-                                        context,
+                                        &context,
                                         partial.rejected_log_records,
                                         partial.error_message,
                                     ),
@@ -232,11 +232,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                             self.metrics.export_metrics_request_received.inc();
                             let rctx = metrics_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(context, status, rvalue),
+                                |status| self.grpc_status(&context, status, rvalue),
                                 |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(context),
+                                    None => self.ok(&context),
                                     Some(partial) => self.partial_success(
-                                        context,
+                                        &context,
                                         partial.rejected_data_points,
                                         partial.error_message,
                                     ),
@@ -248,11 +248,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         OtlpProtoBytes::ExportTracesRequest(bytes) => {
                             self.metrics.export_traces_request_received.inc();
                             let rctx = trace_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(context, status, rvalue),
+                                |status| self.grpc_status(&context, status, rvalue),
                                 |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(context),
+                                    None => self.ok(&context),
                                     Some(partial) => self.partial_success(
-                                        context,
+                                        &context,
                                         partial.rejected_spans,
                                         partial.error_message,
                                     ),

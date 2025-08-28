@@ -14,19 +14,16 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct AckMsg {
     /// Unique identifier of the message being acknowledged.
-    _msg_id: u64,
+    msg_id: u64,
 
     /// Rejected items
-    _rejected: Option<(i64, String)>,
+    rejected: Option<(i64, String)>,
 }
 
 impl AckMsg {
     /// Create a new Ack message
     pub fn new(msg_id: u64, rejected: Option<(i64, String)>) -> Self {
-        Self {
-            _msg_id: msg_id,
-            _rejected: rejected,
-        }
+        Self { msg_id, rejected }
     }
 }
 
@@ -34,19 +31,19 @@ impl AckMsg {
 #[derive(Debug, Clone)]
 pub struct NackMsg<PData> {
     /// Unique identifier of the message not being acknowledged.
-    _msg_id: u64,
+    msg_id: u64,
 
     /// Human-readable reason for the NACK.
-    _reason: String,
+    reason: String,
 
     /// Protocol-independent permanent status
-    _permanent: bool,
+    permanent: bool,
 
     /// Protocol-independent code number
-    _code: Option<i32>,
+    code: Option<i32>,
 
     /// Optional return pdata
-    _pdata: Option<Box<PData>>,
+    pdata: Option<Box<PData>>,
 }
 
 impl<PData> NackMsg<PData> {
@@ -59,11 +56,11 @@ impl<PData> NackMsg<PData> {
         pdata: Option<PData>,
     ) -> Self {
         Self {
-            _msg_id: msg_id,
-            _reason: reason,
-            _permanent: permanent,
-            _code: code,
-            _pdata: pdata.map(Box::new),
+            msg_id,
+            reason,
+            permanent,
+            code,
+            pdata: pdata.map(Box::new),
         }
     }
 }
@@ -165,16 +162,18 @@ pub enum PipelineControlMsg<PData> {
 
     /// Let the pipeline manager deliver an Ack.
     DeliverAck {
-        /// From which component
-        from_node_id: usize,
+        // From which component
+        // from_node_id: usize,
+        //
         /// Acknowledgement context
         ack: AckMsg,
     },
 
     /// Let the pipeline manager deliver an Nack.
     DeliverNack {
-        /// From which component
-        from_node_id: usize,
+        // From which component
+        // from_node_id: usize,
+        //
         /// Acknowledgement context
         nack: NackMsg<PData>,
     },

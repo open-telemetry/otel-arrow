@@ -188,7 +188,7 @@ impl OtapPdata {
         }
     }
 
-    /// Returns a reference to the request context context
+    /// Returns a reference to the request context
     #[must_use]
     pub fn context(&self) -> &Context {
         match self {
@@ -196,6 +196,23 @@ impl OtapPdata {
             Self::OtapArrowBytes { context, .. } => context,
             Self::OtapArrowRecords { context, .. } => context,
         }
+    }
+
+    /// Returns a mut reference to the request context
+    #[must_use]
+    fn mut_context(&mut self) -> &mut Context {
+        match self {
+            Self::OtlpBytes { context, .. } => context,
+            Self::OtapArrowBytes { context, .. } => context,
+            Self::OtapArrowRecords { context, .. } => context,
+        }
+    }
+
+    /// Enables return path
+    #[must_use]
+    pub fn with_return(mut self) -> Self {
+        self.mut_context().set_return();
+        self
     }
 }
 

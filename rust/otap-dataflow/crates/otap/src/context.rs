@@ -19,6 +19,10 @@ impl Context {
     pub fn msg_id(&self) -> u64 {
         self.msg_id
     }
+
+    pub fn set_return(&mut self) {
+        self.reply_count += 1;
+    }
 }
 
 impl Default for Context {
