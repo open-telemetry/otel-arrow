@@ -1,36 +1,64 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use tokio::time::Instant;
+use std::time::Instant;
+
+#[derive(Clone, Debug)]
+pub struct RSVP {
+    /// First register
+    r0: Register,
+
+    /// Second register
+    r1: Register,
+}
+
+#[derive(Clone, Debug)]
+pub enum Register {
+    /// A usize
+    Usize(usize),
+
+    /// A local timestamp
+    Instant(Instant),
+
+    /// No information
+    None,
+}
 
 /// Context for OTAP requests
 #[derive(Clone, Debug)]
 pub struct Context {
-    msg_id: u64,
-    deadline: Instant,
-    reply_count: usize,
+    deadline: Option<Instant>, // Or... mandatory?
+    reply_to: Vec<ReplyTo>,
+}
+
+#[derive(Clone, pub struct ReplyTo {
+    /// The requesting node.
+    node_id: usize,
+
+    /// Node-defined return state provided on return.
+    rsvp: RSVP,
 }
 
 impl Context {
+    pub fn new(deadline: Option<Instant>) -> Self {
+        Self {
+            deadline,
+            reply_to: Vec::new(),
+        }
+    }
+
     pub fn has_rsvp(&self) -> bool {
-        self.reply_count > 0
+        !self.reply_to.is_empty()
     }
 
-    pub fn msg_id(&self) -> u64 {
-        self.msg_id
-    }
-
-    pub fn set_return(&mut self) {
-        self.reply_count += 1;
+    pub(crate) fn reply_to(&mut self, node_id: usize, rsvp: RSVP) {
+        self.reply_to.push(ReplyTo { node_id, rsvp });
     }
 }
 
-impl Default for Context {
-    fn default() -> Self {
-        Self {
-            msg_id: 0,
-            deadline: Instant::now(), // @@@
-            reply_count: 0,
-        }
+impl RSVP {
+    /// New return-to response data.
+    pub fn new(r0: Register, r1: Register) -> Self {
+        Self { r0, r1 }
     }
 }

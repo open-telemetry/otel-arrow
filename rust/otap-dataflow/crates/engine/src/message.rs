@@ -34,7 +34,7 @@ impl<Data> Message<Data> {
 
     /// Create a ACK control message
     #[must_use]
-    pub fn ack_ctrl_msg(ack: AckMsg) -> Self {
+    pub fn ack_ctrl_msg(ack: AckMsg<Data>) -> Self {
         Message::Control(NodeControlMsg::Ack(ack))
     }
 

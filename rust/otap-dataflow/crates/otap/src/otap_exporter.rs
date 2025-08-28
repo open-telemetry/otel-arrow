@@ -226,7 +226,7 @@ mod tests {
     };
     use crate::otap_exporter::OTAP_EXPORTER_URN;
     use crate::otap_exporter::OTAPExporter;
-    use crate::pdata::OtapPdata;
+    use crate::pdata::{Context, OtapPdata};
 
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -267,7 +267,7 @@ mod tests {
                     METRIC_BATCH_ID,
                     ArrowPayloadType::MultivariateMetrics,
                 ));
-                ctx.send_pdata(metric_message.into())
+                ctx.send_pdata((Context::new(None), metric_message).into())
                     .await
                     .expect("Failed to send metric message");
 
@@ -275,7 +275,7 @@ mod tests {
                     LOG_BATCH_ID,
                     ArrowPayloadType::Logs,
                 ));
-                ctx.send_pdata(log_message.into())
+                ctx.send_pdata((Context::new(None), log_message).into())
                     .await
                     .expect("Failed to send log message");
 
@@ -283,7 +283,7 @@ mod tests {
                     TRACE_BATCH_ID,
                     ArrowPayloadType::Spans,
                 ));
-                ctx.send_pdata(trace_message.into())
+                ctx.send_pdata((Context::new(None), trace_message).into())
                     .await
                     .expect("Failed to send trace message");
 

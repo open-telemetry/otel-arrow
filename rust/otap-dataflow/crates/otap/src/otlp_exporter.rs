@@ -6,7 +6,7 @@ use crate::grpc::{
     code_is_permanent,
     otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient},
 };
-use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
+use crate::pdata::{OtapPdata, OtlpProtoBytes};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -83,25 +83,25 @@ impl OTLPExporter {
 
     fn partial_success(
         self: &Box<Self>,
-        ctx: &Context,
+        ctx: OtapPdata,
         rejected: i64,
         message: String,
     ) -> AckOrNack<OtapPdata> {
-        AckOrNack::Ack(AckMsg::new(ctx.msg_id(), Some((rejected, message))))
+        AckOrNack::Ack(AckMsg::new(ctx, Some((rejected, message))))
     }
 
-    fn ok(self: &Box<Self>, ctx: &Context) -> AckOrNack<OtapPdata> {
-        AckOrNack::Ack(AckMsg::new(ctx.msg_id(), None))
+    fn ok(self: &Box<Self>, ctx: OtapPdata) -> AckOrNack<OtapPdata> {
+        AckOrNack::Ack(AckMsg::new(ctx, None))
     }
 
     fn grpc_status(
         self: &Box<Self>,
-        ctx: &Context,
+        context: OtapPdata,
         status: Status,
         pdata: Option<OtapPdata>,
     ) -> AckOrNack<OtapPdata> {
         AckOrNack::Nack(NackMsg::new(
-            ctx.msg_id(),
+            context,
             status.message().to_string(),
             code_is_permanent(&status),
             Some(status.code() as i32),
@@ -204,62 +204,88 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(data) => {
-                    // Note: Tonic takes and does not return a Vec<u8>; we have to clone
-                    // the pdata before or after it is unpacked. Cloning before means
-                    // copying the input data and duplicating the context, cloning after
-                    // means copying the output data and not the context.
-                    let rvalue = data.context().has_rsvp().then(|| data.clone());
-
                     let (context, service_req): (_, OtlpProtoBytes) = data.try_into()?;
 
                     let result = match service_req {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                            let rvalue = context
+                                .has_rsvp()
+                                .then(|| OtlpProtoBytes::ExportLogsRequest(bytes.clone()));
+                            let rctx = (context, OtlpProtoBytes::ExportLogsRequest(vec![])).into();
+
                             self.metrics.export_logs_request_received.inc();
-                            let rctx = logs_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(&context, status, rvalue),
-                                |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(&context),
+                            let resp = logs_client.export(bytes).await;
+                            let acknack = match resp {
+                                Err(status) => self.grpc_status(
+                                    rctx,
+                                    status,
+                                    rvalue.map(|x| (Context::new(), x).into()),
+                                ),
+                                Ok(resp) => match resp.into_inner().partial_success {
+                                    None => self.ok(rctx),
                                     Some(partial) => self.partial_success(
-                                        &context,
+                                        rctx,
                                         partial.rejected_log_records,
                                         partial.error_message,
                                     ),
                                 },
-                            );
+                            };
                             self.metrics.export_logs_request_success.inc();
-                            rctx
-                        }
-                        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                            self.metrics.export_metrics_request_received.inc();
-                            let rctx = metrics_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(&context, status, rvalue),
-                                |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(&context),
-                                    Some(partial) => self.partial_success(
-                                        &context,
-                                        partial.rejected_data_points,
-                                        partial.error_message,
-                                    ),
-                                },
-                            );
-                            self.metrics.export_metrics_request_success.inc();
-                            rctx
+                            acknack
                         }
                         OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                            let rvalue = context
+                                .has_rsvp()
+                                .then(|| OtlpProtoBytes::ExportTracesRequest(bytes.clone()));
+                            let rctx =
+                                (context, OtlpProtoBytes::ExportTracesRequest(vec![])).into();
+
                             self.metrics.export_traces_request_received.inc();
-                            let rctx = trace_client.export(bytes).await.map_or_else(
-                                |status| self.grpc_status(&context, status, rvalue),
-                                |resp| match resp.into_inner().partial_success {
-                                    None => self.ok(&context),
+                            let resp = trace_client.export(bytes).await;
+                            let acknack = match resp {
+                                Err(status) => self.grpc_status(
+                                    rctx,
+                                    status,
+                                    rvalue.map(|x| (Context::new(), x).into()),
+                                ),
+                                Ok(resp) => match resp.into_inner().partial_success {
+                                    None => self.ok(rctx),
                                     Some(partial) => self.partial_success(
-                                        &context,
+                                        rctx,
                                         partial.rejected_spans,
                                         partial.error_message,
                                     ),
                                 },
-                            );
+                            };
                             self.metrics.export_traces_request_success.inc();
-                            rctx
+                            acknack
+                        }
+                        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                            let rvalue = context
+                                .has_rsvp()
+                                .then(|| OtlpProtoBytes::ExportMetricsRequest(bytes.clone()));
+                            let rctx =
+                                (context, OtlpProtoBytes::ExportMetricsRequest(vec![])).into();
+
+                            self.metrics.export_metrics_request_received.inc();
+                            let resp = metrics_client.export(bytes).await;
+                            let acknack = match resp {
+                                Err(status) => self.grpc_status(
+                                    rctx,
+                                    status,
+                                    rvalue.map(|x| (context::New(), x).into()),
+                                ),
+                                Ok(resp) => match resp.into_inner().partial_success {
+                                    None => self.ok(rctx),
+                                    Some(partial) => self.partial_success(
+                                        rctx,
+                                        partial.rejected_data_points,
+                                        partial.error_message,
+                                    ),
+                                },
+                            };
+                            self.metrics.export_metrics_request_success.inc();
+                            acknack
                         }
                     };
                     effect_handler.reply(result).await?;
@@ -277,6 +303,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::pdata::Context;
 
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -312,23 +340,41 @@ mod tests {
                 let req = ExportLogsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtlpProtoBytes::ExportLogsRequest(req_bytes).into())
-                    .await
-                    .expect("Failed to send log message");
+                ctx.send_pdata(
+                    (
+                        Context::new(None),
+                        OtlpProtoBytes::ExportLogsRequest(req_bytes),
+                    )
+                        .into(),
+                )
+                .await
+                .expect("Failed to send log message");
 
                 let req = ExportMetricsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtlpProtoBytes::ExportMetricsRequest(req_bytes).into())
-                    .await
-                    .expect("Failed to send metric message");
+                ctx.send_pdata(
+                    (
+                        Context::new(None),
+                        OtlpProtoBytes::ExportMetricsRequest(req_bytes),
+                    )
+                        .into(),
+                )
+                .await
+                .expect("Failed to send metric message");
 
                 let req = ExportTraceServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
-                ctx.send_pdata(OtlpProtoBytes::ExportTracesRequest(req_bytes).into())
-                    .await
-                    .expect("Failed to send metric message");
+                ctx.send_pdata(
+                    (
+                        Context::new(None),
+                        OtlpProtoBytes::ExportTracesRequest(req_bytes),
+                    )
+                        .into(),
+                )
+                .await
+                .expect("Failed to send metric message");
 
                 // Send shutdown
                 ctx.send_shutdown(Duration::from_millis(200), "test complete")

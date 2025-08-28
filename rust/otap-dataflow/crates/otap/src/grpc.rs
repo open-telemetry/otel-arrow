@@ -22,7 +22,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use crate::pdata::OtapPdata;
+use crate::pdata::{Context, OtapPdata};
 
 pub mod otlp;
 
@@ -201,7 +201,10 @@ where
     OTAPDataType: Fn(BatchArrowRecords) -> OtapArrowBytes,
 {
     let batch_id = batch.batch_id;
-    let status_result = match effect_handler.send_message(otap_data(batch).into()).await {
+    let status_result = match effect_handler
+        .send_message((Context::new(None), otap_data(batch)).into())
+        .await
+    {
         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
         Err(error) => (StatusCode::Canceled, error.to_string()),
     };

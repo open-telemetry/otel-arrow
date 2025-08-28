@@ -202,8 +202,20 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Reply to a request
-    pub async fn reply(&self, _acknack: AckOrNack<PData>) -> Result<(), Error> {
-        //  self.core.reply(acknack).await @@@
+    pub async fn reply(&self, acknack: AckOrNack<PData>) -> Result<(), Error> {
+        let pipeline_ctrl_msg_sender = self
+            .pipeline_ctrl_msg_sender
+            .clone()
+            .expect("[Internal Error] Node request sender not set.");
+        pipeline_ctrl_msg_sender
+            .send(match acknack {
+                AckOrNack::Ack(ack) => PipelineControlMsg::DeliverAck { ack },
+                AckOrNack::Nack(nack) => PipelineControlMsg::DeliverNack { nack },
+            })
+            .await
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })?;
         Ok(())
     }
 }

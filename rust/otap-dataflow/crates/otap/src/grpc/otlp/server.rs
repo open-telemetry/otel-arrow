@@ -10,7 +10,7 @@
 use std::convert::Infallible;
 use std::task::Poll;
 
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
+use crate::pdata::{Context, OtapPdata, OtlpProtoBytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_engine::shared::receiver::EffectHandler;
@@ -125,7 +125,7 @@ impl Decoder for OtapBatchDecoder {
             Signal::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
         };
         src.advance(buf.len());
-        Ok(Some(result.into()))
+        Ok(Some((Context::new(None), result).into()))
     }
 }
 

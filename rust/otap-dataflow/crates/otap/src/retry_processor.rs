@@ -50,7 +50,7 @@
 //! let processor = RetryProcessor::with_config(config);
 //! ```
 
-use crate::pdata::OtapPdata;
+use crate::pdata::{OtapPdata, RSVP, Register};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -129,14 +129,14 @@ pub fn create_retry_processor(
             error: format!("Failed to parse retry configuration: {e}"),
         })?;
 
-    // Create the router processor
-    let router = RetryProcessor::with_config(config);
+    // Create the retry processor
+    let retry = RetryProcessor::with_config(config);
 
     // Create NodeUserConfig and wrap as local processor
     let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
 
     Ok(ProcessorWrapper::local(
-        router,
+        retry,
         node,
         user_config,
         processor_config,
@@ -157,6 +157,21 @@ impl RetryProcessor {
     }
 }
 
+#[derive(Debug)]
+struct RetryState {
+    retries: usize,   // r0
+    last_ts: Instant, // r1
+}
+
+impl From<RetryState> for RSVP {
+    fn from(value: RetryState) -> Self {
+        Self::new(
+            Register::Usize(value.retries),
+            Register::Instant(value.last_ts),
+        )
+    }
+}
+
 #[async_trait(?Send)]
 impl Processor<OtapPdata> for RetryProcessor {
     async fn process(
@@ -165,14 +180,21 @@ impl Processor<OtapPdata> for RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::PData(data) => {
-                // @@@
+            Message::PData(mut data) => {
+                let rstate = RetryState {
+                    retries: 0,
+                    last_ts: Instant::now(),
+                };
 
-                effect_handler.send_message(data.with_return()).await?;
+                data.mut_context()
+                    .reply_to(effect_handler.processor_id().index(), rstate.into());
+
+                effect_handler.send_message(data).await?;
                 Ok(())
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => {
+		    ack.context
                     // @@@
                     Ok(())
                 }
@@ -214,6 +236,7 @@ mod tests {
     use super::*;
     use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
     use crate::grpc::OtapArrowBytes;
+    use crate::pdata::Context;
     use otap_df_channel::mpsc;
     use otap_df_config::experimental::SignalType;
     use otap_df_engine::config::ProcessorConfig;
@@ -241,7 +264,7 @@ mod tests {
 
     fn create_test_data(_id: u64) -> OtapPdata {
         OtapPdata::OtapArrowBytes {
-            context: Default::default(),
+            context: Context::new(None),
             value: OtapArrowBytes::ArrowLogs(create_simple_logs_arrow_record_batches(
                 SimpleDataGenOptions {
                     num_rows: 1,

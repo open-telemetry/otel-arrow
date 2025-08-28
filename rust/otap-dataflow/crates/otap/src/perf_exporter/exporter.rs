@@ -247,7 +247,7 @@ mod tests {
         create_simple_metrics_arrow_record_batches, create_simple_trace_arrow_record_batches,
     };
     use crate::grpc::OtapArrowBytes;
-    use crate::pdata::OtapPdata;
+    use crate::pdata::{Context, OtapPdata};
     use crate::perf_exporter::config::Config;
     use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
     use otap_df_config::node::NodeUserConfig;
@@ -290,15 +290,33 @@ mod tests {
                             ..Default::default()
                         });
                     // // Send a data message
-                    ctx.send_pdata(OtapArrowBytes::ArrowTraces(traces_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowBytes::ArrowLogs(logs_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
-                    ctx.send_pdata(OtapArrowBytes::ArrowMetrics(metrics_batch_data).into())
-                        .await
-                        .expect("Failed to send data message");
+                    ctx.send_pdata(
+                        (
+                            Context::new(None),
+                            OtapArrowBytes::ArrowTraces(traces_batch_data),
+                        )
+                            .into(),
+                    )
+                    .await
+                    .expect("Failed to send data message");
+                    ctx.send_pdata(
+                        (
+                            Context::new(None),
+                            OtapArrowBytes::ArrowLogs(logs_batch_data),
+                        )
+                            .into(),
+                    )
+                    .await
+                    .expect("Failed to send data message");
+                    ctx.send_pdata(
+                        (
+                            Context::new(None),
+                            OtapArrowBytes::ArrowMetrics(metrics_batch_data),
+                        )
+                            .into(),
+                    )
+                    .await
+                    .expect("Failed to send data message");
                 }
 
                 // TODO ADD DELAY BETWEEN HERE

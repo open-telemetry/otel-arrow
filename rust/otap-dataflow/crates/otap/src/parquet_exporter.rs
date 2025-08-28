@@ -247,6 +247,7 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 mod test {
     use crate::grpc::OtapArrowBytes;
     use crate::parquet_exporter::config::WriterOptions;
+    use crate::pdata::Context;
 
     use super::*;
 
@@ -295,7 +296,7 @@ mod test {
                     }),
                 );
 
-                ctx.send_pdata(otap_batch.into())
+                ctx.send_pdata((Context::new(None), otap_batch).into())
                     .await
                     .expect("Failed to send  logs message");
 
@@ -661,23 +662,29 @@ mod test {
             // scope attrs. Since we know the log attrs table has been written, we can guess the
             // writer has buffered files ..
 
-            let otap_batch: OtapPdata = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    // a pretty big batch
-                    num_rows: 48,
-                    ..Default::default()
-                }),
+            let otap_batch: OtapPdata = (
+                Context::new(None),
+                OtapArrowBytes::ArrowLogs(fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        // a pretty big batch
+                        num_rows: 48,
+                        ..Default::default()
+                    },
+                )),
             )
-            .into();
+                .into();
             pdata_tx.send(otap_batch).await.unwrap();
 
-            let otap_batch2: OtapPdata = OtapArrowBytes::ArrowLogs(
-                fixtures::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                    num_rows: 1,
-                    ..Default::default()
-                }),
+            let otap_batch2: OtapPdata = (
+                Context::new(None),
+                OtapArrowBytes::ArrowLogs(fixtures::create_simple_logs_arrow_record_batches(
+                    SimpleDataGenOptions {
+                        num_rows: 1,
+                        ..Default::default()
+                    },
+                )),
             )
-            .into();
+                .into();
             let mut otap_batch2: OtapArrowRecords = otap_batch2.try_into().map(|(_, v)| v).unwrap();
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
@@ -688,7 +695,10 @@ mod test {
                     .unwrap(),
             );
 
-            pdata_tx.send(otap_batch2.into()).await.unwrap();
+            pdata_tx
+                .send((Context::new(None), otap_batch2).into())
+                .await
+                .unwrap();
 
             // wait for the log_attrs table to exist
             try_wait_table_exists(base_dir, ArrowPayloadType::LogAttrs, Duration::from_secs(5))
@@ -815,7 +825,10 @@ mod test {
                     ..Default::default()
                 }),
             );
-            pdata_tx.send(otap_batch.into()).await.unwrap();
+            pdata_tx
+                .send((Context::new(None), otap_batch).into())
+                .await
+                .unwrap();
 
             // wait some time but not as long as the old age threshold, then send a timer tick
             _ = sleep(Duration::from_millis(50)).await;

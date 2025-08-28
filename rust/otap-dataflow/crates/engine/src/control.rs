@@ -12,26 +12,45 @@ use std::time::Duration;
 
 /// The ACK
 #[derive(Debug, Clone)]
-pub struct AckMsg {
-    /// Unique identifier of the message being acknowledged.
-    msg_id: u64,
+pub struct AckMsg<PData> {
+    /// Reply-to information.
+    // Note! This Box<PData> should be <Context> which can be
+    // accomplished by making PData bound by a trait and associated
+    // type i.e., we would use PData::Context. That will be a large
+    // change, for now we expect PData with empty data and returning
+    // context.
+    context: Option<Box<PData>>,
 
     /// Rejected items
     rejected: Option<(i64, String)>,
 }
 
-impl AckMsg {
+impl<PData> AckMsg<PData> {
+    pub fn take_context(&mut self) -> Context {
+        self.context.take().unwrap().context()
+    }
+}
+
+impl<PData> AckMsg<PData> {
     /// Create a new Ack message
-    pub fn new(msg_id: u64, rejected: Option<(i64, String)>) -> Self {
-        Self { msg_id, rejected }
+    pub fn new(context: PData, rejected: Option<(i64, String)>) -> Self {
+        Self {
+            context: Box::new(context),
+            rejected,
+        }
     }
 }
 
 /// The NACK
 #[derive(Debug, Clone)]
 pub struct NackMsg<PData> {
-    /// Unique identifier of the message not being acknowledged.
-    msg_id: u64,
+    /// Reply-to information.
+    // Note! This Box<PData> should be <Context> which can be
+    // accomplished by making PData bound by a trait and associated
+    // type i.e., we would use PData::Context. That will be a large
+    // change, for now we expect PData with empty data and returning
+    // context.
+    context: Box<PData>,
 
     /// Human-readable reason for the NACK.
     reason: String,
@@ -49,17 +68,17 @@ pub struct NackMsg<PData> {
 impl<PData> NackMsg<PData> {
     /// Create a new Nack.
     pub fn new(
-        msg_id: u64,
+        context: PData,
         reason: String,
         permanent: bool,
         code: Option<i32>,
         pdata: Option<PData>,
     ) -> Self {
         Self {
-            msg_id,
             reason,
             permanent,
             code,
+            context: Box::new(context),
             pdata: pdata.map(Box::new),
         }
     }
@@ -68,7 +87,7 @@ impl<PData> NackMsg<PData> {
 /// An Ack or a Nack
 pub enum AckOrNack<PData> {
     /// The Ack
-    Ack(AckMsg),
+    Ack(AckMsg<PData>),
     /// The Nack
     Nack(NackMsg<PData>),
 }
@@ -81,7 +100,7 @@ pub enum NodeControlMsg<PData> {
     /// and processed telemetry data for the specified message ID.
     ///
     /// Typically used for confirming successful delivery or processing.
-    Ack(AckMsg),
+    Ack(AckMsg<PData>),
 
     /// Indicates that a downstream component failed to process or deliver telemetry data.
     ///
@@ -166,7 +185,7 @@ pub enum PipelineControlMsg<PData> {
         // from_node_id: usize,
         //
         /// Acknowledgement context
-        ack: AckMsg,
+        ack: AckMsg<PData>,
     },
 
     /// Let the pipeline manager deliver an Nack.

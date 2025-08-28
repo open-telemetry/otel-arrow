@@ -31,7 +31,10 @@
 //! Implementation uses otel_arrow_rust::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use crate::{
+    OTAP_PROCESSOR_FACTORIES,
+    pdata::{Context, OtapPdata},
+};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
@@ -200,7 +203,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 apply_transform(&mut records, signal, &self.transform, &self.domains)?;
 
                 effect_handler
-                    .send_message(records.into())
+                    .send_message((Context::new(None), records).into())
                     .await
                     .map_err(|e| e.into())
             }

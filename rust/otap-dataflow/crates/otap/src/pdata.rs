@@ -100,7 +100,7 @@ use prost::{EncodeError, Message};
 use crate::encoder::encode_spans_otap_batch;
 use crate::{encoder::encode_logs_otap_batch, grpc::OtapArrowBytes};
 
-pub use crate::context::Context;
+pub use super::context::{Context, RSVP, Register, ReplyTo};
 
 /// module contains related to pdata
 pub mod error {
@@ -147,34 +147,23 @@ impl OtlpProtoBytes {
     }
 }
 
+pub enum OtapPdata {
+    context: Context,
+    value: OtapPayload,
+}
+
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
-pub enum OtapPdata {
+pub enum OtapPayload {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
-    OtlpBytes {
-        /// context about the request
-        context: Context,
-
-        /// the request as OTLP protobuf bytes
-        value: OtlpProtoBytes,
-    },
+    OtlpBytes(OtlpProtoBytes),
 
     /// data is contained in `BatchArrowRecords`, which contain ArrowIPC serialized
-    OtapArrowBytes {
-        /// context about the request
-        context: Context,
-        /// the request as OTAP Arrow IPC bytes
-        value: OtapArrowBytes,
-    },
+    OtapArrowBytes(OtapArrowBytes),
 
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
-    OtapArrowRecords {
-        /// context about the request
-        context: Context,
-        /// the request as OTAP Arrow record batches
-        value: OtapArrowRecords,
-    },
+    OtapArrowRecords(OtapArrowRecords),
 }
 
 impl OtapPdata {
@@ -182,7 +171,7 @@ impl OtapPdata {
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
         match self {
-            Self::OtlpBytes { value, .. } => value.signal_type(),
+            HousingSelf::OtlpBytes { value, .. } => value.signal_type(),
             Self::OtapArrowBytes { value, .. } => value.signal_type(),
             Self::OtapArrowRecords { value, .. } => value.signal_type(),
         }
@@ -200,7 +189,7 @@ impl OtapPdata {
 
     /// Returns a mut reference to the request context
     #[must_use]
-    fn mut_context(&mut self) -> &mut Context {
+    pub(crate) fn mut_context(&mut self) -> &mut Context {
         match self {
             Self::OtlpBytes { context, .. } => context,
             Self::OtapArrowBytes { context, .. } => context,
@@ -208,12 +197,8 @@ impl OtapPdata {
         }
     }
 
-    /// Enables return path
     #[must_use]
-    pub fn with_return(mut self) -> Self {
-        self.mut_context().set_return();
-        self
-    }
+    pub(crate) fn take_context(&mut self) -> Context {}
 }
 
 /* -------- Helper trait implementations -------- */
@@ -256,30 +241,21 @@ impl OtapPdataHelpers for OtapArrowBytes {
 
 /* -------- Conversion implementations -------- */
 
-impl From<OtapArrowRecords> for OtapPdata {
-    fn from(value: OtapArrowRecords) -> Self {
-        Self::OtapArrowRecords {
-            value,
-            context: Default::default(),
-        }
+impl From<(Context, OtapArrowRecords)> for OtapPdata {
+    fn from((context, value): (Context, OtapArrowRecords)) -> Self {
+        Self::OtapArrowRecords { value, context }
     }
 }
 
-impl From<OtlpProtoBytes> for OtapPdata {
-    fn from(value: OtlpProtoBytes) -> Self {
-        Self::OtlpBytes {
-            value,
-            context: Default::default(),
-        }
+impl From<(Context, OtlpProtoBytes)> for OtapPdata {
+    fn from((context, value): (Context, OtlpProtoBytes)) -> Self {
+        Self::OtlpBytes { value, context }
     }
 }
 
-impl From<OtapArrowBytes> for OtapPdata {
-    fn from(value: OtapArrowBytes) -> Self {
-        Self::OtapArrowBytes {
-            value,
-            context: Default::default(),
-        }
+impl From<(Context, OtapArrowBytes)> for OtapPdata {
+    fn from((context, value): (Context, OtapArrowBytes)) -> Self {
+        Self::OtapArrowBytes { value, context }
     }
 }
 

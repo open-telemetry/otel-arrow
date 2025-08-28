@@ -142,6 +142,11 @@ impl NodeId {
     pub(crate) fn build(index: usize, name: NodeName) -> NodeId {
         NodeId { index, name }
     }
+
+    /// The global index (TODO discuss)
+    pub fn index(&self) -> usize {
+        self.index
+    }
 }
 
 impl std::fmt::Display for NodeId {
