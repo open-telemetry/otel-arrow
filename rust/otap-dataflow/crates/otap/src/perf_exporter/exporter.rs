@@ -49,6 +49,7 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
 pub struct PerfExporter {
     config: Config,
     metrics: MetricSet<PerfExporterPdataMetrics>,
+    smoothing_complement: f64,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -77,7 +78,12 @@ impl PerfExporter {
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
         let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
-        PerfExporter { config, metrics }
+        let smoothing_complement = 1.0 - config.smoothing_factor() as f64;
+        PerfExporter {
+            config,
+            metrics,
+            smoothing_complement,
+        }
     }
 
     /// Creates a new PerfExporter from a configuration object
@@ -199,6 +205,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                             latency,
                             average_pipeline_latency,
                             self.config.smoothing_factor() as f64,
+                            self.smoothing_complement,
                         );
                     }
 
@@ -217,21 +224,38 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 }
 
 /// uses the exponential moving average formula to update the average
-fn update_average(new_value: f64, old_average: f64, smoothing_factor: f64) -> f64 {
+#[inline]
+fn update_average(
+    new_value: f64,
+    old_average: f64,
+    smoothing_factor: f64,
+    smoothing_complement: f64,
+) -> f64 {
     // update the average using a exponential moving average which allows new data points to have a greater impact depending on the smoothing factor
-    smoothing_factor * new_value + (1.0 - smoothing_factor) * old_average
+    smoothing_factor.mul_add(new_value, smoothing_complement * old_average)
 }
 
 /// decodes the byte array from the timestamp header and gets the equivalent duration value
+/// Expects format: "{seconds}:{nanoseconds}" as ASCII bytes
+#[inline]
 fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
-    let timestamp_string = std::str::from_utf8(timestamp).map_err(|error| error.to_string())?;
-    let timestamp_parts: Vec<&str> = timestamp_string.split(":").collect();
-    let secs = timestamp_parts[0]
-        .parse::<u64>()
-        .map_err(|error| error.to_string())?;
-    let nanosecs = timestamp_parts[1]
-        .parse::<u32>()
-        .map_err(|error| error.to_string())?;
+    let colon_pos = timestamp
+        .iter()
+        .position(|&b| b == b':')
+        .ok_or("Missing ':' separator in timestamp".to_string())?;
+
+    let secs_bytes = &timestamp[..colon_pos];
+    let nanosecs_bytes = &timestamp[colon_pos + 1..];
+
+    let mut secs = 0u64;
+    for &byte in secs_bytes {
+        secs = secs * 10 + (byte - b'0') as u64;
+    }
+
+    let mut nanosecs = 0u32;
+    for &byte in nanosecs_bytes {
+        nanosecs = nanosecs * 10 + (byte - b'0') as u32;
+    }
 
     Ok(Duration::new(secs, nanosecs))
 }
