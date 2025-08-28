@@ -330,15 +330,65 @@ fn write_summary_datapoints_normal(
 #[cfg(test)]
 mod tests {
 
-    use crate::debug_exporter::marshaler::ViewMarshaler;
-    use crate::debug_exporter::normal_otlp_marshaler::NormalViewMarshaler;
-    use crate::mock::{
-        create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
+    use crate::debug_processor::marshaler::ViewMarshaler;
+    use crate::debug_processor::normal_marshaler::NormalViewMarshaler;
+    use otel_arrow_rust::proto::opentelemetry::{
+        common::v1::{AnyValue, InstrumentationScope, KeyValue},
+        logs::v1::{LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+        metrics::v1::{
+             ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+            HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+            ScopeMetrics, Sum, Summary, SummaryDataPoint, 
+            exponential_histogram_data_point::Buckets, 
+            summary_data_point::ValueAtQuantile,
+        },
+        resource::v1::Resource,
+        trace::v1::{
+            ResourceSpans, ScopeSpans, Span,  TracesData, 
+            
+        },
     };
 
     #[test]
     fn test_marshal_traces() {
-        let trace = create_otlp_trace(1, 1, 1, 1, 1);
+        let trace = TracesData::new(vec![
+            ResourceSpans::build(
+                Resource::build(vec![KeyValue::new(
+                    "ip",
+                    AnyValue::new_string("192.168.0.1"),
+                )])
+                .dropped_attributes_count(123u32),
+            )
+            .schema_url("http://schema.opentelemetry.io")
+            .scope_spans(vec![
+                ScopeSpans::build(
+                    InstrumentationScope::build("library")
+                        .version("v1")
+                        .attributes(vec![KeyValue::new(
+                            "hostname",
+                            AnyValue::new_string("host5.retailer.com"),
+                        )])
+                        .finish(),
+                )
+                .schema_url("http://schema.opentelemetry.io")
+                .spans(vec![
+                    Span::build(
+                        Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()),
+                        Vec::from("7271ee06d7e5925f".as_bytes()),
+                        "user-account",
+                        999u64,
+                    )
+                    .attributes(vec![KeyValue::new(
+                        "hostname",
+                        AnyValue::new_string("host4.gov"),
+                    )])
+                    .parent_span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                    .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
 
         let marshaler = NormalViewMarshaler;
 
@@ -365,7 +415,124 @@ mod tests {
 
     #[test]
     fn test_marshal_metrics() {
-        let metrics = create_otlp_metric(1, 1, 5, 1);
+        let metrics = MetricsData::new(vec![
+            ResourceMetrics::build(
+                Resource::build(vec![KeyValue::new(
+                    "ip",
+                    AnyValue::new_string("192.168.0.2"),
+                )])
+                .finish(),
+            )
+            .scope_metrics(vec![
+                ScopeMetrics::build(
+                    InstrumentationScope::build("library")
+                        .version("v1")
+                        .attributes(vec![KeyValue::new(
+                            "instrumentation_scope_k1",
+                            AnyValue::new_string("k1 value"),
+                        )])
+                        .finish(),
+                )
+                .schema_url("http://schema.opentelemetry.io")
+                .metrics(vec![
+                    Metric::build_sum(
+                        "system.cpu.time",
+                        Sum::new(
+                            0,
+                            false,
+                            vec![NumberDataPoint::build_int(0u64, 0i64).finish()],
+                        ),
+                    )
+                    .finish(),
+                    Metric::build_exponential_histogram(
+                        "system.cpu.time",
+                        ExponentialHistogram::new(
+                            3,
+                            vec![
+                                ExponentialHistogramDataPoint::build(
+                                    345u64,
+                                    67,
+                                    Buckets::new(2, vec![34, 45, 67]),
+                                )
+                                .attributes(vec![KeyValue::new(
+                                    "freq",
+                                    AnyValue::new_string("3GHz"),
+                                )])
+                                .start_time_unix_nano(23u64)
+                                .count(0u64)
+                                .sum(56)
+                                .zero_count(7u64)
+                                .flags(5u32)
+                                .min(12)
+                                .max(100.1)
+                                .zero_threshold(-1.1)
+                                .finish(),
+                            ],
+                        ),
+                    )
+                    .finish(),
+                    Metric::build_histogram(
+                        "system.cpu.time",
+                        Histogram::new(
+                            1,
+                            vec![
+                                HistogramDataPoint::build(
+                                    567u64,
+                                    vec![0],
+                                    vec![94.17542094619048, 65.66722851519177],
+                                )
+                                .attributes(vec![KeyValue::new(
+                                    "freq",
+                                    AnyValue::new_string("3GHz"),
+                                )])
+                                .start_time_unix_nano(23u64)
+                                .count(0u64)
+                                .sum(56)
+                                .flags(1u32)
+                                .min(12)
+                                .max(100.1)
+                                .finish(),
+                            ],
+                        ),
+                    )
+                    .finish(),
+                    Metric::build_gauge(
+                        "system.cpu.time",
+                        Gauge::new(vec![
+                            NumberDataPoint::build_int(0u64, 0i64)
+                                .attributes(vec![KeyValue::new(
+                                    "cpu_logical_processors",
+                                    AnyValue::new_string("8"),
+                                )])
+                                .start_time_unix_nano(456u64)
+                                .flags(1u32)
+                                .finish(),
+                        ]),
+                    )
+                    .finish(),
+                    Metric::build_summary(
+                        "system.cpu.time",
+                        Summary::new(vec![
+                            SummaryDataPoint::build(765u64, vec![ValueAtQuantile::new(0., 0.)])
+                                .attributes(vec![KeyValue::new(
+                                    "cpu_cores",
+                                    AnyValue::new_string("4"),
+                                )])
+                                .start_time_unix_nano(543u64)
+                                .count(0u64)
+                                .sum(56.0)
+                                .flags(2u32)
+                                .finish(),
+                        ]),
+                    )
+                    .finish(),
+                ])
+                .finish(),
+            ])
+            .schema_url("http://schema.opentelemetry.io")
+            .finish(),
+        ]);
+
         let marshaler = NormalViewMarshaler;
         let marshaled_metrics = marshaler.marshal_metrics(metrics);
         let mut output_lines = Vec::new();
@@ -402,7 +569,41 @@ mod tests {
 
     #[test]
     fn test_marshal_logs() {
-        let logs = create_otlp_log(1, 1, 1);
+        let logs = LogsData::new(vec![
+            ResourceLogs::build(Resource::build(vec![KeyValue::new(
+                "version",
+                AnyValue::new_string("2.0"),
+            )]))
+            .schema_url("http://schema.opentelemetry.io")
+            .scope_logs(vec![
+                ScopeLogs::build(
+                    InstrumentationScope::build("library")
+                        .version("v1")
+                        .attributes(vec![KeyValue::new(
+                            "hostname",
+                            AnyValue::new_string("host5.retailer.com"),
+                        )])
+                        .finish(),
+                )
+                .schema_url("http://schema.opentelemetry.io")
+                .log_records(vec![
+                    LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                        .observed_time_unix_nano(3_000_000_000u64)
+                        .severity_text("Info")
+                        .attributes(vec![KeyValue::new(
+                            "hostname",
+                            AnyValue::new_string("host3.thedomain.edu"),
+                        )])
+                        .flags(LogRecordFlags::TraceFlagsMask)
+                        .body(AnyValue::new_string(
+                            "Sint impedit non ut eligendi nisi neque harum maxime adipisci.",
+                        ))
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
         let marshaler = NormalViewMarshaler;
         let marshaled_logs = marshaler.marshal_logs(logs);
         let mut output_lines = Vec::new();

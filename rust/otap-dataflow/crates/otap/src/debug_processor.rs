@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -67,7 +68,7 @@ impl OutputWriter {
 }
 
 /// The URN for the debug processor
-pub const DEBUG_processor_URN: &str = "urn:otel:debug:processor";
+pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
 
 /// processor that outputs all data received to stdout
 pub struct DebugProcessor {
@@ -75,7 +76,6 @@ pub struct DebugProcessor {
     output: Option<String>,
 }
 
-// TODO: Create debug processor factory here
 /// Register AttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
@@ -83,29 +83,16 @@ pub static DEBUG_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> 
     otap_df_engine::ProcessorFactory {
         name: DEBUG_PROCESSOR_URN,
         create: |node: NodeId, config: &Value, proc_cfg: &ProcessorConfig| {
+            let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
             Ok(ProcessorWrapper::local(
                 DebugProcessor::from_config(config)?,
                 node,
-                
+                user_config,
+                proc_cfg,
             ))
         },
     };
 
-
-
-    #[allow(unsafe_code)]
-#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    name: OTAP_EXPORTER_URN,
-    create: |node: NodeId, node_config: Arc<NodeUserConfig>, exporter_config: &ExporterConfig| {
-        Ok(ExporterWrapper::local(
-            OTAPExporter::from_config(&node_config.config)?,
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-};
 impl DebugProcessor {
     /// Creates a new Debug processor
     #[must_use]
@@ -143,43 +130,55 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         };
 
         // get a writer to write to stdout or to a file
-        let raw_writer = get_writer(self.output).await;
+        let raw_writer = get_writer(&self.output).await;
         let mut writer = OutputWriter::new(raw_writer, effect_handler.processor_id());
 
         match msg {
-            Message::Control(_) => Ok(()),
+            Message::Control(control) => {
+                match control {
+                    NodeControlMsg::TimerTick {} => {
+                        writer.write("Timer tick received\n").await?;
+                    }
+                    NodeControlMsg::Config { .. } => {
+                        writer.write("Config message received\n").await?;
+                    }
+                    NodeControlMsg::Shutdown { .. } => {
+                        writer.write("Shutdown message received\n").await?;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
             Message::PData(pdata) => {
-                // forward the data to next node
+                // make a copy of the data and convert it to protobytes that we will later convert to the views
                 let otlp_bytes: OtlpProtoBytes = pdata.clone().try_into()?;
-                effect_handler.send_message(pdata).await;
+                // forward the data to the next node
+                effect_handler.send_message(pdata).await?;
 
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                        let req =
-                            LogsData::decode(bytes.as_slice()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
-                            })?;
+                        let req = LogsData::decode(bytes.as_slice()).map_err(|e| {
+                            Error::PdataConversionError {
+                                error: format!("error decoding proto bytes: {e}"),
+                            }
+                        })?;
                         push_log(&self.config.verbosity(), req, &*marshaler, &mut writer).await?;
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                        let req =
-                            MetricsData::decode(bytes.as_slice()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytesf: {e}"),
-                                }
-                            })?;
+                        let req = MetricsData::decode(bytes.as_slice()).map_err(|e| {
+                            Error::PdataConversionError {
+                                error: format!("error decoding proto bytesf: {e}"),
+                            }
+                        })?;
                         push_metric(&self.config.verbosity(), req, &*marshaler, &mut writer)
                             .await?;
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                        let req =
-                            TracesData::decode(bytes.as_slice()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
-                            })?;
+                        let req = TracesData::decode(bytes.as_slice()).map_err(|e| {
+                            Error::PdataConversionError {
+                                error: format!("error decoding proto bytes: {e}"),
+                            }
+                        })?;
                         push_trace(&self.config.verbosity(), req, &*marshaler, &mut writer).await?;
                     }
                 }
@@ -190,13 +189,13 @@ impl local::Processor<OtapPdata> for DebugProcessor {
 }
 
 /// determine if output goes to console or to a file
-async fn get_writer(output_file: Option<String>) -> Box<dyn AsyncWrite + Unpin> {
+async fn get_writer(output_file: &Option<String>) -> Box<dyn AsyncWrite + Unpin> {
     match output_file {
         Some(file_name) => {
             let file = File::options()
                 .write(true)
+                .append(true)
                 .create(true)
-                .truncate(true)
                 .open(file_name)
                 .await
                 .expect("could not open output file");
@@ -338,68 +337,311 @@ async fn push_log(
     Ok(())
 }
 
-// #[cfg(test)]
-// mod tests {
+#[cfg(test)]
+mod tests {
 
-//     use crate::debug_processor::config::{Config, Verbosity};
-//     use crate::debug_processor::processor::{DEBUG_processor_URN, DebugProcessor};
-//     use crate::grpc::OtapPdata;
-//     use crate::mock::{
-//         create_otlp_log, create_otlp_metric, create_otlp_profile, create_otlp_trace,
-//     };
+    use crate::debug_processor::config::{Config, Verbosity};
+    use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
+    use crate::pdata::{OtapPdata, OtlpProtoBytes};
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::message::Message;
+    use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::processor::{TestContext, ValidateContext};
+    use otap_df_engine::testing::test_node;
+    use otel_arrow_rust::proto::opentelemetry::{
+        common::v1::{AnyValue, InstrumentationScope, KeyValue},
+        logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+        metrics::v1::{
+            Exemplar, Gauge, Metric,
+            MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, 
+        },
+        resource::v1::Resource,
+        trace::v1::{
+            ResourceSpans, ScopeSpans, Span, Status, TracesData, span::Event, span::Link,
+            span::SpanKind, status::StatusCode,
+        },
+    };
+    use prost::Message as _;
+    use serde_json::Value;
+    use std::fs::{File, remove_file};
+    use std::future::Future;
+    use std::io::{BufReader, read_to_string};
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use tokio::time::Duration;
 
-//     use otap_df_engine::error::Error;
-//     use otap_df_engine::processor::processorWrapper;
-//     use otap_df_engine::testing::processor::TestContext;
-//     use otap_df_engine::testing::processor::TestRuntime;
-//     use otap_df_engine::testing::test_node;
-//     use tokio::time::{Duration, sleep};
+    /// Validation closure that checks the outputted data
+    fn validation_procedure(
+        output_file: String,
+    ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |_| {
+            Box::pin(async move {
+                let file = File::open(output_file).expect("failed to open file");
+                let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-//     use otap_df_config::node::NodeUserConfig;
-//     use std::fs::{File, remove_file};
-//     use std::future::Future;
-//     use std::io::{BufReader, read_to_string};
-//     use std::sync::Arc;
+                // check the the processor has received the expected number of messages
+                assert!(reader.contains("Received 1 resource metrics"));
+                assert!(reader.contains("Received 1 metrics"));
+                assert!(reader.contains("Received 1 data points"));
+                assert!(reader.contains("Received 1 resource spans"));
+                assert!(reader.contains("Received 1 spans"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Received 1 links"));
+                assert!(reader.contains("Received 1 resource logs"));
+                assert!(reader.contains("Received 1 log records"));
+                assert!(reader.contains("Received 1 events"));
+                assert!(reader.contains("Timer tick received"));
+                assert!(reader.contains("Config message received"));
+                assert!(reader.contains("Shutdown message received"));
+            })
+        }
+    }
 
-//     /// Validation closure that checks the expected counter values
-//     fn validation_procedure(
-//         output_file: String,
-//     ) -> impl FnOnce(
-//         TestContext<OtapPdata>,
-//         Result<(), Error<OtapPdata>>,
-//     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-//         |_, processor_result| {
-//             Box::pin(async move {
-//                 assert!(processor_result.is_ok());
+    /// Test closure that simulates a typical processor scenario.
+    fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                let logs_data = LogsData::new(vec![
+                    ResourceLogs::build(Resource::default())
+                        .scope_logs(vec![
+                            ScopeLogs::build(
+                                InstrumentationScope::build("library")
+                                    .version("scopev1")
+                                    .finish(),
+                            )
+                            .log_records(vec![
+                                LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                                    .observed_time_unix_nano(3_000_000_000u64)
+                                    .attributes(vec![KeyValue::new(
+                                        "log_attr1",
+                                        AnyValue::new_string("log_val_1"),
+                                    )])
+                                    .body(AnyValue::new_string("log_body"))
+                                    .finish(),
+                            ])
+                            .finish(),
+                        ])
+                        .finish(),
+                ]);
 
-//                 // get a file to read and validate the output
-//                 // open file
-//                 // read the output file
-//                 // assert each line accordingly
-//                 let file = File::open(output_file).expect("failed to open file");
-//                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
+                //convert logsdata to otappdata
+                let mut bytes = vec![];
+                logs_data
+                    .encode(&mut bytes)
+                    .expect("failed to encode log data into bytes");
+                let otlp_logs_bytes: OtapPdata = OtlpProtoBytes::ExportLogsRequest(bytes).into();
+                ctx.process(Message::PData(otlp_logs_bytes))
+                    .await
+                    .expect("failed to process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
 
-//                 // check the the processor has received the expected number of messages
-//                 assert!(reader.contains("Timer tick received"));
-//                 assert!(reader.contains("OTLP Metric objects received: 0"));
-//                 assert!(reader.contains("OTLP Trace objects received: 0"));
-//                 assert!(reader.contains("OTLP Profile objects received: 0"));
-//                 assert!(reader.contains("OTLP Log objects received: 0"));
-//                 assert!(reader.contains("Received 1 resource metrics"));
-//                 assert!(reader.contains("Received 5 metrics"));
-//                 assert!(reader.contains("Received 5 data points"));
-//                 assert!(reader.contains("Received 1 resource spans"));
-//                 assert!(reader.contains("Received 1 spans"));
-//                 assert!(reader.contains("Received 1 events"));
-//                 assert!(reader.contains("Received 1 links"));
-//                 assert!(reader.contains("Received 1 resource logs"));
-//                 assert!(reader.contains("Received 1 log records"));
-//                 assert!(reader.contains("Received 1 events"));
-//                 assert!(reader.contains("Received 1 resource profiles"));
-//                 assert!(reader.contains("Received 0 samples"));
-//                 assert!(reader.contains("Shutdown message received"));
-//             })
-//         }
-//     }
+                let metrics_data = MetricsData::new(vec![
+                    ResourceMetrics::build(Resource::default())
+                        .scope_metrics(vec![
+                            ScopeMetrics::build(
+                                InstrumentationScope::build("library")
+                                    .version("scopev1")
+                                    .finish(),
+                            )
+                            .metrics(vec![
+                                Metric::build_gauge(
+                                    "gauge name",
+                                    Gauge::new(vec![
+                                        NumberDataPoint::build_double(123u64, std::f64::consts::PI)
+                                            .attributes(vec![KeyValue::new(
+                                                "gauge_attr1",
+                                                AnyValue::new_string("gauge_val"),
+                                            )])
+                                            .start_time_unix_nano(456u64)
+                                            .exemplars(vec![
+                                                Exemplar::build_int(678u64, 234i64)
+                                                    .filtered_attributes(vec![KeyValue::new(
+                                                        "exemplar_attr",
+                                                        AnyValue::new_string("exemplar_val"),
+                                                    )])
+                                                    .finish(),
+                                            ])
+                                            .flags(1u32)
+                                            .finish(),
+                                    ]),
+                                )
+                                .description("here's a description")
+                                .unit("a unit")
+                                .metadata(vec![KeyValue::new(
+                                    "metric_attr",
+                                    AnyValue::new_string("metric_val"),
+                                )])
+                                .finish(),
+                            ])
+                            .finish(),
+                        ])
+                        .finish(),
+                ]);
+                bytes = vec![];
+                metrics_data
+                    .encode(&mut bytes)
+                    .expect("failed to encode log data into bytes");
+                let otlp_metrics_bytes: OtapPdata =
+                    OtlpProtoBytes::ExportMetricsRequest(bytes).into();
+                ctx.process(Message::PData(otlp_metrics_bytes))
+                    .await
+                    .expect("failed to process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
 
-// }
+                let traces_data = TracesData::new(vec![
+                    ResourceSpans::build(Resource::default())
+                        .scope_spans(vec![
+                            ScopeSpans::build(
+                                InstrumentationScope::build("library")
+                                    .version("scopev1")
+                                    .finish(),
+                            )
+                            .spans(vec![
+                                Span::build(
+                                    Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()),
+                                    Vec::from("7271ee06d7e5925f".as_bytes()),
+                                    "span_name_1",
+                                    999u64,
+                                )
+                                .trace_state("some_state")
+                                .end_time_unix_nano(1999u64)
+                                .parent_span_id(vec![0, 0, 0, 0, 1, 1, 1, 1])
+                                .dropped_attributes_count(7u32)
+                                .dropped_events_count(11u32)
+                                .dropped_links_count(29u32)
+                                .kind(SpanKind::Consumer)
+                                .status(Status::new("something happened", StatusCode::Error))
+                                .events(vec![
+                                    Event::build("an_event", 456u64)
+                                        .attributes(vec![KeyValue::new(
+                                            "event_attr1",
+                                            AnyValue::new_string("hi"),
+                                        )])
+                                        .dropped_attributes_count(12345u32)
+                                        .finish(),
+                                ])
+                                .links(vec![
+                                    Link::build(
+                                        vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3],
+                                        vec![0, 0, 0, 0, 1, 1, 1, 1],
+                                    )
+                                    .trace_state("some link state")
+                                    .dropped_attributes_count(567u32)
+                                    .flags(7u32)
+                                    .attributes(vec![KeyValue::new(
+                                        "link_attr1",
+                                        AnyValue::new_string("hello"),
+                                    )])
+                                    .finish(),
+                                ])
+                                .finish(),
+                            ])
+                            .finish(),
+                        ])
+                        .finish(),
+                ]);
+
+                bytes = vec![];
+                traces_data
+                    .encode(&mut bytes)
+                    .expect("failed to encode log data into bytes");
+                let otlp_traces_bytes: OtapPdata =
+                    OtlpProtoBytes::ExportTracesRequest(bytes).into();
+                ctx.process(Message::PData(otlp_traces_bytes))
+                    .await
+                    .expect("failed to process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("Processor failed on TimerTick");
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // Process a Config event.
+                ctx.process(Message::config_ctrl_msg(Value::Null))
+                    .await
+                    .expect("Processor failed on Config");
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // Process a Shutdown event.
+                ctx.process(Message::shutdown_ctrl_msg(
+                    Duration::from_millis(200),
+                    "no reason",
+                ))
+                .await
+                .expect("Processor failed on Shutdown");
+                assert!(ctx.drain_pdata().await.is_empty());
+            })
+        }
+    }
+
+    #[test]
+    fn test_debug_processor_normal_verbosity() {
+        let test_runtime = TestRuntime::new();
+
+        let output_file = "debug_output_normal.txt".to_string();
+        let config = Config::new(Verbosity::Normal);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure(output_file.clone()));
+
+        remove_file(output_file).expect("Failed to remove file");
+    }
+
+    #[test]
+    fn test_debug_processor_basic_verbosity() {
+        let test_runtime = TestRuntime::new();
+
+        let output_file = "debug_output_basic.txt".to_string();
+        let config = Config::new(Verbosity::Basic);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure(output_file.clone()));
+
+        remove_file(output_file).expect("Failed to remove file");
+    }
+
+    #[test]
+    fn test_debug_processor_detailed_verbosity() {
+        let test_runtime = TestRuntime::new();
+
+        let output_file = "debug_output_detailed.txt".to_string();
+        let config = Config::new(Verbosity::Detailed);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, Some(output_file.clone())),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure(output_file.clone()));
+
+        remove_file(output_file).expect("Failed to remove file");
+    }
+}

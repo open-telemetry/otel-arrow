@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the ViewMarshaler for converting OTLP messages to structured string reports.
+//! Implementation of the ViewMarshaler for converting VIEW messages to structured string reports.
 
 use super::marshaler::ViewMarshaler;
 use otel_arrow_rust::proto::opentelemetry::{
@@ -17,7 +17,7 @@ use otel_arrow_rust::proto::opentelemetry::{
 
 use std::fmt::Write;
 
-/// The Detailed Marshaler takes OTLP Views and converts them to a string by extracting their information
+/// The Detailed Marshaler takes VIEW Views and converts them to a string by extracting their information
 /// the finalized string will be the output for a detailed verbosity level
 #[derive(Default)]
 pub struct DetailedViewMarshaler;
@@ -636,390 +636,668 @@ fn write_instrumentation_scope(mut report: &mut String, scope: &InstrumentationS
     );
 }
 
-// #[cfg(test)]
-// mod tests {
+#[cfg(test)]
+mod tests {
 
-//     use crate::debug_exporter::detailed_otlp_marshaler::DetailedOTLPMarshaler;
-//     use crate::debug_exporter::marshaler::OTLPMarshaler;
+    use crate::debug_processor::detailed_marshaler::DetailedViewMarshaler;
+    use crate::debug_processor::marshaler::ViewMarshaler;
+    use otel_arrow_rust::proto::opentelemetry::{
+        common::v1::{AnyValue, InstrumentationScope, KeyValue},
+        logs::v1::{LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+        metrics::v1::{
+            Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+            HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+            ScopeMetrics, Sum, Summary, SummaryDataPoint, 
+            exponential_histogram_data_point::Buckets,
+             summary_data_point::ValueAtQuantile,
+        },
+        resource::v1::Resource,
+        trace::v1::{
+            ResourceSpans, ScopeSpans, Span, Status, TracesData, span::Event, span::Link,
+            status::StatusCode,
+        },
+    };
 
-//     #[test]
-//     fn test_marshal_traces() {
-//         let trace = create_otlp_trace(1, 1, 1, 1, 1);
-//         let marshaler = DetailedOTLPMarshaler;
-//         let marshaled_trace = marshaler.marshal_traces(trace);
-//         let mut output_lines = Vec::new();
-//         for line in marshaled_trace.lines() {
-//             output_lines.push(line);
-//         }
-//         assert_eq!(output_lines[0], "ResourceSpan #0");
-//         assert_eq!(
-//             output_lines[1],
-//             "   -> Resource SchemaURL: http://schema.opentelemetry.io"
-//         );
-//         assert_eq!(output_lines[2], "   -> Resource Attributes:");
-//         assert_eq!(output_lines[3], "      -> ip: 192.168.0.1");
-//         assert_eq!(output_lines[4], "   ScopeSpans #0");
-//         assert_eq!(
-//             output_lines[5],
-//             "      -> ScopeSpans SchemaURL: http://schema.opentelemetry.io"
-//         );
-//         assert_eq!(
-//             output_lines[6],
-//             "      -> Instrumentation Scope library @v1"
-//         );
-//         assert_eq!(
-//             output_lines[7],
-//             "      -> Instrumentation Scope Attributes:"
-//         );
-//         assert_eq!(output_lines[8], "         -> hostname: host5.retailer.com");
-//         assert_eq!(output_lines[9], "      Span #0");
-//         assert_eq!(
-//             output_lines[10],
-//             "         -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
-//         );
-//         assert_eq!(output_lines[11], "         -> Parent ID: 7271ee06d7e5925f");
-//         assert_eq!(output_lines[12], "         -> ID: 7271ee06d7e5925f");
-//         assert_eq!(output_lines[13], "         -> Name: user-account");
-//         assert_eq!(output_lines[14], "         -> Kind: 4");
-//         assert_eq!(output_lines[15], "         -> TraceState: ended");
-//         assert_eq!(
-//             output_lines[16],
-//             "         -> Start time: 1647648000000000106"
-//         );
-//         assert_eq!(
-//             output_lines[17],
-//             "         -> End time: 1647648000000000104"
-//         );
-//         assert_eq!(output_lines[18], "         -> Status code: 2");
-//         assert_eq!(output_lines[19], "         -> Status message: Error");
-//         assert_eq!(output_lines[20], "         -> Attributes:");
-//         assert_eq!(output_lines[21], "            -> hostname: host4.gov");
-//         assert_eq!(output_lines[22], "         -> Events:");
-//         assert_eq!(output_lines[23], "            SpanEvent #0");
-//         assert_eq!(output_lines[24], "               -> Name: message-receive");
-//         assert_eq!(
-//             output_lines[25],
-//             "               -> Timestamp: 1647648000000000108"
-//         );
-//         assert_eq!(
-//             output_lines[26],
-//             "               -> DroppedAttributesCount: 0"
-//         );
-//         assert_eq!(output_lines[27], "               -> Attributes:");
-//         assert_eq!(
-//             output_lines[28],
-//             "                  -> hostname: host5.retailer.com"
-//         );
-//         assert_eq!(output_lines[29], "         -> Links:");
-//         assert_eq!(output_lines[30], "            SpanLink: #0");
-//         assert_eq!(
-//             output_lines[31],
-//             "               -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
-//         );
-//         assert_eq!(
-//             output_lines[32],
-//             "               -> Span ID: 7271ee06d7e5925f"
-//         );
-//         assert_eq!(output_lines[33], "               -> TraceState: ended");
-//         assert_eq!(
-//             output_lines[34],
-//             "               -> DroppedAttributesCount: 0"
-//         );
-//         assert_eq!(output_lines[35], "               -> Attributes:");
-//         assert_eq!(output_lines[36], "                  -> hostname: host2.org");
-//     }
+    #[test]
+    fn test_marshal_traces() {
+        let trace = TracesData::new(vec![
+            ResourceSpans::build(
+                Resource::build(vec![KeyValue::new(
+                    "ip",
+                    AnyValue::new_string("192.168.0.1"),
+                )])
+                .dropped_attributes_count(123u32),
+            )
+            .schema_url("http://schema.opentelemetry.io")
+            .scope_spans(vec![
+                ScopeSpans::build(
+                    InstrumentationScope::build("library")
+                        .version("v1")
+                        .attributes(vec![KeyValue::new(
+                            "hostname",
+                            AnyValue::new_string("host5.retailer.com"),
+                        )])
+                        .finish(),
+                )
+                .schema_url("http://schema.opentelemetry.io")
+                .spans(vec![
+                    Span::build(
+                        Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()),
+                        Vec::from("7271ee06d7e5925f".as_bytes()),
+                        "user-account",
+                        1647648000000000106u64,
+                    )
+                    .attributes(vec![KeyValue::new(
+                        "hostname",
+                        AnyValue::new_string("host4.gov"),
+                    )])
+                    .parent_span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                    .end_time_unix_nano(1647648000000000104u64)
+                    .status(Status::new("Error", StatusCode::Error))
+                    .trace_state("ended")
+                    .events(vec![
+                        Event::build("message-receive", 1647648000000000108u64)
+                            .attributes(vec![KeyValue::new(
+                                "hostname",
+                                AnyValue::new_string("host5.retailer.com"),
+                            )])
+                            .dropped_attributes_count(0u32)
+                            .finish(),
+                    ])
+                    .links(vec![
+                        Link::build(
+                            Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()),
+                            Vec::from("7271ee06d7e5925f".as_bytes()),
+                        )
+                        .trace_state("ended")
+                        .dropped_attributes_count(0u32)
+                        .attributes(vec![KeyValue::new(
+                            "hostname",
+                            AnyValue::new_string("host2.org"),
+                        )])
+                        .finish(),
+                    ])
+                    .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+        let marshaler = DetailedViewMarshaler;
+        let marshaled_trace = marshaler.marshal_traces(trace);
+        let mut output_lines = Vec::new();
+        for line in marshaled_trace.lines() {
+            output_lines.push(line);
+        }
+        assert_eq!(output_lines[0], "ResourceSpan #0");
+        assert_eq!(
+            output_lines[1],
+            "   -> Resource SchemaURL: http://schema.opentelemetry.io"
+        );
+        assert_eq!(output_lines[2], "   -> Resource Attributes:");
+        assert_eq!(output_lines[3], "      -> ip: 192.168.0.1");
+        assert_eq!(output_lines[4], "   ScopeSpans #0");
+        assert_eq!(
+            output_lines[5],
+            "      -> ScopeSpans SchemaURL: http://schema.opentelemetry.io"
+        );
+        assert_eq!(
+            output_lines[6],
+            "      -> Instrumentation Scope library @v1"
+        );
+        assert_eq!(
+            output_lines[7],
+            "      -> Instrumentation Scope Attributes:"
+        );
+        assert_eq!(output_lines[8], "         -> hostname: host5.retailer.com");
+        assert_eq!(output_lines[9], "      Span #0");
+        assert_eq!(
+            output_lines[10],
+            "         -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
+        assert_eq!(output_lines[11], "         -> Parent ID: 7271ee06d7e5925f");
+        assert_eq!(output_lines[12], "         -> ID: 7271ee06d7e5925f");
+        assert_eq!(output_lines[13], "         -> Name: user-account");
+        assert_eq!(output_lines[14], "         -> Kind: 0");
+        assert_eq!(output_lines[15], "         -> TraceState: ended");
+        assert_eq!(
+            output_lines[16],
+            "         -> Start time: 1647648000000000106"
+        );
+        assert_eq!(
+            output_lines[17],
+            "         -> End time: 1647648000000000104"
+        );
+        assert_eq!(output_lines[18], "         -> Status code: 2");
+        assert_eq!(output_lines[19], "         -> Status message: Error");
+        assert_eq!(output_lines[20], "         -> Attributes:");
+        assert_eq!(output_lines[21], "            -> hostname: host4.gov");
+        assert_eq!(output_lines[22], "         -> Events:");
+        assert_eq!(output_lines[23], "            SpanEvent #0");
+        assert_eq!(output_lines[24], "               -> Name: message-receive");
+        assert_eq!(
+            output_lines[25],
+            "               -> Timestamp: 1647648000000000108"
+        );
+        assert_eq!(
+            output_lines[26],
+            "               -> DroppedAttributesCount: 0"
+        );
+        assert_eq!(output_lines[27], "               -> Attributes:");
+        assert_eq!(
+            output_lines[28],
+            "                  -> hostname: host5.retailer.com"
+        );
+        assert_eq!(output_lines[29], "         -> Links:");
+        assert_eq!(output_lines[30], "            SpanLink: #0");
+        assert_eq!(
+            output_lines[31],
+            "               -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
+        assert_eq!(
+            output_lines[32],
+            "               -> Span ID: 7271ee06d7e5925f"
+        );
+        assert_eq!(output_lines[33], "               -> TraceState: ended");
+        assert_eq!(
+            output_lines[34],
+            "               -> DroppedAttributesCount: 0"
+        );
+        assert_eq!(output_lines[35], "               -> Attributes:");
+        assert_eq!(output_lines[36], "                  -> hostname: host2.org");
+    }
 
-//     #[test]
-//     fn test_marshal_metrics() {
-//         let metric = create_otlp_metric(1, 1, 5, 1);
-//         let marshaler = DetailedOTLPMarshaler;
-//         let marshaled_metric = marshaler.marshal_metrics(metric);
-//         let mut output_lines = Vec::new();
-//         for line in marshaled_metric.lines() {
-//             output_lines.push(line);
-//         }
-//         assert_eq!(output_lines[0], "ResourceMetric #0");
-//         assert_eq!(
-//             output_lines[1],
-//             "   -> Resource SchemaURL: http://schema.opentelemetry.io"
-//         );
-//         assert_eq!(output_lines[2], "   -> Resource Attributes:");
-//         assert_eq!(output_lines[3], "         -> ip: 192.168.0.2");
-//         assert_eq!(output_lines[4], "   ScopeMetrics #0");
-//         assert_eq!(
-//             output_lines[5],
-//             "      -> ScopeMetrics SchemaURL: http://schema.opentelemetry.io"
-//         );
-//         assert_eq!(
-//             output_lines[6],
-//             "      -> Instrumentation Scope library @v1"
-//         );
-//         assert_eq!(
-//             output_lines[7],
-//             "      -> Instrumentation Scope Attributes:"
-//         );
-//         assert_eq!(
-//             output_lines[8],
-//             "         -> instrumentation_scope_k1: k1 value"
-//         );
-//         assert_eq!(output_lines[9], "      Metric #0");
-//         assert_eq!(output_lines[10], "         -> Name: system.cpu.time");
-//         assert_eq!(
-//             output_lines[11],
-//             "         -> Description: time cpu has ran"
-//         );
-//         assert_eq!(output_lines[12], "         -> Unit: s");
-//         assert_eq!(output_lines[13], "         -> DataType: Gauge");
-//         assert_eq!(output_lines[14], "            NumberDataPoints #0");
-//         assert_eq!(output_lines[15], "               -> Attributes:");
-//         assert_eq!(
-//             output_lines[16],
-//             "               -> StartTimestamp: 1650499200000000100"
-//         );
-//         assert_eq!(
-//             output_lines[17],
-//             "               -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[18], "               -> Value: 0");
-//         assert_eq!(output_lines[19], "      Metric #1");
-//         assert_eq!(output_lines[20], "         -> Name: system.cpu.time");
-//         assert_eq!(
-//             output_lines[21],
-//             "         -> Description: time cpu has ran"
-//         );
-//         assert_eq!(output_lines[22], "         -> Unit: s");
-//         assert_eq!(
-//             output_lines[23],
-//             "         -> DataType: Exponential Histogram"
-//         );
-//         assert_eq!(output_lines[24], "         -> AggregationTemporality: 4");
-//         assert_eq!(
-//             output_lines[25],
-//             "            ExponentialHistogramDataPoints #0"
-//         );
-//         assert_eq!(output_lines[26], "               -> Attributes:");
-//         assert_eq!(output_lines[27], "                     -> freq: 3GHz");
-//         assert_eq!(
-//             output_lines[28],
-//             "               -> StartTimestamp: 1650499200000000000"
-//         );
-//         assert_eq!(
-//             output_lines[29],
-//             "               -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[30], "               -> Count: 0");
-//         assert_eq!(output_lines[31], "               -> Sum: 56");
-//         assert_eq!(output_lines[32], "               -> Min: 12");
-//         assert_eq!(output_lines[33], "               -> Max: 100.1");
-//         assert_eq!(
-//             output_lines[34],
-//             "               -> Bucket [-4.113250378782927, -1), Count: 0"
-//         );
-//         assert_eq!(
-//             output_lines[35],
-//             "               -> Bucket (1, 4.113250378782927], Count: 0"
-//         );
-//         assert_eq!(output_lines[36], "               -> Exemplars:");
-//         assert_eq!(output_lines[37], "                  Exemplar #0");
-//         assert_eq!(
-//             output_lines[38],
-//             "                     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
-//         );
-//         assert_eq!(
-//             output_lines[39],
-//             "                     -> Span ID: 7271ee06d7e5925f"
-//         );
-//         assert_eq!(
-//             output_lines[40],
-//             "                     -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[41], "                     -> Value: 22.2");
-//         assert_eq!(
-//             output_lines[42],
-//             "                     -> FilteredAttributes:"
-//         );
-//         assert_eq!(output_lines[43], "                        -> cpu: 0");
-//         assert_eq!(output_lines[44], "      Metric #2");
-//         assert_eq!(output_lines[45], "         -> Name: system.cpu.time");
-//         assert_eq!(
-//             output_lines[46],
-//             "         -> Description: time cpu has ran"
-//         );
-//         assert_eq!(output_lines[47], "         -> Unit: s");
-//         assert_eq!(output_lines[48], "         -> DataType: Histogram");
-//         assert_eq!(output_lines[49], "         -> AggregationTemporality: 4");
-//         assert_eq!(output_lines[50], "            HistogramDataPoints #0");
-//         assert_eq!(output_lines[51], "               -> Attributes:");
-//         assert_eq!(output_lines[52], "                     -> freq: 3GHz");
-//         assert_eq!(
-//             output_lines[53],
-//             "               -> StartTimestamp: 1650499200000000000"
-//         );
-//         assert_eq!(
-//             output_lines[54],
-//             "               -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[55], "               -> Count: 0");
-//         assert_eq!(output_lines[56], "               -> Sum: 56");
-//         assert_eq!(output_lines[57], "               -> Min: 12");
-//         assert_eq!(output_lines[58], "               -> Max: 100.1");
-//         assert_eq!(
-//             output_lines[59],
-//             "               -> ExplicitBound #0: 94.17542094619048"
-//         );
-//         assert_eq!(
-//             output_lines[60],
-//             "               -> ExplicitBound #1: 65.66722851519177"
-//         );
-//         assert_eq!(output_lines[61], "               -> Buckets #0, Count: 0");
-//         assert_eq!(output_lines[62], "               -> Exemplars:");
-//         assert_eq!(output_lines[63], "                  Exemplar #0");
-//         assert_eq!(
-//             output_lines[64],
-//             "                     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
-//         );
-//         assert_eq!(
-//             output_lines[65],
-//             "                     -> Span ID: 7271ee06d7e5925f"
-//         );
-//         assert_eq!(
-//             output_lines[66],
-//             "                     -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[67], "                     -> Value: 22.2");
-//         assert_eq!(
-//             output_lines[68],
-//             "                     -> FilteredAttributes:"
-//         );
-//         assert_eq!(output_lines[69], "                        -> cpu: 0");
-//         assert_eq!(output_lines[70], "      Metric #3");
-//         assert_eq!(output_lines[71], "         -> Name: system.cpu.time");
-//         assert_eq!(
-//             output_lines[72],
-//             "         -> Description: time cpu has ran"
-//         );
-//         assert_eq!(output_lines[73], "         -> Unit: s");
-//         assert_eq!(output_lines[74], "         -> DataType: Sum");
-//         assert_eq!(output_lines[75], "         -> IsMonotonic: true");
-//         assert_eq!(output_lines[76], "         -> AggregationTemporality: 4");
-//         assert_eq!(output_lines[77], "            NumberDataPoints #0");
-//         assert_eq!(output_lines[78], "               -> Attributes:");
-//         assert_eq!(
-//             output_lines[79],
-//             "                     -> cpu_logical_processors: 8"
-//         );
-//         assert_eq!(
-//             output_lines[80],
-//             "               -> StartTimestamp: 1650499200000000000"
-//         );
-//         assert_eq!(
-//             output_lines[81],
-//             "               -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[82], "               -> Value: 0");
-//         assert_eq!(output_lines[83], "               -> Exemplars:");
-//         assert_eq!(output_lines[84], "                  Exemplar #0");
-//         assert_eq!(
-//             output_lines[85],
-//             "                     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
-//         );
-//         assert_eq!(
-//             output_lines[86],
-//             "                     -> Span ID: 7271ee06d7e5925f"
-//         );
-//         assert_eq!(
-//             output_lines[87],
-//             "                     -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[88], "                     -> Value: 22.2");
-//         assert_eq!(
-//             output_lines[89],
-//             "                     -> FilteredAttributes:"
-//         );
-//         assert_eq!(
-//             output_lines[90],
-//             "                        -> ************: true"
-//         );
-//         assert_eq!(output_lines[91], "      Metric #4");
-//         assert_eq!(output_lines[92], "         -> Name: system.cpu.time");
-//         assert_eq!(
-//             output_lines[93],
-//             "         -> Description: time cpu has ran"
-//         );
-//         assert_eq!(output_lines[94], "         -> Unit: s");
-//         assert_eq!(output_lines[95], "         -> DataType: Summary");
-//         assert_eq!(output_lines[96], "            SummaryDataPoints #0");
-//         assert_eq!(output_lines[97], "               -> Attributes:");
-//         assert_eq!(output_lines[98], "                     -> cpu_cores: 4");
-//         assert_eq!(
-//             output_lines[99],
-//             "               -> StartTimestamp: 1650499200000000100"
-//         );
-//         assert_eq!(
-//             output_lines[100],
-//             "               -> Timestamp: 1663718400000001400"
-//         );
-//         assert_eq!(output_lines[101], "               -> Count: 0");
-//         assert_eq!(output_lines[102], "               -> Sum: 56");
-//         assert_eq!(
-//             output_lines[103],
-//             "               -> QuantileValue #0: Quantile 0, Value 0"
-//         );
-//     }
-//     #[test]
-//     fn test_marshal_logs() {
-//         let logs = create_otlp_log(1, 1, 1);
-//         let marshaler = DetailedOTLPMarshaler;
-//         let marshaled_logs = marshaler.marshal_logs(logs);
-//         let mut output_lines = Vec::new();
-//         for line in marshaled_logs.lines() {
-//             output_lines.push(line);
-//         }
+    #[test]
+    fn test_marshal_metrics() {
+        let metric = MetricsData::new(vec![
+            ResourceMetrics::build(
+                Resource::build(vec![KeyValue::new(
+                    "ip",
+                    AnyValue::new_string("192.168.0.2"),
+                )])
+                .finish(),
+            )
+            .scope_metrics(vec![
+                ScopeMetrics::build(
+                    InstrumentationScope::build("library")
+                        .version("v1")
+                        .attributes(vec![KeyValue::new(
+                            "instrumentation_scope_k1",
+                            AnyValue::new_string("k1 value"),
+                        )])
+                        .finish(),
+                )
+                .schema_url("http://schema.opentelemetry.io")
+                .metrics(vec![
+                    Metric::build_gauge(
+                        "system.cpu.time",
+                        Gauge::new(vec![
+                            NumberDataPoint::build_int(1663718400000001400u64, 0i64)
+                                .start_time_unix_nano(1650499200000000100u64)
+                                .flags(1u32)
+                                .finish(),
+                        ]),
+                    )
+                    .description("time cpu has ran")
+                    .unit("s")
+                    .metadata(vec![])
+                    .finish(),
+                    Metric::build_exponential_histogram(
+                        "system.cpu.time",
+                        ExponentialHistogram::new(
+                            4,
+                            vec![
+                                ExponentialHistogramDataPoint::build(
+                                    1663718400000001400u64,
+                                    1,
+                                    Buckets::new(0, vec![0]),
+                                )
+                                .attributes(vec![KeyValue::new(
+                                    "freq",
+                                    AnyValue::new_string("3GHz"),
+                                )])
+                                .exemplars(vec![
+                                    Exemplar::build_double(1663718400000001400u64, 22.2)
+                                        .filtered_attributes(vec![KeyValue::new(
+                                            "cpu",
+                                            AnyValue::new_string("0"),
+                                        )])
+                                        .trace_id(Vec::from(
+                                            "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
+                                        ))
+                                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                                        .finish(),
+                                ])
+                                .start_time_unix_nano(1650499200000000000u64)
+                                .count(0u64)
+                                .sum(56)
+                                .negative(Buckets::new(0, vec![0]))
+                                .flags(5u32)
+                                .min(12)
+                                .max(100.1)
+                                .zero_threshold(0.0)
+                                .finish(),
+                            ],
+                        ),
+                    )
+                    .description("time cpu has ran")
+                    .unit("s")
+                    .finish(),
+                    Metric::build_histogram(
+                        "system.cpu.time",
+                        Histogram::new(
+                            4,
+                            vec![
+                                HistogramDataPoint::build(
+                                    1663718400000001400u64,
+                                    vec![0],
+                                    vec![94.17542094619048, 65.66722851519177],
+                                )
+                                .attributes(vec![KeyValue::new(
+                                    "freq",
+                                    AnyValue::new_string("3GHz"),
+                                )])
+                                .start_time_unix_nano(1650499200000000000u64)
+                                .count(0u64)
+                                .exemplars(vec![
+                                    Exemplar::build_double(1663718400000001400u64, 22.2)
+                                        .filtered_attributes(vec![KeyValue::new(
+                                            "cpu",
+                                            AnyValue::new_string("0"),
+                                        )])
+                                        .trace_id(Vec::from(
+                                            "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
+                                        ))
+                                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                                        .finish(),
+                                ])
+                                .sum(56)
+                                .flags(0u32)
+                                .min(12)
+                                .max(100.1)
+                                .finish(),
+                            ],
+                        ),
+                    )
+                    .description("time cpu has ran")
+                    .unit("s")
+                    .finish(),
+                    Metric::build_sum(
+                        "system.cpu.time",
+                        Sum::new(
+                            4,
+                            true,
+                            vec![
+                                NumberDataPoint::build_int(1663718400000001400u64, 0i64)
+                                    .start_time_unix_nano(1650499200000000000u64)
+                                    .attributes(vec![KeyValue::new("cpu_logical_processors", AnyValue::new_string("8"))])
+                                    .exemplars(vec![
+                                    Exemplar::build_double(1663718400000001400u64, 22.2)
+                                        .filtered_attributes(vec![KeyValue::new(
+                                            "************",
+                                            AnyValue::new_bool(true),
+                                        )])
+                                        .trace_id(Vec::from(
+                                            "4327e52011a22f9662eac217d77d1ec0".as_bytes(),
+                                        ))
+                                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                                        .finish(),
+                                ])
+                                    .finish(),
+                            ],
+                        ),
+                    )
+                    .description("time cpu has ran")
+                    .unit("s")
+                    .finish(),
+                    Metric::build_summary(
+                        "system.cpu.time",
+                        Summary::new(vec![
+                            SummaryDataPoint::build(
+                                1663718400000001400u64,
+                                vec![ValueAtQuantile::new(0., 0.)],
+                            )
+                            .attributes(vec![KeyValue::new("cpu_cores", AnyValue::new_string("4"))])
+                            .start_time_unix_nano(1650499200000000100u64)
+                            .count(0u64)
+                            .sum(56.0)
+                            .flags(0u32)
+                            .finish(),
+                        ]),
+                    )
+                    .description("time cpu has ran")
+                    .unit("s")
+                    .finish(),
+                ])
+                .finish(),
+            ])
+            .schema_url("http://schema.opentelemetry.io")
+            .finish(),
+        ]);
+        let marshaler = DetailedViewMarshaler;
+        let marshaled_metric = marshaler.marshal_metrics(metric);
+        let mut output_lines = Vec::new();
+        for line in marshaled_metric.lines() {
+            output_lines.push(line);
+        }
+        assert_eq!(output_lines[0], "ResourceMetric #0");
+        assert_eq!(
+            output_lines[1],
+            "   -> Resource SchemaURL: http://schema.opentelemetry.io"
+        );
+        assert_eq!(output_lines[2], "   -> Resource Attributes:");
+        assert_eq!(output_lines[3], "         -> ip: 192.168.0.2");
+        assert_eq!(output_lines[4], "   ScopeMetrics #0");
+        assert_eq!(
+            output_lines[5],
+            "      -> ScopeMetrics SchemaURL: http://schema.opentelemetry.io"
+        );
+        assert_eq!(
+            output_lines[6],
+            "      -> Instrumentation Scope library @v1"
+        );
+        assert_eq!(
+            output_lines[7],
+            "      -> Instrumentation Scope Attributes:"
+        );
+        assert_eq!(
+            output_lines[8],
+            "         -> instrumentation_scope_k1: k1 value"
+        );
+        assert_eq!(output_lines[9], "      Metric #0");
+        assert_eq!(output_lines[10], "         -> Name: system.cpu.time");
+        assert_eq!(
+            output_lines[11],
+            "         -> Description: time cpu has ran"
+        );
+        assert_eq!(output_lines[12], "         -> Unit: s");
+        assert_eq!(output_lines[13], "         -> DataType: Gauge");
+        assert_eq!(output_lines[14], "            NumberDataPoints #0");
+        assert_eq!(output_lines[15], "               -> Attributes:");
+        assert_eq!(
+            output_lines[16],
+            "               -> StartTimestamp: 1650499200000000100"
+        );
+        assert_eq!(
+            output_lines[17],
+            "               -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[18], "               -> Value: 0");
+        assert_eq!(output_lines[19], "      Metric #1");
+        assert_eq!(output_lines[20], "         -> Name: system.cpu.time");
+        assert_eq!(
+            output_lines[21],
+            "         -> Description: time cpu has ran"
+        );
+        assert_eq!(output_lines[22], "         -> Unit: s");
+        assert_eq!(
+            output_lines[23],
+            "         -> DataType: Exponential Histogram"
+        );
+        assert_eq!(output_lines[24], "         -> AggregationTemporality: 4");
+        assert_eq!(
+            output_lines[25],
+            "            ExponentialHistogramDataPoints #0"
+        );
+        assert_eq!(output_lines[26], "               -> Attributes:");
+        assert_eq!(output_lines[27], "                     -> freq: 3GHz");
+        assert_eq!(
+            output_lines[28],
+            "               -> StartTimestamp: 1650499200000000000"
+        );
+        assert_eq!(
+            output_lines[29],
+            "               -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[30], "               -> Count: 0");
+        assert_eq!(output_lines[31], "               -> Sum: 56");
+        assert_eq!(output_lines[32], "               -> Min: 12");
+        assert_eq!(output_lines[33], "               -> Max: 100.1");
+        assert_eq!(
+            output_lines[34],
+            "               -> Bucket [-4.113250378782927, -1), Count: 0"
+        );
+        assert_eq!(
+            output_lines[35],
+            "               -> Bucket (1, 4.113250378782927], Count: 0"
+        );
+        assert_eq!(output_lines[36], "               -> Exemplars:");
+        assert_eq!(output_lines[37], "                  Exemplar #0");
+        assert_eq!(
+            output_lines[38],
+            "                     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
+        assert_eq!(
+            output_lines[39],
+            "                     -> Span ID: 7271ee06d7e5925f"
+        );
+        assert_eq!(
+            output_lines[40],
+            "                     -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[41], "                     -> Value: 22.2");
+        assert_eq!(
+            output_lines[42],
+            "                     -> FilteredAttributes:"
+        );
+        assert_eq!(output_lines[43], "                        -> cpu: 0");
+        assert_eq!(output_lines[44], "      Metric #2");
+        assert_eq!(output_lines[45], "         -> Name: system.cpu.time");
+        assert_eq!(
+            output_lines[46],
+            "         -> Description: time cpu has ran"
+        );
+        assert_eq!(output_lines[47], "         -> Unit: s");
+        assert_eq!(output_lines[48], "         -> DataType: Histogram");
+        assert_eq!(output_lines[49], "         -> AggregationTemporality: 4");
+        assert_eq!(output_lines[50], "            HistogramDataPoints #0");
+        assert_eq!(output_lines[51], "               -> Attributes:");
+        assert_eq!(output_lines[52], "                     -> freq: 3GHz");
+        assert_eq!(
+            output_lines[53],
+            "               -> StartTimestamp: 1650499200000000000"
+        );
+        assert_eq!(
+            output_lines[54],
+            "               -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[55], "               -> Count: 0");
+        assert_eq!(output_lines[56], "               -> Sum: 56");
+        assert_eq!(output_lines[57], "               -> Min: 12");
+        assert_eq!(output_lines[58], "               -> Max: 100.1");
+        assert_eq!(
+            output_lines[59],
+            "               -> ExplicitBound #0: 94.17542094619048"
+        );
+        assert_eq!(
+            output_lines[60],
+            "               -> ExplicitBound #1: 65.66722851519177"
+        );
+        assert_eq!(output_lines[61], "               -> Buckets #0, Count: 0");
+        assert_eq!(output_lines[62], "               -> Exemplars:");
+        assert_eq!(output_lines[63], "                  Exemplar #0");
+        assert_eq!(
+            output_lines[64],
+            "                     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
+        assert_eq!(
+            output_lines[65],
+            "                     -> Span ID: 7271ee06d7e5925f"
+        );
+        assert_eq!(
+            output_lines[66],
+            "                     -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[67], "                     -> Value: 22.2");
+        assert_eq!(
+            output_lines[68],
+            "                     -> FilteredAttributes:"
+        );
+        assert_eq!(output_lines[69], "                        -> cpu: 0");
+        assert_eq!(output_lines[70], "      Metric #3");
+        assert_eq!(output_lines[71], "         -> Name: system.cpu.time");
+        assert_eq!(
+            output_lines[72],
+            "         -> Description: time cpu has ran"
+        );
+        assert_eq!(output_lines[73], "         -> Unit: s");
+        assert_eq!(output_lines[74], "         -> DataType: Sum");
+        assert_eq!(output_lines[75], "         -> IsMonotonic: true");
+        assert_eq!(output_lines[76], "         -> AggregationTemporality: 4");
+        assert_eq!(output_lines[77], "            NumberDataPoints #0");
+        assert_eq!(output_lines[78], "               -> Attributes:");
+        assert_eq!(
+            output_lines[79],
+            "                     -> cpu_logical_processors: 8"
+        );
+        assert_eq!(
+            output_lines[80],
+            "               -> StartTimestamp: 1650499200000000000"
+        );
+        assert_eq!(
+            output_lines[81],
+            "               -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[82], "               -> Value: 0");
+        assert_eq!(output_lines[83], "               -> Exemplars:");
+        assert_eq!(output_lines[84], "                  Exemplar #0");
+        assert_eq!(
+            output_lines[85],
+            "                     -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
+        assert_eq!(
+            output_lines[86],
+            "                     -> Span ID: 7271ee06d7e5925f"
+        );
+        assert_eq!(
+            output_lines[87],
+            "                     -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[88], "                     -> Value: 22.2");
+        assert_eq!(
+            output_lines[89],
+            "                     -> FilteredAttributes:"
+        );
+        assert_eq!(
+            output_lines[90],
+            "                        -> ************: true"
+        );
+        assert_eq!(output_lines[91], "      Metric #4");
+        assert_eq!(output_lines[92], "         -> Name: system.cpu.time");
+        assert_eq!(
+            output_lines[93],
+            "         -> Description: time cpu has ran"
+        );
+        assert_eq!(output_lines[94], "         -> Unit: s");
+        assert_eq!(output_lines[95], "         -> DataType: Summary");
+        assert_eq!(output_lines[96], "            SummaryDataPoints #0");
+        assert_eq!(output_lines[97], "               -> Attributes:");
+        assert_eq!(output_lines[98], "                     -> cpu_cores: 4");
+        assert_eq!(
+            output_lines[99],
+            "               -> StartTimestamp: 1650499200000000100"
+        );
+        assert_eq!(
+            output_lines[100],
+            "               -> Timestamp: 1663718400000001400"
+        );
+        assert_eq!(output_lines[101], "               -> Count: 0");
+        assert_eq!(output_lines[102], "               -> Sum: 56");
+        assert_eq!(
+            output_lines[103],
+            "               -> QuantileValue #0: Quantile 0, Value 0"
+        );
+    }
+    #[test]
+    fn test_marshal_logs() {
+        let logs = LogsData::new(vec![
+            ResourceLogs::build(Resource::build(vec![KeyValue::new(
+                "version",
+                AnyValue::new_string("2.0"),
+            )]))
+            .schema_url("http://schema.opentelemetry.io")
+            .scope_logs(vec![
+                ScopeLogs::build(
+                    InstrumentationScope::build("library")
+                        .version("v1")
+                        .attributes(vec![KeyValue::new(
+                            "hostname",
+                            AnyValue::new_string("host5.retailer.com"),
+                        )])
+                        .finish(),
+                )
+                .schema_url("http://schema.opentelemetry.io")
+                .log_records(vec![
+                    LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
+                        .observed_time_unix_nano(1663718400000001300u64)
+                        .severity_text("INFO")
+                        .trace_id(Vec::from("4327e52011a22f9662eac217d77d1ec0".as_bytes()))
+                        .span_id(Vec::from("7271ee06d7e5925f".as_bytes()))
+                        .attributes(vec![KeyValue::new(
+                            "hostname",
+                            AnyValue::new_string("host3.thedomain.edu"),
+                        )])
+                        .flags(LogRecordFlags::TraceFlagsMask)
+                        .body(AnyValue::new_string(
+                            "Sint impedit non ut eligendi nisi neque harum maxime adipisci.",
+                        ))
+                        .finish(),
+                ])
+                .finish(),
+            ])
+            .finish(),
+        ]);
+        let marshaler = DetailedViewMarshaler;
+        let marshaled_logs = marshaler.marshal_logs(logs);
+        let mut output_lines = Vec::new();
+        for line in marshaled_logs.lines() {
+            output_lines.push(line);
+        }
 
-//         assert_eq!(output_lines[0], "ResourceLog #0");
-//         assert_eq!(
-//             output_lines[1],
-//             "   -> Resource SchemaURL: http://schema.opentelemetry.io"
-//         );
-//         assert_eq!(output_lines[2], "   -> Resource Attributes:");
-//         assert_eq!(output_lines[3], "      -> version: 2.0");
-//         assert_eq!(output_lines[4], "   ScopeLogs #0");
-//         assert_eq!(
-//             output_lines[5],
-//             "      -> ScopeLogs SchemaURL: http://schema.opentelemetry.io"
-//         );
-//         assert_eq!(
-//             output_lines[6],
-//             "      -> Instrumentation Scope library @v1"
-//         );
-//         assert_eq!(
-//             output_lines[7],
-//             "      -> Instrumentation Scope Attributes:"
-//         );
-//         assert_eq!(output_lines[8], "         -> hostname: host5.retailer.com");
-//         assert_eq!(output_lines[9], "      LogRecord #0");
-//         assert_eq!(
-//             output_lines[10],
-//             "         -> ObservedTimestamp: 1663718400000001300"
-//         );
-//         assert_eq!(output_lines[11], "         -> Timestamp: 2000000000");
-//         assert_eq!(output_lines[12], "         -> SeverityText: INFO");
-//         assert_eq!(output_lines[13], "         -> SeverityNumber: 2");
-//         assert_eq!(output_lines[14], "         -> EventName: event1");
-//         assert_eq!(
-//             output_lines[15],
-//             "         -> Body: Sint impedit non ut eligendi nisi neque harum maxime adipisci."
-//         );
-//         assert_eq!(output_lines[16], "         -> Attributes:");
-//         assert_eq!(
-//             output_lines[17],
-//             "            -> hostname: host3.thedomain.edu"
-//         );
-//         assert_eq!(
-//             output_lines[18],
-//             "         -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
-//         );
-//         assert_eq!(output_lines[19], "         -> Span ID: 7271ee06d7e5925f");
-//         assert_eq!(output_lines[20], "         -> Flags: 8");
-//     }
-// }
+        assert_eq!(output_lines[0], "ResourceLog #0");
+        assert_eq!(
+            output_lines[1],
+            "   -> Resource SchemaURL: http://schema.opentelemetry.io"
+        );
+        assert_eq!(output_lines[2], "   -> Resource Attributes:");
+        assert_eq!(output_lines[3], "      -> version: 2.0");
+        assert_eq!(output_lines[4], "   ScopeLogs #0");
+        assert_eq!(
+            output_lines[5],
+            "      -> ScopeLogs SchemaURL: http://schema.opentelemetry.io"
+        );
+        assert_eq!(
+            output_lines[6],
+            "      -> Instrumentation Scope library @v1"
+        );
+        assert_eq!(
+            output_lines[7],
+            "      -> Instrumentation Scope Attributes:"
+        );
+        assert_eq!(output_lines[8], "         -> hostname: host5.retailer.com");
+        assert_eq!(output_lines[9], "      LogRecord #0");
+        assert_eq!(
+            output_lines[10],
+            "         -> ObservedTimestamp: 1663718400000001300"
+        );
+        assert_eq!(output_lines[11], "         -> Timestamp: 2000000000");
+        assert_eq!(output_lines[12], "         -> SeverityText: INFO");
+        assert_eq!(output_lines[13], "         -> SeverityNumber: 9");
+        assert_eq!(output_lines[14], "         -> EventName: event1");
+        assert_eq!(
+            output_lines[15],
+            "         -> Body: Sint impedit non ut eligendi nisi neque harum maxime adipisci."
+        );
+        assert_eq!(output_lines[16], "         -> Attributes:");
+        assert_eq!(
+            output_lines[17],
+            "            -> hostname: host3.thedomain.edu"
+        );
+        assert_eq!(
+            output_lines[18],
+            "         -> Trace ID: 4327e52011a22f9662eac217d77d1ec0"
+        );
+        assert_eq!(output_lines[19], "         -> Span ID: 7271ee06d7e5925f");
+        assert_eq!(output_lines[20], "         -> Flags: 255");
+    }
+}

@@ -123,7 +123,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     }
 }
 
-
+// display implementation to use for debug processor
 impl fmt::Display for AnyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(value) = &self.value {
