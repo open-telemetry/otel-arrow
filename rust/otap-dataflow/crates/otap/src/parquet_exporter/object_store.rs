@@ -55,8 +55,7 @@ mod test {
             .find(|(k, _)| k == "delay")
             .map(|(_, v)| {
                 let s = v.as_ref();
-                humantime_serde::re::humantime::parse_duration(s)
-                    .unwrap_or(Duration::from_millis(0))
+                humantime::parse_duration(s).unwrap_or(Duration::from_millis(0))
             })
             .unwrap_or(Duration::from_millis(0));
 
