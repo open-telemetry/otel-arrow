@@ -1,0 +1,20 @@
+settings:
+  default_control_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:syslog_cef:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "127.0.0.1:4317"
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otlp:exporter"
+    config:
+      grpc_endpoint: "http://127.0.0.1:4317"

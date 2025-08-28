@@ -3,12 +3,20 @@
 
 use async_trait::async_trait;
 use otap_df_engine::control::NodeControlMsg;
+use crate::OTAP_RECEIVER_FACTORIES;
+use otap_df_engine::ReceiverFactory;
+use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::{error::Error, local::receiver as local};
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_engine::config::ReceiverConfig;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::node::NodeId;
+use otap_df_engine::context::PipelineContext;
+use linkme::distributed_slice;
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::{AsyncBufReadExt, BufReader};
-
+use std::sync::Arc;
 use crate::arrow_records_encoder::ArrowRecordsBuilder;
 
 #[allow(dead_code)]
@@ -57,6 +65,23 @@ impl SyslogCefReceiver {
         }
     }
 }
+
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_RECEIVER_FACTORIES)]
+pub static SyslogCefReceiver: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    name: SYLOG_CEF_RECEIVER_URN,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig| {
+        Ok(ReceiverWrapper::local(
+            SyslogCefReceiver::from_config(&node_config.config),
+            node,
+            node_config,
+            receiver_config,
+        ))
+    },
+};
 
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for SyslogCefReceiver {
