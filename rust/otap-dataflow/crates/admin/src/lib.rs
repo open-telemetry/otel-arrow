@@ -7,7 +7,7 @@ pub mod error;
 mod telemetry;
 mod pipeline;
 
-use axum::{Router, routing::get};
+use axum::Router;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -32,12 +32,8 @@ pub async fn run(
     let app_state = AppState { metrics_registry };
 
     let app = Router::new()
-        .route("/telemetry/live-schema", get(telemetry::get_live_schema))
-        .route("/telemetry/metrics", get(telemetry::get_metrics))
-        .route(
-            "/telemetry/metrics/aggregate",
-            get(telemetry::get_metrics_aggregate),
-        )
+        .merge(telemetry::routes())
+        .merge(pipeline::routes())
         .layer(ServiceBuilder::new())
         .with_state(app_state);
 

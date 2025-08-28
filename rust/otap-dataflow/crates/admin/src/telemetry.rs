@@ -8,7 +8,7 @@
 //! - /telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
 use crate::AppState;
-use axum::Json;
+use axum::{Json, Router};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -20,6 +20,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use axum::routing::get;
+
+/// All the routes for telemetry.
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/telemetry/live-schema", get(get_live_schema))
+        .route("/telemetry/metrics", get(get_metrics))
+        .route(
+            "/telemetry/metrics/aggregate",
+            get(get_metrics_aggregate),
+        )
+}
 
 /// All metric sets.
 #[derive(Serialize)]

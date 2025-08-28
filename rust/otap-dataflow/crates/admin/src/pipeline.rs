@@ -12,3 +12,10 @@
 //!
 //! ToDo Alternative -> avoid verb-y subpaths and support PATCH /.../pipelines/{pipelineId} with a body like {"status":"stopped"}. Use 409 if already stopping/stopped.
 
+use axum::Router;
+use crate::AppState;
+
+/// All the routes for pipelines.
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+}
