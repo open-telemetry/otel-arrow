@@ -20,6 +20,7 @@
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use crate::OTAP_EXPORTER_FACTORIES;
+use crate::parquet_exporter::schema::transform_to_known_schema;
 use crate::pdata::OtapPdata;
 use std::io::ErrorKind;
 use std::sync::Arc;
@@ -45,6 +46,7 @@ use otap_df_engine::node::NodeId;
 use otel_arrow_rust::otap::OtapArrowRecords;
 
 mod config;
+mod error;
 mod idgen;
 mod object_store;
 mod partition;
@@ -189,6 +191,15 @@ impl Exporter<OtapPdata> for ParquetExporter {
                             error: format!("ID Generation failed: {e}"),
                         });
                     }
+
+                    // ensure the batches has the schema the parquet writer expects
+                    transform_to_known_schema(&mut otap_batch).map_err(|e| {
+                        // TODO - Ack/Nack instead of returning error
+                        Error::ExporterError {
+                            exporter: effect_handler.exporter_id(),
+                            error: format!("Schema transformation failed: {e}"),
+                        }
+                    })?;
 
                     // compute any partitions
                     let partitions = match self.config.partitioning_strategies.as_ref() {
@@ -408,6 +419,67 @@ mod test {
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 278).await;
                 })
             });
+    }
+
+    #[test]
+    fn test_adaptive_schema_optional_columns() {
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
+        let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
+            exporter,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    let batch1: OtapArrowRecords =
+                        fixtures::create_single_logs_pdata_with_attrs(vec![KeyValue {
+                            key: "strkey".to_string(),
+                            value: Some(AnyValue::new_string("terry")),
+                        }])
+                        .try_into()
+                        .unwrap();
+
+                    let batch2: OtapArrowRecords =
+                        fixtures::create_single_logs_pdata_with_attrs(vec![KeyValue {
+                            key: "intkey".to_string(),
+                            value: Some(AnyValue::new_int(418)),
+                        }])
+                        .try_into()
+                        .unwrap();
+
+                    // double check that these contain schemas that are not the same ...
+                    let batch1_attrs = batch1.get(ArrowPayloadType::LogAttrs).unwrap();
+                    let batch2_attrs = batch2.get(ArrowPayloadType::LogAttrs).unwrap();
+                    assert_ne!(batch1_attrs.schema(), batch2_attrs.schema());
+
+                    ctx.send_pdata(batch1.into()).await.unwrap();
+                    ctx.send_pdata(batch2.into()).await.unwrap();
+
+                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(move |_ctx, exporter_result| {
+                Box::pin(async move {
+                    // check no error
+                    exporter_result.unwrap();
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 2).await;
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 2).await;
+                })
+            })
     }
 
     async fn wait_table_exists(base_dir: &str, payload_type: ArrowPayloadType) {

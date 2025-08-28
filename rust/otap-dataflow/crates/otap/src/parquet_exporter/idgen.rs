@@ -16,15 +16,7 @@ use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_rust::schema::{consts, update_schema_metadata};
 use uuid::Uuid;
 
-/// Definition of errors that could happen when generating an ID
-#[derive(thiserror::Error, Debug)]
-pub enum IdGeneratorError {
-    #[error("Invalid record batch: {error}")]
-    InvalidRecordBatch { error: String },
-
-    #[error("Unknown error occurred: {error}")]
-    UnknownError { error: String },
-}
+use super::error::ParquetExporterError;
 
 /// This is an ID generator that converts the batch IDs (which are only unique within a given
 /// OTAP Batch) into IDs that can be treated as unique.
@@ -61,12 +53,12 @@ impl PartitionSequenceIdGenerator {
     pub fn generate_unique_ids(
         &mut self,
         otap_batch: &mut OtapArrowRecords,
-    ) -> Result<(), IdGeneratorError> {
+    ) -> Result<(), ParquetExporterError> {
         // decode the transport optimized IDs if they are not already decoded. This is needed
         // to ensure that we are not computing the sequence of IDs based on delta-encoded IDs.
         // If the IDs are already decoded, this is a no-op.
         otap_batch.decode_transport_optimized_ids().map_err(|e| {
-            IdGeneratorError::InvalidRecordBatch {
+            ParquetExporterError::InvalidRecordBatch {
                 error: format!("failed to decode transport optimized IDs: {e}"),
             }
         })?;
@@ -157,7 +149,7 @@ impl PartitionSequenceIdGenerator {
         &self,
         column_name: &str,
         record_batch: &RecordBatch,
-    ) -> Result<RecordBatch, IdGeneratorError> {
+    ) -> Result<RecordBatch, ParquetExporterError> {
         let schema = record_batch.schema_ref();
         let id_column_index = match schema.index_of(column_name) {
             Ok(index) => index,
@@ -172,7 +164,7 @@ impl PartitionSequenceIdGenerator {
         let id_column = match cast(id_column, &DataType::UInt32) {
             Ok(id_col) => id_col,
             Err(err) => {
-                return Err(IdGeneratorError::InvalidRecordBatch {
+                return Err(ParquetExporterError::InvalidRecordBatch {
                     error: format!("could not cast ID column to UInt32: {err}"),
                 });
             }
@@ -180,7 +172,7 @@ impl PartitionSequenceIdGenerator {
         let new_id_col = match add(&UInt32Array::new_scalar(self.curr_max), &id_column) {
             Ok(col) => col,
             Err(e) => {
-                return Err(IdGeneratorError::UnknownError {
+                return Err(ParquetExporterError::UnknownError {
                     error: format!("{e}"),
                 });
             }
